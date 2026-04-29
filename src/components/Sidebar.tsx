@@ -3,25 +3,20 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppLogo } from "./AppLogo";
 import { useLang } from "../context/LanguageContext";
-import type { Translations } from "../i18n";
-import type { AnalysisMode } from "../types";
 
 interface SidebarProps {
   isRunning: boolean;
   progress: number;
   done: number;
   total: number;
-  onAnalyze: (path: string, mode: AnalysisMode, png: boolean, pdf: boolean, seg?: number) => void;
+  onAnalyze: (path: string, pdf: boolean) => void;
   onReset: () => void;
 }
 
 export function Sidebar({ isRunning, progress, done, total, onAnalyze, onReset }: SidebarProps) {
   const { t } = useLang();
   const [path, setPath]             = useState("");
-  const [mode, setMode]             = useState<AnalysisMode>("centro");
-  const [png, setPng]               = useState(false);
   const [pdf, setPdf]               = useState(true);
-  const [seg, setSeg]               = useState(15);
   const [isDragOver, setIsDragOver] = useState(false);
   const dropZoneRef                 = useRef<HTMLDivElement>(null);
 
@@ -62,16 +57,10 @@ export function Sidebar({ isRunning, progress, done, total, onAnalyze, onReset }
 
   const handleAnalyze = () => {
     if (!path.trim() || isRunning) return;
-    onAnalyze(path.trim(), mode, png, pdf, mode === "segundos" ? seg : undefined);
+    onAnalyze(path.trim(), pdf);
   };
 
   const canAnalyze = path.trim().length > 0 && !isRunning;
-
-  const modes: { value: AnalysisMode; labelKey: keyof Translations; subKey: keyof Translations }[] = [
-    { value: "segundos", labelKey: "first15s",  subKey: "fastest" },
-    { value: "centro",   labelKey: "center30s", subKey: "recommended" },
-    { value: "completo", labelKey: "fullTrack", subKey: "mostAccurate" },
-  ];
 
   return (
     <aside className="flex h-full w-[260px] flex-shrink-0 flex-col border-r border-border bg-surface overflow-y-auto">
@@ -131,65 +120,8 @@ export function Sidebar({ isRunning, progress, done, total, onAnalyze, onReset }
           </div>
         </div>
 
-        {/* Analysis Mode */}
-        <div>
-          <label className="mb-2 block text-[10px] font-semibold uppercase tracking-widest text-muted">
-            {t("analysisMode")}
-          </label>
-          <div className="space-y-1.5">
-            {modes.map(({ value, labelKey, subKey }) => (
-              <label key={value}
-                className={`flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 border transition-all ${
-                  mode === value
-                    ? "border-accent/40 bg-accent/8 text-white"
-                    : "border-border bg-surface2 text-white/60 hover:border-border2 hover:text-white/80"
-                }`}>
-                <div className="flex items-center gap-2.5">
-                  <div className={`h-3.5 w-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
-                    mode === value ? "border-accent" : "border-muted"
-                  }`}>
-                    {mode === value && <div className="h-1.5 w-1.5 rounded-full bg-accent" />}
-                  </div>
-                  <input type="radio" className="sr-only" name="mode" value={value}
-                    checked={mode === value} onChange={() => setMode(value)} disabled={isRunning} />
-                  <span className="text-xs font-medium">{t(labelKey)}</span>
-                </div>
-                <span className="text-[10px] text-muted">{t(subKey)}</span>
-              </label>
-            ))}
-          </div>
-          {mode === "segundos" && (
-            <div className="mt-2 flex items-center gap-2">
-              <label className="text-[10px] text-muted">{t("seconds")}</label>
-              <input type="number" min={5} max={120} value={seg}
-                onChange={(e) => setSeg(Number(e.target.value))} disabled={isRunning}
-                className="w-16 rounded border border-border2 bg-surface2 px-2 py-1 text-xs text-white font-mono focus:border-accent focus:outline-none" />
-            </div>
-          )}
-        </div>
-
         {/* Options */}
         <div className="space-y-2">
-          {/* PNG checkbox */}
-          <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2 bg-surface2 hover:border-border2 transition-all">
-            <div onClick={() => !isRunning && setPng(!png)}
-              className={`h-4 w-4 rounded border flex items-center justify-center flex-shrink-0 transition-all ${
-                png ? "border-accent bg-accent" : "border-muted bg-transparent"
-              }`}>
-              {png && (
-                <svg className="h-2.5 w-2.5 text-bg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-            </div>
-            <input type="checkbox" className="sr-only" checked={png}
-              onChange={(e) => setPng(e.target.checked)} disabled={isRunning} />
-            <div>
-              <p className="text-xs font-medium text-white/80">{t("saveSpectrograms")}</p>
-              <p className="text-[10px] text-muted">{t("pngFolder")}</p>
-            </div>
-          </label>
-
           {/* PDF checkbox */}
           <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2 bg-surface2 hover:border-border2 transition-all">
             <div onClick={() => !isRunning && setPdf(!pdf)}

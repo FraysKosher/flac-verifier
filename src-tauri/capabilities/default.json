@@ -13,6 +13,8 @@
     "opener:allow-reveal-item-in-dir",
     "dialog:allow-open",
     "shell:allow-spawn",
-    "shell:allow-kill"
+    "shell:allow-kill",
+    "updater:default",
+    "notification:default"
   ]
 }

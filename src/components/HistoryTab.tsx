@@ -2,7 +2,23 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useLang } from "../context/LanguageContext";
+import type { Lang } from "../i18n";
 import type { HistoryRow } from "../types";
+
+// ── Verdict translation map ──────────────────────────────────────────────────
+// Verdicts are always stored in Spanish in historial.csv.
+// This map translates them for display without changing stored data.
+const VERDICT_MAP: Record<string, Record<Lang, string>> = {
+  "LOSSLESS GENUINO":      { en: "LOSSLESS GENUINE",   es: "LOSSLESS GENUINO" },
+  "PROBABLEMENTE LOSSLESS":{ en: "PROBABLY LOSSLESS",  es: "PROBABLEMENTE LOSSLESS" },
+  "DUDOSO":                { en: "DOUBTFUL",           es: "DUDOSO" },
+  "PROBABLE UPSCALE":      { en: "PROBABLE UPSCALE",   es: "PROBABLE UPSCALE" },
+  "indeterminado":         { en: "INCONCLUSIVE",       es: "INDETERMINADO" },
+};
+
+function translateVerdict(raw: string, lang: Lang): string {
+  return VERDICT_MAP[raw]?.[lang] ?? raw;
+}
 
 // ── Lightweight CSV parser (handles quoted fields, BOM, CRLF) ───────────────
 function parseCsvLine(line: string): string[] {
@@ -35,13 +51,14 @@ function parseCsv(raw: string): HistoryRow[] {
 }
 
 // ── Badge for verdict column ────────────────────────────────────────────────
-function VerdictPill({ v }: { v: string }) {
+// `raw` = Spanish key for colour matching; `display` = translated label
+function VerdictPill({ raw, display }: { raw: string; display: string }) {
   const cls =
-    v.includes("GENUINO") || v.includes("GENUINE") ? "badge-genuine" :
-    v.includes("PROBABLE") ? "badge-probable" :
-    v.includes("DUDOSO") || v.includes("DOUBTFUL") ? "badge-doubtful" :
-    v.includes("UPSCALE") ? "badge-upscale" : "text-muted";
-  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{v}</span>;
+    raw.includes("GENUINO")  || raw.includes("GENUINE")  ? "badge-genuine" :
+    raw.includes("PROBABLE") && !raw.includes("UPSCALE")  ? "badge-probable" :
+    raw.includes("DUDOSO")   || raw.includes("DOUBTFUL")  ? "badge-doubtful" :
+    raw.includes("UPSCALE")                               ? "badge-upscale"  : "text-muted";
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{display}</span>;
 }
 
 // ── Sort helper ─────────────────────────────────────────────────────────────
@@ -58,7 +75,7 @@ function sortRows(rows: HistoryRow[], col: keyof HistoryRow, dir: SortDir): Hist
 
 // ── Component ───────────────────────────────────────────────────────────────
 export function HistoryTab() {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const [rows, setRows]       = useState<HistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
@@ -196,7 +213,7 @@ export function HistoryTab() {
                     {row.archivo}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">
-                    <VerdictPill v={row.veredicto} />
+                    <VerdictPill raw={row.veredicto} display={translateVerdict(row.veredicto, lang)} />
                   </td>
                   <td className="px-3 py-2 font-mono text-right text-white/70">{row.score}</td>
                   <td className="px-3 py-2 font-mono text-right text-white/70">

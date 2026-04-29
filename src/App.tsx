@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import "./index.css";
 import { useAnalysis } from "./hooks/useAnalysis";
 import { Sidebar } from "./components/Sidebar";
@@ -9,7 +9,7 @@ import { CsvBanner } from "./components/CsvBanner";
 import { HistoryTab } from "./components/HistoryTab";
 import { useLang } from "./context/LanguageContext";
 import { useTheme } from "./context/ThemeContext";
-import type { AnalysisMode } from "./types";
+import { UpdateChecker } from "./components/UpdateChecker";
 
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
@@ -70,7 +70,64 @@ function EmptyState() {
   );
 }
 
-type Tab = "results" | "history";
+type Tab    = "results" | "history";
+type Filter = "all" | "genuine" | "fake" | "inconclusive";
+
+/** Map a raw veredicto string to a filter bucket */
+function verdictBucket(r: { veredicto?: string; error?: string }): Filter {
+  if (r.error) return "inconclusive";
+  switch (r.veredicto) {
+    case "LOSSLESS GENUINO":
+    case "PROBABLEMENTE LOSSLESS": return "genuine";
+    case "PROBABLE UPSCALE":       return "fake";
+    case "DUDOSO":                 return "inconclusive";
+    default:                       return "inconclusive";
+  }
+}
+
+interface FilterBarProps {
+  active: Filter;
+  counts: Record<Filter, number>;
+  onChange: (f: Filter) => void;
+}
+
+function FilterBar({ active, counts, onChange }: FilterBarProps) {
+  const { t } = useLang();
+
+  const buttons: { key: Filter; label: string; color: string }[] = [
+    { key: "all",          label: `${t("filterAll")}`,          color: "text-white" },
+    { key: "genuine",      label: `✓ ${t("filterGenuine")}`,    color: "text-genuine" },
+    { key: "fake",         label: `✗ ${t("filterFake")}`,       color: "text-upscale" },
+    { key: "inconclusive", label: `? ${t("filterInconclusive")}`,color: "text-doubtful" },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pb-3">
+      {buttons.map(({ key, label, color }) => {
+        const isActive = active === key;
+        const count = counts[key];
+        return (
+          <button
+            key={key}
+            onClick={() => onChange(key)}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-all border ${
+              isActive
+                ? "bg-accent text-bg border-accent shadow-sm shadow-accent/30"
+                : `bg-surface2 border-border2 ${color} hover:border-accent/40 hover:bg-accent/5`
+            }`}
+          >
+            {label}
+            <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
+              isActive ? "bg-bg/20 text-bg" : "bg-border text-muted"
+            }`}>
+              {count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function App() {
   const {
@@ -81,11 +138,26 @@ function App() {
   } = useAnalysis();
 
   const { t } = useLang();
-  const [activeTab, setActiveTab] = useState<Tab>("results");
+  const [activeTab, setActiveTab]     = useState<Tab>("results");
+  const [activeFilter, setActiveFilter] = useState<Filter>("all");
 
-  const handleAnalyze = (path: string, mode: AnalysisMode, png: boolean, pdf: boolean, seg?: number) => {
-    startAnalysis(path, mode, png, pdf, seg);
+  // Verdict-bucket counts (always based on full result set)
+  const filterCounts = useMemo<Record<Filter, number>>(() => {
+    const c: Record<Filter, number> = { all: results.length, genuine: 0, fake: 0, inconclusive: 0 };
+    for (const r of results) c[verdictBucket(r)]++;
+    return c;
+  }, [results]);
+
+  // Visible subset
+  const visibleResults = useMemo(
+    () => activeFilter === "all" ? results : results.filter((r) => verdictBucket(r) === activeFilter),
+    [results, activeFilter]
+  );
+
+  const handleAnalyze = (path: string, pdf: boolean) => {
+    startAnalysis(path, pdf);
     setActiveTab("results");
+    setActiveFilter("all");   // reset filter on new run
   };
 
   return (
@@ -155,6 +227,7 @@ function App() {
                 {t("processingLabel")} {done}/{total}
               </div>
             )}
+            <UpdateChecker silentOnStartup />
             <ThemeToggle />
             <LangToggle />
           </div>
@@ -168,7 +241,7 @@ function App() {
             {results.length === 0 && !isRunning ? (
               <EmptyState />
             ) : (
-              <div className="mx-auto max-w-3xl space-y-3">
+            <div className="mx-auto max-w-3xl space-y-3">
                 {/* Report banners */}
                 {pdfPath && <PdfBanner pdfPath={pdfPath} onDismiss={dismissPdf} />}
                 {csvPath && !csvError && (
@@ -177,13 +250,30 @@ function App() {
 
                 {/* Summary bar */}
                 {summary && !isRunning && (
-                  <div className="mb-5">
+                  <div className="mb-3">
                     <SummaryBar summary={summary} total={total} />
                   </div>
                 )}
 
-                {/* Result cards */}
-                {results.map((result, index) => (
+                {/* Filter bar — only once there are results */}
+                {results.length > 0 && !isRunning && (
+                  <FilterBar
+                    active={activeFilter}
+                    counts={filterCounts}
+                    onChange={setActiveFilter}
+                  />
+                )}
+
+                {/* Filtered empty state */}
+                {visibleResults.length === 0 && !isRunning && (
+                  <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+                    <span className="text-2xl opacity-30">🔍</span>
+                    <p className="text-sm text-muted">{t("filterNoMatch")}</p>
+                  </div>
+                )}
+
+                {/* Result cards (filtered) */}
+                {visibleResults.map((result, index) => (
                   <ResultCard key={result.id} result={result} index={index} />
                 ))}
 

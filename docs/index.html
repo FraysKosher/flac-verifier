@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FLAC Verifier — Authenticity Analyzer</title>
+<meta name="description" content="Automatically detect upscaled FLACs with full spectral analysis, spectrograms, and instant verdicts." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+/* ── Variables ───────────────────────────────────────────────────────────── */
+:root {
+  --acc: #2d9da8;
+  --acc-dim: #247f89;
+  --acc-glow: rgba(45,157,168,.15);
+}
+[data-theme="dark"] {
+  --bg:  #0c0c0a;
+  --s1:  #131310;
+  --s2:  #1a1a17;
+  --b1:  #252522;
+  --b2:  #2e2e2a;
+  --t1:  #e8e7e3;
+  --t2:  #a8a7a3;
+  --t3:  #65645f;
+  --inv: #0c0c0a;
+}
+[data-theme="light"] {
+  --bg:  #f6f5f3;
+  --s1:  #ffffff;
+  --s2:  #eeedeb;
+  --b1:  #dddbd7;
+  --b2:  #cccac5;
+  --t1:  #1c1b18;
+  --t2:  #5a5955;
+  --t3:  #9a9895;
+  --inv: #ffffff;
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t1);line-height:1.65;transition:background .2s,color .2s}
+a{color:var(--acc);text-decoration:none}
+a:hover{color:var(--acc-dim)}
+img{display:block;max-width:100%}
+code,pre{font-family:'JetBrains Mono',monospace}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+section{padding:80px 0}
+section+section{border-top:1px solid var(--b1)}
+
+/* ── Nav ─────────────────────────────────────────────────────────────────── */
+nav{position:sticky;top:0;z-index:100;background:var(--bg);border-bottom:1px solid var(--b1);backdrop-filter:blur(12px)}
+.nav-inner{display:flex;align-items:center;gap:24px;height:60px}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:.9rem;color:var(--t1);letter-spacing:-.02em}
+.nav-logo svg{flex-shrink:0}
+.nav-links{display:flex;gap:20px;margin-left:auto}
+.nav-links a{font-size:.8rem;font-weight:500;color:var(--t2);transition:color .15s}
+.nav-links a:hover{color:var(--t1)}
+.nav-right{display:flex;align-items:center;gap:10px;margin-left:16px}
+.btn-gh{display:inline-flex;align-items:center;gap:6px;font-size:.78rem;font-weight:600;border:1px solid var(--b2);border-radius:6px;padding:5px 12px;color:var(--t2);transition:all .15s}
+.btn-gh:hover{border-color:var(--acc);color:var(--acc)}
+#theme-btn{background:none;border:1px solid var(--b2);border-radius:6px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--t2);font-size:15px;transition:all .15s}
+#theme-btn:hover{border-color:var(--acc);color:var(--acc)}
+
+/* ── Hero ────────────────────────────────────────────────────────────────── */
+.hero{padding:96px 0 80px;text-align:center}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--b2);border-radius:999px;padding:4px 12px;font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t3);margin-bottom:28px}
+.hero-badge span{width:6px;height:6px;border-radius:50%;background:var(--acc)}
+.hero h1{font-size:clamp(2rem,5vw,3.2rem);font-weight:800;letter-spacing:-.04em;line-height:1.1;color:var(--t1);margin-bottom:18px}
+.hero h1 em{font-style:normal;color:var(--acc)}
+.hero p{font-size:1.05rem;color:var(--t2);max-width:500px;margin:0 auto 36px}
+.cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 24px;border-radius:7px;font-size:.875rem;font-weight:600;cursor:pointer;transition:all .15s;border:none;text-decoration:none}
+.btn-primary{background:var(--acc);color:#fff}
+.btn-primary:hover{background:var(--acc-dim);color:#fff}
+.btn-outline{background:transparent;border:1px solid var(--b2);color:var(--t1)}
+.btn-outline:hover{border-color:var(--acc);color:var(--acc)}
+
+/* ── Terminal block ──────────────────────────────────────────────────────── */
+.terminal{background:var(--s1);border:1px solid var(--b1);border-radius:10px;overflow:hidden;max-width:640px;margin:0 auto}
+.terminal-bar{display:flex;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid var(--b1)}
+.dot{width:10px;height:10px;border-radius:50%}
+.dot-r{background:#ff5f57}.dot-y{background:#febc2e}.dot-g{background:#28c840}
+.terminal pre{padding:20px 20px;font-size:.82rem;line-height:1.8;color:var(--t2);overflow-x:auto}
+.terminal .prompt{color:var(--acc)}
+.terminal .comment{color:var(--t3)}
+
+/* ── Section titles ──────────────────────────────────────────────────────── */
+.section-label{font-size:.72rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--acc);margin-bottom:10px}
+.section-title{font-size:clamp(1.5rem,3vw,2.1rem);font-weight:800;letter-spacing:-.03em;color:var(--t1);margin-bottom:14px}
+.section-sub{color:var(--t2);font-size:.95rem;max-width:520px}
+
+/* ── Steps ───────────────────────────────────────────────────────────────── */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px;margin-top:48px}
+.step{background:var(--s1);border:1px solid var(--b1);border-radius:10px;padding:28px 26px;position:relative}
+.step-num{font-size:.72rem;font-weight:700;letter-spacing:.08em;color:var(--t3);margin-bottom:14px;font-family:'JetBrains Mono',monospace}
+.step-icon{font-size:1.6rem;margin-bottom:14px}
+.step h3{font-size:1rem;font-weight:700;color:var(--t1);margin-bottom:8px}
+.step p{font-size:.875rem;color:var(--t2);line-height:1.6}
+.step-line{position:absolute;top:50%;right:-13px;width:24px;height:1px;background:var(--b2);display:none}
+@media(min-width:800px){.step-line{display:block}}
+.step:last-child .step-line{display:none}
+
+/* ── Features ────────────────────────────────────────────────────────────── */
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:48px}
+.feat{background:var(--s1);border:1px solid var(--b1);border-radius:10px;padding:22px 20px}
+.feat-icon{font-size:1.3rem;margin-bottom:12px}
+.feat h4{font-size:.875rem;font-weight:700;color:var(--t1);margin-bottom:6px}
+.feat p{font-size:.8rem;color:var(--t2);line-height:1.55}
+
+/* ── Verdicts strip ──────────────────────────────────────────────────────── */
+.verdicts{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.verdict{font-size:.72rem;font-weight:700;letter-spacing:.06em;padding:4px 10px;border-radius:5px}
+.v-g{background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3)}
+.v-p{background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.3)}
+.v-d{background:rgba(249,115,22,.12);color:#f97316;border:1px solid rgba(249,115,22,.3)}
+.v-u{background:rgba(239,68,68,.12);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
+
+/* ── Install ─────────────────────────────────────────────────────────────── */
+.install-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:48px;align-items:start}
+@media(max-width:680px){.install-grid{grid-template-columns:1fr}}
+.install-step{display:flex;gap:14px;margin-bottom:22px}
+.install-num{flex-shrink:0;width:26px;height:26px;border-radius:50%;background:var(--acc-glow);border:1px solid var(--acc);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;color:var(--acc)}
+.install-text h4{font-size:.875rem;font-weight:600;color:var(--t1);margin-bottom:3px}
+.install-text p{font-size:.8rem;color:var(--t2)}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+footer{border-top:1px solid var(--b1);padding:36px 0}
+.footer-inner{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px}
+.footer-left{display:flex;align-items:center;gap:10px;font-size:.8rem;color:var(--t3)}
+.footer-links{display:flex;gap:20px}
+.footer-links a{font-size:.8rem;color:var(--t3);transition:color .15s}
+.footer-links a:hover{color:var(--acc)}
+
+/* ── Misc ────────────────────────────────────────────────────────────────── */
+.accent{color:var(--acc)}
+@media(max-width:640px){
+  .nav-links{display:none}
+  section{padding:56px 0}
+  .hero{padding:64px 0 48px}
+}
+</style>
+</head>
+<body>
+
+<!-- ── NAV ─────────────────────────────────────────────────────────────── -->
+<nav>
+  <div class="wrap nav-inner">
+    <a href="#" class="nav-logo">
+      <!-- Waveform + checkmark SVG logo -->
+      <svg width="28" height="28" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="8"  y="46" width="8" height="28" rx="3" fill="currentColor"/>
+        <rect x="21" y="30" width="8" height="44" rx="3" fill="currentColor"/>
+        <rect x="34" y="14" width="8" height="60" rx="3" fill="currentColor"/>
+        <rect x="47" y="38" width="8" height="36" rx="3" fill="currentColor"/>
+        <rect x="60" y="22" width="8" height="52" rx="3" fill="currentColor"/>
+        <polyline points="57,62 63,70 76,52" stroke="#2d9da8" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      FLAC Verifier
+    </a>
+    <div class="nav-links">
+      <a href="#how-it-works">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+    </div>
+    <div class="nav-right">
+      <a class="btn-gh" href="https://github.com/FraysKosher/flac-verifier" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+      <button id="theme-btn" aria-label="Toggle theme" title="Toggle light/dark">🌙</button>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-badge"><span></span>Open Source · Windows · Free</div>
+    <h1>Is your FLAC actually<br><em>lossless?</em></h1>
+    <p>Automatically detect upscaled FLACs with full spectral analysis, real spectrograms, and instant verdicts.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/FraysKosher/flac-verifier/releases/latest" id="dl-btn">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        Download
+      </a>
+      <a class="btn btn-outline" href="https://github.com/FraysKosher/flac-verifier" target="_blank" rel="noopener">View on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ─────────────────────────────────────────────────────── -->
+<section id="how-it-works">
+  <div class="wrap">
+    <p class="section-label">How it works</p>
+    <h2 class="section-title">Three steps to the truth</h2>
+    <p class="section-sub">Drop a folder and walk away. FLAC Verifier handles everything else.</p>
+    <div class="steps">
+      <div class="step">
+        <p class="step-num">01</p>
+        <div class="step-icon">📁</div>
+        <h3>Select a folder</h3>
+        <p>Drag and drop any folder containing FLAC files, or browse to it. Single files work too.</p>
+        <div class="step-line"></div>
+      </div>
+      <div class="step">
+        <p class="step-num">02</p>
+        <div class="step-icon">📊</div>
+        <h3>Full spectral analysis</h3>
+        <p>Every file is processed in its entirety — spectral ceiling, dynamic range, bit-depth grid, clipping detection, and a generated spectrogram image.</p>
+        <div class="step-line"></div>
+      </div>
+      <div class="step">
+        <p class="step-num">03</p>
+        <div class="step-icon">✅</div>
+        <h3>Automatic verdict</h3>
+        <p>Each track receives a scored verdict: Lossless Genuine, Probably Lossless, Doubtful, or Probable Upscale — with a full explanation of every metric.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ─────────────────────────────────────────────────────────── -->
+<section id="features">
+  <div class="wrap">
+    <p class="section-label">Features</p>
+    <h2 class="section-title">Everything you need</h2>
+    <p class="section-sub">Built for audiophiles, archivists, and anyone who cares about what's actually in their music collection.</p>
+    <div class="features">
+      <div class="feat">
+        <div class="feat-icon">🖼️</div>
+        <h4>Spectrograms always included</h4>
+        <p>Every analysis generates a full-track spectrogram PNG. View inline or open externally. No option to skip.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">⚡</div>
+        <h4>Batch analysis</h4>
+        <p>Analyze an entire album folder in one click. Results stream in card by card as each file finishes.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">🏷️</div>
+        <h4>Four-tier verdicts</h4>
+        <p>Scored from 0–100% with a clear verdict label:</p>
+        <div class="verdicts">
+          <span class="verdict v-g">GENUINE</span>
+          <span class="verdict v-p">PROBABLE</span>
+          <span class="verdict v-d">DOUBTFUL</span>
+          <span class="verdict v-u">UPSCALE</span>
+        </div>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">🔔</div>
+        <h4>Desktop notifications</h4>
+        <p>Get a Windows system notification when analysis completes — useful for large albums running in the background.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">🔍</div>
+        <h4>Filter &amp; history</h4>
+        <p>Filter results by verdict with one click. Every analysis is saved to a cumulative CSV history log you can sort and search.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">📄</div>
+        <h4>PDF &amp; CSV reports</h4>
+        <p>Export a formatted PDF report and a machine-readable CSV alongside each analyzed folder.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── INSTALL ───────────────────────────────────────────────────────────── -->
+<section id="install">
+  <div class="wrap">
+    <p class="section-label">Installation</p>
+    <h2 class="section-title">Get started in minutes</h2>
+    <p class="section-sub">A pre-built Windows installer is available. To run from source, you'll need Python 3.10+ and the dependencies below.</p>
+    <div class="install-grid">
+      <div>
+        <div class="install-step">
+          <div class="install-num">1</div>
+          <div class="install-text">
+            <h4>Clone the repository</h4>
+            <p>Or download the <a href="https://github.com/FraysKosher/flac-verifier/releases/latest">latest release</a> if you only want the installer.</p>
+          </div>
+        </div>
+        <div class="install-step">
+          <div class="install-num">2</div>
+          <div class="install-text">
+            <h4>Install Python dependencies</h4>
+            <p>NumPy, SciPy, Mutagen, Matplotlib, fpdf2, and Pillow.</p>
+          </div>
+        </div>
+        <div class="install-step">
+          <div class="install-num">3</div>
+          <div class="install-text">
+            <h4>Launch the app</h4>
+            <p>The Tauri desktop shell starts automatically and loads the UI.</p>
+          </div>
+        </div>
+      </div>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="dot dot-r"></div>
+          <div class="dot dot-y"></div>
+          <div class="dot dot-g"></div>
+        </div>
+        <pre><span class="comment"># Clone</span>
+<span class="prompt">$</span> git clone https://github.com/FraysKosher/flac-verifier.git
+<span class="prompt">$</span> cd flac-verifier
+
+<span class="comment"># Python dependencies</span>
+<span class="prompt">$</span> pip install -r requirements.txt
+
+<span class="comment"># Launch (dev mode)</span>
+<span class="prompt">$</span> cd flac-verifier
+<span class="prompt">$</span> npm install
+<span class="prompt">$</span> npm run tauri dev</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ────────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="wrap footer-inner">
+    <div class="footer-left">
+      <svg width="18" height="18" viewBox="0 0 80 80" fill="none">
+        <rect x="8" y="46" width="8" height="28" rx="3" fill="currentColor" opacity=".5"/>
+        <rect x="21" y="30" width="8" height="44" rx="3" fill="currentColor" opacity=".5"/>
+        <rect x="34" y="14" width="8" height="60" rx="3" fill="currentColor" opacity=".5"/>
+        <rect x="47" y="38" width="8" height="36" rx="3" fill="currentColor" opacity=".5"/>
+        <rect x="60" y="22" width="8" height="52" rx="3" fill="currentColor" opacity=".5"/>
+      </svg>
+      FLAC Verifier · MIT License
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/FraysKosher/flac-verifier/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/FraysKosher/flac-verifier/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/FraysKosher/flac-verifier" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  const btn = document.getElementById('theme-btn');
+  const html = document.documentElement;
+
+  // Load saved preference
+  const saved = localStorage.getItem('fv-docs-theme');
+  if (saved) { html.dataset.theme = saved; }
+  btn.textContent = html.dataset.theme === 'light' ? '🌙' : '☀️';
+
+  btn.addEventListener('click', () => {
+    const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
+    html.dataset.theme = next;
+    btn.textContent = next === 'light' ? '🌙' : '☀️';
+    localStorage.setItem('fv-docs-theme', next);
+  });
+
+  // Download button — link to latest release
+  const dlBtn = document.getElementById('dl-btn');
+  if (dlBtn) {
+    fetch('https://api.github.com/repos/FraysKosher/flac-verifier/releases/latest', {cache: 'no-store'})
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        const asset = (data.assets || []).find(a => a.name.endsWith('.msi') || a.name.endsWith('.exe'));
+        if (asset) dlBtn.href = asset.browser_download_url;
+      })
+      .catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>

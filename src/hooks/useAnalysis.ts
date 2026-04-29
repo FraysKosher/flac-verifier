@@ -1,12 +1,40 @@
 import { useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import type {
   AnalysisResult,
   AnalysisSummary,
-  AnalysisMode,
   ProgressEvent,
 } from "../types";
+
+/** Fire a system notification summarising the completed analysis. */
+async function fireCompletionNotification(summary: AnalysisSummary, total: number) {
+  try {
+    let granted = await isPermissionGranted();
+    console.log("[notification] isPermissionGranted →", granted);
+    if (!granted) {
+      const perm = await requestPermission();
+      console.log("[notification] requestPermission →", perm);
+      granted = perm === "granted";
+    }
+    if (!granted) {
+      console.warn("[notification] permission not granted — skipping");
+      return;
+    }
+    const fakes = summary.upscale + summary.doubtful;
+    const body = `${total} file${total !== 1 ? "s" : ""} analyzed — ${summary.genuine} genuine, ${fakes} suspicious`;
+    console.log("[notification] sending →", { title: "FLAC Verifier", body });
+    sendNotification({ title: "FLAC Verifier", body });
+    console.log("[notification] sendNotification() called OK");
+  } catch (e) {
+    console.error("[notification] pipeline error:", e);
+  }
+}
 
 export interface UseAnalysisReturn {
   results: AnalysisResult[];
@@ -20,7 +48,7 @@ export interface UseAnalysisReturn {
   pdfError: string | null;
   csvPath: string | null;
   csvError: string | null;
-  startAnalysis: (path: string, mode: AnalysisMode, png: boolean, pdf: boolean, seg?: number) => Promise<void>;
+  startAnalysis: (path: string, pdf: boolean) => Promise<void>;
   resetAnalysis: () => void;
   dismissPdf: () => void;
   dismissCsv: () => void;
@@ -77,7 +105,7 @@ export function useAnalysis(): UseAnalysisReturn {
   }, []);
 
   const startAnalysis = useCallback(
-    async (path: string, mode: AnalysisMode, png: boolean, pdf: boolean, seg?: number) => {
+    async (path: string, pdf: boolean) => {
       resetAnalysis();
       setIsRunning(true);
       setErrorMessage(null);
@@ -113,7 +141,13 @@ export function useAnalysis(): UseAnalysisReturn {
             return next;
           });
         } else if (parsed.tipo === "fin" || parsed.tipo === "terminated") {
-          setResults((prev) => { setSummary(computeSummary(prev)); return prev; });
+          setResults((prev) => {
+            const s = computeSummary(prev);
+            setSummary(s);
+            // Fire notification after state update (non-blocking)
+            fireCompletionNotification(s, prev.length);
+            return prev;
+          });
           setIsRunning(false);
           setProgress(100);
           // Don't unlisten yet — pdf event may still arrive after fin
@@ -139,7 +173,7 @@ export function useAnalysis(): UseAnalysisReturn {
       unlistenRef.current = unlisten;
 
       try {
-        await invoke("run_analysis", { path, mode, png, pdf, seg });
+        await invoke("run_analysis", { path, pdf });
       } catch (err) {
         setErrorMessage(String(err));
         setIsRunning(false);

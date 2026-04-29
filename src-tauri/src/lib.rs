@@ -51,10 +51,7 @@ fn resolve_script_path(app: &AppHandle) -> Result<String, String> {
 async fn run_analysis(
     app: AppHandle,
     path: String,
-    mode: String,
-    png: bool,
     pdf: bool,
-    seg: Option<u32>,
 ) -> Result<(), String> {
     let script_path = resolve_script_path(&app)?;
 
@@ -62,17 +59,8 @@ async fn run_analysis(
         script_path,
         "--ruta".to_string(),
         path,
-        "--modo".to_string(),
-        mode.clone(),
     ];
 
-    if mode == "segundos" {
-        let s = seg.unwrap_or(15).to_string();
-        args.push("--seg".to_string());
-        args.push(s);
-    }
-
-    if png { args.push("--png".to_string()); }
     if pdf { args.push("--pdf".to_string()); }
 
     // Convert args to &str slices
@@ -174,6 +162,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![run_analysis, read_history, clear_history, get_history_path])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

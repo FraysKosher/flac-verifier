@@ -4,6 +4,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { VerdictBadge } from "./VerdictBadge";
 import { MetricPanel, type MetricKey } from "./MetricPanel";
 import { useLang } from "../context/LanguageContext";
+import { translateIssue } from "../i18n";
 import type { AnalysisResult } from "../types";
 
 interface ResultCardProps {
@@ -74,7 +75,7 @@ function MetricCell({ label, value, valueClass = "text-white/80", sub, onClick, 
 }
 
 export function ResultCard({ result, index }: ResultCardProps) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const { archivo, error, meta, score, veredicto, problemas, clip, dr, bdi, esp } = result;
 
   const [activeMetric, setActiveMetric] = useState<MetricKey | null>(null);
@@ -215,7 +216,7 @@ export function ResultCard({ result, index }: ResultCardProps) {
               {problemas.map((issue, i) => (
                 <div key={i} className="flex items-start gap-2 rounded bg-doubtful/5 px-3 py-1.5 text-xs text-doubtful/90 border border-doubtful/15">
                   <span className="mt-px flex-shrink-0">⚠</span>
-                  <span>{issue}</span>
+                <span>{translateIssue(issue, lang)}</span>
                 </div>
               ))}
             </div>

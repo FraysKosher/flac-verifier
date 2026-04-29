@@ -115,6 +115,12 @@ export interface Translations {
   processingLabel: string;
   // Lang toggle
   langToggle: string;
+  // Result filters
+  filterAll: string;
+  filterGenuine: string;
+  filterFake: string;
+  filterInconclusive: string;
+  filterNoMatch: string;
 }
 
 export const i18n: Record<Lang, Translations> = {
@@ -218,6 +224,11 @@ export const i18n: Record<Lang, Translations> = {
     analyzingNext: "Analyzing next file…",
     processingLabel: "Processing",
     langToggle: "ES",
+    filterAll: "All",
+    filterGenuine: "Genuine",
+    filterFake: "Fake",
+    filterInconclusive: "Inconclusive",
+    filterNoMatch: "No results match this filter.",
   },
   es: {
     source: "Fuente",
@@ -319,5 +330,75 @@ export const i18n: Record<Lang, Translations> = {
     analyzingNext: "Analizando siguiente archivo…",
     processingLabel: "Procesando",
     langToggle: "EN",
+    filterAll: "Todos",
+    filterGenuine: "Genuinos",
+    filterFake: "Falsos",
+    filterInconclusive: "Dudosos",
+    filterNoMatch: "Ningún resultado coincide con este filtro.",
   },
 };
+
+// ─── Backend issue string translator ──────────────────────────────────────────
+// The Python engine (motor_flac.py) emits all "problemas" strings in Spanish.
+// This map translates them to English when lang === "en".
+// Patterns with dynamic values use regex capture groups.
+
+interface IssuePattern {
+  /** Matches the raw Spanish string from Python */
+  test: RegExp;
+  en: (m: RegExpMatchArray) => string;
+  es: (m: RegExpMatchArray) => string;
+}
+
+const ISSUE_PATTERNS: IssuePattern[] = [
+  // "techo espectral 20 kHz (bajo para 48 kHz Nyquist)"
+  {
+    test: /techo espectral (\d+) kHz \(bajo para (\d+) kHz Nyquist\)/,
+    en:   (m) => `spectral ceiling ${m[1]} kHz (low for ${m[2]} kHz Nyquist)`,
+    es:   (m) => `techo espectral ${m[1]} kHz (bajo para ${m[2]} kHz Nyquist)`,
+  },
+  // "techo solo 20 kHz — muy probable upscale"
+  {
+    test: /techo solo (\d+) kHz — muy probable upscale/,
+    en:   (m) => `ceiling only ${m[1]} kHz — very likely upscale`,
+    es:   (m) => `techo solo ${m[1]} kHz — muy probable upscale`,
+  },
+  // "corte artificial a 22.0 kHz (firma de codec lossy)"
+  {
+    test: /corte artificial a ([\d.]+) kHz \(firma de codec lossy\)/,
+    en:   (m) => `artificial cut at ${m[1]} kHz (lossy codec signature)`,
+    es:   (m) => `corte artificial a ${m[1]} kHz (firma de codec lossy)`,
+  },
+  // "ratio altas/medias muy bajo (0.00123)"
+  {
+    test: /ratio altas\/medias muy bajo \(([\d.]+)\)/,
+    en:   (m) => `high/mid frequency ratio very low (${m[1]})`,
+    es:   (m) => `ratio altas/medias muy bajo (${m[1]})`,
+  },
+  // "LSBs parcialmente inactivos (87.3% en grid 16-bit)"
+  {
+    test: /LSBs parcialmente inactivos \(([\d.]+)% en grid 16-bit\)/,
+    en:   (m) => `LSBs partially inactive (${m[1]}% on 16-bit grid)`,
+    es:   (m) => `LSBs parcialmente inactivos (${m[1]}% en grid 16-bit)`,
+  },
+  // "muestras alineadas a cuadrícula 16-bit (97.1%) — upscale"
+  {
+    test: /muestras alineadas a cuadr[íi]cula 16-bit \(([\d.]+)%\) — upscale/,
+    en:   (m) => `samples aligned to 16-bit grid (${m[1]}%) — upscale`,
+    es:   (m) => `muestras alineadas a cuadrícula 16-bit (${m[1]}%) — upscale`,
+  },
+  // "sin MD5 registrado — encoder de baja calidad o metadatos alterados"
+  {
+    test: /sin MD5 registrado — encoder de baja calidad o metadatos alterados/,
+    en:   () => `no MD5 checksum — low-quality encoder or altered metadata`,
+    es:   () => `sin MD5 registrado — encoder de baja calidad o metadatos alterados`,
+  },
+];
+
+export function translateIssue(raw: string, lang: Lang): string {
+  for (const p of ISSUE_PATTERNS) {
+    const m = raw.match(p.test);
+    if (m) return lang === "en" ? p.en(m) : p.es(m);
+  }
+  return raw; // unknown pattern — return as-is
+}
