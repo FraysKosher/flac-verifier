@@ -1,0 +1,7 @@
+numpy>=1.24.0
+scipy>=1.10.0
+mutagen>=1.46.0
+matplotlib>=3.7.0
+fpdf2>=2.7.4
+Pillow>=9.5.0
+soundfile>=0.12.1
