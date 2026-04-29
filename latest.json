@@ -1,0 +1,11 @@
+{
+  "version": "1.1.0",
+  "notes": "FLAC Verifier v1.1.0",
+  "pub_date": "2026-04-29T06:58:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTYkUvNENwbmtmV0ZTZTBicUhCcmFXSHVqTUl4TVhpRzFMcUpyUW04b1VLTGtjVjNnSzVJazlKbXNZZk9TY0RZVFZocUNrdWduV25xYnV0ZXFQOE5TT1BvN3pNUzVYR0FjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3NDQ1OTIzCWZpbGU6RkxBQyBWZXJpZmllcl8xLjEuMF94NjQtc2V0dXAuZXhlCnJKVlAvdjFqenpKeXU2bVdSUTN3UjZETEJRMXhLU1FIU201OW1lTDR6c0k2VDFUbU1IbUFDdHdFU0R5eXZhQ1V6S0thbnc5dUd0NUlDQ0RzZkZCZUR3PT0K",
+      "url": "https://github.com/FraysKosher/flac-verifier/releases/download/v1.1.0/FLAC.Verifier_1.1.0_x64-setup.exe"
+    }
+  }
+}

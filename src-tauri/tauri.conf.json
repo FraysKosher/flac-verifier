@@ -44,6 +44,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -61,7 +62,7 @@
       "open": true
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4NTlFNEQ0QUE4NUMzQ0EKUldUS3c0V3ExT1JaeUQva0UvdlJ0ZHByNEFjYTY3VlJ6VVc3dWs0NE1JcGJDYXpXRTFqSzRFRWMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU4MUY3OUE2MDJGRTEzOUIKUldTYkUvNENwbmtmV0s3L1JaamJERXJLMzhlOUEvcEU4L0ptUGNnRFExYS9FZlZqM2lRQXhteEYK",
       "endpoints": [
         "https://github.com/FraysKosher/flac-verifier/releases/latest/download/latest.json"
       ]
