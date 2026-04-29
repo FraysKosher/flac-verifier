@@ -184,7 +184,7 @@ footer{border-top:1px solid var(--b1);padding:36px 0}
     <h1>Is your FLAC actually<br><em>lossless?</em></h1>
     <p>Automatically detect upscaled FLACs with full spectral analysis, real spectrograms, and instant verdicts.</p>
     <div class="cta-row">
-      <a class="btn btn-primary" href="https://github.com/FraysKosher/flac-verifier/releases/latest" id="dl-btn">
+      <a class="btn btn-primary" href="https://github.com/FraysKosher/flac-verifier/releases/latest">
         <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
         Download
       </a>
@@ -361,18 +361,7 @@ footer{border-top:1px solid var(--b1);padding:36px 0}
     localStorage.setItem('fv-docs-theme', next);
   });
 
-  // Download button — link to latest release
-  const dlBtn = document.getElementById('dl-btn');
-  if (dlBtn) {
-    fetch('https://api.github.com/repos/FraysKosher/flac-verifier/releases/latest', {cache: 'no-store'})
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data) return;
-        const asset = (data.assets || []).find(a => a.name.endsWith('.msi') || a.name.endsWith('.exe'));
-        if (asset) dlBtn.href = asset.browser_download_url;
-      })
-      .catch(() => {});
-  }
+  // Download button href is already set to /releases/latest — nothing to do.
 })();
 </script>
 </body>
