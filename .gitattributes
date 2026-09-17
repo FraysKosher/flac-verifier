@@ -1,0 +1,21 @@
+# Finales de línea: el repositorio guarda LF (los avisos de Git en Windows vienen
+# de aquí). Los binarios no se tocan.
+* text=auto
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.spec  text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binarios
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.pdf  binary
+*.flac binary
+*.wav  binary
+*.mp3  binary

@@ -1,0 +1,43 @@
+# Recursos de versión del ejecutable (los lee PyInstaller al construir).
+#
+# Esto es lo que hace que Windows muestre el .exe como una aplicación con nombre,
+# versión y copyright en lugar de un binario anónimo: menos sospechoso para
+# Windows Defender y para el usuario que lo ve en el explorador.
+#
+# Cambia CompanyName y LegalCopyright por tus datos si vas a distribuirlo.
+
+VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=(1, 0, 0, 0),
+        prodvers=(1, 0, 0, 0),
+        mask=0x3F,
+        flags=0x0,
+        OS=0x40004,          # VOS_NT_WINDOWS32
+        fileType=0x1,        # VFT_APP
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo(
+            [
+                StringTable(
+                    "040904B0",      # en-US + Unicode
+                    [
+                        StringStruct("CompanyName", "FLAC VERIFIER"),
+                        StringStruct("FileDescription",
+                                     "FLAC VERIFIER — verificador de autenticidad de archivos FLAC"),
+                        StringStruct("FileVersion", "1.0.0.0"),
+                        StringStruct("InternalName", "FLAC_Verifier"),
+                        StringStruct("LegalCopyright", "Copyright (C) 2026 FLAC VERIFIER"),
+                        StringStruct("OriginalFilename", "FLAC_Verifier.exe"),
+                        StringStruct("ProductName", "FLAC VERIFIER"),
+                        StringStruct("ProductVersion", "1.0.0.0"),
+                        StringStruct("Comments",
+                                     "Motor de análisis + interfaz gráfica; incluye flac_motor.exe"),
+                    ],
+                )
+            ]
+        ),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)

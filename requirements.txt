@@ -1,0 +1,44 @@
+# FLAC VERIFIER — dependencias
+#
+# Instalación:
+#     pip install -r requirements.txt
+#
+# Versiones verificadas de referencia (donde se validó todo el proyecto):
+#     Python 3.10.11 | numpy 2.2.6 | scipy 1.15.3 | soundfile 0.13.1
+#     mutagen 1.47.0 | matplotlib 3.10.3 | reportlab 5.0.1
+#
+# Los tests NO necesitan dependencias extra: usan unittest de la biblioteca
+# estándar. Para ejecutarlos:
+#     python -m unittest discover -s tests -v
+
+numpy>=1.24
+scipy>=1.10
+soundfile>=0.12
+mutagen>=1.46
+
+# ─── OPCIONALES ──────────────────────────────────────────────────────────────
+# El programa funciona con normalidad si no están instaladas; solo se pierde la
+# función correspondiente, y lo avisa con un mensaje claro en vez de fallar.
+
+# Solo para espectrogramas PNG (opción --png del motor, o responder "s" en el
+# menú del CLI interactivo).
+matplotlib>=3.6
+
+# Solo para el informe PDF por álbum (opción --pdf del motor, o responder "s" en
+# el menú del CLI interactivo). Necesita Pillow para embeber los espectrogramas;
+# si tienes matplotlib ya está instalada.
+reportlab>=4.0
+
+# Solo para la interfaz gráfica (python gui.py o python verificar_flac.py --gui).
+customtkinter>=5.2
+
+# Solo para arrastrar y soltar carpetas sobre la ventana. Si falta, la interfaz
+# funciona igual: el campo de ruta se rellena con el botón "Examinar".
+tkinterdnd2>=0.4
+
+# ─── SOLO PARA COMPILAR EL .EXE ─────────────────────────────────────────────
+# No hace falta para usar el programa; sí para construir la carpeta distribuible:
+#     pip install pyinstaller
+#     python build.py
+# Ver la sección "Distribución" del README.
+# pyinstaller>=6.0

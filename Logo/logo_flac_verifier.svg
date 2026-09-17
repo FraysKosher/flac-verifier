@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-label="FLAC Verifier">
+  <title>FLAC Verifier</title>
+  <rect width="64" height="64" rx="14" fill="#0f0f0d"/>
+  <rect x="2" y="32" width="8" height="28" rx="3" fill="#ffffff"/>
+  <rect x="15" y="16" width="8" height="44" rx="3" fill="#ffffff"/>
+  <rect x="28" y="0" width="8" height="60" rx="3" fill="#ffffff"/>
+  <rect x="41" y="24" width="8" height="36" rx="3" fill="#ffffff"/>
+  <rect x="54" y="8" width="8" height="52" rx="3" fill="#ffffff"/>
+  <polyline points="42,56 48,62 62,48" stroke="#4f98a3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

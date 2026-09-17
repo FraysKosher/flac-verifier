@@ -1,0 +1,57 @@
+# ─── Artefactos de compilación ────────────────────────────────────────────────
+# `python build.py` los regenera; no se versionan (la carpeta dist/ son ~200 MB).
+build/
+dist/
+*.spec.bak
+
+# ─── Caché y resultados del análisis ─────────────────────────────────────────
+# Los espectrogramas y el informe son salida del programa, no fuentes.
+_spectrograms/
+_espectrogramas/
+flac_verifier_report.pdf
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+.python-version
+
+# ─── Herramientas y editores ─────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.Rhistory
+.RData
+.idea/
+.vscode/
+*.swp
+*~
+
+# ─── Sistema ─────────────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ─── Audio de prueba ─────────────────────────────────────────────────────────
+# Los tests generan sus propios fixtures en un directorio temporal, así que
+# ningún .flac debería acabar en el repositorio.
+*.flac
+*.wav
+*.mp3
+*.m4a
+!tests/fixtures_*.flac
+
+# ─── Salidas sueltas de depuración ───────────────────────────────────────────
+*.log
+_salida*.txt
+
+# ─── Exportaciones antiguas ──────────────────────────────────────────────────
+# README.html es un render viejo del README (decía «54 tests»): el README de
+# verdad es README.md, así que el HTML no se publica.
+README.html
