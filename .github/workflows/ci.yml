@@ -6,8 +6,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Un push nuevo sobre la misma rama cancela la ejecución anterior: los resultados
-# intermedios no aportan nada y así la cola no se llena.
+# A new push on the same branch cancels the previous run: intermediate results are
+# worth nothing and the queue does not fill up with them.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -20,19 +20,21 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # 3.10 es la versión de referencia del proyecto; 3.12 comprueba que no
-        # hay dependencias de la versión en la que se escribió.
+        # 3.10 is the reference version of the project; 3.12 checks that nothing
+        # depends on the version it was written with.
         python: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to the current majors: v4/v5 still target Node 20, which GitHub is
+      # retiring, and the runs carry a deprecation annotation because of it.
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      # Los tests de la ventana necesitan Tk: en Ubuntu no viene con Python.
+      # The window tests need Tk, which does not come with Python on Ubuntu.
       - name: Install Tk (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y python3-tk
@@ -47,15 +49,15 @@ jobs:
           python --version
           python -c "import numpy, scipy, soundfile; print('numpy', numpy.__version__, '| scipy', scipy.__version__, '| soundfile', soundfile.__version__)"
 
-      # FLAC_VERIFIER_SIN_GUI solo en Linux: no hay servidor gráfico en el runner,
-      # y los tests de la ventana se saltan solos en lugar de fallar.
+      # FLAC_VERIFIER_SIN_GUI only on Linux: the runner has no graphical server,
+      # and the window tests skip themselves instead of failing.
       - name: Run the test suite
         env:
           FLAC_VERIFIER_SIN_GUI: ${{ runner.os == 'Linux' && '1' || '' }}
         run: python -m unittest discover -s tests -v
 
-      # El recuento de tests es una promesa del README: si baja sin querer, esto lo
-      # deja escrito en el registro del trabajo.
+      # The test count is a promise the README makes: if it drops by accident, this
+      # leaves it written in the job log.
       - name: Sum up
         shell: bash
         run: |
