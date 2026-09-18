@@ -52,6 +52,8 @@ desktop.ini
 # ─── Salidas sueltas de depuración ───────────────────────────────────────────
 *.log
 _salida*.txt
+# Temporary dumps of a script's own output: never part of the project.
+_*.txt
 
 # ─── Exportaciones antiguas ──────────────────────────────────────────────────
 # README.html es un render viejo del README (decía «54 tests»): el README de

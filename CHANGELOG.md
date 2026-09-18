@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A race in `test_gui.TestGestorProceso`: the fake process served a single line, so
+  the reader thread could reach the end of the stream, call `wait()` and leave the
+  manager reporting "not running" before the test asserted the opposite. It passed
+  on three of the four CI jobs and failed on Ubuntu with Python 3.10, where the
+  thread won the race. The fake can now hold its stream open until the test
+  releases it (`ProcesoFalso(..., bloquear=True)`), which makes both that test and
+  the "does not start twice" one deterministic instead of timing-dependent.
 - Three user-visible strings that the interface translation had missed:
   `MD5 verified:` in the interactive CLI, `Not found:` in the file-not-found
   alert of the GUI, and the console labels of the executable checker

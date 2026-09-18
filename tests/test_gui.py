@@ -15,6 +15,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -48,11 +49,48 @@ VISUAL = gui.CTK_OK and _hay_pantalla()
 
 # ─── test doubles ────────────────────────────────────────────────────────────
 
+class FlujoBloqueado(io.StringIO):
+    """A stdout that serves its lines and then waits instead of reaching the end.
+
+    The manager considers the analysis finished when the reader thread hits the end
+    of the stream and the process reports an exit code. A fake that serves a single
+    line reaches that point in microseconds, so a test that wants to inspect the
+    manager *while the analysis runs* is racing the reader thread: it passed on a
+    loaded machine and failed on a fast one (Ubuntu with Python 3.10, where the
+    thread won the race). Holding the stream open until the test — or a call to
+    `terminate`/`kill` — releases it removes the race entirely.
+    """
+
+    def __init__(self, texto, liberar):
+        super().__init__(texto)
+        self._liberar = liberar
+
+    def readline(self, *args, **kwargs):
+        linea = super().readline(*args, **kwargs)
+        if linea:
+            return linea
+        # A bounded wait: a bug must not hang the whole suite for ever.
+        self._liberar.wait(timeout=5.0)
+        return ""
+
+    def __next__(self):
+        linea = self.readline()
+        if not linea:
+            raise StopIteration
+        return linea
+
+
 class ProcesoFalso:
     """Mimics just the part of subprocess.Popen that the manager uses."""
 
-    def __init__(self, lineas=(), error=(), codigo=0, falla_terminate=False):
-        self.stdout = io.StringIO("\n".join(lineas) + ("\n" if lineas else ""))
+    def __init__(self, lineas=(), error=(), codigo=0, falla_terminate=False,
+                 bloquear=False):
+        # With `bloquear=True` the process stays alive until the test releases it,
+        # so assertions about a running analysis are deterministic.
+        self._liberar = threading.Event()
+        texto = "\n".join(lineas) + ("\n" if lineas else "")
+        self.stdout = (FlujoBloqueado(texto, self._liberar) if bloquear
+                       else io.StringIO(texto))
         self.stderr = io.StringIO("\n".join(error) + ("\n" if error else ""))
         self.pid = 4242
         self.returncode = None
@@ -61,21 +99,28 @@ class ProcesoFalso:
         self.terminado = 0
         self.muerto = 0
 
+    def liberar(self):
+        """Lets a blocked stdout reach its end, so the reader thread can finish."""
+        self._liberar.set()
+
     def poll(self):
         return self.returncode
 
     def wait(self, timeout=None):
+        self.liberar()
         self.returncode = self._codigo if self.returncode is None else self.returncode
         return self.returncode
 
     def terminate(self):
         self.terminado += 1
+        self.liberar()                      # a dead process cannot keep writing
         if self.falla_terminate:
             raise OSError("could not terminate")
         self.returncode = 1
 
     def kill(self):
         self.muerto += 1
+        self.liberar()
         self.returncode = 1
 
 
@@ -324,21 +369,31 @@ class TestGestorProceso(unittest.TestCase):
         self.assertIn("stderr", canales)
 
     def test_no_deja_arrancar_dos_veces(self):
-        proceso = ProcesoFalso(['{"tipo": "fin"}'])
+        # The stream is held open: the second call has to be refused because the
+        # first analysis is still running, not because the reader raced ahead.
+        proceso = ProcesoFalso(['{"tipo": "fin"}'], bloquear=True)
         gestor, _ = self._gestor(proceso)
-        gestor.iniciar("C:/Album")
-        with self.assertRaises(RuntimeError):
+        try:
             gestor.iniciar("C:/Album")
+            with self.assertRaises(RuntimeError):
+                gestor.iniciar("C:/Album")
+        finally:
+            proceso.liberar()
+            gestor.esperar(tiempo=5)
 
     def test_cancelar_termina_el_proceso(self):
-        proceso = ProcesoFalso(['{"tipo": "inicio", "total": 9}'])
+        proceso = ProcesoFalso(['{"tipo": "inicio", "total": 9}'], bloquear=True)
         gestor, _ = self._gestor(proceso)
-        gestor.iniciar("C:/Album")
-        self.assertTrue(gestor.activo)
-        gestor.cancelar()
-        self.assertTrue(gestor.cancelado)
-        self.assertGreaterEqual(proceso.terminado, 1)
-        self.assertFalse(gestor.activo)
+        try:
+            gestor.iniciar("C:/Album")
+            self.assertTrue(gestor.activo)
+            gestor.cancelar()
+            self.assertTrue(gestor.cancelado)
+            self.assertGreaterEqual(proceso.terminado, 1)
+            self.assertFalse(gestor.activo)
+        finally:
+            proceso.liberar()
+            gestor.esperar(tiempo=5)
 
     def test_si_terminate_falla_se_usa_kill(self):
         proceso = ProcesoFalso(['{"tipo": "fin"}'], falla_terminate=True)
