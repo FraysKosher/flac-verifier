@@ -1,25 +1,25 @@
-"""Interfaz gráfica de FLAC VERIFIER (CustomTkinter).
+"""Graphical interface for FLAC VERIFIER (CustomTkinter).
 
-Dos formas de arrancarla:
+Two ways to launch it:
 
     python gui.py
     python verificar_flac.py --gui
 
-Arquitectura (pensada para no bloquear la interfaz en Windows):
+Architecture (designed so that the interface never freezes on Windows):
 
-    - El análisis corre en un PROCESO aparte (`subprocess.Popen` con `-u`), usando
-      el mismo intérprete que ejecuta la GUI.
-    - Un HILO demonio lee stdout línea a línea (protocolo NDJSON del motor) y
-      deposita los eventos en una `queue.Queue`.
-    - La ventana drena esa cola con `self.after(100, ...)`: ningún widget se toca
-      desde el hilo lector, así que no hay carreras.
+    - The analysis runs in a separate PROCESS (`subprocess.Popen` with `-u`),
+      using the same interpreter that runs the GUI.
+    - A daemon THREAD reads stdout line by line (the engine's NDJSON protocol)
+      and puts the events into a `queue.Queue`.
+    - The window drains that queue with `self.after(100, ...)`: no widget is
+      touched from the reader thread, so there are no races.
 
-La lógica (comando, parseo, formateo, ciclo de vida del proceso) está separada de
-los widgets para poder probarla sin levantar la ventana.
+The logic (command, parsing, formatting, process lifecycle) is kept apart from
+the widgets so that it can be tested without opening the window.
 
-Dependencias opcionales:
-    customtkinter   la interfaz en sí (sin ella, este módulo solo informa)
-    tkinterdnd2     arrastrar y soltar carpetas (si falta, todo sigue igual)
+Optional dependencies:
+    customtkinter   the interface itself (without it, this module only reports)
+    tkinterdnd2     drag and drop of folders (if missing, everything still works)
 """
 from __future__ import annotations
 
@@ -35,47 +35,47 @@ from typing import Any, Callable, Iterable, Sequence
 try:
     import customtkinter as ctk
     CTK_OK = True
-except ImportError:                      # la GUI es opcional
+except ImportError:                      # the GUI is optional
     ctk = None                           # type: ignore[assignment]
     CTK_OK = False
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
     DND_OK = True
-except ImportError:                      # opcional: sin esto no hay drag and drop
+except ImportError:                      # optional: without this there is no drag and drop
     DND_FILES = None                     # type: ignore[assignment]
     TkinterDnD = None                    # type: ignore[assignment]
     DND_OK = False
 
 Evento = dict[str, Any]
-Mensaje = tuple[str, Evento]             # (canal, evento) tal como viaja por la cola
+Mensaje = tuple[str, Evento]             # (channel, event) as it travels through the queue
 
 DIRECTORIO = os.path.dirname(os.path.abspath(__file__))
 MOTOR = os.path.join(DIRECTORIO, "motor_flac.py")
 NOMBRE_INFORME = "flac_verifier_report.pdf"
-# Ejecutable del motor que se empaqueta junto a la GUI (ver flac_verifier.spec).
+# Engine executable packaged next to the GUI (see flac_verifier.spec).
 NOMBRE_MOTOR_EXE = "flac_motor.exe"
 BANDERA_MOTOR_CLI = "--motor-cli"
 
 
 def empaquetado() -> bool:
-    """¿Estamos corriendo dentro de un ejecutable de PyInstaller?"""
+    """Are we running inside a PyInstaller executable?"""
     return bool(getattr(sys, "frozen", False))
 
 
 def ruta_motor() -> list[str]:
-    """Cómo hay que invocar al motor, según cómo se esté ejecutando esto.
+    """How the engine must be invoked, depending on how this is being run.
 
-    - Empaquetado: se prefiere el ejecutable del motor que va al lado (tiene
-      consola propia, así que su stdout es un flujo real y el protocolo NDJSON
-      llega por la tubería). Si no está, se usa el mismo .exe con la bandera
-      interna `--motor-cli`.
-    - Desde el código fuente: el intérprete con `-u` y el script del motor.
+    - Packaged: the engine executable sitting next to it is preferred (it has its
+      own console, so its stdout is a real stream and the NDJSON protocol
+      arrives through the pipe). If it is missing, the same .exe is used with the
+      internal `--motor-cli` flag.
+    - From the source code: the interpreter with `-u` and the engine script.
 
-    La bandera `--motor-cli` va SIEMPRE en modo empaquetado, también con el
-    ejecutable del motor: es lo que hace que la llamada no dependa de adivinar
-    qué binario es. (Sin ella, `FLAC_Verifier.exe` abriría su ventana en lugar de
-    analizar: la GUI se quedaría esperando eventos que nunca llegan.)
+    The `--motor-cli` flag is ALWAYS present in packaged mode, also with the
+    engine executable: it is what keeps the call from depending on guessing which
+    binary this is. (Without it, `FLAC_Verifier.exe` would open its window instead
+    of analyzing: the GUI would sit waiting for events that never arrive.)
     """
     if empaquetado():
         carpeta = os.path.dirname(os.path.abspath(sys.executable))
@@ -85,15 +85,15 @@ def ruta_motor() -> list[str]:
         return [sys.executable, BANDERA_MOTOR_CLI]
     return [sys.executable, "-u", MOTOR]
 
-# Identidad visual: los assets se generan con Logo/generar_logo.py a partir del
-# diseño de splashscreen.html. Si faltan, la ventana funciona igual (solo avisa).
+# Visual identity: the assets are generated with Logo/generar_logo.py from the
+# design in splashscreen.html. If they are missing, the window still works (it only warns).
 LOGO_CARPETA = os.path.join(DIRECTORIO, "Logo")
-LOGO_ICONO   = os.path.join(LOGO_CARPETA, "icono_app.ico")           # ventana y .exe
-LOGO_ICONPHOTO = os.path.join(LOGO_CARPETA, "logo_flac_verifier_128.png")  # fuera de Windows
-LOGO_MARCA   = os.path.join(LOGO_CARPETA, "logo_flac_verifier.png")  # cabecera y README
-COLOR_MARCA  = "#4f98a3"          # el teal del splash
+LOGO_ICONO   = os.path.join(LOGO_CARPETA, "icono_app.ico")           # window and .exe
+LOGO_ICONPHOTO = os.path.join(LOGO_CARPETA, "logo_flac_verifier_128.png")  # outside Windows
+LOGO_MARCA   = os.path.join(LOGO_CARPETA, "logo_flac_verifier.png")  # header and README
+COLOR_MARCA  = "#4f98a3"          # the teal of the splash
 
-# Etiquetas cortas para el log, y colores por veredicto (los mismos del PDF).
+# Short labels for the log, and colours per verdict (the same as in the PDF).
 ETIQUETA_VEREDICTO = {
     "GENUINE LOSSLESS":       "OK",
     "PROBABLY LOSSLESS": "OK?",
@@ -119,17 +119,17 @@ MODOS = ["center", "full", "seconds"]
 OPCIONES_WORKERS = ["Automatic", "1", "2", "4", "8"]
 
 
-# ─── LÓGICA (probable sin ventana) ───────────────────────────────────────────
+# ─── LOGIC (usable without a window) ─────────────────────────────────────────
 
 def construir_comando(ruta: str, modo: str = "center", segundos: int | None = None,
                       pdf: bool = True, workers: int = 0, sin_cache: bool = False,
                       motor: str | None = None) -> list[str]:
-    """Comando del motor para el subproceso.
+    """Engine command for the subprocess.
 
-    Desde el código fuente se añade `-u` (sin él, el buffer de stdout retendría
-    los eventos NDJSON en lugar de entregarlos en tiempo real). Empaquetado no
-    hace falta: el motor ya se empaqueta con salida sin buffer y cada línea va
-    con `flush=True`.
+    From the source code `-u` is added (without it, the stdout buffer would hold
+    the NDJSON events back instead of delivering them in real time). Packaged it
+    is not needed: the engine is already packaged with unbuffered output and every
+    line goes out with `flush=True`.
     """
     if motor:
         base = ([sys.executable, "-u", motor] if not empaquetado()
@@ -149,10 +149,10 @@ def construir_comando(ruta: str, modo: str = "center", segundos: int | None = No
 
 
 def parsear_evento(linea: str) -> Evento | None:
-    """Convierte una línea NDJSON en un evento. None si la línea está vacía.
+    """Turns one NDJSON line into an event. None if the line is empty.
 
-    Una línea ilegible no puede tumbar el lector: se convierte en un evento
-    interno `__ilegible__` para que quede constancia en el log."""
+    An unreadable line cannot bring the reader down: it becomes an internal
+    `__ilegible__` event so that there is a record of it in the log."""
     texto = (linea or "").strip()
     if not texto:
         return None
@@ -168,7 +168,7 @@ def parsear_evento(linea: str) -> Evento | None:
 
 
 def formatear_resultado(evento: Evento) -> str:
-    """Línea de log de un evento `resultado`."""
+    """Log line for a `resultado` event."""
     archivo = str(evento.get("archivo", "?"))
     if evento.get("error"):
         return f"[ERROR] {archivo}: {evento['error']}"
@@ -186,7 +186,7 @@ def formatear_resultado(evento: Evento) -> str:
 
 
 def formatear_resumen(eventos: Iterable[Evento]) -> tuple[str, str]:
-    """Resumen final del lote: (clave_de_color, texto) para la tarjeta de estado."""
+    """Final summary of the batch: (colour_key, text) for the status card."""
     conteo: dict[str, int] = {}
     errores = 0
     total = 0
@@ -224,9 +224,9 @@ def formatear_resumen(eventos: Iterable[Evento]) -> tuple[str, str]:
 
 
 def rutas_de_dnd(datos: str) -> list[str]:
-    """Rutas contenidas en un evento <<Drop>> de tkinterdnd2.
+    """Paths contained in a <<Drop>> event from tkinterdnd2.
 
-    El widget entrega las rutas con espacios entre llaves: `{C:/mi musica} {D:/otra}`."""
+    The widget delivers the paths with spaces between braces: `{C:/my music} {D:/other}`."""
     rutas: list[str] = []
     actual = ""
     dentro = False
@@ -249,7 +249,7 @@ def rutas_de_dnd(datos: str) -> list[str]:
 
 
 def abrir_archivo(ruta: str) -> bool:
-    """Abre un archivo con el visor predeterminado del sistema. Nunca lanza."""
+    """Opens a file with the system default viewer. Never raises."""
     try:
         if os.name == "nt":
             os.startfile(ruta)                       # type: ignore[attr-defined]
@@ -263,11 +263,11 @@ def abrir_archivo(ruta: str) -> bool:
 
 
 def terminar_proceso(proceso: "subprocess.Popen[str] | None", espera: float = 3.0) -> None:
-    """Termina el proceso y TODA su descendencia. Nunca lanza.
+    """Terminates the process and ALL of its descendants. Never raises.
 
-    El motor puede repartir el trabajo entre procesos hijos (`--workers`), así
-    que matar solo al padre dejaría huérfanos: en Windows se mata el árbol con
-    taskkill y, pase lo que pase, queda el terminate()/kill() de respaldo."""
+    The engine may spread the work across child processes (`--workers`), so killing
+    only the parent would leave orphans behind: on Windows the tree is killed with
+    taskkill and, whatever happens, the terminate()/kill() fallback remains."""
     if proceso is None or proceso.poll() is not None:
         return
     if os.name == "nt":
@@ -288,17 +288,17 @@ def terminar_proceso(proceso: "subprocess.Popen[str] | None", espera: float = 3.
 
 def lector_salida(proceso: "subprocess.Popen[str]", cola: "queue.Queue[Mensaje]",
                   cancelado: Callable[[], bool] | None = None) -> None:
-    """Hilo demonio: lee stdout y stderr y los deposita en la cola.
+    """Daemon thread: reads stdout and stderr and puts them into the queue.
 
-    Termina siempre con un evento `__fin__` para que la ventana sepa que el
-    proceso acabó, incluso si la lectura falló."""
+    It always ends with a `__fin__` event so that the window knows the process
+    finished, even if the read failed."""
     def leer(flujo: Any, canal: str) -> None:
         try:
             for linea in flujo:
                 evento = parsear_evento(linea)
                 if evento is not None:
                     cola.put((canal, evento))
-        except Exception as e:                       # tubería rota, proceso matado…
+        except Exception as e:                       # broken pipe, process killed…
             cola.put((canal, {"tipo": "__aviso_lectura__",
                               "mensaje": f"{type(e).__name__}: {e}"}))
         finally:
@@ -320,13 +320,13 @@ def lector_salida(proceso: "subprocess.Popen[str]", cola: "queue.Queue[Mensaje]"
 
 
 class GestorProceso:
-    """Ciclo de vida del subproceso del motor: arrancar, leer y cancelar."""
+    """Lifecycle of the engine subprocess: start, read and cancel."""
 
     def __init__(self, cola: "queue.Queue[Mensaje]", motor: str | None = None,
                  lanzador: Callable[..., Any] = subprocess.Popen) -> None:
         self.cola = cola
         self.motor = motor
-        self._lanzador = lanzador                 # inyectable para las pruebas
+        self._lanzador = lanzador                 # injectable for the tests
         self.proceso: "subprocess.Popen[str] | None" = None
         self.hilo: threading.Thread | None = None
         self.cancelado = False
@@ -337,14 +337,14 @@ class GestorProceso:
 
     def iniciar(self, ruta: str, modo: str = "center", segundos: int | None = None,
                 pdf: bool = True, workers: int = 0, sin_cache: bool = False) -> list[str]:
-        """Lanza el análisis. Devuelve el comando usado (útil para el log)."""
+        """Launches the analysis. Returns the command used (useful for the log)."""
         if self.activo:
             raise RuntimeError("an analysis is already running")
         comando = construir_comando(ruta, modo=modo, segundos=segundos, pdf=pdf,
                                     workers=workers, sin_cache=sin_cache,
                                     motor=self.motor)
         self.cancelado = False
-        # CREATE_NO_WINDOW evita que parpadee una consola al arrancar el motor.
+        # CREATE_NO_WINDOW stops a console from flashing when the engine starts.
         self.proceso = self._lanzador(
             comando, cwd=DIRECTORIO,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -366,12 +366,12 @@ class GestorProceso:
             self.hilo.join(timeout=tiempo)
 
 
-# ─── VENTANA ─────────────────────────────────────────────────────────────────
+# ─── WINDOW ─────────────────────────────────────────────────────────────────
 
 if CTK_OK:
 
     class _BaseVentana(ctk.CTk, TkinterDnD.DnDWrapper if DND_OK else object):  # type: ignore[misc]
-        """Base que añade drag and drop solo si tkinterdnd2 está instalado."""
+        """Base that adds drag and drop only if tkinterdnd2 is installed."""
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
@@ -382,7 +382,7 @@ if CTK_OK:
                     pass
 
     class VentanaFlacVerifier(_BaseVentana):
-        """Ventana principal: controles a la izquierda, telemetría a la derecha."""
+        """Main window: controls on the left, telemetry on the right."""
 
         def __init__(self, ruta_inicial: str | None = None, motor: str | None = None) -> None:
             super().__init__()
@@ -420,9 +420,9 @@ if CTK_OK:
                           "(Logo/icono_app.ico); the window uses the default icon.",
                           "aviso")
 
-        # ── construcción de los widgets ─────────────────────────────────────
+        # ── widget construction ─────────────────────────────────────────────
         def _imagen_marca(self, lado: int) -> Any:
-            """La marca del logo, escalada. None si el asset no está."""
+            """The logo mark, scaled. None if the asset is missing."""
             if not os.path.exists(LOGO_MARCA):
                 return None
             try:
@@ -436,11 +436,11 @@ if CTK_OK:
                 return None
 
         def _cargar_identidad(self) -> None:
-            """Icono de la ventana (y del futuro .exe) con el logo del proyecto.
+            """Window icon (and that of the future .exe) with the project logo.
 
-            En Windows se usa el .ico multi-resolución, que es lo que alimenta la
-            barra de tareas; en el resto, iconphoto con un PNG. Si falta el asset,
-            la ventana se abre igual."""
+            On Windows the multi-resolution .ico is used, which is what feeds the
+            taskbar; elsewhere, iconphoto with a PNG. If the asset is missing, the
+            window still opens."""
             self.icono_cargado = False
             if os.name == "nt" and os.path.exists(LOGO_ICONO):
                 try:
@@ -462,7 +462,7 @@ if CTK_OK:
             panel.grid_propagate(False)
             panel.grid_columnconfigure(0, weight=1)
 
-            # Cabecera: la marca del logo junto al nombre, como en el splash
+            # Header: the logo mark next to the name, as in the splash
             cabecera = ctk.CTkFrame(panel, fg_color="transparent")
             cabecera.grid(row=0, column=0, padx=16, pady=(18, 14), sticky="ew")
             marca = self._imagen_marca(46)
@@ -497,9 +497,9 @@ if CTK_OK:
                                                  command=lambda _: self._cambiar_modo())
             self.opcion_modo.grid(row=5, column=0, padx=16, sticky="ew")
 
-            # Los segundos solo tienen sentido en modo "segundos": el control se
-            # quita del grid (no se deshabilita) para que no deje hueco y los
-            # controles de abajo suban.
+            # The seconds only make sense in "seconds" mode: the control is
+            # removed from the grid (not disabled) so that it leaves no gap and
+            # the controls below move up.
             self.fila_segundos = ctk.CTkFrame(panel, fg_color="transparent")
             self.fila_segundos.grid(row=6, column=0, padx=16, pady=(8, 0), sticky="ew")
             self.fila_segundos.grid_columnconfigure(0, weight=1)
@@ -578,12 +578,12 @@ if CTK_OK:
                                                height=38, command=self._abrir_pdf)
             self.btn_abrir_pdf.grid(row=0, column=0, sticky="w")
 
-        # ── helpers de la vista ─────────────────────────────────────────────
+        # ── view helpers ────────────────────────────────────────────────────
         def _log(self, texto: str, etiqueta: str = "info") -> None:
             marca = time.strftime("%H:%M:%S")
             self.log.configure(state="normal")
             self.log.insert("end", f"[{marca}] {texto}\n")
-            try:                                     # coloreado si el widget lo soporta
+            try:                                     # colouring if the widget supports it
                 indice = self.log.index("end-2l")
                 self.log.tag_add(etiqueta, indice, "end-1c")
                 color = {"error": "#E06C6C", "aviso": "#E0A96C",
@@ -620,12 +620,12 @@ if CTK_OK:
                 self._log(f"Folder selected: {elegida}")
 
         def _cambiar_modo(self) -> None:
-            """Muestra u oculta el control de segundos según el modo.
+            """Shows or hides the seconds control depending on the mode.
 
-            Se usa `grid_remove()`/`grid()` y no `configure(state=...)`: así el
-            control libera su espacio, la fila se colapsa y todo lo de abajo sube,
-            sin dejar huecos fantasma. El widget sigue existiendo, listo para
-            volver."""
+            `grid_remove()`/`grid()` is used and not `configure(state=...)`: this
+            way the control releases its space, the row collapses and everything
+            below moves up, without leaving ghost gaps. The widget still exists,
+            ready to come back."""
             if self.var_modo.get() == "seconds":
                 self.fila_segundos.grid()
                 self.fila_segundos.grid_configure(row=6, column=0, padx=16,
@@ -642,9 +642,9 @@ if CTK_OK:
 
         def _workers(self) -> int:
             if not self.var_paralelo.get():
-                return 1                              # secuencial
+                return 1                              # sequential
             elegido = self.opcion_workers.get()
-            return int(elegido) if elegido.isdigit() else 0   # 0 = automático
+            return int(elegido) if elegido.isdigit() else 0   # 0 = automatic
 
         def _actualizar_estado(self) -> None:
             activo = self.gestor.activo
@@ -665,14 +665,14 @@ if CTK_OK:
             self.tarjeta.configure(fg_color=fondo)
             self.lbl_resumen.configure(text=texto, text_color=tinta)
 
-        # ── ciclo de vida del análisis ──────────────────────────────────────
+        # ── analysis lifecycle ──────────────────────────────────────────────
         def _analizar(self) -> None:
             ruta = self.var_ruta.get().strip().strip('"')
             if not ruta:
                 self._alerta("Path missing", "Choose a folder or a .flac file.")
                 return
             if not os.path.exists(ruta):
-                self._alerta("Path does not exist", f"No existe:\n{ruta}", error=True)
+                self._alerta("Path does not exist", f"Not found:\n{ruta}", error=True)
                 return
 
             self.eventos = []
@@ -707,17 +707,17 @@ if CTK_OK:
             self._actualizar_estado()
 
         def _drenar_cola(self) -> None:
-            """Se ejecuta en el hilo de la interfaz: aquí sí se tocan widgets.
+            """Runs on the interface thread: here it is safe to touch widgets.
 
-            Se vuelve a programar mientras el proceso siga vivo **o** mientras el
-            último drenado haya sacado algo: si el motor termina justo después de
-            una pasada, el evento `__fin__` seguiría en la cola y la ventana
-            nunca mostraría el resumen final."""
+            It is rescheduled while the process is still alive **or** while the
+            last drain took something out: if the engine finishes right after a
+            pass, the `__fin__` event would stay in the queue and the window would
+            never show the final summary."""
             if self.gestor.activo or self._vaciar_cola():
                 self.after(100, self._drenar_cola)
 
         def _vaciar_cola(self) -> bool:
-            """Procesa todo lo que haya en la cola. True si procesó algo."""
+            """Processes everything in the queue. True if it processed something."""
             algo = False
             try:
                 while True:
@@ -792,16 +792,16 @@ if CTK_OK:
                              f"Open it manually:\n{self.ruta_pdf}", error=True)
 
         def _alerta(self, titulo: str, mensaje: str, error: bool = False) -> None:
-            """Alerta nativa. Queda también en el log, para poder revisarla luego."""
+            """Native alert. It is also written to the log, so it can be reviewed later."""
             self._log(f"{titulo}: {mensaje}", "error" if error else "aviso")
             from tkinter import messagebox
             try:
                 (messagebox.showerror if error else messagebox.showwarning)(titulo, mensaje)
             except Exception:
-                pass                      # sin ventana (pruebas) no hay diálogo
+                pass                      # without a window (tests) there is no dialog
 
         def _al_cerrar(self) -> None:
-            """Cerrar la ventana no puede dejar procesos vivos."""
+            """Closing the window must not leave live processes behind."""
             if self.gestor.activo:
                 self._log("Closing: cancelling the running analysis…", "aviso")
                 self.gestor.cancelar()
@@ -810,7 +810,7 @@ if CTK_OK:
 
 
 def main(ruta_inicial: str | None = None) -> int:
-    """Punto de entrada de la interfaz gráfica."""
+    """Entry point of the graphical interface."""
     if not CTK_OK:
         print("⚠️  customtkinter is not installed, so there is no graphical interface.")
         print("   Install it with:  pip install customtkinter")
@@ -822,7 +822,7 @@ def main(ruta_inicial: str | None = None) -> int:
         ventana = VentanaFlacVerifier(ruta_inicial=ruta_inicial)
         ventana.mainloop()
         return 0
-    except Exception as e:                     # sin pantalla, sin Tk, sin permisos…
+    except Exception as e:                     # no display, no Tk, no permissions…
         print(f"Could not open the graphical interface: {type(e).__name__}: {e}")
         print("In an environment without a desktop use the CLI: python verificar_flac.py")
         return 1

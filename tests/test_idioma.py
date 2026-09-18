@@ -1,20 +1,25 @@
-"""Idioma: ningún texto visible puede contener español.
+"""Language: nothing the project ships may contain Spanish.
 
-La interfaz del programa (GUI, CLI, informe PDF y protocolo del motor) va en
-inglés porque el proyecto se comparte con la comunidad internacional. Este módulo
-lo vigila sobre los literales de texto del código, no sobre los comentarios ni los
-docstrings: el encargo dice explícitamente que el código de dentro no se traduce.
+The interface (GUI, CLI, PDF report and the engine's JSON protocol) is in English
+because the project is shared with an international audience. This module is the
+guard for that promise, and it checks three kinds of text:
 
-Qué se comprueba, en cada trozo de texto de cada literal:
-  1. Que no haya caracteres propios del español (ñ, ¿, ¡, vocales acentuadas…).
-  2. Que no aparezca ninguna palabra de la lista de palabras españolas.
+  1. The text literals of the application and tool modules, piece by piece. Only
+     the static parts of an f-string are inspected, so an interpolated variable
+     name is not mistaken for prose.
+  2. Every comment in every Python file of the repository.
+  3. Every docstring in every Python file of the repository.
 
-Dos excepciones deliberadas:
-  · Las claves y los nombres internos del protocolo JSON y de los estilos de
-    reportlab (`archivo`, `ruta`, `veredicto`, `problema`, `celda`…) son
-    identificadores, no texto de interfaz: están en `PERMITIDOS`.
-  · Los nombres de archivo (iconos, logo) pueden llevar palabras en español.
+Two deliberate exceptions:
+
+  · The internal names of the JSON protocol keys and of the reportlab styles
+    (`archivo`, `ruta`, `veredicto`, `problema`, `celda`…) are identifiers, not
+    interface text, and are listed in `PERMITIDOS`.
+  · Identifiers written in Spanish are accepted: the code is not being renamed.
+    Only prose is checked, and a word glued to an underscore or to another word
+    is treated as part of an identifier.
 """
+import ast
 import io
 import os
 import re
@@ -25,14 +30,14 @@ import unittest
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ)
 
-# Todo lo que el usuario puede llegar a leer: los cuatro módulos de la aplicación
-# y las dos herramientas que se ejecutan a mano (compilar y comprobar el .exe).
+# Everything the user can read: the application modules and the two tools that are
+# run by hand (the builder and the executable checker).
 MODULOS = ("main.py", "motor_flac.py", "gui.py", "verificar_flac.py",
            "informe_pdf.py", "build.py", "comprobar_ejecutable.py")
 
 PROPIOS = re.compile(r"[ñÑáéíóúÁÉÍÓÚüÜ¿¡]")
 
-# Palabras que no existen en inglés: si aparece alguna, el texto está sin traducir.
+# Words that do not exist in English: if one shows up, the text was not translated.
 PALABRAS = re.compile(
     r"\b(de|del|la|las|los|una|uno|unos|unas|que|con|para|por|sin|al|su|sus|"
     r"es|son|está|están|hay|más|muy|pero|como|cuando|donde|este|esta|esto|"
@@ -53,34 +58,62 @@ PALABRAS = re.compile(
     r"etiqueta|valor|fila|filas|columna|ancho|alto|peso|tama[nñ]o|fecha|hora|"
     r"siguiente|anterior|cuerpo|cabecera|pie|generado|generar|guardar|ignorar|"
     r"aplicable|disponible|comprobaci[oó]n|comprobando|verificando|compilaci[oó]n|"
-    r"compilando|distribuible|instalado|instalaci[oó]n|ejecuta|ejecuci[oó]n)\b",
+    r"compilando|distribuible|instalado|instalaci[oó]n|ejecuta|ejecuci[oó]n|"
+    r"quiz[aá]|tambi[eé]n|tres|cuatro|cada|mismo|misma|tiene|tienen|hace|hacen|"
+    r"debe|deben|puede|pueden|queda|quedan|sale|salen|existe|existen|sobra|sobran|"
+    # Spanish participles: the pattern that slipped through twice, because they
+    # carry no accent and read like a verb in a status message.
+    r"verificad[oa]|verificar|comprobad[oa]|comprobar|obtenid[oa]|encontrad[oa]|"
+    r"seleccionad[oa]|elegid[oa]|iniciad[oa]|detenid[oa]|guardad[oa]|escrit[oa]|"
+    r"le[ií]d[oa]|abiert[oa]|cerrad[oa]|mostrad[oa]|calculad[oa]|medid[oa]|"
+    r"detectad[oa]|analizad[oa]|procesad[oa]|cread[oa]|borrad[oa]|a[nñ]adid[oa]|"
+    r"cambiad[oa]|actualizad[oa]|marcad[oa]|activad[oa]|desactivad[oa])\b",
     re.IGNORECASE)
-# Palabras que existen igual en inglés: no sirven como señal de idioma.
-FALSOS_POSITIVOS = {"album", "compatible", "control", "pie"}
+# Words spelled the same in English: no signal of the language.
+FALSOS_POSITIVOS = {"album", "compatible", "control", "pie", "solo", "dos", "pro"}
 
-# Identificadores internos (claves del protocolo, nombres de estilos de reportlab)
-# y rutas de archivo: no son texto de interfaz.
+# Internal identifiers (protocol keys, reportlab style names) and file paths: not
+# interface text.
 PERMITIDOS = {
     "archivo", "ruta", "veredicto", "problemas", "problema", "informe", "aviso",
     "modo", "cache", "pico", "tamano", "cancion", "etiqueta", "celda", "pie",
     "seccion", "codigo", "cancelado", "normal", "subtitulo", "titulo", "insignia",
     "error", "ok", "paginas", "salida", "output",
-    # Claves del protocolo y destinos de argparse que se quedan como están: son
-    # identificadores internos, no texto de interfaz.
+    # Protocol keys and argparse destinations that stay as they are: internal
+    # identifiers, not interface text.
     "espectrograma", "espectrogramas", "carpeta", "segundos",
 }
 RUTA_O_ARCHIVO = re.compile(r"[\w/\\-]*\.(ico|png|svg|py|txt|pdf|zip|exe|flac|json)")
 
 
-def docstrings(fuente):
-    """Rangos (en caracteres) de los docstrings.
+def archivos_con_prosa():
+    """Every Python file whose comments and docstrings are checked."""
+    carpeta = os.path.join(RAIZ, "tests")
+    pruebas = sorted(f"tests/{nombre}" for nombre in os.listdir(carpeta)
+                     if nombre.endswith(".py"))
+    return MODULOS + tuple(pruebas) + ("Logo/generar_logo.py",)
 
-    Ojo con las unidades: `col_offset`/`end_col_offset` del árbol sintáctico son
-    desplazamientos en BYTES UTF-8, mientras que el recorrido de los tokens va en
-    caracteres. Si se mezclan, los rangos no coinciden y el filtro deja pasar los
-    docstrings (que sí llevan acentos y palabras españolas).
+
+def nodos_docstring(fuente):
+    """The Constant nodes that are a module, class or function docstring."""
+    for nodo in ast.walk(ast.parse(fuente)):
+        if isinstance(nodo, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            cuerpo = getattr(nodo, "body", [])
+            if (cuerpo and isinstance(cuerpo[0], ast.Expr)
+                    and isinstance(cuerpo[0].value, ast.Constant)
+                    and isinstance(cuerpo[0].value.value, str)):
+                yield cuerpo[0].value
+
+
+def rangos_docstring(fuente):
+    """Character ranges of the docstrings.
+
+    Watch the units: `col_offset`/`end_col_offset` from the syntax tree are UTF-8
+    BYTE offsets, while the token walk uses characters. Mixing them makes the
+    ranges miss, and then the filter lets docstrings through into the visible-text
+    scan — which is wrong in both directions.
     """
-    import ast
     datos = fuente.encode("utf-8")
     saltos = [0]
     for indice, byte in enumerate(datos):
@@ -90,26 +123,16 @@ def docstrings(fuente):
     def a_caracter(posicion_en_bytes):
         return len(datos[:posicion_en_bytes].decode("utf-8"))
 
-    rangos = []
-    for nodo in ast.walk(ast.parse(fuente)):
-        if isinstance(nodo, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                             ast.AsyncFunctionDef)):
-            cuerpo = getattr(nodo, "body", [])
-            if (cuerpo and isinstance(cuerpo[0], ast.Expr)
-                    and isinstance(cuerpo[0].value, ast.Constant)
-                    and isinstance(cuerpo[0].value.value, str)):
-                literal = cuerpo[0].value
-                inicio = a_caracter(saltos[literal.lineno - 1] + literal.col_offset)
-                fin = a_caracter(saltos[literal.end_lineno - 1] + literal.end_col_offset)
-                rangos.append((inicio, fin))
-    return rangos
+    return [(a_caracter(saltos[nodo.lineno - 1] + nodo.col_offset),
+             a_caracter(saltos[nodo.end_lineno - 1] + nodo.end_col_offset))
+            for nodo in nodos_docstring(fuente)]
 
 
 def piezas(interior):
-    """Trozos de texto de un literal, sin las expresiones `{…}` de las f-strings.
+    """Text pieces of a literal, without the `{…}` expressions of an f-string.
 
-    Lo que ve el usuario es el texto, no los nombres de las variables que se
-    interpolan: `f"{icono} Ready"` muestra «Ready».
+    What the user sees is the text, not the names of the interpolated variables:
+    `f"{icono} Ready"` shows "Ready".
     """
     resultados = []
     actual = []
@@ -140,9 +163,9 @@ def piezas(interior):
 
 
 def trozos_visibles(ruta):
-    """(linea, texto) de cada trozo de literal visible, sin docstrings."""
+    """(line, text) of every visible piece of every text literal."""
     fuente = open(ruta, "rb").read().decode("utf-8")
-    omitir = docstrings(fuente)
+    omitir = rangos_docstring(fuente)
     inicio_linea = [0]
     for indice, caracter in enumerate(fuente):
         if caracter == "\n":
@@ -164,61 +187,67 @@ def trozos_visibles(ruta):
             yield token.start[0], trozo
 
 
-def codigo_sin_comentarios(ruta):
-    """El código de un archivo sin comentarios (para buscar banderas u textos)."""
+def prosa(ruta):
+    """(line, text) of every comment line and every docstring line."""
     fuente = open(ruta, "rb").read().decode("utf-8")
-    partes = []
     for token in tokenize.generate_tokens(io.StringIO(fuente).readline):
-        if token.type in (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE,
-                          tokenize.INDENT, tokenize.DEDENT):
-            partes.append(" ")
-            continue
-        partes.append(token.string)
-    return " ".join(partes)
+        if token.type == tokenize.COMMENT:
+            yield token.start[0], token.string
+    for nodo in nodos_docstring(fuente):
+        for desplazamiento, linea in enumerate(nodo.value.splitlines()):
+            yield nodo.lineno + desplazamiento, linea
 
 
 class TestIdioma(unittest.TestCase):
-    """Los textos de interfaz tienen que estar en inglés."""
+    """Interface text, comments and docstrings have to be in English."""
 
-    def _revisar(self, nombre, patron, descripcion):
+    def _revisar(self, patron, descripcion):
         problemas = []
-        for linea, texto in trozos_visibles(os.path.join(RAIZ, nombre)):
-            if not texto.strip():
-                continue
-            # Los nombres de archivo y las rutas pueden llevar español
-            # («Logo/icono_app.ico»). La condición es «parece una ruta»: sin
-            # espacios. Saltarse cualquier texto con una barra dejaba pasar frases
-            # como «ratio altas/medias muy bajo», que es prosa.
-            if RUTA_O_ARCHIVO.search(texto) or ("/" in texto and " " not in texto.strip()):
-                continue
-            if texto.strip().strip("\"'") in PERMITIDOS:
-                continue
-            for coincidencia in patron.finditer(texto):
-                palabra = coincidencia.group(0)
-                if palabra.lower() in PERMITIDOS or palabra.lower() in FALSOS_POSITIVOS:
+        fuentes = [(os.path.join(RAIZ, nombre), trozos_visibles, "text")
+                   for nombre in MODULOS]
+        fuentes += [(os.path.join(RAIZ, ruta), prosa, "prose")
+                    for ruta in archivos_con_prosa()]
+        for ruta, generador, origen in fuentes:
+            for linea, texto in generador(ruta):
+                if not texto.strip():
                     continue
-                # "process(es)" o "(s)" no son español: se descartan los trozos que
-                # van pegados a un paréntesis o dentro de otra palabra.
-                inicio, fin = coincidencia.span()
-                antes = texto[inicio - 1] if inicio else ""
-                despues = texto[fin] if fin < len(texto) else ""
-                if antes in "([{" or despues in ")]}":
+                # File names and paths may contain anything ("Logo/icono_app.ico").
+                # The rule is "looks like a path": no spaces. Skipping every text
+                # with a slash used to let prose through, such as the warning the
+                # engine prints when the high/mid ratio is very low.
+                if RUTA_O_ARCHIVO.search(texto) or ("/" in texto and " " not in texto.strip()):
                     continue
-                problemas.append(f"{nombre}:{linea}: {palabra!r} en {texto!r}")
-        self.assertEqual(problemas, [], f"{descripcion} en " + "; ".join(problemas[:6]))
+                if texto.strip().strip("\"'") in PERMITIDOS:
+                    continue
+                for coincidencia in patron.finditer(texto):
+                    palabra = coincidencia.group(0)
+                    if palabra.lower() in PERMITIDOS or palabra.lower() in FALSOS_POSITIVOS:
+                        continue
+                    # "process(es)" and "(s)" are not Spanish, and a word glued to
+                    # an underscore, to another word or to a call parenthesis
+                    # belongs to an identifier: Spanish identifiers are accepted
+                    # (the code keeps its names), Spanish prose is not. That is how
+                    # an English docstring may mention `informe_pdf.generar()`.
+                    inicio, fin = coincidencia.span()
+                    antes = texto[inicio - 1] if inicio else ""
+                    despues = texto[fin] if fin < len(texto) else ""
+                    if antes in "([{" or despues in ")]}(":
+                        continue
+                    if antes.isalnum() or antes == "_" or despues.isalnum() or despues == "_":
+                        continue
+                    problemas.append(
+                        f"{os.path.basename(ruta)}:{linea} [{origen}]: "
+                        f"{palabra!r} in {texto.strip()[:60]!r}")
+        self.assertEqual(problemas, [], f"{descripcion} in " + "; ".join(problemas[:6]))
 
     def test_no_hay_caracteres_espanoles(self):
-        for nombre in MODULOS:
-            with self.subTest(modulo=nombre):
-                self._revisar(nombre, PROPIOS, "caracteres españoles")
+        self._revisar(PROPIOS, "Spanish characters")
 
     def test_no_hay_palabras_espanolas(self):
-        for nombre in MODULOS:
-            with self.subTest(modulo=nombre):
-                self._revisar(nombre, PALABRAS, "palabras españolas")
+        self._revisar(PALABRAS, "Spanish words")
 
     def test_los_veredictos_estan_en_ingles_y_coinciden(self):
-        """El semáforo depende de que motor, GUI y PDF usen las MISMAS cadenas."""
+        """The traffic light depends on engine, GUI and PDF using the SAME strings."""
         import gui
         import informe_pdf
         esperados = {"GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
@@ -226,17 +255,16 @@ class TestIdioma(unittest.TestCase):
         self.assertEqual(set(gui.ETIQUETA_VEREDICTO), esperados)
         self.assertEqual(set(gui.COLOR_VEREDICTO), esperados)
         self.assertEqual(set(informe_pdf.ESTILO_VEREDICTO), esperados)
-        # El motor solo puede emitir esos: si alguien deja uno antiguo, aquí salta.
-        # Se mira el código sin comentarios ni docstrings (ahí sí se puede citar el
-        # nombre antiguo al explicar un cambio).
-        fuente = codigo_sin_comentarios(os.path.join(RAIZ, "motor_flac.py"))
-        for veredicto in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
-                          "PROBABLE UPSCALE", "indeterminate"):
+        # The engine can only emit those labels. Only text literals are inspected,
+        # so a comment or a docstring may still quote an old name on purpose.
+        visibles = {texto.strip() for _, texto in
+                    trozos_visibles(os.path.join(RAIZ, "motor_flac.py"))}
+        for veredicto in esperados:
             with self.subTest(veredicto=veredicto):
-                self.assertIn(f'"{veredicto}"', fuente)
+                self.assertIn(veredicto, visibles)
         for antiguo in ("LOSSLESS GENUINO", "PROBABLEMENTE LOSSLESS", "DUDOSO"):
             with self.subTest(antiguo=antiguo):
-                self.assertNotIn(f'"{antiguo}"', fuente)
+                self.assertNotIn(antiguo, visibles)
 
     def test_las_banderas_estan_en_ingles(self):
         import motor_flac
@@ -248,9 +276,8 @@ class TestIdioma(unittest.TestCase):
         for antigua in ("--ruta", "--modo", "--seg", "--sin-cache"):
             with self.subTest(bandera=antigua):
                 self.assertNotIn(f'"{antigua}"', fuente)
-        # Los modos que acepta el motor son los ingleses.
-        parser = motor_flac.cli_principal
-        self.assertTrue(callable(parser))
+        # The engine's command-line entry point stays importable and callable.
+        self.assertTrue(callable(motor_flac.cli_principal))
 
     def test_el_informe_y_la_carpeta_cambiaron_de_nombre(self):
         import gui

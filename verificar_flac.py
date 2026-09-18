@@ -1,19 +1,19 @@
-"""FLAC VERIFIER — interfaz de línea de comandos.
+"""FLAC VERIFIER — command-line interface.
 
-Esta es una CAPA DE PRESENTACIÓN: aquí no hay lógica de análisis. Todo el motor
-(firma, metadatos, MD5, clipping, rango dinámico, bit-depth, espectro y scoring)
-vive en motor_flac.py. Este archivo solo llama al motor, formatea el informe y
-gestiona el menú interactivo.
+This is a PRESENTATION LAYER: there is no analysis logic here. The whole engine
+(signature, metadata, MD5, clipping, dynamic range, bit-depth, spectrum and
+scoring) lives in motor_flac.py. This file only calls the engine, formats the
+report and drives the interactive menu.
 
-Uso:
-    python verificar_flac.py          # menú interactivo
-    python motor_flac.py --ruta ...   # motor crudo, protocolo JSON por línea
+Usage:
+    python verificar_flac.py          # interactive menu
+    python motor_flac.py --ruta ...   # raw engine, JSON protocol per line
 """
 import os
 import sys
 from collections import Counter
 
-# Permite ejecutar el script desde cualquier directorio de trabajo.
+# Allows the script to be run from any working directory.
 _DIRECTORIO = os.path.dirname(os.path.abspath(__file__))
 if _DIRECTORIO not in sys.path:
     sys.path.insert(0, _DIRECTORIO)
@@ -25,9 +25,10 @@ VERSION = "v4.0"
 SALIR_CMDS = {"exit", "q", "quit", "0"}
 AFIRMATIVOS = ("y", "yes")
 
-# Veredictos canónicos del motor -> presentación.
-# Se comparan por IGUALDAD EXACTA contra motor_flac.calcular_score, así que ya no
-# hay comparaciones por subcadena ni dos juegos de cadenas que puedan divergir.
+# Canonical engine verdicts -> presentation.
+# They are compared by EXACT EQUALITY against motor_flac.calcular_score, so there
+# are no substring comparisons any more and no two sets of strings that could
+# diverge.
 VEREDICTOS = {
     "GENUINE LOSSLESS":       ("✅", "GENUINE LOSSLESS"),
     "PROBABLY LOSSLESS": ("⚠️ ", "PROBABLY LOSSLESS"),
@@ -36,7 +37,7 @@ VEREDICTOS = {
     "indeterminate":          ("❓", "indeterminate"),
 }
 
-# ─── PRESENTACIÓN DEL INFORME ────────────────────────────────────────────────
+# ─── REPORT PRESENTATION ─────────────────────────────────────────────────────
 
 def etiqueta_veredicto(veredicto):
     icono, texto = VEREDICTOS.get(veredicto, ("❓", str(veredicto)))
@@ -51,7 +52,7 @@ def _md5(md5):
         return
     estado = md5.get("estado")
     if estado == "match":
-        print(f"  ✅ MD5 verificado: {md5.get('calculado')}")
+        print(f"  ✅ MD5 verified: {md5.get('calculado')}")
     elif estado == "mismatch":
         print("  ❌ MD5 MISMATCH — file corrupt or modified")
         print(f"     stored    : {md5.get('almacenado')}")
@@ -79,8 +80,8 @@ def _bit_depth(bdi):
     if "error" in bdi:
         print(f"  ⚠️  Could not evaluate the LSB utilization: {bdi['error']}")
         return
-    # "LSB activos" no es una buena noticia: solo significa que el test no puede
-    # desmentir nada (un transcódigo lossy en 24 bits también llena los LSB).
+    # "Active LSBs" is not good news: it only means that the test cannot disprove
+    # anything (a lossy transcode at 24 bits fills the LSB as well).
     ic = {"empty": "❌", "partial": "⚠️ ", "active": "ℹ️ "}.get(bdi.get("lsbs"), "⚠️ ")
     print(f"  {ic} LSB utilization: {bdi['conclusion']}")
 
@@ -114,7 +115,7 @@ def _espectro(esp):
         print(f"  📊 Spectrogram: {esp['espectrograma']}")
 
 def _cuerpo(res):
-    """Imprime el informe de un archivo ya analizado. Devuelve el veredicto o None."""
+    """Prints the report for an already analysed file. Returns the verdict or None."""
     error = res.get("error")
     if error:
         print(f"  ❌ FAILED — {error}")
@@ -138,11 +139,11 @@ def _cuerpo(res):
     return res["veredicto"]
 
 def imprimir_informe(res):
-    """Informe completo (encabezado + cuerpo) de un resultado del motor."""
+    """Full report (header + body) for one engine result."""
     _encabezado(res.get("archivo", "?"))
     return _cuerpo(res)
 
-# ─── MENÚ ────────────────────────────────────────────────────────────────────
+# ─── MENU ────────────────────────────────────────────────────────────────────
 
 def pedir_modo():
     print('\nHow do you want to analyze the spectrum?')
@@ -171,20 +172,20 @@ def pedir_informe():
     resp = input("Generate the album PDF report when finished? (y/N): ").strip().lower()
     return resp in AFIRMATIVOS
 
-# ─── EJECUCIÓN ───────────────────────────────────────────────────────────────
+# ─── EXECUTION ───────────────────────────────────────────────────────────────
 
 def analizar_archivo(ruta, modo, segundos=None, guardar_png=False, resultado=None):
-    """Analiza un archivo (o presenta uno ya calculado) y devuelve el resultado.
+    """Analyses a file (or presents one already computed) and returns the result.
 
-    Devuelve el dict del motor (para el informe PDF) o None si falló de forma
-    inesperada."""
+    Returns the engine dict (for the PDF report) or None if it failed
+    unexpectedly."""
     _encabezado(os.path.basename(ruta))
     if resultado is None:
         if sys.stdout.isatty():
             print("  ⏳ analyzing…", flush=True)
         try:
             resultado = motor.analizar_archivo_datos(ruta, modo, segundos, guardar_png)
-        except Exception as e:                 # el motor ya blinda; red de seguridad
+        except Exception as e:                 # the engine already shields; safety net
             print(f"  ❌ Unexpected failure: {type(e).__name__}: {e}")
             return None
     elif resultado.get("desde_cache"):
@@ -207,8 +208,8 @@ def ejecutar_analisis(ruta, modo, segundos, guardar_png, guardar_pdf=False):
         print("  Invalid path, or the file is not a .flac")
         return
 
-    # El informe PDF necesita los espectrogramas: se generan aunque no se hayan
-    # pedido los PNG, para que el usuario no tenga que combinar opciones.
+    # The PDF report needs the spectrograms: they are generated even when the PNG
+    # files were not requested, so that the user does not have to combine options.
     if guardar_pdf:
         guardar_png = True
 
@@ -241,7 +242,7 @@ def ejecutar_analisis(ruta, modo, segundos, guardar_png, guardar_pdf=False):
             print(f"📊 Spectrograms in: {os.path.join(ruta, '_spectrograms')}")
 
     if guardar_pdf:
-        # Un fallo al escribir el PDF se avisa; nunca aborta el análisis ya hecho.
+        # A failed PDF write is reported; the analysis is never aborted.
         informe = motor.generar_informe_pdf(ruta, resultados, modo=modo)
         if informe.get("ok"):
             print(f"📄 PDF report: {informe['ruta']}  ({informe.get('paginas', '?')} pages)")
@@ -251,10 +252,10 @@ def ejecutar_analisis(ruta, modo, segundos, guardar_png, guardar_pdf=False):
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main(argv=None):
-    """CLI interactivo. Con `--gui` (o `-g`) abre la interfaz gráfica."""
-    # Antes de imprimir CUALQUIER cosa: si la salida está redirigida en Windows,
-    # cp1252 no puede con los marcos ni con los emojis, y el propio mensaje de
-    # error moriría con UnicodeEncodeError.
+    """Interactive CLI. With `--gui` (or `-g`) it opens the graphical interface."""
+    # Before printing ANYTHING: if the output is redirected on Windows, cp1252
+    # cannot cope with the frames or with the emoji, and the error message itself
+    # would die with UnicodeEncodeError.
     motor.forzar_utf8_salida()
 
     argumentos = list(sys.argv[1:] if argv is None else argv)
@@ -302,7 +303,7 @@ def main(argv=None):
                 guardar_png    = pedir_espectrograma()
                 guardar_pdf    = pedir_informe()
     except (EOFError, KeyboardInterrupt):
-        # stdin cerrado (scripts, tuberías) o Ctrl+C: salir sin traceback
+        # stdin closed (scripts, pipes) or Ctrl+C: exit without a traceback
         print('\n\nExiting. Goodbye!')
 
 if __name__ == "__main__":

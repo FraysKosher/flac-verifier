@@ -1,30 +1,30 @@
-"""Punto de entrada único de FLAC VERIFIER (y del ejecutable empaquetado).
+"""Single entry point of FLAC VERIFIER (and of the packaged executable).
 
-    python main.py                     # interfaz gráfica
-    python main.py --gui [PATH]        # interfaz gráfica, con la ruta ya puesta
-    python main.py --motor-cli ...     # motor en modo consola (lo usa la GUI)
-    python main.py --cli               # CLI interactivo
+    python main.py                     # graphical interface
+    python main.py --gui [PATH]        # graphical interface, with the path already set
+    python main.py --motor-cli ...     # engine in console mode (used by the GUI)
+    python main.py --cli               # interactive CLI
     python main.py --version
 
-Cuando PyInstaller congela la aplicación, este archivo es el que arranca. Se
-generan DOS ejecutables que comparten la carpeta:
+When PyInstaller freezes the application, this file is the one that starts. TWO
+executables are generated, sharing the folder:
 
-    FLAC_Verifier.exe   sin consola: interfaz gráfica (y motor con --motor-cli)
-    flac_motor.exe      con consola: el motor, para la GUI y para scripts
+    FLAC_Verifier.exe   no console: graphical interface (and engine with --motor-cli)
+    flac_motor.exe      with console: the engine, for the GUI and for scripts
 
-`flac_motor.exe` no abre ventanas: lo que recibe son opciones del motor, así que
-`flac_motor.exe --path ÁLBUM --pdf` funciona tal cual. La GUI, además, le pasa
-siempre la bandera `--motor-cli` para que la llamada no dependa del nombre del
-binario (ver `gui.ruta_motor`).
+`flac_motor.exe` does not open windows: what it receives are engine options, so
+`flac_motor.exe --path ALBUM --pdf` works as is. The GUI, in addition, always
+passes it the `--motor-cli` flag so that the call does not depend on the name of
+the binary (see `gui.ruta_motor`).
 
-Sobre `multiprocessing.freeze_support()`: tiene que ser lo primero que se ejecuta,
-antes de mirar siquiera los argumentos. En Windows, `multiprocessing` arranca cada
-proceso hijo volviendo a lanzar este mismo ejecutable con argumentos internos
-(`--multiprocessing-fork`); `freeze_support()` los intercepta y ejecuta el worker.
-Si se llamara después de evaluar los argumentos —o no se llamara— cada uno de los
-8 procesos del análisis paralelo volvería a arrancar la aplicación entera: en el
-ejecutable de ventana eso son 8 ventanas nuevas, y cada una puede volver a
-repartir su propio trabajo, así que la GUI se multiplica sin fin.
+About `multiprocessing.freeze_support()`: it has to be the first thing that runs,
+before even looking at the arguments. On Windows, `multiprocessing` starts each
+child process by relaunching this same executable with internal arguments
+(`--multiprocessing-fork`); `freeze_support()` intercepts them and runs the worker.
+If it were called after evaluating the arguments —or not called at all— each of the
+8 processes of the parallel analysis would start the whole application again: in the
+windowed executable that means 8 new windows, and each one can hand out its own work
+again, so the GUI multiplies without end.
 """
 from __future__ import annotations
 
@@ -60,12 +60,12 @@ Engine options (--motor-cli and flac_motor.exe):
 
 
 def es_motor_exe() -> bool:
-    """¿Nos está arrancando `flac_motor.exe` (el ejecutable del motor)?
+    """Is `flac_motor.exe` (the engine executable) starting us?
 
-    El motor va en su propio binario para tener consola: un ejecutable de ventana
-    deja `sys.stdout = None` y el protocolo NDJSON no llegaría a la GUI. Como es
-    el motor y no la aplicación, sus argumentos se interpretan como opciones del
-    motor en lugar de abrir la ventana.
+    The engine lives in its own binary so that it can have a console: a windowed
+    executable leaves `sys.stdout = None` and the NDJSON protocol would never reach
+    the GUI. As it is the engine and not the application, its arguments are
+    interpreted as engine options instead of opening the window.
     """
     if not getattr(sys, "frozen", False):
         return False
@@ -73,7 +73,7 @@ def es_motor_exe() -> bool:
 
 
 def principal(argumentos: list[str] | None = None) -> int:
-    """Reparte los argumentos hacia la GUI, el motor o el CLI interactivo."""
+    """Routes the arguments towards the GUI, the engine or the interactive CLI."""
     argumentos = list(sys.argv[1:] if argumentos is None else argumentos)
 
     if argumentos and argumentos[0] in ("--version", "-V"):
@@ -83,7 +83,7 @@ def principal(argumentos: list[str] | None = None) -> int:
         print(AYUDA)
         return 0
 
-    # Bandera interna: la GUI pide el motor al mismo ejecutable, en consola.
+    # Internal flag: the GUI asks the same executable for the engine, in console mode.
     if argumentos and argumentos[0] == "--motor-cli":
         import motor_flac
         return motor_flac.cli_principal(argumentos[1:])
@@ -92,8 +92,8 @@ def principal(argumentos: list[str] | None = None) -> int:
         import verificar_flac
         return verificar_flac.main(argumentos[1:])
 
-    # `flac_motor.exe` es el motor: si no se pide la ventana a propósito, lo que
-    # recibe son sus opciones. Sin argumentos, la ayuda (y no un error).
+    # `flac_motor.exe` is the engine: unless the window is asked for on purpose,
+    # what it receives are its options. With no arguments, the help (and not an error).
     if es_motor_exe() and not (argumentos and argumentos[0] in ("--gui", "-g")):
         if not argumentos:
             print(AYUDA)
@@ -101,7 +101,7 @@ def principal(argumentos: list[str] | None = None) -> int:
         import motor_flac
         return motor_flac.cli_principal(argumentos)
 
-    # Por defecto, la interfaz gráfica (con ruta opcional)
+    # By default, the graphical interface (with an optional path)
     ruta = None
     if argumentos and argumentos[0] in ("--gui", "-g"):
         argumentos = argumentos[1:]
@@ -109,7 +109,7 @@ def principal(argumentos: list[str] | None = None) -> int:
         ruta = argumentos[0]
     try:
         from gui import main as main_grafico
-    except Exception as e:                       # sin customtkinter, sin Tk…
+    except Exception as e:                       # without customtkinter, without Tk…
         print(f"Could not load the graphical interface: {type(e).__name__}: {e}")
         print("You can use the CLI instead:  FLAC_Verifier.exe --cli")
         return 1
@@ -117,8 +117,8 @@ def principal(argumentos: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # ── PRIMERA INSTRUCCIÓN, SIN EXCEPCIONES ────────────────────────────────
-    # Ver la explicación del encabezado: si se mueve de aquí, el análisis en
-    # paralelo del ejecutable empaquetado arranca una instancia por worker.
+    # ── FIRST STATEMENT, NO EXCEPTIONS ──────────────────────────────────────
+    # See the explanation in the header: if it is moved from here, the parallel
+    # analysis of the packaged executable starts one instance per worker.
     multiprocessing.freeze_support()
     raise SystemExit(principal())

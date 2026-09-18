@@ -1,16 +1,16 @@
-"""Informe PDF por álbum — capa de presentación con reportlab.
+"""Per-album PDF report — presentation layer built on reportlab.
 
-Dependencia OPCIONAL: `reportlab`. Si no está instalado, el análisis funciona
-igual y este módulo solo informa de que no puede generar el informe. Ni el motor
-ni el CLI importan reportlab: solo lo usan a través de `disponible()` y
-`generar()`, y `generar()` NUNCA lanza: devuelve un dict con `ok`/`error` para
-que un fallo al escribir el PDF no aborte el análisis.
+OPTIONAL dependency: `reportlab`. If it is not installed, the analysis still
+works and this module only reports that it cannot generate the report. Neither
+the engine nor the CLI import reportlab: they use it only through `disponible()`
+and `generar()`, and `generar()` NEVER raises: it returns a dict with
+`ok`/`error` so that a failure while writing the PDF does not abort the analysis.
 
-Estructura del informe:
-    1. Portada: ruta del álbum, fecha, resumen ejecutivo por colores.
-    2. Una página por canción: veredicto + score, tabla técnica, problemas y
-       espectrograma.
-    3. Página final: tabla global de todas las canciones.
+Report structure:
+    1. Cover: album path, date, executive summary by colour.
+    2. One page per song: verdict + score, technical table, issues and
+       spectrogram.
+    3. Final page: global table of every song.
 """
 import os
 import shutil
@@ -26,22 +26,22 @@ try:
     from reportlab.platypus import (Image, KeepTogether, PageBreak, Paragraph,
                                     SimpleDocTemplate, Spacer, Table, TableStyle)
     REPORTLAB_OK = True
-except ImportError:                     # el análisis sigue funcionando sin esto
+except ImportError:                     # the analysis keeps working without this
     REPORTLAB_OK = False
 
 NOMBRE_INFORME = "flac_verifier_report.pdf"
-MAX_PX_ESPECTROGRAMA = 1800            # los PNG se recomprimen para no hinchar el PDF
+MAX_PX_ESPECTROGRAMA = 1800            # PNG files are recompressed so as not to bloat the PDF
 
-# Geometría del marco, en milímetros (se multiplican por `mm` dentro de las
-# funciones: `mm` viene de reportlab y no puede usarse al importar el módulo).
-ANCHO_MARCO_MM = 170                   # A4 menos los márgenes laterales (20+20)
-ALTO_MARCO_MM  = 259                   # A4 menos los márgenes superior e inferior (18+20)
-ALTO_IMG_MAX_MM = 62                   # altura deseada del espectrograma
-ALTO_IMG_MIN_MM = 34                   # por debajo de esto no se encoge más
+# Frame geometry, in millimetres (they are multiplied by `mm` inside the
+# functions: `mm` comes from reportlab and cannot be used at module import time).
+ANCHO_MARCO_MM = 170                   # A4 minus the side margins (20+20)
+ALTO_MARCO_MM  = 259                   # A4 minus the top and bottom margins (18+20)
+ALTO_IMG_MAX_MM = 62                   # desired height of the spectrogram
+ALTO_IMG_MIN_MM = 34                   # below this it is no longer shrunk
 
-# Veredicto canónico -> (etiqueta, color de texto, color de fondo).
-# Verde / amarillo / naranja / rojo, con texto oscuro sobre fondo claro para que
-# se lea bien impreso.
+# Canonical verdict -> (label, text colour, background colour).
+# Green / yellow / orange / red, with dark text on a light background so that it
+# reads well in print.
 ESTILO_VEREDICTO = {
     "GENUINE LOSSLESS":       ("GENUINE LOSSLESS",        "#14632C", "#E3F4E7"),
     "PROBABLY LOSSLESS": ("PROBABLY LOSSLESS",  "#8A6D00", "#FBF3D5"),
@@ -71,18 +71,18 @@ TEXTO_LSBS = {
 
 
 def disponible():
-    """¿Se puede generar el informe en este entorno?"""
+    """Can the report be generated in this environment?"""
     return REPORTLAB_OK
 
 
 def ruta_informe(ruta_analizada):
-    """El informe va en la carpeta del álbum; si es un archivo, junto a él."""
+    """The report goes into the album folder; if that is a file, next to it."""
     absoluta = os.path.abspath(ruta_analizada)
     base = absoluta if os.path.isdir(absoluta) else os.path.dirname(absoluta)
     return os.path.join(base, NOMBRE_INFORME)
 
 
-# ─── HELPERS DE FORMATO ──────────────────────────────────────────────────────
+# ─── FORMAT HELPERS ──────────────────────────────────────────────────────────
 
 def _estilo_veredicto(res):
     if res.get("error"):
@@ -113,7 +113,7 @@ def _formato_meta(meta):
 
 
 def _resumen(resultados):
-    """Cuenta veredictos y errores. Devuelve (filas, totales)."""
+    """Counts verdicts and errors. Returns (rows, totals)."""
     conteo = {clave: 0 for clave in ESTILO_VEREDICTO}
     errores = 0
     for res in resultados:
@@ -124,7 +124,7 @@ def _resumen(resultados):
     return conteo, errores
 
 
-# ─── CONSTRUCCIÓN DEL DOCUMENTO ──────────────────────────────────────────────
+# ─── DOCUMENT CONSTRUCTION ───────────────────────────────────────────────────
 
 def _estilos():
     hoja = getSampleStyleSheet()
@@ -166,7 +166,7 @@ def _tabla(datos, anchos, estilos, estilo_celdas=None):
 
 
 def _tabla_tecnica(res, est):
-    """Tabla de datos técnicos: dos pares etiqueta/valor por fila."""
+    """Technical data table: two label/value pairs per row."""
     meta = res.get("meta") or {}
     esp  = res.get("esp") or {}
     bdi  = res.get("bdi") or {}
@@ -227,8 +227,8 @@ def _tabla_tecnica(res, est):
         partes.append(valor("L-R separation", _num(esp.get("separacion_stereo"), "", 4)))
         partes.append(valor("Nyquist", _num(nyq, " Hz", 0)))
 
-    # Rejilla de 4 columnas: etiqueta, valor, etiqueta, valor. El ancho de las
-    # etiquetas (34 mm) evita que se partan en dos líneas en A4.
+    # 4-column grid: label, value, label, value. The width of the labels
+    # (34 mm) keeps them from wrapping onto two lines on A4.
     filas = []
     for i in range(0, len(partes), 2):
         izquierda = partes[i]
@@ -256,15 +256,16 @@ def _insignia(res, est):
 
 
 def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
-    """Devuelve (flowable, aviso). El aviso explica por qué no hay imagen.
+    """Returns (flowable, warning). The warning explains why there is no image.
 
-    Los PNG de matplotlib pesan ~1.2 MB cada uno; para el PDF se reescalan y se
-    recomprimen en JPEG dentro de un directorio temporal (reportlab necesita una
-    ruta de archivo). Sin Pillow se embebe el PNG original: el informe sale igual.
+    matplotlib PNG files weigh ~1.2 MB each; for the PDF they are rescaled and
+    recompressed to JPEG inside a temporary directory (reportlab needs a file
+    path). Without Pillow the original PNG is embedded: the report comes out the
+    same either way.
 
-    Los tamaños se calculan DENTRO de la función a propósito: `mm` viene de
-    reportlab, y un valor por defecto en la firma se evaluaría al importar el
-    módulo, rompiendo la importación cuando reportlab no está instalado."""
+    The sizes are computed INSIDE the function on purpose: `mm` comes from
+    reportlab, and a default value in the signature would be evaluated when the
+    module is imported, breaking the import when reportlab is not installed."""
     ancho_max = ancho_max or 170 * mm
     alto_max  = alto_max or 62 * mm
     ruta = (res.get("esp") or {}).get("espectrograma")
@@ -283,7 +284,7 @@ def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
             fuente = os.path.join(temporal, os.path.basename(ruta) + ".jpg")
             copia.save(fuente, format="JPEG", quality=88, optimize=True)
     except Exception:
-        fuente = ruta                              # sin Pillow: PNG original
+        fuente = ruta                              # without Pillow: original PNG
         try:
             px_ancho, px_alto = ImageReader(ruta).getSize()
         except Exception as e:
@@ -291,14 +292,14 @@ def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
 
     altura = ancho_max * px_alto / float(px_ancho)
     ancho = ancho_max
-    if altura > alto_max:                          # se ajusta manteniendo la proporción
+    if altura > alto_max:                          # scaled down keeping the aspect ratio
         altura = alto_max
         ancho = altura * px_ancho / float(px_alto)
     return Image(fuente, width=ancho, height=altura), None
 
 
 def _alto_de(flowables):
-    """Alto real que ocuparán esos flowables dentro del marco del informe."""
+    """Actual height those flowables will occupy inside the report frame."""
     total = 0.0
     for flowable in flowables:
         try:
@@ -310,10 +311,10 @@ def _alto_de(flowables):
 
 
 def _ajustar_imagen(imagen, disponible):
-    """Encoge la imagen (hasta ALTO_IMG_MIN_MM) para que quepa en lo que queda.
+    """Shrinks the image (down to ALTO_IMG_MIN_MM) so that it fits in what is left.
 
-    Sin esto, una ficha con muchos problemas empujaba el espectrograma a la
-    página siguiente y lo dejaba suelto arriba, separado de su título."""
+    Without this, a song page with many issues pushed the spectrogram onto the
+    next page and left it loose at the top, separated from its heading."""
     if imagen is None:
         return None
     deseado = min(imagen.drawHeight, ALTO_IMG_MAX_MM * mm)
@@ -325,7 +326,7 @@ def _ajustar_imagen(imagen, disponible):
 
 
 def _ficha_cancion(indice, total, res, est, temporal):
-    """Página de una canción."""
+    """Page for one song."""
     elemento = [Paragraph(f"{indice} of {total} &nbsp;·&nbsp; {res.get('archivo', '?')}",
                           est["cancion"]),
                 _insignia(res, est),
@@ -347,9 +348,9 @@ def _ficha_cancion(indice, total, res, est, temporal):
         elemento.append(Paragraph("No issues detected.", est["normal"]))
     elemento.append(Spacer(1, 4 * mm))
 
-    # La imagen se mide y se ajusta para que el título y el espectrograma queden
-    # siempre juntos en la misma página. KeepTogether es la red de seguridad para
-    # el caso extremo (una lista de problemas que no deja sitio ni al mínimo).
+    # The image is measured and adjusted so that the heading and the spectrogram
+    # always stay together on the same page. KeepTogether is the safety net for
+    # the extreme case (an issue list that leaves no room even for the minimum).
     titulo_espectro = Paragraph("Spectrogram", est["seccion"])
     imagen = _ajustar_imagen(_imagen_espectrograma(res, temporal)[0],
                              ALTO_MARCO_MM * mm - _alto_de(elemento + [titulo_espectro])
@@ -444,7 +445,7 @@ def _tabla_final(resultados, est):
 
 
 def _pie_de_pagina(canvas, doc, album, contador):
-    """Pie con el nombre del álbum y el número de página."""
+    """Footer with the album name and the page number."""
     contador["paginas"] = max(contador["paginas"], canvas.getPageNumber())
     canvas.saveState()
     canvas.setStrokeColor(colors.HexColor("#DDDDDD"))
@@ -457,12 +458,12 @@ def _pie_de_pagina(canvas, doc, album, contador):
     canvas.restoreState()
 
 
-# ─── API PÚBLICA ─────────────────────────────────────────────────────────────
+# ─── PUBLIC API ──────────────────────────────────────────────────────────────
 
 def generar(ruta_analizada, resultados, destino=None, modo=None):
-    """Escribe el informe PDF. NUNCA lanza.
+    """Writes the PDF report. NEVER raises.
 
-    Devuelve {"ok": bool, "ruta": str|None, "error": str|None, "paginas": int}.
+    Returns {"ok": bool, "ruta": str|None, "error": str|None, "paginas": int}.
     """
     if not REPORTLAB_OK:
         return {"ok": False, "ruta": None, "paginas": 0,
@@ -476,7 +477,7 @@ def generar(ruta_analizada, resultados, destino=None, modo=None):
     contador = {"paginas": 0}
     temporal = None
     try:
-        # Las imágenes recomprimidas viven aquí y se borran al terminar el build.
+        # The recompressed images live here and are deleted when the build ends.
         temporal = tempfile.mkdtemp(prefix="flac_verifier_report_")
         documento = SimpleDocTemplate(
             destino, pagesize=A4,

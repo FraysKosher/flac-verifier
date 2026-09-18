@@ -1,18 +1,18 @@
-"""Automatiza la construcción del ejecutable de FLAC VERIFIER.
+"""Automates the build of the FLAC VERIFIER executable.
 
-    python build.py                # limpia, comprueba PyInstaller y compila
-    python build.py --no-clean  # reutiliza build/ (compilación incremental)
+    python build.py                # clean, check PyInstaller and build
+    python build.py --no-clean  # reuse build/ (incremental build)
 
-Qué hace, en orden:
-  1. Comprueba la versión de Python y que PyInstaller esté disponible (lo instala
-     si falta).
-  2. Borra build/ y dist/ para que no se mezclen restos de compilaciones previas.
-  3. Compila con flac_verifier.spec (modo carpeta, dos ejecutables).
-  4. Verifica el resultado: que existan los .exe, su tamaño, y que respondan a
-     `--version` (sin abrir ninguna ventana).
+What it does, in order:
+  1. Checks the Python version and that PyInstaller is available (it installs it
+     if missing).
+  2. Removes build/ and dist/ so that leftovers from previous builds do not mix in.
+  3. Builds with flac_verifier.spec (folder mode, two executables).
+  4. Verifies the result: that the .exe files exist, their size, and that they
+     respond to `--version` (without opening any window).
 
-No requiere permisos de administrador ni toca nada fuera de esta carpeta (salvo
-la instalación de PyInstaller, si falta).
+It requires no administrator rights and touches nothing outside this folder
+(except the PyInstaller installation, if missing).
 """
 from __future__ import annotations
 
@@ -34,11 +34,11 @@ PYTHON_MINIMO = (3, 8)
 
 
 def _utf8() -> None:
-    """UTF-8 en la salida: en Windows, con la salida redirigida a un archivo o
-    tubería, cp1252 no puede con los marcas ✓/✗ y el script moriría él solo.
+    """UTF-8 on the output: on Windows, with the output redirected to a file or a
+    pipe, cp1252 cannot cope with the ✓/✗ marks and the script would die on its own.
 
-    Además se activa el vaciado por línea: con la salida por una tubería Python
-    la retiene en bloques y no se vería avanzar la compilación hasta el final.
+    Line flushing is also enabled: with the output through a pipe Python holds it
+    back in blocks and the build would not be seen advancing until the end.
     """
     for nombre in ("stdout", "stderr"):
         flujo = getattr(sys, nombre, None)
@@ -108,9 +108,9 @@ def verificar() -> None:
         print(f"  ✓ {os.path.basename(ruta):20s} {os.path.getsize(ruta) / 1e6:6.1f} MB "
               f"({etiqueta})")
 
-    # Que respondan sin abrir ninguna ventana. El motor escribe la versión en
-    # stdout; el de ventana no tiene consola, así que ahí basta con el código de
-    # salida (que no reviente).
+    # That they respond without opening any window. The engine writes the version
+    # to stdout; the windowed one has no console, so there the exit code is enough
+    # (that it does not blow up).
     for ruta in (EXE_GUI, EXE_MOTOR):
         proceso = subprocess.run([ruta, "--version"], capture_output=True, text=True,
                                  timeout=180,

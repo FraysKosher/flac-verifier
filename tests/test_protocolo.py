@@ -1,8 +1,8 @@
-"""Protocolo JSON del motor: una línea por evento, siempre válida.
+"""Engine JSON protocol: one line per event, always valid.
 
-Cubre los fallos reproducidos en la auditoría:
-  - una excepción en un archivo interrumpía el lote y NUNCA se emitía 'fin'.
-  - separacion_stereo = NaN producía JSON inválido que JSON.parse rechaza.
+Covers the failures reproduced in the audit:
+  - an exception on one file interrupted the batch and 'fin' was NEVER emitted.
+  - separacion_stereo = NaN produced invalid JSON that JSON.parse rejects.
 """
 import json
 import math
@@ -30,16 +30,16 @@ class TestProtocolo(unittest.TestCase):
         p, eventos, crudas = fx.resultados(self.fx.dir)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(eventos[0]["tipo"], "inicio")
-        self.assertEqual(eventos[-1]["tipo"], "fin")        # antes se perdía
+        self.assertEqual(eventos[-1]["tipo"], "fin")        # before, it was lost
         resultados = [e for e in eventos if e["tipo"] == "resultado"]
         self.assertEqual(len(resultados), eventos[0]["total"])
         self.assertEqual(eventos[0]["total"], len(crudas) - 2)
-        # todos los índices presentes y correlativos
+        # all indices present and consecutive
         self.assertEqual([r["indice"] for r in resultados],
                          list(range(1, len(resultados) + 1)))
 
     def test_todas_las_lineas_son_json_estricto(self):
-        """JSON.parse de JavaScript rechaza literales NaN/Infinity."""
+        """JavaScript's JSON.parse rejects the literals NaN/Infinity."""
         _, _, crudas = fx.resultados(self.fx.dir)
         for linea in crudas:
             with self.subTest(linea=linea[:70]):
@@ -48,10 +48,10 @@ class TestProtocolo(unittest.TestCase):
                 self.assertNotIn("Infinity", linea)
 
     def test_archivo_32k_estereo_no_produce_nan(self):
-        """Nyquist 16 kHz -> máscaras de banda alta vacías (origen del NaN)."""
+        """Nyquist 16 kHz -> empty high-band masks (the origin of the NaN)."""
         res = motor.analizar_archivo_datos(self.fx["estereo32k"], "center", None, False)
         esp = res["esp"]
-        self.assertIsNone(esp["separacion_stereo"])       # antes: nan
+        self.assertIsNone(esp["separacion_stereo"])       # before: nan
         self.assertEqual(esp["ratio"], 0.0)
         for clave, valor in esp.items():
             if isinstance(valor, float):

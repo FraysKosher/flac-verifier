@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How the verdict is decided
+    url: https://github.com/FraysKosher/flac-verifier/blob/main/README.md#how-the-verdict-is-decided
+    about: The scoring model, the thresholds, and why some cases are deliberately inconclusive.
+  - name: Known limits
+    url: https://github.com/FraysKosher/flac-verifier/blob/main/README.md#known-limits
+    about: Read this before reporting a verdict as a bug — several documented limits are deliberate.
+  - name: Two designs for the same problem
+    url: https://github.com/FraysKosher/flac-verifier/blob/main/COMPARISON.md
+    about: How this project differs from other FLAC authenticity checkers, and when a library or CLI fits better.

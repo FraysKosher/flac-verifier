@@ -1,13 +1,13 @@
-"""Genera los assets del logo de FLAC VERIFIER a partir del diseño del splash.
+"""Generates the FLAC VERIFIER logo assets from the splash design.
 
-El diseño NO se inventa aquí: `splashscreen.html` define la identidad (fondo
-#0f0f0d, cinco barras blancas de 8 px con radio 3 y el check teal #4f98a3) y este
-script lo reproduce en unidades para poder rasterizarlo en los tamaños que
-necesita la aplicación. Todas las proporciones salen de ese archivo.
+The design is NOT invented here: `splashscreen.html` defines the identity (background
+#0f0f0d, five white bars of 8 px with radius 3 and the teal check #4f98a3) and this
+script reproduces it in units so that it can be rasterised at the sizes the
+application needs. All the proportions come from that file.
 
-    python Logo/generar_logo.py        # reescribe los assets de esta carpeta
+    python Logo/generar_logo.py        # rewrites the assets of this folder
 
-Solo necesita Pillow (ya viene con matplotlib/reportlab).
+It only needs Pillow (it already comes with matplotlib/reportlab).
 """
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ from PIL import Image, ImageDraw
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 
-# ─── El diseño, en las unidades del splash ───────────────────────────────────
-FONDO   = "#0f0f0d"      # fondo del splash
+# ─── The design, in the units of the splash ──────────────────────────────────
+FONDO   = "#0f0f0d"      # splash background
 BARRA   = "#ffffff"      # .bar { background: #ffffff }
-TEAL    = "#4f98a3"      # .subtitle y el check
+TEAL    = "#4f98a3"      # .subtitle and the check
 ALTURAS = (28, 44, 60, 36, 52)   # .bar:nth-child(n) { height: ... }
 ANCHO_BARRA = 8          # .bar { width: 8px }
 HUECO       = 5          # .bars { gap: 5px }
 RADIO_BARRA = 3          # .bar { border-radius: 3px 3px 0 0 }
-ALTO_TOTAL  = 60         # la barra más alta
-# .check { right: -4px; bottom: -4px } con un SVG de 24x18 y trazo 3
+ALTO_TOTAL  = 60         # the tallest bar
+# .check { right: -4px; bottom: -4px } with a 24x18 SVG and a stroke of 3
 CHECK_PUNTOS = ((2, 10), (8, 16), (22, 2))
 CHECK_CAJA   = (24, 18)
 CHECK_SOBRESALE = 4
@@ -39,14 +39,14 @@ ANCHO_CON_CHECK = ANCHO_UNIDADES + CHECK_SOBRESALE                          # 64
 
 def dibujar_marca(imagen: Image.Image, x: float, y: float, alto: float,
                   barras: bool = True, check: bool = True) -> None:
-    """Dibuja barras y check dentro de un cuadrado de lado `alto` en (x, y)."""
+    """Draws the bars and the check inside a square of side (alto) at (x, y)."""
     escala = alto / ALTO_UNIDADES
     lapiz = ImageDraw.Draw(imagen)
 
-    def px(u: float) -> float:                       # unidades -> píxeles
+    def px(u: float) -> float:                       # units -> pixels
         return u * escala
 
-    base = y + px(ALTO_TOTAL)                        # las barras se apoyan abajo
+    base = y + px(ALTO_TOTAL)                        # the bars rest on the bottom
     if barras:
         for indice, altura in enumerate(ALTURAS):
             izquierda = x + px(indice * (ANCHO_BARRA + HUECO))
@@ -57,20 +57,20 @@ def dibujar_marca(imagen: Image.Image, x: float, y: float, alto: float,
                 radius=max(1, px(RADIO_BARRA)), fill=BARRA, corners=(True, True, False, False))
 
     if check:
-        # el check vive en su propia caja y sobresale por la derecha y por abajo
+        # the check lives in its own box and sticks out to the right and downwards
         caja_x = x + px(ANCHO_UNIDADES + CHECK_SOBRESALE - CHECK_CAJA[0])
         caja_y = base + px(CHECK_SOBRESALE - CHECK_CAJA[1])
         puntos = [(caja_x + px(px_x), caja_y + px(px_y)) for px_x, px_y in CHECK_PUNTOS]
         grosor = max(1, round(px(TRAZO_CHECK)))
         lapiz.line(puntos, fill=TEAL, width=grosor, joint="curve")
-        radio = grosor / 2                          # extremos redondeados
+        radio = grosor / 2                          # rounded ends
         for punto in (puntos[0], puntos[-1]):
             lapiz.ellipse([punto[0] - radio, punto[1] - radio,
                            punto[0] + radio, punto[1] + radio], fill=TEAL)
 
 
 def marca(lado: int, fondo: str | None, margen: float = 0.16) -> Image.Image:
-    """Marca cuadrada. Con `fondo` se dibuja el tile redondeado del icono."""
+    """Square mark. With `fondo` the rounded tile of the icon is drawn."""
     imagen = Image.new("RGBA", (lado, lado), (0, 0, 0, 0))
     if fondo:
         lapiz = ImageDraw.Draw(imagen)
@@ -82,7 +82,7 @@ def marca(lado: int, fondo: str | None, margen: float = 0.16) -> Image.Image:
 
 
 def svg() -> str:
-    """Versión vectorial con la misma geometría, para GitHub y la web."""
+    """Vector version with the same geometry, for GitHub and the web."""
     radio = RADIO_BARRA
     partes = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{ANCHO_CON_CHECK}" '
@@ -116,25 +116,25 @@ def main() -> None:
     transparente.save(ruta)
     generados.append(ruta)
 
-    # Versión pequeña para iconphoto (Tk lee PNG, pero no conviene darle 1024 px)
+    # Small version for iconphoto (Tk reads PNG, but it is not advisable to hand it 1024 px)
     ruta = os.path.join(AQUI, "logo_flac_verifier_128.png")
     marca(128, FONDO).save(ruta)
     generados.append(ruta)
 
-    # Icono multi-resolución para la ventana y para el futuro .exe
+    # Multi-resolution icon for the window and for the future .exe
     ruta = os.path.join(AQUI, "icono_app.ico")
     marca(256, FONDO).save(ruta, format="ICO",
                            sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
                                   (64, 64), (128, 128), (256, 256)])
     generados.append(ruta)
 
-    # Versión vectorial, para la web y para el README de GitHub
+    # Vector version, for the web and for the GitHub README
     ruta = os.path.join(AQUI, "logo_flac_verifier.svg")
     with open(ruta, "w", encoding="utf-8") as f:
         f.write(svg())
     generados.append(ruta)
 
-    print("Assets del logo generados a partir del diseño del splash:")
+    print("Logo assets generated from the splash design:")
     for ruta in generados:
         print(f"  {os.path.basename(ruta):38s} {os.path.getsize(ruta) / 1024:8.1f} KB")
 

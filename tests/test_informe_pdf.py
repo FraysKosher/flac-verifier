@@ -1,9 +1,8 @@
-"""Informe PDF por álbum.
+"""PDF report per album.
 
-Los tests no se conforman con que el archivo exista: descomprimen los streams
-del PDF y comprueban el TEXTO que contiene, el número de páginas y que todas las
-canciones aparezcan. PyMuPDF solo se usa para verificar; no es dependencia del
-proyecto.
+The tests are not satisfied with the file existing: they decompress the PDF
+streams and check the TEXT it contains, the number of pages and that every song
+appears. PyMuPDF is used only to verify; it is not a dependency of the project.
 """
 import base64
 import json
@@ -22,10 +21,10 @@ import informe_pdf as pdf
 
 
 def _desescapar(flujo):
-    """Resuelve los escapes de las cadenas PDF: \\(  \\)  \\\\  y \\ddd octal."""
+    """Resolves the escapes of PDF strings: \\(  \\)  \\\\  and octal \\ddd."""
     def reemplazo(encontrado):
         cuerpo = encontrado.group(1)
-        if cuerpo[:1] in b"01234567":          # solo 0-7 son dígitos octales
+        if cuerpo[:1] in b"01234567":          # only 0-7 are octal digits
             return bytes([int(cuerpo[:3], 8) & 0xFF])
         return cuerpo
 
@@ -33,14 +32,14 @@ def _desescapar(flujo):
 
 
 def _a_ascii85(crudo):
-    """Decodifica ASCII85 como lo hace ASCII85Decode de PDF (sin delimitadores)."""
+    """Decodes ASCII85 the way PDF's ASCII85Decode does (without delimiters)."""
     fin = crudo.find(b"~>")
     return base64.a85decode(crudo[:fin] if fin >= 0 else crudo, adobe=False,
                             ignorechars=b" \t\r\n\f\v")
 
 
 def _decodificar_stream(crudo, filtros):
-    """Aplica los filtros declarados en el objeto (reportlab usa ASCII85+Flate)."""
+    """Applies the filters declared in the object (reportlab uses ASCII85+Flate)."""
     datos = crudo
     if b"ASCII85Decode" in filtros:
         datos = _a_ascii85(datos)
@@ -58,7 +57,7 @@ def _decodificar_stream(crudo, filtros):
 
 
 def texto_del_pdf(ruta):
-    """Texto contenido en los streams del PDF, respetando sus filtros."""
+    """Text contained in the PDF streams, honouring their filters."""
     datos = open(ruta, "rb").read()
     partes = []
     for encontrado in re.finditer(rb"stream\r?\n", datos):
@@ -66,18 +65,18 @@ def texto_del_pdf(ruta):
         fin = datos.find(b"endstream", inicio)
         if fin < 0:
             continue
-        # el diccionario del objeto está justo antes de la palabra 'stream'
+        # the object dictionary is just before the word 'stream'
         cabecera = datos[max(0, encontrado.start() - 400) : encontrado.start()]
         filtros = b" ".join(re.findall(rb"/(ASCII85Decode|FlateDecode)", cabecera))
         try:
             partes.append(_decodificar_stream(datos[inicio:fin], filtros))
         except Exception:
-            continue                               # stream que no es de contenido
+            continue                               # a stream that is not content
     return _desescapar(b"".join(partes)).decode("latin-1", "replace")
 
 
 def paginas_del_pdf(ruta):
-    """Número de páginas, leído del árbol de páginas del PDF."""
+    """Number of pages, read from the PDF page tree."""
     datos = open(ruta, "rb").read()
     cuentas = re.findall(rb"/Count\s+(\d+)", datos)
     return max(int(c) for c in cuentas) if cuentas else 0
@@ -98,7 +97,7 @@ def analizar_album(carpeta, guardar_png=True):
             if nombre.lower().endswith(".flac")]
 
 
-@unittest.skipUnless(pdf.disponible(), "reportlab no instalado")
+@unittest.skipUnless(pdf.disponible(), "reportlab not installed")
 class TestInformePDF(unittest.TestCase):
 
     @classmethod
@@ -111,7 +110,7 @@ class TestInformePDF(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    # ── generación y ubicación ──────────────────────────────────────────────
+    # ── generation and location ─────────────────────────────────────────────
     def test_genera_el_informe_en_la_carpeta_del_album(self):
         informe = pdf.generar(self.album, analizar_album(self.album))
         self.assertTrue(informe["ok"], informe.get("error"))
@@ -119,7 +118,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertEqual(os.path.basename(informe["ruta"]), pdf.NOMBRE_INFORME)
         datos = open(informe["ruta"], "rb").read()
         self.assertTrue(datos.startswith(b"%PDF"))
-        self.assertGreater(len(datos), 20 * 1024, "el PDF es sospechosamente pequeño")
+        self.assertGreater(len(datos), 20 * 1024, "the PDF is suspiciously small")
 
     def test_un_solo_archivo_guarda_el_pdf_junto_a_el(self):
         ruta = self.fx["ok16"]
@@ -132,7 +131,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertTrue(os.path.exists(esperado))
         os.remove(esperado)
 
-    # ── estructura del documento ────────────────────────────────────────────
+    # ── document structure ──────────────────────────────────────────────────
     def test_una_pagina_por_cancion_mas_portada_y_resumen(self):
         resultados = analizar_album(self.album)
         informe = pdf.generar(self.album, resultados)
@@ -144,7 +143,7 @@ class TestInformePDF(unittest.TestCase):
         resultados = analizar_album(self.album)
         informe = pdf.generar(self.album, resultados)
         texto = texto_del_pdf(informe["ruta"])
-        self.assertIn("FLAC verification report", texto)     # portada, con acento
+        self.assertIn("FLAC verification report", texto)     # cover page, with an accent
         self.assertIn("Executive summary", texto)
         self.assertIn("Overall summary", texto)
         self.assertIn("Analysis date", texto)
@@ -159,7 +158,7 @@ class TestInformePDF(unittest.TestCase):
     def test_las_canciones_con_error_aparecen_marcadas(self):
         resultados = analizar_album(self.album)
         self.assertTrue([r for r in resultados if r.get("error")],
-                        "el fixture corrupto debería fallar")
+                        "the corrupt fixture should fail")
         informe = pdf.generar(self.album, resultados)
         texto = texto_del_pdf(informe["ruta"])
         self.assertIn(pdf.ESTILO_ERROR[0], texto)
@@ -173,10 +172,10 @@ class TestInformePDF(unittest.TestCase):
                          "Spectral cut-off", "High/mid ratio", "Nyquist"):
             with self.subTest(etiqueta=etiqueta):
                 self.assertIn(etiqueta, texto)
-        self.assertIn("verified (match)", texto)            # estado del MD5
+        self.assertIn("verified (match)", texto)            # MD5 state
         self.assertIn("Detected issues", texto)
 
-    # ── espectrogramas ──────────────────────────────────────────────────────
+    # ── spectrograms ────────────────────────────────────────────────────────
     def test_el_informe_embebe_los_espectrogramas(self):
         resultados = analizar_album(self.album, guardar_png=True)
         con_imagen = [r for r in resultados if (r.get("esp") or {}).get("espectrograma")]
@@ -185,17 +184,17 @@ class TestInformePDF(unittest.TestCase):
         self.assertTrue(informe["ok"], informe.get("error"))
         texto = texto_del_pdf(informe["ruta"])
         self.assertIn("Spectrogram", texto)
-        # el aviso de "sin imagen" solo puede salir en las fichas sin PNG
+        # the "no image" notice can only appear in the records with no PNG
         sin_png = sum(1 for r in resultados if not (r.get("esp") or {}).get("espectrograma"))
         self.assertEqual(texto.count("no image"), sin_png)
 
     def test_las_imagenes_no_hinchan_el_pdf(self):
-        """Los PNG se recomprimen: el PDF pesa bastante menos que sus originales."""
+        """The PNGs are recompressed: the PDF weighs noticeably less than its originals."""
         try:
             import PIL                                     # noqa: F401
             from PIL import Image as _
         except ImportError:
-            self.skipTest("Pillow no instalado: se embebe el PNG original")
+            self.skipTest("Pillow not installed: the original PNG is embedded")
         resultados = analizar_album(self.album, guardar_png=True)
         originales = [r["esp"]["espectrograma"] for r in resultados
                       if (r.get("esp") or {}).get("espectrograma")]
@@ -205,11 +204,11 @@ class TestInformePDF(unittest.TestCase):
         self.assertTrue(informe["ok"], informe.get("error"))
         peso_pdf = os.path.getsize(informe["ruta"])
         self.assertLess(peso_pdf, peso_png * 0.6,
-                        f"el PDF ({peso_pdf/1024:.0f} KB) no aprovecha la recompresión "
-                        f"de los PNG ({peso_png/1024:.0f} KB)")
+                        f"the PDF ({peso_pdf/1024:.0f} KB) does not take advantage of the "
+                        f"recompression of the PNGs ({peso_png/1024:.0f} KB)")
 
     def test_sin_espectrogramas_el_informe_se_genera_igual(self):
-        """Sin PNG (por ejemplo sin matplotlib) el PDF sale igual, con el aviso."""
+        """Without PNGs (for example without matplotlib) the PDF still comes out, with the notice."""
         resultados = analizar_album(self.album, guardar_png=False)
         informe = pdf.generar(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
@@ -231,27 +230,27 @@ class TestInformePDF(unittest.TestCase):
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertIn("is no longer available", texto_del_pdf(informe["ruta"]))
 
-    # ── maqueta: la ficha no puede desbordar su página ──────────────────────
+    # ── layout: the record must not overflow its page ───────────────────────
     def _resultado_con_problemas(self, cuantos):
-        """Resultado real con una lista de problemas largos."""
+        """A real result with a list of long issues."""
         base = [r for r in analizar_album(self.album, guardar_png=True)
                 if (r.get("esp") or {}).get("espectrograma")][0]
         copia = dict(base)
         copia["esp"] = dict(base["esp"])
         copia["problemas"] = [
-            f"{i + 1}) declara 24 bits a 44.1 kHz pero su banda alta está cortada a "
-            f"16.4 kHz: la resolución declarada no está respaldada por el contenido"
+            f"{i + 1}) declares 24 bits at 44.1 kHz but its high band is cut at "
+            f"16.4 kHz: the declared resolution is not backed by the content"
             for i in range(cuantos)]
         return copia
 
     def test_una_ficha_con_muchos_problemas_no_desborda_la_pagina(self):
-        """Antes, 12 problemas empujaban el espectrograma a la página siguiente
-        (la ficha pasaba de 1 a 2 páginas). La imagen se encoge para caber."""
+        """Before, 12 issues pushed the spectrogram onto the next page
+        (the record went from 1 page to 2). The image shrinks so that it fits."""
         limpio = self.fx.subcarpeta("maqueta_larga", ("ok16",))
         destino = os.path.join(limpio, "informe_largo.pdf")
         informe = pdf.generar(limpio, [self._resultado_con_problemas(12)], destino=destino)
         self.assertTrue(informe["ok"], informe.get("error"))
-        # portada + 1 canción + resumen: si la ficha desbordara serían 4
+        # cover + 1 song + summary: if the record overflowed it would be 4
         self.assertEqual(informe["paginas"], 3)
         self.assertEqual(paginas_del_pdf(destino), 3)
 
@@ -261,10 +260,10 @@ class TestInformePDF(unittest.TestCase):
         self.assertEqual(informe["paginas"], len(resultados) + 2)
         self.assertTrue(os.path.exists(informe["ruta"]))
 
-    @unittest.skipUnless(_fitz_disponible(), "PyMuPDF no instalado")
+    @unittest.skipUnless(_fitz_disponible(), "PyMuPDF not installed")
     def test_el_titulo_y_la_imagen_nunca_se_separan_de_pagina(self):
-        """El síntoma que se corrigió: imagen suelta al principio de la página
-        siguiente, lejos de su título."""
+        """The symptom that was fixed: a loose image at the top of the next page,
+        far from its title."""
         import fitz
         limpio = self.fx.subcarpeta("maqueta_separa", ("ok16",))
         for cuantos in (2, 6, 12, 20):
@@ -281,7 +280,7 @@ class TestInformePDF(unittest.TestCase):
                                   if any(p.get_image_rects(im[0])
                                          for im in p.get_images(full=True))]
                     self.assertEqual(con_titulo, con_imagen,
-                                     "el título y su imagen acabaron en páginas distintas")
+                                     "the title and its image ended up on different pages")
                     for i, pagina in enumerate(documento, start=1):
                         for im in pagina.get_images(full=True):
                             for rect in pagina.get_image_rects(im[0]):
@@ -291,7 +290,7 @@ class TestInformePDF(unittest.TestCase):
                     documento.close()
                 os.remove(destino)
 
-    # ── manejo de errores: nunca aborta ─────────────────────────────────────
+    # ── error handling: it never aborts ─────────────────────────────────────
     def test_sin_reportlab_avisa_sin_generar_nada(self):
         limpio = self.fx.subcarpeta("album_sin_reportlab", ("ok16",))
         original = pdf.REPORTLAB_OK
@@ -307,7 +306,7 @@ class TestInformePDF(unittest.TestCase):
 
     def test_destino_imposible_avisa_sin_lanzar(self):
         resultados = analizar_album(self.album, guardar_png=False)
-        destino = os.path.join(self.fx["ok16"], pdf.NOMBRE_INFORME)   # un archivo
+        destino = os.path.join(self.fx["ok16"], pdf.NOMBRE_INFORME)   # a file
         informe = pdf.generar(self.album, resultados, destino=destino)
         self.assertFalse(informe["ok"])
         self.assertIsNone(informe["ruta"])
@@ -319,9 +318,9 @@ class TestInformePDF(unittest.TestCase):
         self.assertIn("there are no results", informe["error"].lower())
 
     def test_un_fallo_del_generador_no_aborta_el_analisis(self):
-        """El motor convierte cualquier problema del informe en un aviso."""
+        """The engine turns any issue in the report into a notice."""
         sonda = self.fx.subcarpeta("album_roto", ("ok16",))
-        # el destino del informe es un DIRECTORIO: escribir dentro falla seguro
+        # the report destination is a DIRECTORY: writing into it is bound to fail
         os.makedirs(os.path.join(sonda, pdf.NOMBRE_INFORME), exist_ok=True)
         entorno = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
         p = subprocess.run([sys.executable, fx.CLI], input=f"2\nn\ny\n{sonda}\nn\n",
@@ -330,9 +329,9 @@ class TestInformePDF(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-1500:])
         self.assertNotIn("Traceback", p.stderr or "")
         self.assertIn("Could not generate the PDF report", p.stdout)
-        self.assertIn("Resumen: 1", p.stdout.replace("SUMMARY:", "Resumen:"))
+        self.assertIn("Summary: 1", p.stdout.replace("SUMMARY:", "Summary:"))
 
-    # ── integración con los CLI ─────────────────────────────────────────────
+    # ── integration with the CLIs ───────────────────────────────────────────
     def test_el_motor_emite_el_evento_informe_antes_de_fin(self):
         sonda = self.fx.subcarpeta("album_cli", ("ok16", "corte_16k"))
         p = fx.correr_motor(sonda, extra=("--pdf",))
@@ -345,8 +344,8 @@ class TestInformePDF(unittest.TestCase):
         evento = eventos[tipos.index("informe")]
         self.assertEqual(os.path.dirname(evento["ruta"]), os.path.abspath(sonda))
         self.assertTrue(os.path.exists(evento["ruta"]))
-        self.assertEqual(evento["paginas"], 4)              # portada + 2 + resumen
-        # --pdf genera los espectrogramas aunque no se pida --png
+        self.assertEqual(evento["paginas"], 4)              # cover + 2 + summary
+        # --pdf generates the spectrograms even when --png is not requested
         for resultado in (e for e in eventos if e["tipo"] == "resultado"):
             if not resultado.get("error"):
                 self.assertIsNotNone(resultado["esp"].get("espectrograma"))

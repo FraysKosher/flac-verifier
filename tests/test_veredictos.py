@@ -1,11 +1,12 @@
-"""Bloques 2, 4 y 5: coherencia del veredicto, bit-depth honesto y corte con
-distancia al Nyquist.
+"""Blocks 2, 4 and 5: verdict coherence, honest bit depth and cut-off with
+distance to Nyquist.
 
-Criterios de aceptación (fixtures de _audit_flac\\realista):
-  - un MP3 de 320 kbps reempaquetado en 24 bits NO puede ser "PROBABLEMENTE LOSSLESS";
-  - un master de CD con filtro anti-alias a 20 kHz NO puede ser acusado de transcodificación;
-  - el silencio digital no recibe veredicto;
-  - la utilización de los LSB nunca premia (solo penaliza).
+Acceptance criteria (fixtures from _audit_flac\\realista):
+  - a 320 kbps MP3 repackaged into 24 bits must NOT be "PROBABLY LOSSLESS";
+  - a CD master with an anti-alias filter at 20 kHz must NOT be accused of
+    transcoding;
+  - digital silence receives no verdict;
+  - LSB utilisation never rewards (it only penalises).
 """
 import os
 import shutil
@@ -45,7 +46,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn("error", res, res.get("error"))
         return res
 
-    # ── Bloque 2: guarda de silencio ────────────────────────────────────────
+    # ── Block 2: silence guard ──────────────────────────────────────────────
     def test_el_silencio_digital_no_recibe_veredicto(self):
         res = motor.analizar_archivo_datos(self.fx["silence"], "center", None, False)
         self.assertIn("error", res)
@@ -53,21 +54,21 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn("veredicto", res)
         self.assertNotIn("score", res)
 
-    # ── Bloque 5: master de CD con LPF a 20 kHz ─────────────────────────────
+    # ── Block 5: CD master with a 20 kHz LPF ────────────────────────────────
     def test_master_de_cd_con_lpf_no_es_acusado_de_transcodificacion(self):
         res = self.analizar("master_cd_20k")
         esp = res["esp"]
-        # El escalón se detecta como hecho...
+        # The step is detected as a fact...
         self.assertTrue(esp["corte_detectado"])
-        # ...pero está a menos del 12% del Nyquist: zona de filtro anti-alias.
+        # ...but it is at less than 12% of Nyquist: the anti-alias filter zone.
         self.assertGreaterEqual(esp["distancia_nyquist"], 0.88)
         self.assertEqual(esp["clase_corte"], "near_nyquist_cutoff")
-        self.assertFalse(esp["corte_artificial"])          # ya no es una acusación
-        # Ningún mensaje puede acusar de transcodificación.
+        self.assertFalse(esp["corte_artificial"])          # it is no longer an accusation
+        # No message may accuse it of transcoding.
         texto = " ".join(res["problemas"]).lower()
-        for acusacion in ("codec signature", "codec signature", "transcodific",
+        for acusacion in ("codec signature", "codec signature", "transcode",
                           "lossy", "artificial cut-off"):
-            self.assertNotIn(acusacion, texto, f"acusación indebida: {acusacion}")
+            self.assertNotIn(acusacion, texto, f"unwarranted accusation: {acusacion}")
         self.assertNotIn(res["veredicto"], ("PROBABLE UPSCALE",))
 
     def test_corte_muy_por_debajo_del_nyquist_si_se_acusa(self):
@@ -80,16 +81,16 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
 
     def test_la_frecuencia_del_corte_usa_redondeo_real(self):
-        """Antes se imprimía con división entera: 19 821 Hz -> '19.0 kHz'."""
+        """It used to be printed with integer division: 19 821 Hz -> '19.0 kHz'."""
         res = self.analizar("corte_16k")
         fc = res["esp"]["frecuencia_corte"]
         esperado = f"{fc/1000:.1f} kHz"
         self.assertTrue(any(esperado in p for p in res["problemas"]),
-                        f"ningún problema menciona {esperado}")
+                        f"no problem mentions {esperado}")
 
     def test_un_corte_lejano_bloquea_el_veredicto_maximo(self):
-        """Con el resto de la evidencia perfecta, un defecto confirmado no puede
-        convivir con 'LOSSLESS GENUINO'."""
+        """With all the rest of the evidence perfect, a confirmed defect cannot
+        coexist with 'GENUINE LOSSLESS'."""
         esp = dict(ESP_PERFECTO, clase_corte="far_cutoff", corte_detectado=True,
                    frecuencia_corte=16000, distancia_nyquist=0.73,
                    corte_artificial=True)
@@ -98,11 +99,12 @@ class TestVeredicto(unittest.TestCase):
         self.assertTrue(any("artificial cut-off" in p for p in problemas))
 
     def test_un_techo_cerca_del_nyquist_no_regala_puntos(self):
-        """El techo a 44.1 kHz ya no puntúa: es idéntico en un master y en un 320 kbps.
+        """The ceiling at 44.1 kHz no longer scores: it is identical in a master and
+        in a 320 kbps file.
 
-        Invariante: un corte ambiguo (pegado al Nyquist) cuesta su bloque entero,
-        así que con el resto de la evidencia perfecta NO alcanza el veredicto
-        máximo — pero tampoco se acusa de nada."""
+        Invariant: an ambiguous cut-off (hugging Nyquist) costs its whole block,
+        so with all the rest of the evidence perfect it does NOT reach the maximum
+        verdict — but neither is anything accused."""
         cerca = dict(ESP_PERFECTO, techo_hz=20000, techo_rel_nyquist=0.907,
                      clase_corte="near_nyquist_cutoff", corte_detectado=True,
                      frecuencia_corte=19800, distancia_nyquist=0.898,
@@ -113,20 +115,20 @@ class TestVeredicto(unittest.TestCase):
         s_cerca, v_cerca, probs_cerca = motor.calcular_score(META_CD, cerca, SIN_BITDEPTH)
         s_sin, v_sin, _               = motor.calcular_score(META_CD, sin_corte, SIN_BITDEPTH)
 
-        # el ambiguo no puede llegar al veredicto máximo...
+        # the ambiguous one cannot reach the maximum verdict...
         self.assertEqual(v_sin, "GENUINE LOSSLESS")
         self.assertNotEqual(v_cerca, "GENUINE LOSSLESS")
         self.assertLess(s_cerca, s_sin)
-        # ...y no se acusa de nada
+        # ...and nothing is accused
         texto = " ".join(probs_cerca).lower()
         self.assertNotIn("artificial cut-off", texto)
         self.assertNotIn("codec signature", texto)
         self.assertNotIn("codec signature", texto)
         self.assertTrue(any("inconclusive" in p for p in probs_cerca))
 
-    # ── Bloque 4: el bit-depth solo penaliza ────────────────────────────────
+    # ── Block 4: bit depth only penalises ───────────────────────────────────
     def test_la_utilizacion_de_lsb_no_premia(self):
-        """bdi 'activos' debe puntuar EXACTAMENTE igual que bdi no aplicable."""
+        """'active' bdi must score EXACTLY the same as bdi not applicable."""
         activos = {"aplica": True, "lsbs": "active", "resolucion_efectiva_bits": 24,
                    "fraccion_16bit_grid": 9.8, "conclusion": "..."}
         s_sin, v_sin, _ = motor.calcular_score(META_CD, ESP_PERFECTO, SIN_BITDEPTH)
@@ -149,26 +151,26 @@ class TestVeredicto(unittest.TestCase):
         self.assertEqual(bdi["lsbs"], "empty")
         self.assertEqual(bdi["resolucion_efectiva_bits"], 16)
         self.assertAlmostEqual(bdi["fraccion_16bit_grid"], 100.0, delta=1.0)
-        # Y ya no se etiqueta como genuino
-        self.assertNotIn("genuino_24", bdi)
-        self.assertNotIn("genuino", bdi["conclusion"].lower())
+        # And it is no longer labelled as genuine
+        self.assertNotIn("genuine_24", bdi)
+        self.assertNotIn("genuine", bdi["conclusion"].lower())
 
     def test_el_bit_depth_no_etiqueta_como_genuino_un_transcodigo(self):
-        """Un lossy en 24 bits llena los LSB: el test no puede confirmar nada."""
+        """A lossy file in 24 bits fills the LSB: the test cannot confirm anything."""
         activos = {"aplica": True, "lsbs": "active", "resolucion_efectiva_bits": 24,
                    "fraccion_16bit_grid": 9.8, "conclusion": "..."}
         res = motor.analizar_archivo_datos(self.fx["ok24"], "center", None, False)
         self.assertNotEqual(res["bdi"].get("lsbs"), "empty")
-        self.assertNotIn("genuino", res["bdi"]["conclusion"].lower())
+        self.assertNotIn("genuine", res["bdi"]["conclusion"].lower())
 
 
 class TestHiRes(unittest.TestCase):
-    """La banda alta de un hi-res NO se mide en proporción al Nyquist.
+    """The high band of a hi-res file is NOT measured in proportion to Nyquist.
 
-    A 96 kHz, el 70 % del Nyquist son 33.6 kHz, una frecuencia donde la música
-    acústica real no tiene energía: un master 96/24 con el roll-off analógico de
-    sus convertidores a 30 kHz tiene su techo en ~26 kHz y es legítimo. La
-    referencia correcta es el límite del CD (22.05 kHz).
+    At 96 kHz, 70 % of Nyquist is 33.6 kHz, a frequency where real acoustic music
+    has no energy: a 96/24 master with the analogue roll-off of its converters at
+    30 kHz has its ceiling at ~26 kHz and is legitimate. The correct reference is
+    the CD limit (22.05 kHz).
     """
 
     @classmethod
@@ -186,14 +188,14 @@ class TestHiRes(unittest.TestCase):
         return res
 
     def _cuenta(self, meta, techo, **extra):
-        """calcular_score con un espectro sintético del techo indicado."""
+        """calcular_score with a synthetic spectrum at the given ceiling."""
         nyquist = meta["sample_rate"] // 2
         esp = dict(ESP_PERFECTO, techo_hz=techo, techo_rel_nyquist=techo / nyquist,
                    **extra)
         return motor.calcular_score(meta, esp, SIN_BITDEPTH)
 
     def test_un_master_hires_con_rolloff_a_30_khz_no_se_penaliza(self):
-        """Caso real: Steven Wilson, 'The Raven that Refused to Sing' (96/24)."""
+        """Real case: Steven Wilson, 'The Raven that Refused to Sing' (96/24)."""
         res = self.analizar("hires96_rolloff30k")
         self.assertGreaterEqual(res["esp"]["techo_hz"], motor.LIMITE_CD_HZ)
         texto = " ".join(res["problemas"]).lower()
@@ -206,7 +208,7 @@ class TestHiRes(unittest.TestCase):
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
     def test_un_techo_de_25_khz_en_hires_no_se_penaliza(self):
-        """El caso concreto del informe: 25 kHz con 48 kHz de Nyquist."""
+        """The specific case in the report: 25 kHz with a 48 kHz Nyquist."""
         meta = {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2,
                 "duracion": 100.0, "md5": 1}
         score, veredicto, problemas = self._cuenta(meta, 25000)
@@ -217,9 +219,9 @@ class TestHiRes(unittest.TestCase):
         self.assertGreater(score, 0.80)
 
     def test_el_limite_es_el_del_cd_y_no_una_proporcion_del_nyquist(self):
-        """Justo por encima del límite del CD no hay penalización; justo por
-        debajo, sí. Con la regla anterior (70 % de 48 kHz = 33.6 kHz) ambos
-        casos se penalizaban."""
+        """Just above the CD limit there is no penalty; just below it, there is.
+        With the previous rule (70 % of 48 kHz = 33.6 kHz) both cases were
+        penalised."""
         meta = {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2,
                 "duracion": 100.0, "md5": 1}
         _, _, encima = self._cuenta(meta, motor.LIMITE_CD_HZ)
@@ -234,25 +236,25 @@ class TestHiRes(unittest.TestCase):
         self.assertTrue(any("not backed by" in p for p in res["problemas"]))
 
     def test_la_regla_de_cd_no_cambia(self):
-        """Por debajo de 48 kHz se sigue midiendo en proporción al Nyquist."""
+        """Below 48 kHz the measurement is still in proportion to Nyquist."""
         meta = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2,
                 "duracion": 100.0, "md5": 1}
-        # 0.907 del Nyquist: banda completa, sin penalización
+        # 0.907 of Nyquist: full band, no penalty
         _, _, alto = self._cuenta(meta, 20000)
         self.assertFalse([p for p in alto if "destroyed" in p])
-        # 0.635 del Nyquist: banda destruida
+        # 0.635 of Nyquist: destroyed band
         _, _, bajo = self._cuenta(meta, 14000)
         self.assertTrue([p for p in bajo if "destroyed" in p])
 
     def test_un_hires_sin_contenido_alto_sigue_penalizado(self):
-        """La corrección no abre la puerta a un upscale descarado."""
+        """The fix does not open the door to a blatant upscale."""
         res = self.analizar("upscale96")
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
 
 
-@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg no está en el PATH")
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is not on the PATH")
 class TestMP3Real(unittest.TestCase):
-    """Criterio de aceptación principal: un MP3 320k real subido a 24 bits."""
+    """Main acceptance criterion: a real 320k MP3 upsampled to 24 bits."""
 
     @classmethod
     def setUpClass(cls):

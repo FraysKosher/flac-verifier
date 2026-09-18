@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Un push nuevo sobre la misma rama cancela la ejecución anterior: los resultados
+# intermedios no aportan nada y así la cola no se llena.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 3.10 es la versión de referencia del proyecto; 3.12 comprueba que no
+        # hay dependencias de la versión en la que se escribió.
+        python: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # Los tests de la ventana necesitan Tk: en Ubuntu no viene con Python.
+      - name: Install Tk (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Show versions
+        run: |
+          python --version
+          python -c "import numpy, scipy, soundfile; print('numpy', numpy.__version__, '| scipy', scipy.__version__, '| soundfile', soundfile.__version__)"
+
+      # FLAC_VERIFIER_SIN_GUI solo en Linux: no hay servidor gráfico en el runner,
+      # y los tests de la ventana se saltan solos en lugar de fallar.
+      - name: Run the test suite
+        env:
+          FLAC_VERIFIER_SIN_GUI: ${{ runner.os == 'Linux' && '1' || '' }}
+        run: python -m unittest discover -s tests -v
+
+      # El recuento de tests es una promesa del README: si baja sin querer, esto lo
+      # deja escrito en el registro del trabajo.
+      - name: Sum up
+        shell: bash
+        run: |
+          echo "Suite finished on ${{ runner.os }} with Python ${{ matrix.python }}."
+          echo "Expected: 229 tests. Two are skipped when the platform cannot"
+          echo "create processes or when ffmpeg is not on the PATH."

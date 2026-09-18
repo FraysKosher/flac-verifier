@@ -1,13 +1,14 @@
-"""Bloque 8: caché, paralelización y renderizador rápido.
+"""Block 8: cache, parallelisation and the fast renderer.
 
-Lo que se fija aquí:
-  - la segunda pasada reaprovecha la caché y da EXACTAMENTE el mismo resultado;
-  - la caché se invalida si el archivo cambia (fecha, tamaño o MD5 del STREAMINFO),
-    si cambia el modo o si cambia la versión del motor;
-  - con espectrogramas, la caché solo vale si el PNG sigue ahí y es el correcto;
-  - el análisis en paralelo da lo mismo que el secuencial y conserva el orden;
-  - un entorno sin procesos degrada a secuencial en vez de fallar;
-  - el espectrograma se pinta con imshow (ráster) y no con pcolormesh(gouraud).
+What is pinned down here:
+  - the second pass reuses the cache and gives EXACTLY the same result;
+  - the cache is invalidated if the file changes (date, size or MD5 from
+    STREAMINFO), if the mode changes or if the engine version changes;
+  - with spectrograms, the cache only counts if the PNG is still there and is
+    the right one;
+  - the parallel analysis gives the same as the serial one and keeps the order;
+  - an environment with no processes falls back to serial instead of failing;
+  - the spectrogram is drawn with imshow (raster) and not with pcolormesh(gouraud).
 """
 import json
 import os
@@ -26,12 +27,12 @@ CAMPOS_VOLATILES = ("desde_cache", "tipo", "indice", "total")
 
 
 def comparable(resultado):
-    """El resultado sin los campos que dependen de la ejecución."""
+    """The result without the fields that depend on the run."""
     return {k: v for k, v in resultado.items() if k not in CAMPOS_VOLATILES}
 
 
 def eventos_final(salida):
-    """Último evento del protocolo."""
+    """Last event of the protocol."""
     return json.loads([l for l in salida.splitlines() if l.strip()][-1])
 
 
@@ -47,7 +48,7 @@ class TestCache(unittest.TestCase):
         cls.fx.cerrar()
 
     def copia(self, nombre, origen="ok16"):
-        """Una copia propia por test: la caché vive junto al archivo."""
+        """A copy of its own per test: the cache lives next to the file."""
         destino = os.path.join(self.fx.dir, f"cache_{nombre}.flac")
         shutil.copy(self.fx[origen], destino)
         return destino
@@ -79,29 +80,29 @@ class TestCache(unittest.TestCase):
         info = os.stat(ruta)
         os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
         otra = motor.analizar_archivo_datos(ruta, "center", None, False)
-        self.assertFalse(otra.get("desde_cache"), "la caché no se invalidó con otra fecha")
+        self.assertFalse(otra.get("desde_cache"), "the cache was not invalidated by a different date")
 
     def test_se_invalida_si_cambia_el_md5_aunque_coincidan_tamano_y_fecha(self):
-        """El caso duro: mismo tamaño y misma fecha, contenido distinto."""
+        """The hard case: same size and same date, different content."""
         ruta = self.copia("md5")
         primera = motor.analizar_archivo_datos(ruta, "center", None, False)
         self.assertEqual(primera["md5"]["estado"], "match")
         info = os.stat(ruta)
 
-        with open(ruta, "r+b") as f:            # falsea el MD5 del STREAMINFO
+        with open(ruta, "r+b") as f:            # fakes the STREAMINFO MD5
             f.seek(26)
             f.write(b"\x00" * 16)
-        os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns))   # misma fecha
+        os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns))   # same date
 
         segunda = motor.analizar_archivo_datos(ruta, "center", None, False)
-        self.assertFalse(segunda.get("desde_cache"), "la caché no miró el MD5")
+        self.assertFalse(segunda.get("desde_cache"), "the cache did not look at the MD5")
         self.assertEqual(segunda["md5"]["estado"], "absent")
 
     def test_se_invalida_si_cambia_la_version_del_motor(self):
         ruta = self.copia("version")
         motor.analizar_archivo_datos(ruta, "center", None, False)
         original = motor.VERSION_MOTOR
-        motor.VERSION_MOTOR = original + "-prueba"
+        motor.VERSION_MOTOR = original + "-test"
         try:
             otra = motor.analizar_archivo_datos(ruta, "center", None, False)
         finally:
@@ -113,7 +114,7 @@ class TestCache(unittest.TestCase):
         motor.analizar_archivo_datos(ruta, "center", None, False)
         otra = motor.analizar_archivo_datos(ruta, "full", None, False)
         self.assertFalse(otra.get("desde_cache"))
-        # y al repetir el modo original sí reaprovecha
+        # and repeating the original mode does reuse it
         self.assertTrue(motor.analizar_archivo_datos(ruta, "center", None, False)
                         .get("desde_cache"))
 
@@ -137,14 +138,14 @@ class TestCache(unittest.TestCase):
         self.assertTrue(segunda.get("desde_cache"))
         self.assertEqual(segunda["esp"]["espectrograma"], ruta_png)
         self.assertEqual(os.stat(ruta_png).st_mtime_ns, sello,
-                         "se volvió a dibujar el espectrograma en vez de reusarlo")
+                         "the spectrogram was drawn again instead of being reused")
 
     def test_si_falta_el_png_la_cache_no_vale_para_el_informe(self):
         ruta = self.copia("png_borrado")
         primera = motor.analizar_archivo_datos(ruta, "center", None, True)
         os.remove(primera["esp"]["espectrograma"])
         segunda = motor.analizar_archivo_datos(ruta, "center", None, True)
-        self.assertFalse(segunda.get("desde_cache"), "reusó una caché sin PNG")
+        self.assertFalse(segunda.get("desde_cache"), "it reused a cache entry with no PNG")
         self.assertTrue(os.path.exists(segunda["esp"]["espectrograma"]))
 
     def test_sin_png_no_se_reporta_una_ruta_generada_antes(self):
@@ -168,7 +169,7 @@ class TestParalelizacion(unittest.TestCase):
         cls.fx.cerrar()
 
     def _motor(self, *extra):
-        # Sin caché: se quiere comparar análisis de verdad, no lecturas de JSON.
+        # No cache: the point is to compare real analyses, not JSON reads.
         return fx.correr_motor(self.carpeta, extra=("--no-cache", *extra))
 
     def _resultados(self, salida):
@@ -198,7 +199,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertEqual(inicio["total"], 4)
         self.assertIn("workers", inicio)
         self.assertIn("paralelo", inicio)
-        self.assertFalse(inicio["cache"])          # se pidió --sin-cache
+        self.assertFalse(inicio["cache"])          # --no-cache was requested
         self.assertEqual(eventos[-1]["tipo"], "fin")
 
     def test_el_pdf_sale_igual_con_paralelo(self):
@@ -207,11 +208,11 @@ class TestParalelizacion(unittest.TestCase):
         eventos = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
         informe = [e for e in eventos if e["tipo"] == "informe"]
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertTrue(informe, "no se emitió el evento informe")
-        self.assertEqual(informe[0]["paginas"], 5)          # portada + 3 + resumen
+        self.assertTrue(informe, "the report event was not emitted")
+        self.assertEqual(informe[0]["paginas"], 5)          # cover + 3 + summary
         self.assertTrue(os.path.exists(informe[0]["ruta"]))
         self.assertGreater(os.path.getsize(informe[0]["ruta"]), 20 * 1024)
-        self.assertEqual(informe[0]["desde_cache"], 0)      # primera pasada
+        self.assertEqual(informe[0]["desde_cache"], 0)      # first pass
 
     def test_un_archivo_roto_en_el_lote_no_tumba_el_paralelo(self):
         sonda = self.fx.subcarpeta("paralelo_roto", ("ok16", "ok24", "basura_magic"))
@@ -241,7 +242,7 @@ class TestParalelizacion(unittest.TestCase):
         finally:
             motor._sonda_procesos = original
 
-    @unittest.skipUnless(PROCESOS, "este entorno no permite crear procesos")
+    @unittest.skipUnless(PROCESOS, "this environment does not allow creating processes")
     def test_con_procesos_disponibles_se_usa_el_pool(self):
         archivos = [os.path.join(self.carpeta, f)
                     for f in sorted(os.listdir(self.carpeta))]
@@ -250,15 +251,15 @@ class TestParalelizacion(unittest.TestCase):
         self.assertEqual(workers, 4)
 
     def test_la_cache_evita_arrancar_procesos(self):
-        """Con todo cacheado no se reparte trabajo: no hace falta el pool."""
+        """With everything cached there is no work to spread: the pool is not needed."""
         sonda = self.fx.subcarpeta("cache_paralelo", ("ok16", "ok24", "corte_16k"))
         archivos = [os.path.join(sonda, f) for f in sorted(os.listdir(sonda))]
-        for ruta in archivos:                      # primera pasada: llena la caché
+        for ruta in archivos:                      # first pass: fills the cache
             motor.analizar_archivo_datos(ruta, "center", None, False)
         analisis, workers = motor.analizar_archivos(archivos, "center", None, False,
                                                    workers=8, usar_cache=True)
         resultados = list(analisis)
-        self.assertEqual(workers, 1, "no debería arrancar procesos si todo está en caché")
+        self.assertEqual(workers, 1, "it should not start processes when everything is cached")
         self.assertTrue(all(r.get("desde_cache") for r in resultados))
 
 
@@ -273,12 +274,12 @@ class TestRenderizador(unittest.TestCase):
         cls.fx.cerrar()
 
     def test_el_espectrograma_se_pinta_con_imshow(self):
-        """pcolormesh(shading='gouraud') con 2049x1500 celdas tardaba ~10 s por
-        pista; imshow pinta un ráster y es del orden de 10 veces más rápido."""
+        """pcolormesh(shading='gouraud') with 2049x1500 cells took ~10 s per
+        track; imshow paints a raster and is of the order of 10 times faster."""
         fuente = open(fx.MOTOR, encoding="utf-8").read()
         self.assertIn("ax.imshow(", fuente)
-        self.assertNotIn("ax.pcolormesh(", fuente)      # el comentario sí lo menciona
-        self.assertIn("shading=\"gouraud\"", fuente)    # solo en el comentario explicativo
+        self.assertNotIn("ax.pcolormesh(", fuente)      # the comment does mention it
+        self.assertIn("shading=\"gouraud\"", fuente)    # only in the explanatory comment
 
     def test_huella_render_cambia_con_los_parametros(self):
         original_frames = motor.MAX_FRAMES_PNG
@@ -295,7 +296,7 @@ class TestRenderizador(unittest.TestCase):
             motor.MAX_FRAMES_PNG = original_frames
             motor.DPI_ESPECTROGRAMA = original_dpi
 
-    @unittest.skipUnless(motor.MATPLOTLIB_OK, "matplotlib no instalado")
+    @unittest.skipUnless(motor.MATPLOTLIB_OK, "matplotlib not installed")
     def test_el_png_sigue_saliendo_con_un_tamano_razonable(self):
         ruta = self.fx["ok16"]
         resultado = motor.analizar_archivo_datos(ruta, "center", None, True,
@@ -307,10 +308,10 @@ class TestRenderizador(unittest.TestCase):
             self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
 
     def test_un_fallo_al_pintar_se_informa(self):
-        """El motivo del fallo llega al resultado (antes se perdía en silencio)."""
+        """The reason for the failure reaches the result (before, it was lost silently)."""
         original = motor.plt
         try:
-            motor.plt = None                    # cualquier uso de plt reventará
+            motor.plt = None                    # any use of plt will blow up
             resultado = motor.analizar_archivo_datos(self.fx["ok16"], "center", None,
                                                      True, usar_cache=False)
             self.assertIsNone(resultado["esp"]["espectrograma"])

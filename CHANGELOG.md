@@ -9,14 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Nothing yet.
+- Continuous integration on GitHub Actions: the 229 tests run on Ubuntu and
+  Windows, with Python 3.10 and 3.12. The window tests skip on the Linux runner,
+  where there is no display, and a stale run is cancelled when a new commit
+  arrives on the same branch.
+- Issue templates for bug reports and feature requests, a contact list pointing at
+  the verdict model, the known limits and the comparison page, and a pull-request
+  template that asks about the four invariants of the project
+  (`freeze_support()` first, `VERSION_MOTOR` bump, no Spanish in what is shipped,
+  presentation layers stay thin).
+- `COMPARISON.md`: how this project and FLAC Detective differ, both described on
+  their own terms, with the commands that produce every number in the tables.
+
+### Changed
+
+- **The code is English now, not only the interface.** Every comment and every
+  docstring in the repository was translated from Spanish, and `test_idioma.py`
+  now fails if Spanish prose appears in any Python file — not just in the text
+  the user can see. Internal identifiers (variable and function names, JSON
+  protocol keys such as `tipo` or `veredicto`) keep their names: renaming them
+  would break every consumer of the protocol.
+
+### Fixed
+
+- Three user-visible strings that the interface translation had missed:
+  `MD5 verified:` in the interactive CLI, `Not found:` in the file-not-found
+  alert of the GUI, and the console labels of the executable checker
+  (`interface`, `engine`, `FAILED`, `RESULT:`).
+- The `--seg` flag that the GUI still sent to the engine after the command-line
+  flags were renamed to English, and the protocol status codes
+  (`match`/`mismatch`, `far_cutoff`/`near_nyquist_cutoff`, `empty`/`partial`/
+  `active`) that the CLI still compared against their old Spanish values.
 
 ### Planned
 
-- Translate the code comments and docstrings from Spanish to English. Only the
-  text the user can see (GUI, CLI, PDF report, engine messages) is in English
-  today; the internals are deliberately left in Spanish for now, and
-  `tests/test_idioma.py` watches over the boundary.
 - Rename the remaining Spanish internal identifiers in the JSON protocol and the
   cache entries (field names such as `tipo`, `veredicto` or `desde_cache`, and
   the module-level constants) once that does not break external consumers.

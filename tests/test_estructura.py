@@ -1,10 +1,10 @@
-"""Bloque 7 (estructura): capa fina, guarda __main__, UTF-8 y sin duplicación.
+"""Block 7 (structure): thin layer, __main__ guard, UTF-8 and no duplication.
 
-Estos tests vigilan las invariantes estructurales del proyecto:
-  - importar un módulo no puede ejecutar ningún CLI.
-  - la lógica de análisis NO puede volver a duplicarse en el CLI.
-  - la salida con stdout redirigido no puede morir por codificación.
-  - la tabla de veredictos del CLI cubre las salidas reales del motor.
+These tests watch over the structural invariants of the project:
+  - importing a module must not run any CLI.
+  - the analysis logic must NOT be duplicated again in the CLI.
+  - output with stdout redirected must not die from encoding.
+  - the CLI's verdict table covers the engine's real outputs.
 """
 import json
 import os
@@ -18,7 +18,7 @@ import fixtures as fx
 import motor_flac as motor
 import verificar_flac as cli
 
-# Funciones que deben vivir SOLO en el motor.
+# Functions that must live ONLY in the engine.
 FUNCIONES_DEL_MOTOR = (
     "verificar_firma", "verificar_metadatos", "leer_audio", "_md5_pcm",
     "verificar_md5", "analizar_bit_depth", "analizar_espectro",
@@ -30,7 +30,7 @@ FUNCIONES_DEL_MOTOR = (
 class TestSinEfectosSecundarios(unittest.TestCase):
 
     def test_importar_los_modulos_no_ejecuta_ningun_cli(self):
-        """Antes, 'import verificar_flac' arrancaba el menú interactivo."""
+        """Before, 'import verificar_flac' started the interactive menu."""
         codigo = "import motor_flac, verificar_flac; print('IMPORT_OK')"
         p = subprocess.run([sys.executable, "-c", codigo], cwd=fx.RAIZ,
                            capture_output=True, text=True, encoding="utf-8", timeout=180)
@@ -46,15 +46,15 @@ class TestCapaFina(unittest.TestCase):
             with self.subTest(funcion=nombre):
                 self.assertNotIn(
                     nombre, vars(cli),
-                    f"{nombre} vuelve a estar definido en verificar_flac.py: "
-                    f"la lógica se ha duplicado en vez de usar motor_flac")
+                    f"{nombre} is defined again in verificar_flac.py: "
+                    f"the logic has been duplicated instead of using motor_flac")
 
     def test_el_cli_importa_el_motor(self):
         self.assertIs(cli.motor, motor)
 
     def test_la_dependencia_del_pdf_queda_aislada(self):
-        """Ni el motor ni el CLI importan reportlab: solo informe_pdf lo usa, y
-        por eso ambos funcionan aunque reportlab no esté instalado."""
+        """Neither the engine nor the CLI imports reportlab: only informe_pdf uses
+        it, and that is why both work even when reportlab is not installed."""
         for ruta in (fx.MOTOR, fx.CLI):
             with self.subTest(modulo=os.path.basename(ruta)):
                 fuente = open(ruta, encoding="utf-8").read()
@@ -62,9 +62,10 @@ class TestCapaFina(unittest.TestCase):
                 self.assertNotRegex(fuente, r"(?m)^\s*(?:import|from)\s+PIL")
 
     def test_el_informe_no_usa_reportlab_al_importar(self):
-        """Un valor por defecto en la firma se evalúa al importar el módulo: usar
-        ahí un nombre de reportlab (mm, A4, colors…) rompía la importación cuando
-        la librería no está, y con ella el aviso de dependencia que falta."""
+        """A default value in the signature is evaluated when the module is
+        imported: using a reportlab name there (mm, A4, colors…) broke the import
+        when the library is missing, and with it the warning about the missing
+        dependency."""
         fuente = open(os.path.join(fx.RAIZ, "informe_pdf.py"), encoding="utf-8").read()
         for linea in fuente.splitlines():
             if linea.lstrip().startswith("def "):
@@ -81,8 +82,9 @@ class TestCapaFina(unittest.TestCase):
                   "import motor_flac, informe_pdf\n"
                   "print('motor OK', informe_pdf.disponible())\n"
                   "print(informe_pdf.generar('.', [{'archivo': 'x'}])['error'])\n")
-        # El hijo imprime un mensaje con acento: sin esto, un stdout redirigido en
-        # Windows usa cp1252 y el propio test moriría con UnicodeEncodeError.
+        # The child prints a message with an accent: without this, a redirected
+        # stdout on Windows uses cp1252 and the test itself would die with
+        # UnicodeEncodeError.
         entorno = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         p = subprocess.run([sys.executable, "-c", codigo], cwd=fx.RAIZ, env=entorno,
                            capture_output=True, text=True, encoding="utf-8", timeout=180)
@@ -100,7 +102,7 @@ class TestCapaFina(unittest.TestCase):
         casos = [esp_ok,
                  dict(esp_ok, techo_hz=8000, corte_artificial=True,
                       frecuencia_corte=16000, ratio=0.0, var_alta_db=0.0),
-                 dict(esp_ok, error="fallo simulado")]
+                 dict(esp_ok, error="simulated failure")]
         for esp in casos:
             with self.subTest(esp=esp.get("error") or esp["techo_hz"]):
                 score, veredicto, problemas = motor.calcular_score(meta, esp, {"aplica": False})
@@ -112,8 +114,8 @@ class TestCapaFina(unittest.TestCase):
         for veredicto in cli.VEREDICTOS:
             with self.subTest(veredicto=veredicto):
                 self.assertTrue(cli.etiqueta_veredicto(veredicto))
-        # un veredicto desconocido no debe romper la presentación
-        self.assertIn("nuevo", cli.etiqueta_veredicto("nuevo"))
+        # an unknown verdict must not break the presentation
+        self.assertIn("new", cli.etiqueta_veredicto("new"))
 
 
 class TestUTF8(unittest.TestCase):
@@ -128,10 +130,10 @@ class TestUTF8(unittest.TestCase):
         cls.fx.cerrar()
 
     def _correr_cli(self, carpeta, pdf=False):
-        """CLI con stdin/stdout redirigidos y SIN PYTHONIOENCODING.
+        """CLI with stdin/stdout redirected and WITHOUT PYTHONIOENCODING.
 
-        Es exactamente el escenario donde antes moría con UnicodeEncodeError.
-        El orden de respuestas es: modo, PNG, informe PDF, ruta, otra carpeta."""
+        This is exactly the scenario where it used to die with UnicodeEncodeError.
+        The order of the answers is: mode, PNG, PDF report, path, another folder."""
         entorno = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
         entrada = f"2\nn\n{'y' if pdf else 'n'}\n{carpeta}\nn\n"
         return subprocess.run([sys.executable, fx.CLI], input=entrada, cwd=fx.RAIZ,
@@ -143,19 +145,19 @@ class TestUTF8(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])
         self.assertNotIn("UnicodeEncodeError", p.stderr or "")
         self.assertNotIn("Traceback", p.stderr or "")
-        self.assertIn("═", p.stdout)                 # el carácter que reventaba en cp1252
+        self.assertIn("═", p.stdout)                 # the character that blew up in cp1252
         self.assertIn("✅", p.stdout)
 
     def test_cli_analiza_el_lote_entero_incluido_el_archivo_roto(self):
         p = self._correr_cli(self.carpeta)
         self.assertIn("Analyzing 2 file(s)", p.stdout)
         self.assertIn("SUMMARY:", p.stdout)
-        self.assertIn("1 ❌ WITH ERRORS", p.stdout)     # el lote no se aborta
+        self.assertIn("1 ❌ WITH ERRORS", p.stdout)     # the batch is not aborted
         self.assertIn("ok16", p.stdout)
         self.assertIn("basura_magic", p.stdout)
 
     def test_cli_sale_limpio_sin_entrada(self):
-        """EOF en stdin (stdin cerrado) debe terminar con elegancia."""
+        """EOF on stdin (stdin closed) must finish gracefully."""
         p = subprocess.run([sys.executable, fx.CLI], input="", cwd=fx.RAIZ,
                            capture_output=True, text=True, encoding="utf-8", timeout=180)
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])
@@ -163,7 +165,7 @@ class TestUTF8(unittest.TestCase):
 
 
 class TestEspectrogramaPNG(unittest.TestCase):
-    """El PNG lo genera la vía en streaming; su firma cambió en el Bloque 6."""
+    """The PNG is produced by the streaming path; its signature changed in Block 6."""
 
     @classmethod
     def setUpClass(cls):
@@ -173,12 +175,12 @@ class TestEspectrogramaPNG(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    @unittest.skipUnless(motor.MATPLOTLIB_OK, "matplotlib no instalado")
+    @unittest.skipUnless(motor.MATPLOTLIB_OK, "matplotlib not installed")
     def test_se_genera_el_png_y_se_reporta_la_ruta(self):
         res = motor.analizar_archivo_datos(self.fx["ok16"], "center", None, True)
         self.assertNotIn("error", res, res.get("error"))
         ruta = res["esp"]["espectrograma"]
-        self.assertIsNotNone(ruta, "no se generó el espectrograma")
+        self.assertIsNotNone(ruta, "the spectrogram was not generated")
         self.assertTrue(os.path.exists(ruta))
         self.assertGreater(os.path.getsize(ruta), 1000)
 

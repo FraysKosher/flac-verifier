@@ -1,10 +1,11 @@
-"""Bloque 3 (integridad): el MD5 del STREAMINFO se verifica de verdad.
+"""Block 3 (integrity): the STREAMINFO MD5 is really verified.
 
-Reglas que fijan estos tests:
-  - 'coincide'  -> el audio decodificado es exactamente el que registró el encoder.
-  - 'ausente'   -> no hay MD5 registrado; no es un error, pero no se premia.
-  - 'no_coincide' -> ERROR DURO: archivo corrupto o alterado, sin veredicto.
-  - el MD5 no es un voto de scoring en ningún sentido.
+Rules these tests pin down:
+  - 'match'    -> the decoded audio is exactly what the encoder recorded.
+  - 'absent'   -> there is no registered MD5; it is not an error, but it earns
+                  no credit.
+  - 'mismatch' -> HARD ERROR: corrupt or altered file, with no verdict.
+  - the MD5 is not a scoring vote in either direction.
 """
 import os
 import sys
@@ -38,10 +39,10 @@ class TestMD5(unittest.TestCase):
         res = motor.analizar_archivo_datos(self.fx["md5_obsoleto"], "center", None, False)
         self.assertEqual(res["md5"]["estado"], "mismatch")
         self.assertIn("error", res)
-        # no puede recibir veredicto de lossless ni score
+        # it can receive neither a lossless verdict nor a score
         self.assertNotIn("veredicto", res)
         self.assertNotIn("score", res)
-        # ni siquiera se gasta en analizar el espectro de un archivo corrupto
+        # it does not even spend time analysing the spectrum of a corrupt file
         self.assertNotIn("esp", res)
         self.assertNotEqual(res["md5"]["calculado"], res["md5"]["almacenado"])
 
@@ -53,7 +54,7 @@ class TestMD5(unittest.TestCase):
         self.assertIn("score", res)
 
     def test_el_md5_no_puntua(self):
-        """Mismo audio con MD5 presente y con MD5 ausente -> score idéntico."""
+        """Same audio with MD5 present and with MD5 absent -> identical score."""
         con_md5    = motor.analizar_archivo_datos(self.fx["ok16"], "center", None, False)
         sin_md5    = motor.analizar_archivo_datos(self.fx["md5_ausente"], "center", None, False)
         self.assertEqual(con_md5["md5"]["estado"], "match")
@@ -63,7 +64,7 @@ class TestMD5(unittest.TestCase):
         self.assertEqual(con_md5["problemas"], sin_md5["problemas"])
 
     def test_md5_pcm_coincide_con_mutagen(self):
-        """El hash recalculado es el mismo que mutagen reporta del STREAMINFO."""
+        """The recomputed hash is the same as the one mutagen reports from STREAMINFO."""
         from mutagen.flac import FLAC
         for nombre in ("ok16", "ok24"):
             with self.subTest(archivo=nombre):
@@ -73,7 +74,7 @@ class TestMD5(unittest.TestCase):
                 self.assertEqual(int(calculado, 16), almacenado)
 
     def test_profundidad_no_verificable_devuelve_none(self):
-        """Una profundidad rara no puede acusar en falso de corrupción."""
+        """An odd bit depth must not falsely accuse the file of corruption."""
         self.assertIsNone(motor._md5_pcm([[0.0]], 20))
         self.assertIsNone(motor._md5_pcm([[0.0]], 12))
 

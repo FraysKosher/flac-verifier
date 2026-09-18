@@ -1,33 +1,33 @@
-"""Comprueba el ejecutable ya construido (dist/FLAC_Verifier).
+"""Checks the already built executable (dist/FLAC_Verifier).
 
-Se ejecuta en la máquina de compilación, después de `python build.py`:
+It runs on the build machine, after `python build.py`:
 
-    python comprobar_ejecutable.py                       (usa el álbum de pruebas)
+    python comprobar_ejecutable.py                       (uses the test album)
     python comprobar_ejecutable.py --album "D:/Music/Album"
-    python comprobar_ejecutable.py --quick               (se salta el PDF y el GUI)
+    python comprobar_ejecutable.py --quick               (skips the PDF and the GUI)
 
-Cada paso lanza el .exe con la salida REDIRIGIDA A UN ARCHIVO, nunca a una
-tubería: los procesos hijos del análisis paralelo heredan los descriptores, y con
-una tubería el lector se queda esperando un fin de flujo que no llega. Además cada
-paso tiene su propio tiempo límite, así que un cuelgue se detecta y se reporta en
-vez de quedarse ahí.
+Every step launches the .exe with the output REDIRECTED TO A FILE, never to a
+pipe: the child processes of the parallel analysis inherit the descriptors, and with
+a pipe the reader waits forever for an end of stream that never arrives. In addition,
+every step has its own time limit, so a hang is detected and reported instead of
+sitting there.
 
-Lo que se comprueba, en orden:
-  1. Los dos ejecutables existen y dicen su versión.
-  2. El motor analiza en serie (camino sin multiprocessing), invocado como lo
-     haría un usuario: `flac_motor.exe --ruta …`, sin banderas de más.
-  3. El motor analiza EN PARALELO con 8 procesos: es el camino de
-     multiprocessing.freeze_support(). Sin él, cada worker volvería a arrancar la
-     aplicación y esto se colgaría.
-  4. El motor genera espectrogramas PNG y el informe PDF (matplotlib y reportlab
-     empaquetados).
-  5. El comando EXACTO que arma la GUI empaquetada (se le pregunta a
-     `gui.ruta_motor()`, no se copia a mano) y el respaldo `--motor-cli` sobre el
-     ejecutable de ventana.
-  6. La interfaz gráfica abre una ventana real y se cierra sin dejar procesos.
-  7. El ejecutable da las MISMAS fichas que el código fuente sobre el mismo
-     álbum, campo a campo: es lo que garantiza que empaquetar no cambió el
-     análisis.
+What is checked, in order:
+  1. Both executables exist and state their version.
+  2. The engine analyses serially (the path without multiprocessing), invoked as a
+     user would: `flac_motor.exe --ruta …`, with no extra flags.
+  3. The engine analyses IN PARALLEL with 8 processes: it is the
+     multiprocessing.freeze_support() path. Without it, each worker would start the
+     application again and this would hang.
+  4. The engine generates PNG spectrograms and the PDF report (matplotlib and
+     reportlab packaged).
+  5. The EXACT command that the packaged GUI builds (it asks
+     `gui.ruta_motor()`, it is not copied by hand) and the `--motor-cli` fallback on
+     the windowed executable.
+  6. The graphical interface opens a real window and closes without leaving processes.
+  7. The executable gives the SAME records as the source code on the same
+     album, field by field: that is what guarantees that packaging did not change
+     the analysis.
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ import time
 AQUI = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(AQUI, "dist", "FLAC_Verifier")
 MOTOR_FUENTE = os.path.join(AQUI, "motor_flac.py")
-# El álbum de pruebas de la auditoría vive dos carpetas más arriba (junto al
-# proyecto, no dentro de él).
+# The test album of the audit lives two folders above (next to the
+# project, not inside it).
 ALBUM_PRUEBA = os.path.join(os.path.dirname(os.path.dirname(AQUI)),
                             "_audit_flac", "_demo_album")
 SIN_VENTANA = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -53,9 +53,9 @@ LIMITE = 300
 def _utf8() -> None:
     for nombre in ("stdout", "stderr"):
         try:
-            # line_buffering: si la salida va a una tubería (por ejemplo un
-            # script o una tarea en segundo plano) se ve el progreso paso a paso
-            # en lugar de todo de golpe al terminar.
+            # line_buffering: if the output goes to a pipe (for example a
+            # script or a background task) the progress is seen step by step
+            # instead of all at once at the end.
             getattr(sys, nombre, None).reconfigure(encoding="utf-8", errors="replace",
                                                    line_buffering=True)
         except (AttributeError, ValueError, OSError):
@@ -70,7 +70,7 @@ class Comprobador:
         self.resultados: list[tuple[str, bool, str]] = []
         self.temporal = tempfile.mkdtemp(prefix="flac_exe_")
 
-    # ── utilidades ──────────────────────────────────────────────────────────
+    # ── utilities ───────────────────────────────────────────────────────────
     def anotar(self, nombre: str, bien: bool, detalle: str = "") -> None:
         self.resultados.append((nombre, bien, detalle))
         print(f"  {'OK  ' if bien else 'FALLA'} {nombre}"
@@ -78,7 +78,7 @@ class Comprobador:
 
     def lanzar(self, comando: list[str], limite: int = LIMITE,
                etiqueta: str = "output") -> tuple[int | None, str]:
-        """Ejecuta con la salida a un archivo y devuelve (código, texto)."""
+        """Runs with the output to a file and returns (code, text)."""
         ruta = os.path.join(self.temporal, f"{etiqueta}.txt")
         with open(ruta, "w", encoding="utf-8", errors="replace") as salida:
             try:
@@ -106,11 +106,11 @@ class Comprobador:
 
     @staticmethod
     def fichas(texto: str) -> dict[str, dict]:
-        """Los eventos `resultado` por archivo, sin los campos que cambian solos.
+        """The `resultado` events per file, without the fields that change on their own.
 
-        Se quitan la ruta, el PNG y la marca de caché: lo demás (veredicto,
-        puntuación, MD5, problemas, DR…) tiene que ser idéntico entre el código
-        fuente y el ejecutable, porque es el análisis en sí.
+        The path, the PNG and the cache mark are removed: the rest (verdict,
+        score, MD5, problems, DR…) has to be identical between the source
+        code and the executable, because it is the analysis itself.
         """
         volatiles = ("ruta", "espectrograma", "desde_cache")
         return {e["archivo"]: {k: v for k, v in e.items() if k not in volatiles}
@@ -122,10 +122,10 @@ class Comprobador:
         texto = " ".join(texto.split())
         return texto[:limite] + ("…" if len(texto) > limite else "")
 
-    # ── pasos ───────────────────────────────────────────────────────────────
+    # ── steps ───────────────────────────────────────────────────────────────
     def paso_1_ejecutables(self) -> None:
         print("\n[1] Both executables exist and respond")
-        for etiqueta, ruta in (("interfaz", self.gui), ("motor", self.motor)):
+        for etiqueta, ruta in (("interface", self.gui), ("engine", self.motor)):
             if not os.path.exists(ruta):
                 self.anotar(f"{etiqueta}: {os.path.basename(ruta)}", False, "no existe")
                 continue
@@ -141,7 +141,7 @@ class Comprobador:
         inicio = time.perf_counter()
         codigo, texto = self.lanzar([self.motor, "--path", album, "--mode", "center",
                                      "--workers", "1", "--no-cache"],
-                                    etiqueta="serie")
+                                    etiqueta="serial")
         segundos = time.perf_counter() - inicio
         eventos = self.eventos(texto)
         tipos = [e.get("tipo") for e in eventos]
@@ -159,7 +159,7 @@ class Comprobador:
         inicio = time.perf_counter()
         codigo, texto = self.lanzar([self.motor, "--path", album, "--mode", "center",
                                      "--workers", str(workers), "--no-cache"],
-                                    etiqueta="paralelo")
+                                    etiqueta="parallel")
         segundos = time.perf_counter() - inicio
         if codigo is None:
             self.anotar(f"analysis with {workers} processes", False, texto)
@@ -175,7 +175,7 @@ class Comprobador:
         self.anotar(f"analysis with {workers} processes", bien, detalle)
         if not bien:
             print("     " + self.abreviar(texto, 300))
-        elif not inicio_evento.get("paralelo"):
+        elif not inicio_evento.get("parallel"):
             self.anotar("real processes were used", False,
                         "the engine fell back to serial: this environment cannot create "
                         "processes (the intended fallback). Run it in a "
@@ -209,13 +209,13 @@ class Comprobador:
     def paso_5_bandera_interna(self, album: str) -> None:
         print("\n[5] The command the packaged GUI builds, and the --motor-cli flag")
 
-        # (a) Lo que de verdad ejecuta la GUI cuando está empaquetada. Se finge
-        # que este proceso es el .exe para que `ruta_motor()` decida con las
-        # reglas reales, en lugar de copiar aquí el comando a mano (copiarlo es
-        # justo lo que dejó pasar el fallo de que faltaba --motor-cli).
+        # (a) What the GUI really runs when it is packaged. This process is made
+        # to pretend that it is the .exe so that `ruta_motor()` decides with the
+        # real rules, instead of copying the command by hand here (copying it is
+        # exactly what let the bug of the missing --motor-cli through).
         try:
             import gui
-        except Exception as e:                 # sin customtkinter en esta máquina
+        except Exception as e:                 # no customtkinter on this machine
             self.anotar("command built by the packaged GUI", False,
                         f"could not read gui.ruta_motor(): {type(e).__name__}: {e}"
                         " · install customtkinter on the build machine")
@@ -233,19 +233,19 @@ class Comprobador:
                 sys.executable = original_exe
             comando = [*base, "--path", album, "--mode", "center",
                        "--workers", "1", "--no-cache"]
-            codigo, texto = self.lanzar(comando, limite=180, etiqueta="gui_empaquetada")
+            codigo, texto = self.lanzar(comando, limite=180, etiqueta="packaged_gui")
             eventos = self.eventos(texto)
             resultados = [e for e in eventos if e.get("tipo") == "resultado"]
             self.anotar(f"command built by the packaged GUI: {' '.join(base)}",
                         codigo == 0 and bool(resultados),
                         f"{len(resultados)} result(s), exit code {codigo}")
 
-        # (b) La bandera interna sobre el .exe de ventana: es el respaldo de un
-        # único ejecutable. Funciona porque `_asegurar_flujos()` reconstruye
-        # stdout, que en un .exe de ventana llega a None.
+        # (b) The internal flag on the windowed .exe: it is the fallback of a
+        # single executable. It works because `_asegurar_flujos()` rebuilds
+        # stdout, which in a windowed .exe arrives as None.
         codigo, texto = self.lanzar([self.gui, "--motor-cli", "--path", album,
                                      "--mode", "center", "--workers", "1",
-                                     "--no-cache"], limite=180, etiqueta="bandera")
+                                     "--no-cache"], limite=180, etiqueta="flag")
         eventos = self.eventos(texto)
         resultados = [e for e in eventos if e.get("tipo") == "resultado"]
         self.anotar("the windowed .exe delivers the NDJSON protocol with --motor-cli",
@@ -263,7 +263,7 @@ class Comprobador:
         proceso = subprocess.Popen([self.gui, "--gui"], creationflags=SIN_VENTANA)
         try:
             titulo = ""
-            for _ in range(40):                     # hasta 20 s
+            for _ in range(40):                     # up to 20 s
                 time.sleep(0.5)
                 if proceso.poll() is not None:
                     break
@@ -297,18 +297,18 @@ class Comprobador:
                     f"live processes: {cuantos}")
 
     def paso_7_mismos_veredictos(self, album: str) -> None:
-        """El ejecutable no puede analizar distinto que el código fuente.
+        """The executable cannot analyse differently from the source code.
 
-        Es la comprobación que de verdad cierra el empaquetado: mismo álbum,
-        mismos argumentos, y las fichas tienen que coincidir campo a campo
-        (veredicto, puntuación, MD5, DR, problemas…).
+        It is the check that really closes out the packaging: same album,
+        same arguments, and the records have to match field by field
+        (verdict, score, MD5, DR, problems…).
         """
         print("\n[7] The executable gives the same verdicts as the source code")
         argumentos = ["--path", album, "--mode", "center", "--workers", "1",
                       "--no-cache"]
         _, texto_fuente = self.lanzar([sys.executable, "-u", MOTOR_FUENTE, *argumentos],
-                                      etiqueta="fuente")
-        _, texto_exe = self.lanzar([self.motor, *argumentos], etiqueta="congelado_exe")
+                                      etiqueta="source")
+        _, texto_exe = self.lanzar([self.motor, *argumentos], etiqueta="frozen_exe")
         fuente = self.fichas(texto_fuente)
         ejecutable = self.fichas(texto_exe)
         if not fuente or not ejecutable:
@@ -319,7 +319,7 @@ class Comprobador:
                        if ficha != ejecutable.get(nombre)]
         detalle = (f"{len(fuente)} record(s) compared"
                    if not diferencias else
-                   "distintas: " + ", ".join(diferencias[:3]))
+                   "differing: " + ", ".join(diferencias[:3]))
         self.anotar("same records field by field (verdict, MD5, DR…)", not diferencias,
                     detalle)
         for nombre in diferencias[:2]:
@@ -330,7 +330,7 @@ class Comprobador:
         print("\n" + "=" * 72)
         fallos = [r for r in self.resultados if not r[1]]
         if fallos:
-            print(f"RESULTADO: {len(fallos)} check(s) failed out of "
+            print(f"RESULT: {len(fallos)} check(s) failed out of "
                   f"{len(self.resultados)}")
             for nombre, _, detalle in fallos:
                 print(f"  ✗ {nombre}  {detalle}")
@@ -353,7 +353,7 @@ def main() -> int:
     print("=" * 72)
     print("EXECUTABLE CHECK")
     print("=" * 72)
-    print(f"  ejecutables: {args.carpeta}")
+    print(f"  executables: {args.carpeta}")
     print(f"  test album: {args.album}")
 
     comprobador = Comprobador(args.carpeta)
@@ -367,7 +367,7 @@ def main() -> int:
             comprobador.paso_7_mismos_veredictos(args.album)
     else:
         comprobador.anotar("test album", False,
-                           f"no existe {args.album}: use --album")
+                           f"not found: {args.album} — pass --album")
     if not args.rapido:
         comprobador.paso_6_ventana()
     return comprobador.resumen()

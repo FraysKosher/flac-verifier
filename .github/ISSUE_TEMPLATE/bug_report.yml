@@ -1,0 +1,103 @@
+name: Bug report
+description: Something analysed wrong, crashed, or produced a report you cannot trust.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Two things that help enormously:
+        a **`--version` output** and the **verdict the tool gave you** for the file.
+
+        If a file is involved and you would rather not share it, a synthetic case
+        that reproduces the problem is just as good: `ffmpeg`-generated transcodes
+        are what the test suite uses.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `FLAC_Verifier.exe --version` (or `python main.py --version`).
+      placeholder: FLAC VERIFIER 1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: How are you running it?
+      options:
+        - The packaged Windows executable (release ZIP)
+        - From source (`python main.py`)
+        - The command line (`--cli`)
+        - The engine directly (`flac_motor.exe` or `motor_flac.py`)
+        - As a library, from my own code
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2, Python 3.10.11
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Command or steps that trigger it
+      placeholder: FLAC_Verifier.exe --gui, then Analyze on an album of 96/24 files
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: The album should be reported as GENUINE LOSSLESS with no issues.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: |
+        Paste the verdict line and the `issues` list if you have it. For CLI runs,
+        including the JSON events of one file is the most useful thing you can send.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part?
+      multiple: true
+      options:
+        - Verdict is wrong (false positive or false negative)
+        - MD5 integrity check
+        - LSB / effective bit depth
+        - Spectral analysis (ceiling, cut-off, Nyquist distance)
+        - Clipping or dynamic range
+        - PDF report
+        - Graphical interface
+        - Packaging / the executable itself
+        - Documentation
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: I am running the latest release.
+          required: true
+        - label: I know the tool never writes to the audio files; it only reads them.
+          required: false
+        - label: |
+            If Windows antivirus flagged the executable, I read the antivirus section
+            of the README first (it is a false positive: unsigned PyInstaller builds
+            trigger it).
+          required: false

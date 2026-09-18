@@ -1,0 +1,65 @@
+name: Feature request
+description: Suggest a detector, an output format or a workflow improvement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Useful feature requests here usually start from a file the tool gets wrong,
+        or from a workflow it does not fit (a large library, a NAS, a script, a
+        different player or tagger). Tell us which one it is.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of change is it?
+      options:
+        - A new or better detector (evidence the tool is not using yet)
+        - An output format or an integration (another report, another tool)
+        - The graphical interface
+        - Performance on large libraries
+        - Packaging and installation
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you are trying to solve
+      description: Describe the situation, not the implementation. What do you do today instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence, if you have any
+      description: |
+        Numbers, a file that shows the pattern, a measurement of how often it happens,
+        a link to a discussion. Anything that lets us check the claim instead of
+        guessing. If you have no evidence, say so — that is still useful to know.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: understanding
+    attributes:
+      label: Constraints worth knowing before proposing
+      options:
+        - label: |
+            A change to the analysis invalidates every cached result, so it comes with
+            a `VERSION_MOTOR` bump and re-measured fixtures.
+          required: false
+        - label: |
+            The verdict model only accepts evidence that can be measured and shown;
+            "it sounds wrong" is a starting point, not a rule.
+          required: false

@@ -14,10 +14,12 @@ the spectrum using the distance to Nyquist and, when the evidence does not allow
 a decision, **it says so** instead of inventing a verdict.
 
 > **Language.** The user interface (GUI, CLI and PDF report), the values of the
-> engine's JSON protocol, the command-line flags and all the documentation are in
-> English, because the project is shared with the international audiophile
-> community. Code comments and docstrings are still in Spanish: translating them
-> is a known pending task.
+> engine's JSON protocol, the command-line flags, the code comments, the
+> docstrings and all the documentation are in English, because the project is
+> shared with the international audiophile community. `tests/test_idioma.py`
+> enforces it. Internal identifiers (variable and function names, JSON protocol
+> keys) keep their original names, as renaming them would break every consumer of
+> the protocol.
 
 ```
 FLAC VERIFIER/
@@ -693,7 +695,7 @@ the right answer: the one that checks that the parallel path really uses process
 | `test_gui.py` | Subprocess command with `-u` and `CREATE_NO_WINDOW`; NDJSON event parsing (including unreadable lines); formatting of results and of the colour summary; process life cycle and cancellation (including the `kill` fallback and the tree with `taskkill`); real-time events with a real subprocess; and the hidden window with its full flow |
 | `test_estructura.py` | Importing executes nothing; the CLI does not duplicate the engine; UTF-8 with a redirected stdout; clean EOF |
 | `test_empaquetado.py` | `freeze_support()` is the first statement of `main.py`; the flag dispatch of `main.py`; the engine command in source mode, packaged and without the engine `.exe`; the `.spec` collects everything (packages with data, soundfile DLLs, scipy submodules, own modules, two `EXE` with the correct console, icon, version, no UPX); `version_info.txt` is coherent; `build.py` builds |
-| `test_idioma.py` | The language of the interface: no user-visible text contains Spanish characters or Spanish words (the text literals of the application and tool modules are inspected, not the comments or docstrings; JSON protocol keys and reportlab style names are treated as internal identifiers and allowed) |
+| `test_idioma.py` | The language of the project: no text literal of the application and tool modules contains Spanish characters or Spanish words, and neither do any comment or docstring of any Python file in the repository (only the static parts of an f-string are inspected, so an interpolated variable name is not mistaken for prose; JSON protocol keys, reportlab style names and Spanish identifiers are treated as internal names and allowed). It also pins the shared verdict labels across engine, GUI and PDF, the English command-line flags, and the report and spectrogram folder names |
 
 `tests/test_veredictos.py` generates real MP3 transcodes with `ffmpeg` if it is on
 the `PATH` (otherwise those tests are skipped).
