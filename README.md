@@ -702,16 +702,16 @@ the `PATH` (otherwise those tests are skipped).
 
 ## Related projects
 
-**[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)** solves the
-same problem and is the more mature project: on PyPI, a beets plugin, wider codec
-coverage, an optional desktop GUI, a documentation site and CI. If you want one
-tool for a whole library today, use that one.
+**[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)** answers the
+same question from a different design: a Python library and CLI you install and
+script — on PyPI, with Docker images, a beets plugin, CSV/HTML reports, wider
+codec coverage and its own desktop GUI extra.
 
-This project differs in four measured ways — STREAMINFO MD5 integrity as a hard
-check, direct LSB-utilisation measurement, a per-album PDF report and a
-zero-install Windows build — and is worse in everything else. `COMPARISON.md`
-states both sides with the commands that produce the numbers, together with what
-we intend to do about the overlap.
+This project is the other design: a self-contained Windows application whose unit
+of work is the album, with a per-album PDF report, an STREAMINFO MD5 integrity
+check that sits outside the verdict scoring, and a build verified as a build.
+`COMPARISON.md` compares the two approaches side by side, with the commands that
+produce every number.
 
 ---
 
