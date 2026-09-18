@@ -1,7 +1,9 @@
 # ─── Artefactos de compilación ────────────────────────────────────────────────
 # `python build.py` los regenera; no se versionan (la carpeta dist/ son ~200 MB).
+# El ZIP de la release (~90 MB) se adjunta a la release de GitHub, no al repo.
 build/
 dist/
+*.zip
 *.spec.bak
 
 # ─── Caché y resultados del análisis ─────────────────────────────────────────
