@@ -700,6 +700,21 @@ the `PATH` (otherwise those tests are skipped).
 
 ---
 
+## Related projects
+
+**[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)** solves the
+same problem and is the more mature project: on PyPI, a beets plugin, wider codec
+coverage, an optional desktop GUI, a documentation site and CI. If you want one
+tool for a whole library today, use that one.
+
+This project differs in four measured ways — STREAMINFO MD5 integrity as a hard
+check, direct LSB-utilisation measurement, a per-album PDF report and a
+zero-install Windows build — and is worse in everything else. `COMPARISON.md`
+states both sides with the commands that produce the numbers, together with what
+we intend to do about the overlap.
+
+---
+
 ## Licence and authorship
 
 Personal project. Use it and modify it freely. See `LICENSE` (MIT).
