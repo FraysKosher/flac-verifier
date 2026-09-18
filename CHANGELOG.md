@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- Rename the remaining Spanish internal identifiers in the JSON protocol and the
+  cache entries (field names such as `tipo`, `veredicto` or `desde_cache`, and
+  the module-level constants) once that does not break external consumers.
+- A trained classifier for the 320 kbps MP3 stored at 16 bits, which is at
+  present a documented physical limit of the spectral analysis.
+
+## [2.0.0] - 2026-09-18
+
+The first release with continuous integration, an English code base and a version
+number that means the same thing everywhere. The analysis is unchanged from
+1.0.0: this version is about the project around it.
+
 ### Added
 
-- Continuous integration on GitHub Actions: the 229 tests run on Ubuntu and
+- Continuous integration on GitHub Actions: the 230 tests run on Ubuntu and
   Windows, with Python 3.10 and 3.12. The window tests skip on the Linux runner,
   where there is no display, and a stale run is cancelled when a new commit
   arrives on the same branch.
@@ -20,18 +34,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   presentation layers stay thin).
 - `COMPARISON.md`: how this project and FLAC Detective differ, both described on
   their own terms, with the commands that produce every number in the tables.
+- `test_empaquetado.py` now checks that the Windows version resources announce the
+  same number as `main.py`, and that the build banner reads it from there instead
+  of keeping its own copy.
 
 ### Changed
 
 - **The code is English now, not only the interface.** Every comment and every
-  docstring in the repository was translated from Spanish, and `test_idioma.py`
-  now fails if Spanish prose appears in any Python file — not just in the text
-  the user can see. Internal identifiers (variable and function names, JSON
-  protocol keys such as `tipo` or `veredicto`) keep their names: renaming them
-  would break every consumer of the protocol.
+  docstring in the repository was translated from Spanish, including the
+  PyInstaller `.spec`, `version_info.txt`, `requirements.txt` and `.gitignore`, and
+  the remaining Spanish string literals in the tests. `test_idioma.py` fails if
+  Spanish prose appears in any Python file — not just in the text the user can see.
+  Internal identifiers (variable and function names, JSON protocol keys such as
+  `tipo` or `veredicto`) keep their names: renaming them would break every consumer
+  of the protocol.
+- The version is announced from a single place. `build.py` read it from a literal in
+  its own banner, which is how the executable, the tag and the release ended up
+  saying different numbers.
 
 ### Fixed
 
+- The program, its Windows version resources, the release tag and the ZIP archive
+  announced different versions (`1.0.0` inside, `2.0.0` outside). Everything says
+  **2.0.0** now, and a test keeps it that way.
 - A race in `test_gui.TestGestorProceso`: the fake process served a single line, so
   the reader thread could reach the end of the stream, call `wait()` and leave the
   manager reporting "not running" before the test asserted the opposite. It passed
@@ -47,14 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flags were renamed to English, and the protocol status codes
   (`match`/`mismatch`, `far_cutoff`/`near_nyquist_cutoff`, `empty`/`partial`/
   `active`) that the CLI still compared against their old Spanish values.
-
-### Planned
-
-- Rename the remaining Spanish internal identifiers in the JSON protocol and the
-  cache entries (field names such as `tipo`, `veredicto` or `desde_cache`, and
-  the module-level constants) once that does not break external consumers.
-- A trained classifier for the 320 kbps MP3 stored at 16 bits, which is at
-  present a documented physical limit of the spectral analysis.
 
 ## [1.0.0] - 2026-09-16
 

@@ -1,55 +1,56 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Especificación de PyInstaller para FLAC VERIFIER 1.0.0 (Windows 10/11 x64).
+"""PyInstaller specification for FLAC VERIFIER 2.0.0 (Windows 10/11 x64).
 
-Se construye en modo CARPETA (`--onedir`): es lo recomendado para aplicaciones
-con NumPy/SciPy/Matplotlib porque arranca al instante y no descomprime cientos de
-megas en %TEMP% en cada ejecución (ni bloquea al abrir varios procesos a la vez,
-que es justo lo que hace el análisis en paralelo).
+The build uses FOLDER mode (`--onedir`): this is the recommended choice for
+applications with NumPy/SciPy/Matplotlib because it starts instantly and does not
+unpack hundreds of megabytes into %TEMP% on every run (nor does it block when
+several processes open at once, which is exactly what the parallel analysis
+does).
 
-Se generan DOS ejecutables que comparten la misma carpeta:
+TWO executables are generated and they share the same folder:
 
-    FLAC_Verifier.exe   la interfaz gráfica (sin consola: --noconsole)
-    flac_motor.exe      el motor en consola, que la GUI lanza como subproceso
+    FLAC_Verifier.exe   the graphical interface (no console: --noconsole)
+    flac_motor.exe      the console engine, which the GUI launches as a subprocess
 
-El motivo de separarlos: un ejecutable de ventana no tiene consola, así que
-PyInstaller deja `sys.stdout = None` y `print()` no escribe nada: el protocolo
-NDJSON llegaría vacío y la GUI se quedaría colgada esperando eventos. El motor,
-al ser de consola, tiene stdout real y la tubería funciona. La GUI lo lanza con
-CREATE_NO_WINDOW, así que no aparece ninguna ventana negra.
+The reason for separating them: a windowed executable has no console, so
+PyInstaller leaves `sys.stdout = None` and `print()` writes nothing: the NDJSON
+protocol would arrive empty and the GUI would hang waiting for events. Since the
+engine is a console build, it has a real stdout and the pipe works. The GUI
+launches it with CREATE_NO_WINDOW, so no black window appears.
 
-Construcción:
-    pyinstaller flac_verifier.spec --noconfirm --clean       (o python build.py)
+Build:
+    pyinstaller flac_verifier.spec --noconfirm --clean       (or python build.py)
 """
 from PyInstaller.utils.hooks import (collect_all, collect_data_files,
                                      collect_dynamic_libs, collect_submodules)
 
-# ─── Recolección de datos, binarios e importaciones ocultas ─────────────────
+# ─── Collection of data, binaries and hidden imports ────────────────────────
 datas: list = []
 binaries: list = []
 hiddenimports: list = []
 
-# Paquetes que PyInstaller no ve entero por sí solo: temas JSON y fuentes de
-# customtkinter, los TCL/TK y las DLL de tkdnd, la libsndfile de soundfile, y
-# las fuentes/datos de reportlab y PIL.
+# Packages that PyInstaller does not see in full on its own: the JSON themes and
+# fonts of customtkinter, the TCL/TK and the tkdnd DLLs, the libsndfile of
+# soundfile, and the fonts/data of reportlab and PIL.
 for paquete in ("customtkinter", "tkinterdnd2", "soundfile", "reportlab", "PIL"):
     d, b, h = collect_all(paquete)
     datas += d
     binaries += b
     hiddenimports += h
 
-# Matplotlib se recoge SOLO por sus datos (fuentes, mpl-data, stylelib…). Con
-# `collect_all` entrarían también sus submódulos, y entre ellos matplotlib.testing
-# arrastra pandas, pyarrow, cryptography y lxml: 107 MB de bibliotecas que este
-# proyecto no usa para nada (el backend Agg y pyplot los añade el hook propio de
-# PyInstaller, que además detecta el `matplotlib.use("Agg")` del motor).
+# Matplotlib is collected ONLY by its data (fonts, mpl-data, stylelib…). With
+# `collect_all` its submodules would enter as well, and among them matplotlib.testing
+# drags in pandas, pyarrow, cryptography and lxml: 107 MB of libraries that this
+# project does not use at all (the Agg backend and pyplot are added by
+# PyInstaller's own hook, which also detects the `matplotlib.use("Agg")` of the engine).
 datas += collect_data_files("matplotlib")
 
-# La DLL nativa de libsndfile, por si el hook no la clasifica como binario.
+# The native libsndfile DLL, in case the hook does not classify it as a binary.
 binaries += collect_dynamic_libs("soundfile")
 binaries += collect_dynamic_libs("_soundfile_data")
 
-# Submódulos que PyInstaller suele omitir en scipy/numpy y que este proyecto usa
-# (scipy.signal.stft/welch para el espectro, scipy.fft y numpy.fft por debajo).
+# Submodules that PyInstaller usually omits in scipy/numpy and that this project
+# uses (scipy.signal.stft/welch for the spectrum, scipy.fft and numpy.fft underneath).
 hiddenimports += [
     "numpy.fft",
     "numpy.fft.helper",
@@ -65,13 +66,13 @@ hiddenimports += [
     "scipy._lib",
     "scipy.io",
 ]
-# Se recogen los submódulos, pero sin los paquetes de tests: no se ejecutan nunca
-# y solo hacen bulto (y ruido en el informe de la compilación).
+# The submodules are collected, but without the test packages: they never run
+# and are only dead weight (and noise in the build report).
 hiddenimports += [m for m in collect_submodules("scipy.signal") if ".tests" not in m]
 hiddenimports += [m for m in collect_submodules("scipy.fft") if ".tests" not in m]
 
-# Módulos propios que solo se importan dentro de funciones (import perezoso): si
-# no se declaran, PyInstaller no los encuentra y el .exe falla al usarlos.
+# Own modules that are only imported inside functions (lazy import): if they are
+# not declared, PyInstaller does not find them and the .exe fails when using them.
 hiddenimports += [
     "motor_flac",
     "informe_pdf",
@@ -88,8 +89,8 @@ hiddenimports += [
     "soundfile",
 ]
 
-# ─── Datos propios: la identidad visual ────────────────────────────────────
-# Van a la carpeta del bundle, así que gui.py los encuentra por su ruta relativa.
+# ─── Own data: the visual identity ─────────────────────────────────────────
+# They go to the bundle folder, so gui.py finds them by their relative path.
 datas += [
     ("Logo/logo_flac_verifier.png", "Logo"),
     ("Logo/logo_flac_verifier_transparente.png", "Logo"),
@@ -103,7 +104,7 @@ VERSION = "version_info.txt"
 NOMBRE_GUI = "FLAC_Verifier"
 NOMBRE_MOTOR = "flac_motor"
 
-# ─── Análisis ──────────────────────────────────────────────────────────────
+# ─── Analysis ──────────────────────────────────────────────────────────────
 a = Analysis(
     ["main.py"],
     pathex=[],
@@ -113,15 +114,15 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Se excluyen herramientas pesadas que no se usan en ejecución.
+    # Heavy tools that are not used at runtime are excluded.
     excludes=[
         "pytest", "setuptools", "pip", "wheel",
         "IPython", "jupyter", "notebook", "nbformat",
         "matplotlib.tests", "numpy.tests", "scipy.tests",
         "PyQt5", "PyQt6", "PySide2", "PySide6", "wx",
-        # Entraban por matplotlib.testing (que ya no se recoge) y suman más de
-        # 100 MB: nada de lo que hace este programa los necesita, y dejarlos en
-        # la lista evita que un hook futuro los arrastre otra vez.
+        # They entered through matplotlib.testing (which is no longer collected)
+        # and add up to more than 100 MB: nothing this program does needs them,
+        # and keeping them in the list stops a future hook dragging them in again.
         "pandas", "pyarrow", "cryptography", "lxml",
         "openpyxl", "xlrd", "sqlalchemy", "ipykernel", "sphinx",
     ],
@@ -130,7 +131,7 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# ─── La interfaz gráfica (sin consola) ─────────────────────────────────────
+# ─── The graphical interface (no console) ──────────────────────────────────
 exe_gui = EXE(
     pyz,
     a.scripts,
@@ -140,8 +141,8 @@ exe_gui = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,                 # UPX dispara los falsos positivos de los antivirus
-    console=False,             # --noconsole: sin ventana negra de fondo
+    upx=False,                 # UPX triggers antivirus false positives
+    console=False,             # --noconsole: no black window behind it
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -151,10 +152,10 @@ exe_gui = EXE(
     version=VERSION,
 )
 
-# ─── El motor en consola (lo lanza la GUI) ─────────────────────────────────
+# ─── The console engine (launched by the GUI) ──────────────────────────────
 exe_motor = EXE(
     pyz,
-    a.scripts,                 # mismo punto de entrada: main.py reparte por banderas
+    a.scripts,                 # same entry point: main.py dispatches by flags
     [],
     exclude_binaries=True,
     name=NOMBRE_MOTOR,
@@ -162,7 +163,7 @@ exe_motor = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,              # consola real: stdout es un flujo válido
+    console=True,              # real console: stdout is a valid stream
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -172,7 +173,7 @@ exe_motor = EXE(
     version=VERSION,
 )
 
-# ─── Carpeta de distribución ───────────────────────────────────────────────
+# ─── Distribution folder ───────────────────────────────────────────────────
 coll = COLLECT(
     exe_gui,
     exe_motor,

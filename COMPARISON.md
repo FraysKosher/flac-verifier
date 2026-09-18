@@ -28,7 +28,7 @@ workflow.
 | Packaging | PyPI, Docker, wheel smoke tests in CI | PyInstaller onedir with two executables, plus `comprobar_ejecutable.py`, which verifies the frozen build against the source field by field |
 | Code size | 70 files, 15,426 lines in `src/` | 7 modules, 3,618 lines |
 | Tests | 562 test functions in 68 files | 229 test functions in 12 files |
-| Version checked | 1.13.16 (`1ae00ad`, 2026-09-15) | 1.0.0 |
+| Version checked | 1.13.16 (`1ae00ad`, 2026-09-15) | 2.0.0 |
 | Licence | MIT | MIT |
 
 ## The library-and-CLI design

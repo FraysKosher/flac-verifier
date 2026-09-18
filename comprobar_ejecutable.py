@@ -175,7 +175,15 @@ class Comprobador:
         self.anotar(f"analysis with {workers} processes", bien, detalle)
         if not bien:
             print("     " + self.abreviar(texto, 300))
-        elif not inicio_evento.get("parallel"):
+        elif "paralelo" not in inicio_evento:
+            # The protocol keys are Spanish by design: they are identifiers and were
+            # never renamed. Reading "parallel" here — the English word — silently
+            # returned None and made this check report a fallback that had not
+            # happened, which is worse than not checking at all.
+            self.anotar("real processes were used", False,
+                        "the engine did not report the 'paralelo' field: the protocol "
+                        "contract changed")
+        elif not inicio_evento.get("paralelo"):
             self.anotar("real processes were used", False,
                         "the engine fell back to serial: this environment cannot create "
                         "processes (the intended fallback). Run it in a "

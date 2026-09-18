@@ -33,6 +33,17 @@ EXE_MOTOR = os.path.join(CARPETA, "flac_motor.exe")
 PYTHON_MINIMO = (3, 8)
 
 
+def version_del_proyecto() -> str:
+    """The version the build announces, read from the single place that defines it.
+
+    It used to be a literal in the banner, which is how the tag, the release and
+    the executable ended up saying different numbers. `main.py` owns `VERSION`, so
+    the build reads it from there.
+    """
+    import main
+    return main.VERSION
+
+
 def _utf8() -> None:
     """UTF-8 on the output: on Windows, with the output redirected to a file or a
     pipe, cp1252 cannot cope with the ✓/✗ marks and the script would die on its own.
@@ -134,7 +145,7 @@ def main() -> int:
 
     _utf8()
     print("=" * 72)
-    print("BUILDING FLAC VERIFIER 1.0.0")
+    print("BUILDING FLAC VERIFIER " + version_del_proyecto())
     print("=" * 72)
 
     paso(1, "Checking the environment")

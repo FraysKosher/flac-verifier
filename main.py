@@ -32,7 +32,7 @@ import multiprocessing
 import os
 import sys
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 NOMBRE_MOTOR_EXE = "flac_motor.exe"
 
 AYUDA = """FLAC VERIFIER — FLAC authenticity verifier

@@ -1,13 +1,13 @@
-# ─── Artefactos de compilación ────────────────────────────────────────────────
-# `python build.py` los regenera; no se versionan (la carpeta dist/ son ~200 MB).
-# El ZIP de la release (~90 MB) se adjunta a la release de GitHub, no al repo.
+# ─── Build artefacts ─────────────────────────────────────────────────────────
+# `python build.py` regenerates them; they are not versioned (dist/ is ~200 MB).
+# The release ZIP (~90 MB) is attached to the GitHub release, not to the repository.
 build/
 dist/
 *.zip
 *.spec.bak
 
-# ─── Caché y resultados del análisis ─────────────────────────────────────────
-# Los espectrogramas y el informe son salida del programa, no fuentes.
+# ─── Analysis cache and results ──────────────────────────────────────────────
+# The spectrograms and the report are program output, not sources.
 _spectrograms/
 _espectrogramas/
 flac_verifier_report.pdf
@@ -23,7 +23,7 @@ venv/
 env/
 .python-version
 
-# ─── Herramientas y editores ─────────────────────────────────────────────────
+# ─── Tools and editors ───────────────────────────────────────────────────────
 .pytest_cache/
 .mypy_cache/
 .coverage
@@ -35,27 +35,27 @@ htmlcov/
 *.swp
 *~
 
-# ─── Sistema ─────────────────────────────────────────────────────────────────
+# ─── System ──────────────────────────────────────────────────────────────────
 Thumbs.db
 desktop.ini
 .DS_Store
 
-# ─── Audio de prueba ─────────────────────────────────────────────────────────
-# Los tests generan sus propios fixtures en un directorio temporal, así que
-# ningún .flac debería acabar en el repositorio.
+# ─── Test audio ──────────────────────────────────────────────────────────────
+# The tests generate their own fixtures in a temporary directory, so no .flac
+# should ever reach the repository.
 *.flac
 *.wav
 *.mp3
 *.m4a
 !tests/fixtures_*.flac
 
-# ─── Salidas sueltas de depuración ───────────────────────────────────────────
+# ─── Loose debug output ──────────────────────────────────────────────────────
 *.log
 _salida*.txt
 # Temporary dumps of a script's own output: never part of the project.
 _*.txt
 
-# ─── Exportaciones antiguas ──────────────────────────────────────────────────
-# README.html es un render viejo del README (decía «54 tests»): el README de
-# verdad es README.md, así que el HTML no se publica.
+# ─── Old exports ─────────────────────────────────────────────────────────────
+# README.html is a stale render of the README (it said "54 tests"): README.md is
+# the real one, so the HTML is not published.
 README.html

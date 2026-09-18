@@ -317,10 +317,21 @@ class TestEspecificacion(unittest.TestCase):
         exec(open(VERSION_INFO, encoding="utf-8").read(), espacio)   # pyinstaller runs it
         self.assertIn("VSVersionInfo", espacio)
         texto = open(VERSION_INFO, encoding="utf-8").read()
-        self.assertIn("1.0.0", texto)
+        # The Windows resources must announce the same version as the program, and
+        # the check reads it from the one place that defines it instead of repeating
+        # the literal: the tag, the release and the executable drifted apart once
+        # precisely because these were independent numbers.
+        self.assertIn(main.VERSION, texto)
+        self.assertIn(f'"{main.VERSION}.0"', texto)      # the filevers style: 2.0.0.0
         self.assertIn("FLAC VERIFIER", texto)
         self.assertIn("LegalCopyright", texto)
         self.assertIn("OriginalFilename", texto)
+
+    def test_el_constructor_anuncia_la_version_del_programa(self):
+        """The build banner takes the version from `main.py`, not from its own copy."""
+        fuente = open(os.path.join(RAIZ, "build.py"), encoding="utf-8").read()
+        self.assertIn("version_del_proyecto()", fuente)
+        self.assertNotRegex(fuente, r"BUILDING FLAC VERIFIER \d")
 
     def test_el_constructor_existe_y_es_python_valido(self):
         compile(open(os.path.join(RAIZ, "build.py"), encoding="utf-8").read(),

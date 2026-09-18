@@ -1,14 +1,14 @@
-# FLAC VERIFIER — dependencias
+# FLAC VERIFIER — dependencies
 #
-# Instalación:
+# Installation:
 #     pip install -r requirements.txt
 #
-# Versiones verificadas de referencia (donde se validó todo el proyecto):
+# Reference versions verified for this project:
 #     Python 3.10.11 | numpy 2.2.6 | scipy 1.15.3 | soundfile 0.13.1
 #     mutagen 1.47.0 | matplotlib 3.10.3 | reportlab 5.0.1
 #
-# Los tests NO necesitan dependencias extra: usan unittest de la biblioteca
-# estándar. Para ejecutarlos:
+# The tests need no extra dependency: they use unittest from the standard library.
+# To run them:
 #     python -m unittest discover -s tests -v
 
 numpy>=1.24
@@ -16,29 +16,29 @@ scipy>=1.10
 soundfile>=0.12
 mutagen>=1.46
 
-# ─── OPCIONALES ──────────────────────────────────────────────────────────────
-# El programa funciona con normalidad si no están instaladas; solo se pierde la
-# función correspondiente, y lo avisa con un mensaje claro en vez de fallar.
+# ─── OPTIONAL ────────────────────────────────────────────────────────────────
+# The program works normally without these; only the matching feature is lost, and
+# it says so with a clear message instead of failing.
 
-# Solo para espectrogramas PNG (opción --png del motor, o responder "s" en el
-# menú del CLI interactivo).
+# Only for PNG spectrograms (the engine's --png flag, or answering "y" in the
+# interactive CLI menu).
 matplotlib>=3.6
 
-# Solo para el informe PDF por álbum (opción --pdf del motor, o responder "s" en
-# el menú del CLI interactivo). Necesita Pillow para embeber los espectrogramas;
-# si tienes matplotlib ya está instalada.
+# Only for the per-album PDF report (the engine's --pdf flag, or answering "y" in
+# the interactive CLI menu). It needs Pillow to embed the spectrograms, which is
+# already installed if matplotlib is.
 reportlab>=4.0
 
-# Solo para la interfaz gráfica (python gui.py o python verificar_flac.py --gui).
+# Only for the graphical interface (python gui.py or python verificar_flac.py --gui).
 customtkinter>=5.2
 
-# Solo para arrastrar y soltar carpetas sobre la ventana. Si falta, la interfaz
-# funciona igual: el campo de ruta se rellena con el botón "Examinar".
+# Only for dragging folders onto the window. If it is missing the interface works
+# anyway: the path field is filled in with the "Browse" button.
 tkinterdnd2>=0.4
 
-# ─── SOLO PARA COMPILAR EL .EXE ─────────────────────────────────────────────
-# No hace falta para usar el programa; sí para construir la carpeta distribuible:
+# ─── ONLY TO BUILD THE .EXE ──────────────────────────────────────────────────
+# Not needed to use the program; only to build the distributable folder:
 #     pip install pyinstaller
 #     python build.py
-# Ver la sección "Distribución" del README.
+# See the "Distribution" section of the README.
 # pyinstaller>=6.0

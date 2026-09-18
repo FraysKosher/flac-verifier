@@ -1,15 +1,15 @@
-# Recursos de versión del ejecutable (los lee PyInstaller al construir).
+# Version resources of the executable (read by PyInstaller at build time).
 #
-# Esto es lo que hace que Windows muestre el .exe como una aplicación con nombre,
-# versión y copyright en lugar de un binario anónimo: menos sospechoso para
-# Windows Defender y para el usuario que lo ve en el explorador.
+# This is what makes Windows show the .exe as an application with a name, a version
+# and a copyright instead of an anonymous binary: less suspicious for Windows
+# Defender and for the user who sees it in Explorer.
 #
-# Cambia CompanyName y LegalCopyright por tus datos si vas a distribuirlo.
+# Replace CompanyName and LegalCopyright with your own details if you distribute it.
 
 VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(1, 0, 0, 0),
-        prodvers=(1, 0, 0, 0),
+        filevers=(2, 0, 0, 0),
+        prodvers=(2, 0, 0, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,          # VOS_NT_WINDOWS32
@@ -25,15 +25,15 @@ VSVersionInfo(
                     [
                         StringStruct("CompanyName", "FLAC VERIFIER"),
                         StringStruct("FileDescription",
-                                     "FLAC VERIFIER — verificador de autenticidad de archivos FLAC"),
-                        StringStruct("FileVersion", "1.0.0.0"),
+                                     "FLAC VERIFIER — FLAC authenticity verification"),
+                        StringStruct("FileVersion", "2.0.0.0"),
                         StringStruct("InternalName", "FLAC_Verifier"),
                         StringStruct("LegalCopyright", "Copyright (C) 2026 FLAC VERIFIER"),
                         StringStruct("OriginalFilename", "FLAC_Verifier.exe"),
                         StringStruct("ProductName", "FLAC VERIFIER"),
-                        StringStruct("ProductVersion", "1.0.0.0"),
+                        StringStruct("ProductVersion", "2.0.0.0"),
                         StringStruct("Comments",
-                                     "Motor de análisis + interfaz gráfica; incluye flac_motor.exe"),
+                                     "Analysis engine + graphical interface; includes flac_motor.exe"),
                     ],
                 )
             ]
