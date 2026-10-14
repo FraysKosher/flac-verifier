@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import MutableSequence
 
 try:
     from reportlab.lib import colors
@@ -87,7 +88,7 @@ def ruta_informe(ruta_analizada):
 def _estilo_veredicto(res):
     if res.get("error"):
         return ESTILO_ERROR
-    return ESTILO_VEREDICTO.get(res.get("veredicto"), ("INDETERMINATE", "#444444", "#EDEDED"))
+    return ESTILO_VEREDICTO.get(res.get("veredicto"), ESTILO_VEREDICTO["indeterminate"])
 
 
 def _num(valor, unidad="", decimales=1, si_none="—"):
@@ -154,8 +155,8 @@ def _estilos():
     }
 
 
-def _tabla(datos, anchos, estilos, estilo_celdas=None):
-    tabla = Table(datos, colWidths=anchos, hAlign="LEFT")
+def _tabla(datos, anchos, estilos, estilo_celdas=None, repetir_filas=0):
+    tabla = Table(datos, colWidths=anchos, hAlign="LEFT", repeatRows=repetir_filas)
     comandos = [("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
@@ -352,13 +353,13 @@ def _ficha_cancion(indice, total, res, est, temporal):
     # always stay together on the same page. KeepTogether is the safety net for
     # the extreme case (an issue list that leaves no room even for the minimum).
     titulo_espectro = Paragraph("Spectrogram", est["seccion"])
-    imagen = _ajustar_imagen(_imagen_espectrograma(res, temporal)[0],
+    imagen, aviso = _imagen_espectrograma(res, temporal)
+    imagen = _ajustar_imagen(imagen,
                              ALTO_MARCO_MM * mm - _alto_de(elemento + [titulo_espectro])
                              - 2 * mm)
     if imagen is not None:
         elemento.append(KeepTogether([titulo_espectro, imagen]))
     else:
-        aviso = _imagen_espectrograma(res, temporal)[1]
         elemento.append(titulo_espectro)
         elemento.append(Paragraph(f"(no image: {aviso})", est["normal"]))
     return elemento
@@ -441,7 +442,8 @@ def _tabla_final(resultados, est):
                                 est["celda"])])
         comandos.append(("BACKGROUND", (2, len(filas) - 1), (2, len(filas) - 1),
                          colors.HexColor(color_fondo)))
-    return _tabla(filas, [10 * mm, 62 * mm, 52 * mm, 20 * mm, 22 * mm], est, comandos)
+    return _tabla(filas, [10 * mm, 62 * mm, 52 * mm, 20 * mm, 22 * mm], est, comandos,
+                  repetir_filas=1)
 
 
 def _pie_de_pagina(canvas, doc, album, contador):
@@ -459,6 +461,72 @@ def _pie_de_pagina(canvas, doc, album, contador):
 
 
 # ─── PUBLIC API ──────────────────────────────────────────────────────────────
+
+class _FlujoPerezoso(MutableSequence):
+    """Generator-backed sequence for reportlab's document builder.
+
+    `BaseDocTemplate.build()` requires a *sequence*: it reads `flowables[0]`,
+    calls `len(flowables)` and deletes from the front, so a plain generator is not
+    accepted. This adapter materialises flowables on demand, so the report is not
+    held as one huge list: reportlab pulls page by page and each page's flowables
+    are released after it is drawn. `len()` only has to tell whether anything is
+    left (the count is used only for progress reporting, which the report does not
+    use)."""
+
+    def __init__(self, generador):
+        self._generador = generador
+        self._buffer = []
+        self._agotado = False
+
+    def _rellenar(self, cuantos):
+        while not self._agotado and len(self._buffer) < cuantos:
+            try:
+                self._buffer.append(next(self._generador))
+            except StopIteration:
+                self._agotado = True
+
+    def __len__(self):
+        self._rellenar(1)                    # just enough to know if there is one
+        return len(self._buffer)
+
+    def __getitem__(self, indice):
+        if isinstance(indice, slice):
+            if indice.stop is not None:
+                self._rellenar(indice.stop)
+            return self._buffer[indice]
+        self._rellenar(indice + 1)
+        return self._buffer[indice]
+
+    def __setitem__(self, indice, valor):
+        if isinstance(indice, slice):
+            self._buffer[indice] = list(valor)
+        else:
+            self._rellenar(indice + 1)
+            self._buffer[indice] = valor
+
+    def __delitem__(self, indice):
+        if isinstance(indice, slice):
+            if indice.stop is not None:
+                self._rellenar(indice.stop)
+            del self._buffer[indice]
+        else:
+            self._rellenar(indice + 1)
+            del self._buffer[indice]
+
+    def insert(self, posicion, valor):
+        self._buffer.insert(posicion, valor)
+
+
+def _elementos(ruta_analizada, resultados, modo, est, temporal):
+    """Yields the report flowables lazily: cover, one page per song, final table."""
+    yield from _portada(ruta_analizada, resultados, modo, est)
+    for i, res in enumerate(resultados, start=1):
+        yield PageBreak()
+        yield from _ficha_cancion(i, len(resultados), res, est, temporal)
+    yield PageBreak()
+    yield Paragraph("Overall summary", est["seccion"])
+    yield _tabla_final(resultados, est)
+
 
 def generar(ruta_analizada, resultados, destino=None, modo=None):
     """Writes the PDF report. NEVER raises.
@@ -490,15 +558,9 @@ def generar(ruta_analizada, resultados, destino=None, modo=None):
         pie = lambda lienzo, doc: _pie_de_pagina(lienzo, doc, os.path.basename(
             os.path.dirname(destino) or destino), contador)
 
-        elementos = _portada(ruta_analizada, resultados, modo, est)
-        for i, res in enumerate(resultados, start=1):
-            elementos.append(PageBreak())
-            elementos += _ficha_cancion(i, len(resultados), res, est, temporal)
-        elementos += [PageBreak(),
-                      Paragraph("Overall summary", est["seccion"]),
-                      _tabla_final(resultados, est)]
-
-        documento.build(elementos, onFirstPage=pie, onLaterPages=pie)
+        documento.build(
+            _FlujoPerezoso(_elementos(ruta_analizada, resultados, modo, est, temporal)),
+            onFirstPage=pie, onLaterPages=pie)
         paginas = contador["paginas"]
         return {"ok": True, "ruta": destino, "error": None, "paginas": paginas}
     except Exception as e:
