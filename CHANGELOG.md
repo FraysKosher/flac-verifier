@@ -15,6 +15,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A trained classifier for the 320 kbps MP3 stored at 16 bits, which is at
   present a documented physical limit of the spectral analysis.
 
+## [2.1.0] - 2026-10-14
+
+A performance release: the analysis, the report and the interface were optimised
+without changing a single verdict (the full result digest is identical on real
+albums).
+
+### Changed
+
+- **Engine (streaming path).** The spectral cut-off search is vectorised with
+  `np.cumsum` (O(n) instead of the Python window loop), `_pcm_bytes` dumps
+  contiguous PCM buffers (`<i1`/`<i2`/`<i4`), the LSB sample is no longer buffered
+  for ≤16-bit tracks, `|Z|²` is squared in place and the dynamic range uses
+  `np.partition`. On a real 21-track album: **35 % less time** and up to **164 MB
+  less peak RAM** with the spectrograms on.
+- **Report.** `informe_pdf.py` builds the PDF lazily (`_FlujoPerezoso`), repeats the
+  summary header on every page and shapes each spectrogram once.
+- **Interface.** The event loop drains the engine queue in bounded batches (no more
+  micro-freezes), the `__fin__` race is fixed, blocking dialogs are reserved for
+  fatal errors, and the event list, the log and the queue are bounded.
+- **Packaging.** The bundle drops `PIL._avif`, `reportlab.graphics`, the non-Agg
+  matplotlib backends and the non-Windows `tkinterdnd2` builds: the `_internal`
+  folder goes from 168 MB to 154 MB.
+
 ## [2.0.0] - 2026-09-18
 
 The first release with continuous integration, an English code base and a version
