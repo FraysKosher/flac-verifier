@@ -19,3 +19,8 @@
 *.flac binary
 *.wav  binary
 *.mp3  binary
+
+# GitHub language stats: the only tracked .html is the logo design source
+# (Logo/splashscreen.html), a static asset that must stay in the repository.
+# Keep HTML out of the language breakdown.
+*.html linguist-detectable=false
