@@ -30,7 +30,10 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from typing import Any, Callable, Iterable
+
+import informe_pdf
 
 try:
     import customtkinter as ctk
@@ -52,7 +55,9 @@ Mensaje = tuple[str, Evento]             # (channel, event) as it travels throug
 
 DIRECTORIO = os.path.dirname(os.path.abspath(__file__))
 MOTOR = os.path.join(DIRECTORIO, "motor_flac.py")
-NOMBRE_INFORME = "flac_verifier_report.pdf"
+# Single source: the report generator owns the file name and the GUI mirrors it,
+# so the engine event and the "Open PDF" button can never disagree.
+NOMBRE_INFORME = informe_pdf.NOMBRE_INFORME
 # Engine executable packaged next to the GUI (see flac_verifier.spec).
 NOMBRE_MOTOR_EXE = "flac_motor.exe"
 BANDERA_MOTOR_CLI = "--motor-cli"
@@ -110,6 +115,15 @@ COLORES = {
 }
 MODOS = ["center", "full", "seconds"]
 OPCIONES_WORKERS = ["Automatic", "1", "2", "4", "8"]
+
+# ─── UI throughput and memory limits ─────────────────────────────────────────
+LOTE_DRENADO = 200             # engine events processed per UI tick (keeps Tk responsive)
+INTERVALO_ACTIVO_MS = 20       # reschedule fast while events are pending
+INTERVALO_REPOSO_MS = 100      # gentle polling while the engine works quietly
+MAX_EVENTOS_EN_MEMORIA = 5000  # result events kept on screen / for the final summary
+MAX_LINEAS_LOG = 3000          # log lines kept in the text box
+MAX_COLA = 5000                # bounded queue: backpressure instead of unbounded growth
+COLORES_LOG = {"error": "#E06C6C", "aviso": "#E0A96C", "ok": "#7FD18A", "info": "#9AA4B2"}
 
 
 # ─── LOGIC (usable without a window) ─────────────────────────────────────────
@@ -328,6 +342,16 @@ class GestorProceso:
     def activo(self) -> bool:
         return self.proceso is not None and self.proceso.poll() is None
 
+    @property
+    def hilo_activo(self) -> bool:
+        """Is the reader thread still alive?
+
+        The reader queues `__fin__` only AFTER the process is reaped, so `activo`
+        can be False while the final event has not reached the queue yet. The
+        window must keep draining until the thread ends, or the last summary is
+        lost."""
+        return self.hilo is not None and self.hilo.is_alive()
+
     def iniciar(self, ruta: str, modo: str = "center", segundos: int | None = None,
                 pdf: bool = True, workers: int = 0, sin_cache: bool = False) -> list[str]:
         """Launches the analysis. Returns the command used (useful for the log)."""
@@ -383,9 +407,10 @@ if CTK_OK:
             self.geometry("1120x740")
             self.minsize(980, 640)
 
-            self.cola: "queue.Queue[Mensaje]" = queue.Queue()
+            self.cola: "queue.Queue[Mensaje]" = queue.Queue(maxsize=MAX_COLA)
             self.gestor = GestorProceso(self.cola, motor=motor)
-            self.eventos: list[Evento] = []
+            # Bounded: a very long batch must not grow the window's memory forever.
+            self.eventos: "deque[Evento]" = deque(maxlen=MAX_EVENTOS_EN_MEMORIA)
             self.total = 0
             self.recibidos = 0
             self.ruta_pdf: str | None = None
@@ -399,7 +424,7 @@ if CTK_OK:
             self._cargar_identidad()
             self._actualizar_estado()
             self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
-            self.dnd_activo = self._registrar_dnd()
+            self._registrar_dnd()
 
             if ruta_inicial:
                 self.var_ruta.set(ruta_inicial)
@@ -444,7 +469,10 @@ if CTK_OK:
             if not self.icono_cargado and os.path.exists(LOGO_ICONPHOTO):
                 try:
                     import tkinter
-                    self.iconphoto(True, tkinter.PhotoImage(file=LOGO_ICONPHOTO))
+                    # Keep a reference: if the PhotoImage is collected by the GC
+                    # the window icon silently disappears (only on non-Windows).
+                    self._icono_ventana = tkinter.PhotoImage(file=LOGO_ICONPHOTO)
+                    self.iconphoto(True, self._icono_ventana)
                     self.icono_cargado = True
                 except Exception:
                     self.icono_cargado = False
@@ -563,6 +591,9 @@ if CTK_OK:
                                       font=ctk.CTkFont(family="Consolas", size=12))
             self.log.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 10))
             self.log.configure(state="disabled")
+            # Tag colours are configured ONCE here; _log only reuses them.
+            for etiqueta, color in COLORES_LOG.items():
+                self.log.tag_config(etiqueta, foreground=color)
 
             acciones = ctk.CTkFrame(panel, fg_color="transparent")
             acciones.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 16))
@@ -577,15 +608,21 @@ if CTK_OK:
             self.log.configure(state="normal")
             self.log.insert("end", f"[{marca}] {texto}\n")
             try:                                     # colouring if the widget supports it
-                indice = self.log.index("end-2l")
-                self.log.tag_add(etiqueta, indice, "end-1c")
-                color = {"error": "#E06C6C", "aviso": "#E0A96C",
-                         "ok": "#7FD18A", "info": "#9AA4B2"}.get(etiqueta, "#9AA4B2")
-                self.log.tag_config(etiqueta, foreground=color)
+                self.log.tag_add(etiqueta, "end-2l", "end-1c")
             except Exception:
                 pass
+            self._recortar_log()
             self.log.configure(state="disabled")
             self.log.see("end")
+
+        def _recortar_log(self) -> None:
+            """Keeps the text box bounded: drops the oldest lines past the limit."""
+            try:
+                total = int(self.log.index("end-1c").split(".")[0])
+                if total > MAX_LINEAS_LOG:
+                    self.log.delete("1.0", f"{total - MAX_LINEAS_LOG + 1}.0")
+            except Exception:
+                pass
 
         def _registrar_dnd(self) -> bool:
             if not DND_OK:
@@ -668,7 +705,7 @@ if CTK_OK:
                 self._alerta("Path does not exist", f"Not found:\n{ruta}", error=True)
                 return
 
-            self.eventos = []
+            self.eventos.clear()
             self.total = 0
             self.recibidos = 0
             self.ruta_pdf = None
@@ -702,23 +739,33 @@ if CTK_OK:
         def _drenar_cola(self) -> None:
             """Runs on the interface thread: here it is safe to touch widgets.
 
-            It is rescheduled while the process is still alive **or** while the
-            last drain took something out: if the engine finishes right after a
-            pass, the `__fin__` event would stay in the queue and the window would
-            never show the final summary."""
-            if self.gestor.activo or self._vaciar_cola():
-                self.after(100, self._drenar_cola)
-
-        def _vaciar_cola(self) -> bool:
-            """Processes everything in the queue. True if it processed something."""
-            algo = False
+            It processes a BOUNDED batch per tick: a huge backlog can no longer
+            freeze the window, because Tk regains control between batches and the
+            Cancel button stays responsive. It is rescheduled while the engine is
+            alive, while the reader thread is still alive (it may not have queued
+            the final `__fin__` yet) or while a full batch was just processed."""
+            procesados = 0
             try:
-                while True:
+                while procesados < LOTE_DRENADO:
                     canal, evento = self.cola.get_nowait()
-                    self._procesar(canal, evento)
-                    algo = True
+                    try:
+                        self._procesar(canal, evento)
+                    except Exception as e:      # one bad event cannot stall the UI
+                        self._log(f"Could not process an engine event: "
+                                  f"{type(e).__name__}: {e}", "error")
+                    procesados += 1
             except queue.Empty:
-                return algo
+                pass
+
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            backlog = procesados >= LOTE_DRENADO
+            if backlog or self.gestor.activo or self.gestor.hilo_activo:
+                self.after(INTERVALO_ACTIVO_MS if backlog else INTERVALO_REPOSO_MS,
+                           self._drenar_cola)
 
         def _procesar(self, canal: str, evento: Evento) -> None:
             tipo = evento.get("tipo")
@@ -749,9 +796,13 @@ if CTK_OK:
                           f"({evento.get('paginas', '?')} pages)", "ok")
                 self._actualizar_estado()
             elif tipo == "aviso":
-                self._alerta("Engine warning", str(evento.get("mensaje")), error=False)
+                # Non-blocking: engine warnings go to the log. A modal dialog here
+                # would freeze the Tk event loop on every warning.
+                self._log(f"Engine warning: {evento.get('mensaje')}", "aviso")
             elif tipo == "error":
-                self._alerta("Engine error", str(evento.get("mensaje")), error=True)
+                # The blocking dialog is reserved for a fatal non-zero exit, shown
+                # once in _finalizar, not for every engine error event.
+                self._log(f"Engine error: {evento.get('mensaje')}", "error")
             elif tipo == "__fin__":
                 self._finalizar(evento)
             elif tipo == "__ilegible__":
