@@ -396,12 +396,21 @@ class TestGestorProceso(unittest.TestCase):
             gestor.esperar(tiempo=5)
 
     def test_si_terminate_falla_se_usa_kill(self):
-        proceso = ProcesoFalso(['{"tipo": "fin"}'], falla_terminate=True)
+        # The stream is held open so the fake process is still alive when the test
+        # cancels it. With a stream that reaches EOF immediately, the reader thread
+        # can reap the process first, and `terminar_proceso()` would (correctly) see
+        # it already dead and return without calling terminate/kill — that race made
+        # this test flaky on fast runners.
+        proceso = ProcesoFalso(['{"tipo": "fin"}'], falla_terminate=True, bloquear=True)
         gestor, _ = self._gestor(proceso)
-        gestor.iniciar("C:/Album")
-        gestor.cancelar()
-        self.assertGreaterEqual(proceso.terminado, 1)
-        self.assertGreaterEqual(proceso.muerto, 1)
+        try:
+            gestor.iniciar("C:/Album")
+            gestor.cancelar()
+            self.assertGreaterEqual(proceso.terminado, 1)
+            self.assertGreaterEqual(proceso.muerto, 1)
+        finally:
+            proceso.liberar()
+            gestor.esperar(tiempo=5)
 
     def test_terminar_proceso_mata_el_arbol_en_windows(self):
         """The engine spreads work across child processes: they all have to be killed."""
