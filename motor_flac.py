@@ -122,7 +122,7 @@ def verificar_firma(ruta):
     try:
         with open(ruta, "rb") as f:
             return f.read(4) == b"fLaC"
-    except (FileNotFoundError, PermissionError) as e:
+    except (FileNotFoundError, PermissionError):
         return False
 
 def verificar_metadatos(ruta):

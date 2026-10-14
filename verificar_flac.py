@@ -20,7 +20,14 @@ if _DIRECTORIO not in sys.path:
 
 import motor_flac as motor
 
-VERSION = "v4.0"
+# The version has a SINGLE source: main.py owns it, build.py stamps the .exe from
+# it and version_info.txt mirrors it. It used to be a literal here as well, and it
+# drifted ("v4.0" while the program announced "2.0.0"), so this now reads it back
+# from that one place instead of keeping a second copy in sync by hand.
+try:
+    from main import VERSION
+except Exception:                        # main.py unavailable: the CLI still works
+    VERSION = "unknown"
 
 SALIR_CMDS = {"exit", "q", "quit", "0"}
 AFIRMATIVOS = ("y", "yes")
@@ -137,11 +144,6 @@ def _cuerpo(res):
     for problema in res.get("problemas", []):
         print(f"    → {problema}")
     return res["veredicto"]
-
-def imprimir_informe(res):
-    """Full report (header + body) for one engine result."""
-    _encabezado(res.get("archivo", "?"))
-    return _cuerpo(res)
 
 # ─── MENU ────────────────────────────────────────────────────────────────────
 

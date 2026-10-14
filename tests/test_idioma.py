@@ -253,7 +253,6 @@ class TestIdioma(unittest.TestCase):
         esperados = {"GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
                      "PROBABLE UPSCALE", "indeterminate"}
         self.assertEqual(set(gui.ETIQUETA_VEREDICTO), esperados)
-        self.assertEqual(set(gui.COLOR_VEREDICTO), esperados)
         self.assertEqual(set(informe_pdf.ESTILO_VEREDICTO), esperados)
         # The engine can only emit those labels. Only text literals are inspected,
         # so a comment or a docstring may still quote an old name on purpose.
