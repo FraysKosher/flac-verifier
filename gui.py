@@ -11,8 +11,9 @@ Architecture (designed so that the interface never freezes on Windows):
       using the same interpreter that runs the GUI.
     - A daemon THREAD reads stdout line by line (the engine's NDJSON protocol)
       and puts the events into a `queue.Queue`.
-    - The window drains that queue with `self.after(100, ...)`: no widget is
-      touched from the reader thread, so there are no races.
+    - The window drains that queue in bounded batches (`LOTE_DRENADO` events per
+      tick, rescheduled with a short interval while there is a backlog): no widget
+      is touched from the reader thread, and a huge batch cannot freeze the window.
 
 The logic (command, parsing, formatting, process lifecycle) is kept apart from
 the widgets so that it can be tested without opening the window.
