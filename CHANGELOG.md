@@ -38,6 +38,18 @@ albums).
   matplotlib backends and the non-Windows `tkinterdnd2` builds: the `_internal`
   folder goes from 168 MB to 154 MB.
 
+### Fixed
+
+- The process-manager cancellation test (`test_gui.py`) was flaky: it raced the
+  reader thread and could reap the fake process before `cancel()` ran. It now
+  holds the stream open, and a new test covers the reader-thread liveness
+  (`hilo_activo`) the window uses so as not to lose the final event.
+
+### Removed
+
+- The stale Vite build shell `Logo/index.html`; and HTML is kept out of GitHub's
+  language statistics (`.gitattributes`: `*.html linguist-detectable=false`).
+
 ## [2.0.0] - 2026-09-18
 
 The first release with continuous integration, an English code base and a version

@@ -5,8 +5,11 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
+[![Version: 2.1.0](https://img.shields.io/badge/version-2.1.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 229](https://img.shields.io/badge/tests-230-brightgreen)](README.md#tests)
+[![Tests: 230](https://img.shields.io/badge/tests-230-brightgreen)](README.md#tests)
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the version history (current: **2.1.0**).
 
 A tool for deciding whether a FLAC file is **genuinely lossless** or fake
 lossless: a transcode from a lossy format (MP3, AAC…) or a bit-depth upgrade
@@ -96,8 +99,8 @@ chosen with "Browse".
 
 While it is analysing: a per-file progress bar, a log with timestamps and a
 colour per verdict, and when it finishes a status card with the batch summary
-(green, yellow, orange or red). Engine errors and warnings appear in the log and
-in a native dialog, without closing the application.
+(green, yellow, orange or red). Engine warnings and errors are written to the log
+(only a fatal failure opens a native dialog), without closing the application.
 
 **How it works inside** (so that it does not freeze on Windows):
 
@@ -108,9 +111,12 @@ in a native dialog, without closing the application.
    them back.
 2. A **daemon thread** reads stdout and stderr and puts them in a
    `queue.Queue`; no widget is touched from that thread.
-3. The window drains the queue with `self.after(100, …)`, always on the
-   interface thread, and keeps draining until nothing is left (if the engine
-   finishes right after a pass, the final event would not be lost).
+3. The window drains that queue in **bounded batches** (`LOTE_DRENADO` events per
+   tick, always on the interface thread) and reschedules with a short interval
+   while there is a backlog, so a huge batch cannot freeze the window and
+   "Cancel" stays responsive. It keeps draining while the process is alive **or**
+   while the reader thread still is, so the final `__fin__` event is never lost
+   even if the engine finishes right after a pass.
 4. "Cancel" kills the process tree with `taskkill /F /T` on Windows (the engine
    spreads the work across children: killing only the parent would leave
    orphans) and leaves `terminate()`/`kill()` as a fallback. Closing the window
@@ -183,24 +189,38 @@ dist/FLAC_Verifier/
 ```
 
 The whole folder is copied or compressed into a ZIP: **the `.exe` alone does not
-work**, it needs its `_internal/` next to it. That is about 202 MB on disk
-(88 MB in a ZIP), because it includes NumPy, SciPy, Matplotlib and the Python
+work**, it needs its `_internal/` next to it. That is about 186 MB on disk
+(81 MB in a ZIP), because it includes NumPy, SciPy, Matplotlib and the Python
 interpreter. The first launch takes a few seconds (that is normal: there is
 nothing to unpack in `%TEMP%`, which is exactly the reason for using folder mode
 instead of a single `.exe`).
 
-Where those 202 MB come from: `scipy` with its DLLs (82 MB), `numpy` (27 MB),
-`matplotlib` (18 MB), `PIL` (14 MB, used by reportlab for the images),
-`reportlab` (4 MB) and the Python interpreter with Tcl/Tk.
+Where those 186 MB come from: `scipy` with its DLLs (≈63 MB), the OpenBLAS
+libraries that numpy and scipy each ship (≈39 MB together), `matplotlib` (≈12 MB),
+`PIL` (≈6 MB, used by reportlab for the images), `reportlab` (≈4 MB) and the
+Python interpreter with Tcl/Tk and `libsndfile`.
+
+The 2.1.0 build also trimmed what the program never loads: `PIL._avif` (an image
+codec it never opens, ≈7.5 MB), `reportlab.graphics` (the chart stack `platypus`
+never imports), every **non-Agg** matplotlib backend (Qt, GTK, Tk, Wx, PDF, SVG,
+PS, Cairo, WebAgg…) and the non-Windows `tkinterdnd2` builds (only `win-x64` is
+kept). `collect_all()` was also called with `include_py_files=False`: by default
+it copies every `.py` again as *data*, which bloated the bundle and defeated the
+`excludes`.
 
 Collecting matplotlib with `collect_all` also pulled in `pandas`, `pyarrow`,
 `cryptography` and `lxml` —107 MB— because `matplotlib.testing` imports them:
 they are for matplotlib's own tests, not for this program. That is why the
 matplotlib `.spec` collects only its data (fonts, `mpl-data`) and lets
 PyInstaller's own hook add the `Agg` backend, and those four libraries are in
-`excludes`. The result: from 340 MB to 202 MB, and the `.exe` files from 19.0 to
-12.9 MB. If the `.spec` is ever touched, it is worth looking at the size of
-`dist/`: a jump of 100 MB means they have come back in.
+`excludes`. The result: from 340 MB to 186 MB (154 MB inside `_internal/`), and
+the `.exe` files from 19.0 to 12.2 MB. If the `.spec` is ever touched, it is worth
+looking at the size of `dist/`: a jump of 100 MB means they have come back in.
+
+> One exclusion is deliberately **not** made: `scipy.optimize._highspy`. The
+> engine never solves a linear program, but `import scipy.signal` pulls in
+> `scipy.optimize._linprog_highs`, which imports `_highspy` eagerly — removing it
+> would break the engine at start-up. The `.spec` records this in a comment.
 
 Use from a machine with no Python:
 
@@ -610,9 +630,35 @@ Per phase (same 10-minute signal):
 | MD5 | 0.84 s | 0.84 s | unavoidable work, but in the same pass |
 | Mono FFT | 50 ms | 25 ms | reuses the single STFT |
 
-Both paths produce **the same verdict, the same score and the same problems**;
-there is only numerical drift in `ratio`, `var_alta_db` and `separacion_stereo`
-of the order of 0.02–0.5 %, which does not change any decision.
+Both paths produce **the same verdict, the same score and the same problems**.
+`test_rendimiento.py` pins it exactly: the streaming path and the array path (the
+oracle) must return identical values, field by field, including `ratio`,
+`var_alta_db` and `separacion_stereo`.
+
+### 2.1.0: vectorising the hot paths
+
+The streaming pass was already memory-bounded; 2.1.0 made the arithmetic itself
+faster, without changing any result (verified field by field):
+
+| Hot spot | 2.1.0 change | Isolated gain |
+|---|---|---|
+| Spectral cut-off search (`_metricas_espectrales`) | Sliding-window loop `O(n·paso)` → `np.cumsum` `O(n)` | **×57** |
+| `_pcm_bytes` (MD5 dump, 16-bit) | `<i8` round-trip → contiguous `<i1`/`<i2`/`<i4` | **×3.7** |
+| Dynamic range (`_dr_desde_rms`) | `sorted()` `O(n log n)` → `np.partition` `O(n)` | **×13** |
+| Spectrogram render | float64 `log10` → float32 in place, decimate first | **×1.35** |
+
+On a real 21-track album (463 MB, 16/44.1 kHz, `--mode full`):
+
+| Scenario | Before | After | Saving |
+|---|---|---|---|
+| Full album, no PNG | 29.46 s | **19.14 s** | **−35 %** |
+| Full album, with PNG | 47.95 s | **32.49 s** | **−32 %** |
+| Peak RAM, with PNG | 734 MB | **570 MB** | **−164 MB** |
+
+The verdicts are identical before and after (`15 GENUINE LOSSLESS ·
+5 PROBABLY LOSSLESS · 1 PROBABLE UPSCALE` on that album). The GUI got the same
+treatment: it drains the engine queue in bounded batches, the `__fin__` race is
+fixed, and the event list, the log and the queue are bounded.
 
 ### Full album with a PDF report
 
@@ -686,10 +732,11 @@ GitHub Actions runs the same command on Ubuntu and Windows, with Python 3.10 and
 3.12, on every push and pull request (`.github/workflows/ci.yml`). The badge at the
 top of this file reports the last run.
 
-Two tests are skipped depending on the environment, and in both cases the skip is
-the right answer: the one that checks that the parallel path really uses processes
-(if the system does not allow creating them) and the one that covers operation
-**without** `tkinterdnd2` (if the library is installed).
+A few tests skip themselves depending on the environment, and in every case the
+skip is the right answer: the parallel path really uses processes (skipped if the
+system does not allow creating them), operation **without** `tkinterdnd2`
+(skipped if the library is installed), and the real-MP3 cases (skipped if `ffmpeg`
+is not on the `PATH`).
 
 | Module | What it pins down |
 |---|---|
@@ -700,9 +747,9 @@ the right answer: the one that checks that the parallel path really uses process
 | `test_rendimiento.py` | The streaming path gives the same as the array path (oracle); vectorisation identical to the naive loop; runs that cross blocks and that end with the file |
 | `test_cache_y_paralelo.py` | The cache reuses and gives the same, and is invalidated by date, size, MD5, mode or engine version; the parallel path matches the sequential one and preserves order; with no processes it degrades to serial; the PNG is drawn with `imshow` |
 | `test_informe_pdf.py` | The PDF is generated where it should be, has one page per song plus cover and summary, contains the expected text (its content is really read back), embeds the spectrograms, works without them, no record overflows its page and no PDF failure aborts the analysis |
-| `test_gui.py` | Subprocess command with `-u` and `CREATE_NO_WINDOW`; NDJSON event parsing (including unreadable lines); formatting of results and of the colour summary; process life cycle and cancellation (including the `kill` fallback and the tree with `taskkill`); real-time events with a real subprocess; and the hidden window with its full flow |
+| `test_gui.py` | Subprocess command with `-u` and `CREATE_NO_WINDOW`; NDJSON event parsing (including unreadable lines); formatting of results and of the colour summary; process life cycle and cancellation (including the `kill` fallback and the tree with `taskkill`, and the reader-thread liveness `hilo_activo` the window uses so as not to lose the final event); real-time events with a real subprocess; and the hidden window with its full flow |
 | `test_estructura.py` | Importing executes nothing; the CLI does not duplicate the engine; UTF-8 with a redirected stdout; clean EOF |
-| `test_empaquetado.py` | `freeze_support()` is the first statement of `main.py`; the flag dispatch of `main.py`; the engine command in source mode, packaged and without the engine `.exe`; the `.spec` collects everything (packages with data, soundfile DLLs, scipy submodules, own modules, two `EXE` with the correct console, icon, version, no UPX); `version_info.txt` is coherent; `build.py` builds |
+| `test_empaquetado.py` | `freeze_support()` is the first statement of `main.py`; the flag dispatch of `main.py`; the engine command in source mode, packaged and without the engine `.exe`; the `.spec` collects what it needs (packages with data, soundfile DLLs, scipy submodules, own modules, two `EXE` with the correct console, icon, version, no UPX, `include_py_files=False` and the exclusion list); `version_info.txt` is coherent; `build.py` builds |
 | `test_idioma.py` | The language of the project: no text literal of the application and tool modules contains Spanish characters or Spanish words, and neither do any comment or docstring of any Python file in the repository (only the static parts of an f-string are inspected, so an interpolated variable name is not mistaken for prose; JSON protocol keys, reportlab style names and Spanish identifiers are treated as internal names and allowed). It also pins the shared verdict labels across engine, GUI and PDF, the English command-line flags, and the report and spectrogram folder names |
 
 `tests/test_veredictos.py` generates real MP3 transcodes with `ffmpeg` if it is on
