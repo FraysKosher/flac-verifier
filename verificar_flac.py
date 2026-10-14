@@ -7,7 +7,7 @@ report and drives the interactive menu.
 
 Usage:
     python verificar_flac.py          # interactive menu
-    python motor_flac.py --ruta ...   # raw engine, JSON protocol per line
+    python motor_flac.py --path ...   # raw engine, JSON protocol per line
 """
 import os
 import sys
