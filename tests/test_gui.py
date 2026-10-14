@@ -435,6 +435,21 @@ class TestGestorProceso(unittest.TestCase):
     def test_terminar_none_no_lanza(self):
         gui.terminar_proceso(None)
 
+    def test_hilo_activo_distingue_el_lector_en_marcha(self):
+        """`hilo_activo` is what the window uses so as not to lose the final `__fin__`.
+
+        It has to be True while the reader thread is working and False once that
+        thread has ended, even if the process has already been reaped."""
+        proceso = ProcesoFalso(['{"tipo": "fin"}'], bloquear=True)
+        gestor, _ = self._gestor(proceso)
+        try:
+            gestor.iniciar("C:/Album")
+            self.assertTrue(gestor.hilo_activo)
+        finally:
+            proceso.liberar()
+            gestor.esperar(tiempo=5)
+        self.assertFalse(gestor.hilo_activo)
+
 
 class TestProcesoReal(unittest.TestCase):
     """A real subprocess: it checks real time and cancellation."""
