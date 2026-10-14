@@ -21,6 +21,8 @@ launches it with CREATE_NO_WINDOW, so no black window appears.
 Build:
     pyinstaller flac_verifier.spec --noconfirm --clean       (or python build.py)
 """
+import os
+
 from PyInstaller.utils.hooks import (collect_all, collect_data_files,
                                      collect_dynamic_libs, collect_submodules)
 
@@ -33,7 +35,10 @@ hiddenimports: list = []
 # fonts of customtkinter, the TCL/TK and the tkdnd DLLs, the libsndfile of
 # soundfile, and the fonts/data of reportlab and PIL.
 for paquete in ("customtkinter", "tkinterdnd2", "soundfile", "reportlab", "PIL"):
-    d, b, h = collect_all(paquete)
+    # include_py_files=False: the source `.py` files are already compiled into the
+    # PYZ; copying them again as *data* only bloats the bundle (and defeats the
+    # `excludes` below, which drop unused modules but cannot drop data copies).
+    d, b, h = collect_all(paquete, include_py_files=False)
     datas += d
     binaries += b
     hiddenimports += h
@@ -48,6 +53,22 @@ datas += collect_data_files("matplotlib")
 # The native libsndfile DLL, in case the hook does not classify it as a binary.
 binaries += collect_dynamic_libs("soundfile")
 binaries += collect_dynamic_libs("_soundfile_data")
+
+# ─── Trim what the app never loads ───────────────────────────────────────────
+# Two sources of dead weight that `collect_all` above pulls in:
+#   * tkinterdnd2 ships one native tkdnd build per platform and ABI; this is a
+#     Windows x64 build against Tcl/Tk 8.6, so only `win-x64` is ever loaded
+#     (the Tcl 9, Linux, macOS, arm64 and x86 builds cannot run here).
+#   * Pillow bundles optional codecs (AVIF…) the program never opens: it only
+#     reads PNG (spectrograms) and writes JPEG (for the PDF).
+def _conservar(origen):
+    ruta = str(origen).replace("\\", "/").lower()
+    if "tkinterdnd2/tkdnd/" in ruta:
+        return "tkinterdnd2/tkdnd/win-x64/" in ruta
+    return "_avif" not in os.path.basename(ruta)
+
+datas    = [(s, d) for (s, d) in datas if _conservar(s)]
+binaries = [(s, d) for (s, d) in binaries if _conservar(s)]
 
 # Submodules that PyInstaller usually omits in scipy/numpy and that this project
 # uses (scipy.signal.stft/welch for the spectrum, scipy.fft and numpy.fft underneath).
@@ -125,6 +146,45 @@ a = Analysis(
         # and keeping them in the list stops a future hook dragging them in again.
         "pandas", "pyarrow", "cryptography", "lxml",
         "openpyxl", "xlrd", "sqlalchemy", "ipykernel", "sphinx",
+        # Optional codec the app never opens (only PNG in, JPEG out).
+        "PIL._avif",
+        # reportlab's chart/graphics stack: `platypus` never imports it (verified),
+        # so the report renders fine without it.
+        "reportlab.graphics",
+        # Matplotlib backends: the engine forces the Agg backend, so every other
+        # one (Qt, GTK, Tk, Wx, PDF, SVG, PS, Cairo, WebAgg…) is dead weight.
+        "matplotlib.backends.backend_pdf",
+        "matplotlib.backends.backend_svg",
+        "matplotlib.backends.backend_ps",
+        "matplotlib.backends.backend_pgf",
+        "matplotlib.backends.backend_cairo",
+        "matplotlib.backends.backend_gtk3",
+        "matplotlib.backends.backend_gtk3agg",
+        "matplotlib.backends.backend_gtk3cairo",
+        "matplotlib.backends.backend_gtk4",
+        "matplotlib.backends.backend_gtk4agg",
+        "matplotlib.backends.backend_gtk4cairo",
+        "matplotlib.backends.backend_qt",
+        "matplotlib.backends.backend_qtagg",
+        "matplotlib.backends.backend_qtcairo",
+        "matplotlib.backends.backend_tkagg",
+        "matplotlib.backends.backend_tkcairo",
+        "matplotlib.backends.backend_wx",
+        "matplotlib.backends.backend_wxagg",
+        "matplotlib.backends.backend_wxcairo",
+        "matplotlib.backends.backend_macosx",
+        "matplotlib.backends.backend_nbagg",
+        "matplotlib.backends.backend_webagg",
+        "matplotlib.backends.backend_webagg_core",
+        "matplotlib.backends.backend_template",
+        "matplotlib.backends.backend_mixed",
+        "matplotlib.backends._tkagg",
+        "matplotlib.backends._backend_tk",
+        "matplotlib.backends._backend_gtk",
+        # NOTE: scipy.optimize._highspy is deliberately NOT excluded: `import
+        # scipy.signal` pulls in scipy.optimize._linprog_highs, which imports
+        # _highspy eagerly, so removing it would break the engine at start-up
+        # (verified: it is loaded as soon as scipy.signal is imported).
     ],
     noarchive=False,
     optimize=0,
