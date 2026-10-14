@@ -30,7 +30,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable
 
 try:
     import customtkinter as ctk
@@ -107,13 +107,6 @@ COLORES = {
     "naranja":  ("#FDE8D5", "#A85B00"),
     "rojo":     ("#FBE0E0", "#A11616"),
     "gris":     ("#EDEDED", "#444444"),
-}
-COLOR_VEREDICTO = {
-    "GENUINE LOSSLESS":       "verde",
-    "PROBABLY LOSSLESS": "amarillo",
-    "SUSPICIOUS":                 "naranja",
-    "PROBABLE UPSCALE":       "rojo",
-    "indeterminate":          "gris",
 }
 MODOS = ["center", "full", "seconds"]
 OPCIONES_WORKERS = ["Automatic", "1", "2", "4", "8"]

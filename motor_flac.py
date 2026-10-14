@@ -49,10 +49,16 @@ preparar_cache_matplotlib()
 
 try:
     import matplotlib
-    matplotlib.use('Agg')
+    matplotlib.use('Agg')          # headless backend: safe in worker processes
+    # pyplot is kept at module level because the spectrogram uses plt.Figure (the
+    # OO Figure class, which does not touch pyplot's global state); the test suite
+    # injects failures through `motor.plt`.
     import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
     MATPLOTLIB_OK = True
 except ImportError:
+    plt = None
+    FigureCanvasAgg = None
     MATPLOTLIB_OK = False
 
 # ─── BASIC CHECKS ─────────────────────────────────────────────────────────────
@@ -122,7 +128,7 @@ def verificar_firma(ruta):
     try:
         with open(ruta, "rb") as f:
             return f.read(4) == b"fLaC"
-    except (FileNotFoundError, PermissionError) as e:
+    except (FileNotFoundError, PermissionError):
         return False
 
 def verificar_metadatos(ruta):
@@ -158,14 +164,23 @@ def leer_audio(ruta):
 # It is reported as a FACT of its own ("md5"), never as a scoring vote.
 
 _ANCHO_POR_BITS = {8: 1, 16: 2, 24: 3, 32: 4}
+# Direct dump width for 8/16/32 bits: the integer dtype already matches the format
+# width, so the contiguous buffer is written as is (no <i8 round-trip, no
+# non-contiguous view). 24 bits has no native dtype and falls back to <i4.
+_DTYPE_POR_ANCHO = {1: "<i1", 2: "<i2", 4: "<i4"}
 
 def _pcm_bytes(bloque, bits_per_sample, ancho):
     """Little-endian interleaved PCM of a block, exactly as the format hashes it.
 
     float64 -> exact integer: the soundfile conversion is m / 2**(bits-1)."""
     escala = float(1 << (bits_per_sample - 1))
-    q = np.round(bloque * escala).astype("<i8")
-    return q.view(np.uint8).reshape(-1, 8)[:, :ancho].tobytes()
+    dt = _DTYPE_POR_ANCHO.get(ancho)
+    if dt is not None:
+        return np.rint(bloque * escala).astype(dt).tobytes()
+    # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
+    # little-endian layout the old <i8 path produced, at half the memory.
+    q = np.rint(bloque * escala).astype("<i4")
+    return q.view(np.uint8).reshape(-1, 4)[:, :ancho].tobytes()
 
 def _md5_pcm(data, bits_per_sample, frames_por_bloque=1 << 20):
     """MD5 of the decoded PCM of a whole array. None if it is not verifiable."""
@@ -270,30 +285,38 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
         carpeta        = os.path.dirname(ruta_audio)
         nombre         = os.path.splitext(os.path.basename(ruta_audio))[0]
         directorio_png = os.path.join(carpeta, "_spectrograms")
-        try:
-            os.makedirs(directorio_png, exist_ok=True)
-        except FileExistsError:
-            pass                    # several processes may create it at once
+        os.makedirs(directorio_png, exist_ok=True)   # race-safe across processes
 
         ruta_png = os.path.join(directorio_png, nombre + "_espectrograma.png")
 
-        db  = 10 * np.log10(np.asarray(mezcla, dtype=np.float64) + 1e-30)
-        db -= np.max(db)
+        # 1) Decimate BEFORE the transcendental step: log10 runs on far fewer
+        #    cells when the window has more frames than the PNG can show.
+        mezcla_arr = np.asarray(mezcla, dtype=np.float32)
+        if mezcla_arr.shape[1] > MAX_FRAMES_PNG:
+            step       = max(1, mezcla_arr.shape[1] // MAX_FRAMES_PNG)
+            mezcla_arr = mezcla_arr[:, ::step]
+            times      = times[::step]
 
-        MAX_FRAMES = MAX_FRAMES_PNG
-        if db.shape[1] > MAX_FRAMES:
-            step  = max(1, db.shape[1] // MAX_FRAMES)
-            db    = db[:, ::step]
-            times = times[::step]
+        # 2) log10 in place, in float32 (half the memory bandwidth of float64).
+        db = np.maximum(mezcla_arr, 1e-30)
+        np.log10(db, out=db)
+        db *= 10.0
+        db -= float(np.max(db))
 
-        fig, ax = plt.subplots(figsize=FIGURA_ESPECTROGRAMA, dpi=DPI_ESPECTROGRAMA)
+        # 3) OO API through plt.Figure: it returns the matplotlib.figure.Figure
+        #    class directly, so pyplot's global state is not touched, yet the
+        #    module-level `plt` stays as the fault-injection point the tests use.
+        fig = plt.Figure(figsize=FIGURA_ESPECTROGRAMA, dpi=DPI_ESPECTROGRAMA)
+        FigureCanvasAgg(fig)
+        ax  = fig.add_subplot(111)
+
         # imshow paints a raster: with a grid of ~2049x1500 cells it is ~10 times
         # faster than pcolormesh(shading="gouraud") and more faithful (gouraud
         # interpolated between cell centres, smoothing the result).
         img = ax.imshow(db, aspect="auto", origin="lower", cmap="inferno",
                         vmin=-80, vmax=0, interpolation="auto",
                         extent=[times[0], times[-1], freqs[0] / 1000, freqs[-1] / 1000])
-        plt.colorbar(img, ax=ax, label="dB (relative to peak)")
+        fig.colorbar(img, ax=ax, label="dB (relative to peak)")
         ax.set_ylabel("Frequency (kHz)")
         ax.set_xlabel("Time (s)")
         ax.set_title(f"Spectrogram — {os.path.basename(ruta_audio)}")
@@ -306,15 +329,11 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
                        label=f"Corte: {frecuencia_corte/1000:.1f} kHz")
         if techo_hz or frecuencia_corte:
             ax.legend(loc="upper right", fontsize=8)
-        plt.tight_layout()
-        plt.savefig(ruta_png, dpi=DPI_ESPECTROGRAMA)
-        plt.close(fig)
+
+        fig.tight_layout()
+        fig.savefig(ruta_png, dpi=DPI_ESPECTROGRAMA)
         return ruta_png, None
     except Exception as e:
-        try:
-            plt.close("all")
-        except Exception:
-            pass
         return None, f"{type(e).__name__}: {e}"
 
 def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None):
@@ -330,21 +349,33 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None):
     pot_db    = 10 * np.log10(potencia + 1e-30)
     pot_db_n  = pot_db - np.max(pot_db)
 
-    freqs_act = freqs[pot_db_n > -60]
-    techo_hz  = float(freqs_act[-1]) if len(freqs_act) > 0 else 0
+    mask_act = pot_db_n > -60
+    if np.any(mask_act):
+        # Last bin above -60 dB, located from the end in C without copying freqs.
+        ultimo_idx = len(freqs) - 1 - int(np.argmax(mask_act[::-1]))
+        techo_hz   = float(freqs[ultimo_idx])
+    else:
+        techo_hz   = 0.0
 
     corte_hz = None
     mask_s = (freqs >= 12000) & (freqs <= 25000)
-    if np.sum(mask_s) > 10:
+    if np.count_nonzero(mask_s) > 10:
         pr   = pot_db_n[mask_s]
         fr   = freqs[mask_s]
-        paso = max(1, len(pr) // 20)
-        for i in range(paso, len(pr) - paso):
-            antes   = _media_segura(pr[i - paso : i])
-            despues = _media_segura(pr[i : i + paso])
-            if (antes - despues) > 25 and despues < -45:
-                corte_hz = float(fr[i])
-                break
+        n_pr = len(pr)
+        paso = max(1, n_pr // 20)
+        if n_pr > 2 * paso:
+            # O(n) equivalent of the sliding-window loop via cumulative sums: the
+            # two means per index become two vectorised subtractions.
+            cs = np.empty(n_pr + 1, dtype=np.float64)
+            cs[0] = 0.0
+            np.cumsum(pr, dtype=np.float64, out=cs[1:])
+            inv_paso = 1.0 / paso
+            antes   = (cs[paso : n_pr - paso] - cs[0 : n_pr - 2 * paso]) * inv_paso
+            despues = (cs[2 * paso : n_pr]    - cs[paso : n_pr - paso]) * inv_paso
+            cond    = ((antes - despues) > 25.0) & (despues < -45.0)
+            if np.any(cond):
+                corte_hz = float(fr[int(np.argmax(cond)) + paso])
 
     # Block 5: the distance to Nyquist decides whether the step is a codec
     # signature or a mastering filter. A legitimate anti-alias filter lives right
@@ -361,12 +392,13 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None):
     mask_m = (freqs > 15000) & (freqs < 18000)
     # Empty-mask guards: at 32 kHz (Nyquist 16 kHz) the high band does not exist
     # and a mean of an empty slice returned NaN -> invalid JSON.
-    ratio_aplica = bool(np.sum(mask_a) > 0 and np.sum(mask_m) > 0)
+    hay_a = bool(np.any(mask_a))
+    ratio_aplica = bool(hay_a and np.any(mask_m))
     if ratio_aplica:
         ratio = _media_segura(potencia[mask_a]) / (_media_segura(potencia[mask_m]) + 1e-30)
     else:
         ratio = 0.0
-    var_alta = float(np.var(pot_db_n[mask_a])) if np.sum(mask_a) > 0 else 0
+    var_alta = float(np.var(pot_db_n[mask_a])) if hay_a else 0
 
     sep = None
     if es_stereo and ratio_aplica:
@@ -468,13 +500,16 @@ def detectar_clipping(data):
         return None
 
 def _dr_desde_rms(rms_list, pico, n_bloques):
-    """Dynamic range formula, shared by the array path and the block path."""
-    if n_bloques < 2:                       # at least 6 seconds are needed
+    """Dynamic range formula in O(n) via np.partition, shared by the array path and
+    the block path. It accepts a Python list or an ndarray alike."""
+    if n_bloques < 2 or pico <= 0:          # at least 6 seconds are needed
         return None
-    validos = [r for r in rms_list if r > 1e-6]
-    if not validos or pico <= 0:
+    arr     = np.asarray(rms_list, dtype=np.float64)
+    validos = arr[arr > 1e-6]
+    if validos.size == 0:
         return None
-    rms_top = float(np.mean(sorted(validos)[-max(1, len(validos) // 5):]))
+    k       = max(1, validos.size // 5)
+    rms_top = float(np.mean(np.partition(validos, -k)[-k:]))
     return round(20 * np.log10(pico / (rms_top + 1e-30)), 1)
 
 def calcular_dr(data, sr):
@@ -740,6 +775,7 @@ class _AnalisisPorBloques:
         self._paso_png = max(1, frames_est // MAX_FRAMES_PNG)
         self._png_pot   = []
         self._png_times = []
+        self._png_n     = 0
 
     def _ventana(self, modo, segundos):
         if modo == "seconds" and segundos:
@@ -759,7 +795,18 @@ class _AnalisisPorBloques:
     def _integridad_y_clipping(self, bloque):
         if self._md5 is not None:
             self._md5.update(_pcm_bytes(bloque, self.bits, self._ancho_md5))
-        amp = np.max(np.abs(bloque), axis=1) if bloque.ndim > 1 else np.abs(bloque)
+        if bloque.ndim > 1:
+            n_ch = bloque.shape[1]
+            if n_ch == 2:
+                # Operating on the two channel columns avoids the stride overhead
+                # of np.max(..., axis=1) on a tiny axis.
+                amp = np.maximum(np.abs(bloque[:, 0]), np.abs(bloque[:, 1]))
+            elif n_ch == 1:
+                amp = np.abs(bloque[:, 0])
+            else:
+                amp = np.max(np.abs(bloque), axis=1)
+        else:
+            amp = np.abs(bloque)
         if amp.size:
             pico = float(np.max(amp))
             if pico > self._pico:
@@ -768,9 +815,19 @@ class _AnalisisPorBloques:
         self._clip_runs += sum(1 for largo in rachas if largo >= 3)
 
     def _rango_dinamico(self, bloque):
-        mono = bloque.mean(axis=1) if bloque.ndim > 1 else bloque
+        if bloque.ndim > 1:
+            n_ch = bloque.shape[1]
+            if n_ch == 2:
+                mono = (bloque[:, 0] + bloque[:, 1]) * 0.5
+            elif n_ch == 1:
+                mono = bloque[:, 0]
+            else:
+                mono = bloque.mean(axis=1)
+        else:
+            mono = bloque
         if mono.size:
-            pico = float(np.max(np.abs(mono)))
+            # max(|mono|) without materialising a full np.abs(mono) temporary.
+            pico = max(float(np.max(mono)), -float(np.min(mono)))
             if pico > self._dr_pico:
                 self._dr_pico = pico
         if self._dr_pendiente.size:
@@ -783,7 +840,10 @@ class _AnalisisPorBloques:
         self._dr_pendiente = mono
 
     def _muestra_bits(self, bloque, offset):
-        if self._muestras_n >= MAX_MUESTRAS_BITS:
+        # Bits <= 16 never reach the LSB test (analizar_bit_depth returns
+        # {"aplica": False}), so nothing is buffered for CD-depth tracks: this
+        # saves holding up to 1<<20 float64 frames (~16 MB) per file.
+        if self.bits <= 16 or self._muestras_n >= MAX_MUESTRAS_BITS:
             return
         if (offset // FRAMES_POR_BLOQUE) % self._paso_muestreo:
             return
@@ -819,44 +879,59 @@ class _AnalisisPorBloques:
             # between blocks, so no splice artefact slips in.
             freqs, _, Zl = stft(pieza[:, 0], self.sr, nperseg=self._nperseg,
                                 noverlap=self._hop)
-            pot_l = np.abs(Zl) ** 2
+            # |Z|^2 bit-for-bit identical to np.abs(Zl) ** 2 (same C square
+            # kernel), but squaring in place after freeing Zl avoids a second
+            # float64 temporary.
+            pot_l = np.abs(Zl)
             del Zl
+            np.square(pot_l, out=pot_l)
             es_stereo = pieza.shape[1] >= 2
             if es_stereo:
                 _, _, Zr = stft(pieza[:, 1], self.sr, nperseg=self._nperseg,
                                 noverlap=self._hop)
-                pot_r = np.abs(Zr) ** 2
+                pot_r = np.abs(Zr)
                 del Zr
+                np.square(pot_r, out=pot_r)
             else:
                 pot_r = pot_l                   # single FFT in mono
             self._es_stereo = es_stereo
 
             if self.guardar_png:
                 self._guardar_frames(pot_l, pot_r, inicio)
+
+            sum_l = np.sum(pot_l, axis=1)
+            sum_r = np.sum(pot_r, axis=1) if es_stereo else sum_l.copy()
             if self._pot_l is None:
                 self._freqs = freqs
-                self._pot_l = np.sum(pot_l, axis=1)
-                self._pot_r = np.sum(pot_r, axis=1)
+                self._pot_l = sum_l
+                self._pot_r = sum_r
             else:
-                self._pot_l += np.sum(pot_l, axis=1)
-                self._pot_r += np.sum(pot_r, axis=1)
+                self._pot_l += sum_l
+                self._pot_r += sum_r
             self._esp_frames += pot_l.shape[1]
             del pot_l, pot_r, pieza
         except Exception as e:
             self._error_espectro = str(e)
 
     def _guardar_frames(self, pot_l, pot_r, inicio_muestras):
-        """Stores frames spread over the whole window (bounded memory)."""
-        mezcla = (pot_l + pot_r) / 2
-        base   = self._esp_frames
-        for i in range(mezcla.shape[1]):
-            if (base + i) % self._paso_png:
-                continue
-            if len(self._png_times) >= MAX_FRAMES_PNG:
-                return
-            self._png_pot.append(mezcla[:, i].astype(np.float32))
-            self._png_times.append(
-                (inicio_muestras + i * self._hop) / self.sr - self.ini / self.sr)
+        """Vectorised frame selection: only the needed columns are sliced, and the
+        channels are mixed after the slice (bounded memory, far fewer operations)."""
+        restantes = MAX_FRAMES_PNG - self._png_n
+        if restantes <= 0:
+            return
+        n_cols = pot_l.shape[1]
+        i0     = (-self._esp_frames) % self._paso_png
+        if i0 >= n_cols:
+            return
+        idx = np.arange(i0, n_cols, self._paso_png)[:restantes]
+        if pot_l is pot_r:                      # mono: no point averaging with itself
+            sub = pot_l[:, idx].astype(np.float32)
+        else:
+            sub = ((pot_l[:, idx] + pot_r[:, idx]) * 0.5).astype(np.float32)
+        tiempos = (inicio_muestras - self.ini + idx * self._hop) / float(self.sr)
+        self._png_pot.append(sub)
+        self._png_times.append(tiempos)
+        self._png_n += len(idx)
 
     # ── result ───────────────────────────────────────────────────────────────
     def resultado(self):
@@ -868,8 +943,8 @@ class _AnalisisPorBloques:
             "md5":  _comparar_md5(self._md5.hexdigest() if self._md5 else None, self.meta),
             "clip": {"runs_clip": self._clip_runs, "hay_clipping": self._clip_runs > 0},
         }
-        if self._dr_bloque:
-            rms = [math.sqrt(s / self._dr_bloque) for s in self._dr_sumsq]
+        if self._dr_bloque and self._dr_sumsq:
+            rms = np.sqrt(np.asarray(self._dr_sumsq, dtype=np.float64) / self._dr_bloque)
             salida["dr"] = _dr_desde_rms(rms, self._dr_pico, len(self._dr_sumsq))
         else:
             salida["dr"] = None
@@ -893,8 +968,10 @@ class _AnalisisPorBloques:
                                     self.sr, es_stereo=getattr(self, "_es_stereo", None))
         if self.guardar_png and self._png_pot:
             ruta_png, error = _guardar_espectrograma(
-                self._freqs, np.asarray(self._png_times),
-                np.stack(self._png_pot, axis=1), self.sr, self.ruta,
+                self._freqs,
+                np.concatenate(self._png_times),
+                np.concatenate(self._png_pot, axis=1),
+                self.sr, self.ruta,
                 esp["techo_hz"], esp["frecuencia_corte"])
             esp["espectrograma"] = ruta_png
             if error:
@@ -1047,18 +1124,27 @@ def _trabajo_analisis(tarea):
     ruta, modo, segundos, guardar_png, usar_cache = tarea
     return analizar_archivo_datos(ruta, modo, segundos, guardar_png, usar_cache)
 
+_SONDA_PROCESOS_CACHE = None
+
 def _sonda_procesos():
     """Can processes be created in this environment?
 
     Some environments do not allow it (sandboxes that block Windows named pipes).
-    In that case the analysis runs in series: slower, but correct.
+    In that case the analysis runs in series: slower, but correct. The answer is
+    cached for the lifetime of the process: probing starts a whole child
+    interpreter (numpy, scipy, matplotlib, soundfile), which is wasteful to repeat
+    on every batch.
     """
-    try:
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=1) as ejecutor:
-            return ejecutor.submit(int, 1).result(timeout=120) == 1
-    except Exception:
-        return False
+    global _SONDA_PROCESOS_CACHE
+    if _SONDA_PROCESOS_CACHE is None:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=1) as ejecutor:
+                _SONDA_PROCESOS_CACHE = (
+                    ejecutor.submit(int, 1).result(timeout=120) == 1)
+        except Exception:
+            _SONDA_PROCESOS_CACHE = False
+    return _SONDA_PROCESOS_CACHE
 
 def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
                       usar_cache=True):

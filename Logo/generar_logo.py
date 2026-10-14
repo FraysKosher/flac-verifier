@@ -88,7 +88,7 @@ def svg() -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{ANCHO_CON_CHECK}" '
         f'height="{ALTO_UNIDADES}" viewBox="0 0 {ANCHO_CON_CHECK} {ALTO_UNIDADES}" '
         f'fill="none" role="img" aria-label="FLAC Verifier">',
-        f'  <title>FLAC Verifier</title>',
+        '  <title>FLAC Verifier</title>',
         f'  <rect width="{ANCHO_CON_CHECK}" height="{ALTO_UNIDADES}" rx="14" fill="{FONDO}"/>',
     ]
     for indice, altura in enumerate(ALTURAS):
