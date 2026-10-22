@@ -73,7 +73,9 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.5"
+VERSION_MOTOR = "9.6"
+# 9.6: Phase 5 forensic suite and validation benchmark (mirror threshold and
+#      Opus scoring refined); results invalidate older caches.
 # 9.5: modular facade; each result carries the additive `evidencias_forenses`
 #      list shown by the GUI and the PDF.
 # 9.4: Vector 5 (libopus 20.00 kHz cliff) and Vector 6 (clipping nature and
@@ -607,7 +609,8 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
 
 # ─── ANALYSIS OF ONE FILE (returns a dict, does not print) ───────────────────
 
-def analizar_archivo_datos(ruta, modo, segundos, guardar_png, usar_cache=True):
+def analizar_archivo_datos(ruta, modo="center", segundos=None, guardar_png=False,
+                           usar_cache=True):
     """Analyses one file and returns a dict. With `usar_cache`, if the file has not
     changed since the last analysis the stored result is reused."""
     resultado = {"archivo": os.path.basename(ruta), "ruta": ruta}

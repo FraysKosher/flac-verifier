@@ -290,7 +290,7 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate):
     deltas = np.linspace(1000.0, 7000.0, 48)
     banda_inf = np.interp(22050.0 - deltas, freqs, curva_fina)
     banda_sup = np.interp(22050.0 + deltas, freqs, curva_fina)
-    if (np.std(banda_inf) > 1.5 and np.std(banda_sup) > 1.5
+    if (np.std(banda_inf) > 0.5 and np.std(banda_sup) > 0.5
             and np.mean(banda_sup) > -115.0):
         # The interpolator's anti-imaging response tilts the mirror copy, so a
         # raw Pearson coefficient can be negative even for a perfect mirror;

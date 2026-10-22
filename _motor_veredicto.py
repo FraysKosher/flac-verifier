@@ -148,7 +148,14 @@ def calcular_score(meta, esp, bdi):
                      f"cut-off delta {esp.get('delta_corte_ms_hz', 0.0):.0f} Hz): "
                      f"joint-stereo lossy codec signature", 0.30)
         iqr = esp.get("iqr_corte_hz") or 0.0
-        if iqr > 550.0:
+        # The jitter is already part of the Opus evidence: do not penalise the
+        # same symptom twice when the 20.00 kHz cliff is already corroborated.
+        opus_corroborado = bool(esp.get("sospecha_corte_opus_20k") and
+                                not (esp.get("es_transferencia_dsd") or
+                                     esp.get("rolloff_analogico_genuino")) and
+                                (esp.get("sospecha_joint_stereo") or iqr > 550.0 or
+                                 (esp.get("ratio_huecos_mdct") or 0.0) > 0.10))
+        if iqr > 550.0 and not opus_corroborado:
             penaliza(f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
                      f"frame-adaptive codec signature", 0.20, bloquea_maximo=False)
         huecos = esp.get("ratio_huecos_mdct") or 0.0
@@ -170,7 +177,8 @@ def calcular_score(meta, esp, bdi):
             if corroborado:
                 penaliza(f"20.00 kHz cliff of "
                          f"{esp.get('caida_opus_20k_db', 0.0):.0f} dB with other "
-                         f"codec evidence: libopus fullband transcode signature", 0.30)
+                         f"codec evidence: libopus fullband transcode signature", 0.20,
+                          bloquea_maximo=False)
             else:
                 problemas.append("a 20.00 kHz cliff is consistent with libopus fullband "
                                  "and also with a mastering low-pass: inconclusive "

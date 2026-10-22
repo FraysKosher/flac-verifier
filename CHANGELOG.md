@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tests/test_forense_riguroso.py`: ten deterministic forensic regression
+  cases (analogue Hi-Res, sinc/aliasing upscales, joint-stereo and Opus
+  transcodes, 24-bit padding/comb, silence and a long quiet intro).
+- `tests/benchmark_validacion.py` and `VALIDATION.md`: reproducible 40-track
+  balanced benchmark with TP/TN/FP/FN, sensitivity, specificity and Wilson 95%
+  confidence intervals (100% / 100% on the synthetic corpus).
 - Vector 1: Mid/Side high-band asymmetry (`caida_side_agudos_db`,
   `delta_corte_ms_hz`, `sospecha_joint_stereo`, `es_dual_mono`), which catches
   joint-stereo lossy encoders that cut the Side channel before Mid.
