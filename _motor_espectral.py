@@ -94,6 +94,29 @@ def _paso_tiempo(duracion):
         return 10.0
     return 25.0
 
+def _eje_tiempo(tiempos):
+    """Positions, duration and label for the X axis.
+
+    The energy selector keeps blocks spread over the whole song, so the recovered
+    frames can have real gaps. Treating `0..t1` as one continuous span would put
+    ticks over audio that is not in the image. When a gap is detected (more than
+    three median frame steps, or more than one second), the positions accumulate
+    only the frames actually represented and the axis says so.
+    """
+    tiempos = np.asarray(tiempos, dtype=np.float64).reshape(-1)
+    if tiempos.size < 2:
+        return tiempos - (tiempos[0] if tiempos.size else 0.0), 0.0, "Time (s)"
+    diferencias = np.diff(tiempos)
+    positivas = diferencias[diferencias > 0]
+    paso = float(np.median(positivas)) if positivas.size else 0.0
+    discontinuo = bool(paso > 0.0 and np.any(
+        (diferencias > 3.0 * paso) | (diferencias > 1.0)))
+    if discontinuo:
+        posiciones = np.arange(tiempos.size, dtype=np.float64) * paso
+        return posiciones, float(posiciones[-1]), "Selected active blocks (s)"
+    return tiempos - tiempos[0], float(max(0.0, tiempos[-1] - tiempos[0])), "Time (s)"
+
+
 def _dibujar_colorbar(lienzo, dibujo, x0, y0, ancho, alto, db_min, db_max, fuente):
     """Vertical LUT gradient from db_min (bottom) to db_max (top), with ticks."""
     indices = np.linspace(255, 0, int(alto), dtype=np.uint8).reshape(-1, 1)
@@ -195,8 +218,7 @@ def renderizar_espectrograma_rapido(matriz_db, sample_rate, ruta_salida_png,
                if times is not None else np.array([]))
     if tiempos.size != matriz.shape[1] or not np.all(np.isfinite(tiempos)):
         tiempos = np.arange(matriz.shape[1], dtype=np.float64)
-    t0, t1 = float(tiempos[0]), float(tiempos[-1])
-    duracion = max(0.0, t1 - t0)
+    posiciones, duracion, etiqueta_tiempo = _eje_tiempo(tiempos)
     paso = _paso_tiempo(duracion)
     if duracion > 0.0:
         for valor in np.arange(0.0, duracion + 1e-9, paso):
@@ -204,7 +226,7 @@ def renderizar_espectrograma_rapido(matriz_db, sample_rate, ruta_salida_png,
             dibujo.line([(x, y_fin), (x, y_fin + 7)], fill=color_eje, width=1)
             dibujo.text((x, y_fin + 12), f"{valor:.0f}",
                         fill=color_texto, font=fuente_tick, anchor="ma")
-    dibujo.text(((margen_izq + x_fin) // 2, y_fin + 44), "Time (s)",
+    dibujo.text(((margen_izq + x_fin) // 2, y_fin + 44), etiqueta_tiempo,
                 fill=color_texto, font=fuente_eje, anchor="ma")
 
     # Reference lines
