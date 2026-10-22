@@ -80,7 +80,9 @@ except ImportError:
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.2"
+VERSION_MOTOR = "9.3"
+# 9.3: Vector 3 (Hi-Res morphology: brickwall, spectral mirror, DSD and
+#      analogue roll-off) and Vector 4 (native-bit padding/comb audit).
 # 9.2: Vector 1 (Mid/Side high-band asymmetry) and Vector 2 (temporal cut-off
 #      jitter + MDCT spectral holes) added to the spectral result and the score.
 # 9.1: the spectrum is measured on the K most active blocks of the whole file
@@ -264,7 +266,7 @@ def verificar_md5(data, meta):
 
 # ─── ANALYSIS ────────────────────────────────────────────────────────────────
 
-def analizar_bit_depth(data, meta):
+def analizar_bit_depth(data, meta, incluir_forense=True):
     """LSB utilisation of the container (Block 4).
 
     This analysis CAN ONLY REFUTE: empty low bits, or low bits aligned to the
@@ -272,18 +274,29 @@ def analizar_bit_depth(data, meta):
     authenticity — a lossy transcode stored in 24 bits also fills the LSBs, and a
     renormalisation breaks the alignment. That is why the result is reported as a
     fact and can only penalise in the scoring.
+
+    `forense_bits` (Vector 4) audits the native integers: zero padding and the
+    quantisation comb of a 16-bit source scaled into 24 bits. The streaming path
+    disables it here and attaches its own whole-file accumulator instead.
     """
     bits = meta["bits_per_sample"]
     if bits <= 16:
         return {"aplica": False}
+    forense = None
     try:
+        if incluir_forense:
+            forense = _analizar_forense_bits(data, meta)
+
         # All channels, not just the left one: a silent channel or a file with
         # misaligned channels biased the previous test.
         muestras = np.ascontiguousarray(data).reshape(-1)
         activas  = muestras[np.abs(muestras) > 0.001]
         if activas.size < 1000:
-            return {"aplica": True, "lsbs": "indeterminate",
-                    "conclusion": "indeterminate: too little signal to measure LSB utilization"}
+            salida = {"aplica": True, "lsbs": "indeterminate",
+                      "conclusion": "indeterminate: too little signal to measure LSB utilization"}
+            if forense is not None:
+                salida["forense_bits"] = forense
+            return salida
 
         # 1) Are the samples on the 16-bit grid? (the classic upscale test)
         escalado = activas * 32768.0
@@ -315,15 +328,21 @@ def analizar_bit_depth(data, meta):
             lsbs = "active"
             conclusion = (f"LSBs active, effective resolution ~{efectiva} of {bits} bits: "
                           f"rules out grid upscaling, but does NOT prove the origin")
-        return {
+        salida = {
             "aplica":                   True,
             "fraccion_16bit_grid":      round(fraccion * 100, 1),
             "resolucion_efectiva_bits": int(efectiva),
             "lsbs":                     lsbs,
             "conclusion":               conclusion,
         }
+        if forense is not None:
+            salida["forense_bits"] = forense
+        return salida
     except Exception as e:
-        return {"aplica": True, "lsbs": "indeterminate", "error": str(e)}
+        salida = {"aplica": True, "lsbs": "indeterminate", "error": str(e)}
+        if forense is not None:
+            salida["forense_bits"] = forense
+        return salida
 
 def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_hz, frecuencia_corte):
     """Draws the spectrogram. Returns (ruta_png, error): it never raises, and the
@@ -383,9 +402,147 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
+def _ganancia_ruido_blanco(nperseg, ventana):
+    """Mean bin power of a unit-variance white noise through the normalised
+    float32 STFT. Dividing a power spectrum by it turns each bin into dBFS: a
+    broadband floor at -104 dBFS reads -104 dB, independently of nperseg."""
+    n = int(nperseg)
+    suma_w = float(np.sum(ventana, dtype=np.float64))
+    if n <= 0 or suma_w <= 0.0:
+        return 1.0
+    suma_w2 = float(np.sum(np.asarray(ventana, dtype=np.float64) ** 2))
+    return n * suma_w2 / (2.0 * suma_w * suma_w * (n / 2.0 + 1.0))
+
 def _potencia_db(potencia):
     """Power spectrum in dB (floor 1e-28, no np.sqrt)."""
     return 10.0 * np.log10(np.maximum(np.asarray(potencia, dtype=np.float64), 1e-28))
+
+def _espectro_dbfs(potencia, ganancia_ruido=1.0):
+    """Power spectrum in dBFS/ bin using the white-noise gain calibration."""
+    ganancia = ganancia_ruido if ganancia_ruido and ganancia_ruido > 0 else 1.0
+    return 10.0 * np.log10(np.maximum(np.asarray(potencia, dtype=np.float64),
+                                      1e-28) / ganancia)
+
+def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate):
+    """Vector 3: morphology of a Hi-Res spectrum (>= 88.2 kHz).
+
+    Distinguishes three physically different cases that the old CD-limit rule
+    mixed together:
+      1. A brickwall at the CD/DAT Nyquist (22.05 / 24 kHz): upscale made with a
+         sinc filter. A steep spectral slope plus a jump into the digital void.
+      2. A spectral mirror around 22.05 kHz: upscale with an unfiltered
+         interpolator (folded aliasing).
+      3. A genuine analogue/acoustic roll-off (Queen case): no cliff, a smooth
+         slope and a continuous thermal/tape/dither floor above the CD limit.
+    A DSD/SACD transfer (88.2/176.4 kHz) adds a rising noise-shaping ramp in
+    24-40 kHz.
+
+    `espectro_mid_db` is calibrated to dBFS per bin (see _espectro_dbfs)."""
+    salida = {
+        "muro_brickwall_nyquist":  False,
+        "espejo_aliasing_detectado": False,
+        "rolloff_analogico_genuino": False,
+        "gradiente_nyquist_db_khz": 0.0,
+        "salto_ultrasonico_db":     0.0,
+        "correlacion_espejo_22k":   0.0,
+        "es_transferencia_dsd":     False,
+    }
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    espectro = np.asarray(espectro_mid_db, dtype=np.float64)
+    if sample_rate < 88200 or freqs.size < 8 or espectro.shape != freqs.shape:
+        return salida
+    if not np.all(np.isfinite(espectro)):
+        return salida
+
+    df = float(freqs[1] - freqs[0]) if freqs.size > 1 else 1.0
+    # 1 kHz smoothing: a 250 Hz kernel lets the bin-to-bin variance of real
+    # noise look like a 90 dB/kHz cliff. The morphology of a brickwall or a
+    # roll-off lives on a much wider scale, so smoothing does not hide it.
+    bins_suavizado = max(3, int(round(1000.0 / df)))
+    kernel = np.ones(bins_suavizado, dtype=np.float32) / bins_suavizado
+    curva = np.convolve(espectro, kernel, mode="same")
+    grad_db_khz = np.gradient(curva, df / 1000.0)
+
+    mask_22k = (freqs >= 19800.0) & (freqs <= 22450.0)
+    mask_24k = (freqs >= 22500.0) & (freqs <= 24400.0)
+    mask_previa = (freqs >= 13500.0) & (freqs < 19200.0)
+    pendiente_22k = float(np.min(grad_db_khz[mask_22k])) if np.any(mask_22k) else 0.0
+    pendiente_24k = float(np.min(grad_db_khz[mask_24k])) if np.any(mask_24k) else 0.0
+    peor_pendiente = min(pendiente_22k, pendiente_24k)
+    pendiente_base = (float(np.percentile(grad_db_khz[mask_previa], 20))
+                      if np.any(mask_previa) else -4.0)
+
+    mask_antes = (freqs >= 18000.0) & (freqs <= 20800.0)
+    mask_despues = ((freqs >= 23500.0)
+                    & (freqs <= min(36000.0, sample_rate * 0.44)))
+    nivel_antes_db = float(np.median(curva[mask_antes])) if np.any(mask_antes) else -120.0
+    nivel_despues_db = (float(np.median(curva[mask_despues]))
+                        if np.any(mask_despues) else -140.0)
+    salto_db = nivel_antes_db - nivel_despues_db
+
+    muro_brickwall = (
+        (peor_pendiente < -28.0 and peor_pendiente < pendiente_base * 2.1
+         and salto_db > 15.0)
+        or (salto_db > 21.0 and nivel_despues_db < -125.0)
+    )
+
+    # DSD64/128 to PCM: rising noise-shaping ramp between 24 and 40 kHz. It is
+    # checked before the mirror because an independent rising ultrasonic ramp can
+    # look correlated with the musical band after detrending.
+    es_dsd = False
+    mask_dsd = (freqs >= 24000.0) & (freqs <= 40000.0)
+    if (sample_rate % 44100 == 0 and np.count_nonzero(mask_dsd) > 8):
+        y = curva[mask_dsd]
+        x = freqs[mask_dsd]
+        pendiente = float(np.polyfit(x, y, 1)[0] * 1000.0)
+        subida = float(y[-1] - y[0])
+        monotona = float(np.mean(np.diff(y) >= 0.0)) >= 0.6
+        es_dsd = bool(pendiente > 0.8 and subida > 12.0 and monotona)
+
+    # Spectral mirror around the CD Nyquist (unfiltered interpolation). The fine
+    # 250 Hz curve keeps the texture the mirror copies; the coarse curve is only
+    # for slopes and levels.
+    bins_fino = max(3, int(round(250.0 / df)))
+    curva_fina = np.convolve(espectro,
+                             np.ones(bins_fino, dtype=np.float32) / bins_fino,
+                             mode="same")
+    deltas = np.linspace(1000.0, 7000.0, 48)
+    banda_inf = np.interp(22050.0 - deltas, freqs, curva_fina)
+    banda_sup = np.interp(22050.0 + deltas, freqs, curva_fina)
+    if (np.std(banda_inf) > 1.5 and np.std(banda_sup) > 1.5
+            and np.mean(banda_sup) > -115.0):
+        # The interpolator's anti-imaging response tilts the mirror copy, so a
+        # raw Pearson coefficient can be negative even for a perfect mirror;
+        # the shape is what matters. Detrending both bands keeps r > 0.82 for a
+        # mirror and low for genuine independent ultrasonic noise.
+        def _sin_tendencia(valores):
+            t = np.arange(valores.size, dtype=np.float64)
+            return valores - np.polyval(np.polyfit(t, valores, 1), t)
+        corr_espejo = float(np.corrcoef(_sin_tendencia(banda_inf),
+                                        _sin_tendencia(banda_sup))[0, 1])
+    else:
+        corr_espejo = 0.0
+    espejo_aliasing = bool(corr_espejo > 0.82 and salto_db < 18.0 and not es_dsd)
+
+    rolloff_analogico = bool(
+        not muro_brickwall
+        and not espejo_aliasing
+        and not es_dsd
+        and peor_pendiente > -17.5
+        and salto_db < 14.5
+        and nivel_despues_db > -124.0
+    )
+
+    salida.update({
+        "muro_brickwall_nyquist":   bool(muro_brickwall),
+        "espejo_aliasing_detectado": espejo_aliasing,
+        "rolloff_analogico_genuino": rolloff_analogico,
+        "gradiente_nyquist_db_khz": round(abs(peor_pendiente), 2),
+        "salto_ultrasonico_db":     round(salto_db, 2),
+        "correlacion_espejo_22k":   round(corr_espejo, 3),
+        "es_transferencia_dsd":     es_dsd,
+    })
+    return salida
 
 def _analizar_asimetria_mid_side(espectro_mid_db, espectro_side_db, freqs_hz,
                                  sample_rate, es_mono_real):
@@ -457,7 +614,7 @@ def _analizar_asimetria_mid_side(espectro_mid_db, espectro_side_db, freqs_hz,
     return salida
 
 def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, potencia=None,
-                          pot_mid=None, pot_side=None):
+                          pot_mid=None, pot_side=None, ganancia_ruido=1.0):
     """Core of the spectral analysis: everything is derived from the
     time-averaged power spectrum (one entry per bin). It does not depend on how
     it was obtained.
@@ -535,12 +692,22 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
     # an ordinary stereo difference as joint-stereo collapse.
     if pot_mid is None or pot_side is None:
         asimetria = _analizar_asimetria_mid_side(
-            _potencia_db(pot_l), _potencia_db(pot_r), freqs, samplerate,
-            es_mono_real=True)
+            _espectro_dbfs(pot_l, ganancia_ruido), _espectro_dbfs(pot_r, ganancia_ruido),
+            freqs, samplerate, es_mono_real=True)
     else:
+        mid_db = _espectro_dbfs(pot_mid, ganancia_ruido)
+        side_db = _espectro_dbfs(pot_side, ganancia_ruido)
         asimetria = _analizar_asimetria_mid_side(
-            _potencia_db(pot_mid), _potencia_db(pot_side), freqs, samplerate,
-            es_mono_real=not es_stereo)
+            mid_db, side_db, freqs, samplerate, es_mono_real=not es_stereo)
+
+    # Vector 3: Hi-Res morphology, measured on the Mid spectrum calibrated to
+    # dBFS per bin so the absolute thermal-floor thresholds are meaningful.
+    if pot_mid is None or pot_side is None:
+        espectro_mid_db = _espectro_dbfs(pot_mid if pot_mid is not None else pot_l,
+                                         ganancia_ruido)
+    else:
+        espectro_mid_db = mid_db
+    hires = _diagnosticar_autenticidad_hires(freqs, espectro_mid_db, samplerate)
 
     return {
         "error":              None,
@@ -563,6 +730,14 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         "delta_corte_ms_hz":    asimetria["delta_corte_ms_hz"],
         "sospecha_joint_stereo": asimetria["sospecha_joint_stereo"],
         "es_dual_mono":         asimetria["es_dual_mono"],
+        # Vector 3 (additive keys: old consumers ignore them).
+        "muro_brickwall_nyquist":   hires["muro_brickwall_nyquist"],
+        "espejo_aliasing_detectado": hires["espejo_aliasing_detectado"],
+        "rolloff_analogico_genuino": hires["rolloff_analogico_genuino"],
+        "gradiente_nyquist_db_khz": hires["gradiente_nyquist_db_khz"],
+        "salto_ultrasonico_db":     hires["salto_ultrasonico_db"],
+        "correlacion_espejo_22k":   hires["correlacion_espejo_22k"],
+        "es_transferencia_dsd":     hires["es_transferencia_dsd"],
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }
@@ -696,7 +871,11 @@ def calcular_score(meta, esp, bdi):
         #    claims to be hi-res. At 44.1/48 kHz it is physically impossible.
         if es_hires:
             max_v += 3
-            if techo >= LIMITE_CD_HZ:
+            if esp.get("rolloff_analogico_genuino") or esp.get("es_transferencia_dsd"):
+                votos += 3
+                problemas.append("hi-res morphology consistent with an analogue/DSD "
+                                 "master (smooth roll-off and continuous ultrasonic floor)")
+            elif techo >= LIMITE_CD_HZ:
                 votos += 3
             elif techo >= 18000:
                 votos += 1.5
@@ -720,6 +899,10 @@ def calcular_score(meta, esp, bdi):
         if sr > 48000:
             if techo >= LIMITE_CD_HZ:
                 votos += 3
+            elif esp.get("rolloff_analogico_genuino") or esp.get("es_transferencia_dsd"):
+                votos += 3
+                problemas.append("hi-res ceiling explained by an analogue/DSD master: "
+                                 "the declared band is backed by the morphology")
             else:
                 penaliza(f"spectral ceiling {techo/1000:.1f} kHz: there is no content above "
                          f"the CD limit ({LIMITE_CD_HZ/1000:.2f} kHz), so "
@@ -734,12 +917,31 @@ def calcular_score(meta, esp, bdi):
             penaliza(f"spectral ceiling {techo/1000:.1f} kHz ({rel_techo*100:.0f}% of Nyquist "
                      f"of {nyq_txt}): the high band is destroyed", 0.40)
 
+        # 3b. Vector 3: morphology that no legitimate master produces.
+        if esp.get("muro_brickwall_nyquist"):
+            penaliza(f"Hi-Res container with a brickwall at the CD/DAT Nyquist "
+                     f"({esp.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz, "
+                     f"{esp.get('salto_ultrasonico_db', 0.0):.1f} dB into the digital void): "
+                     f"upscaled from a 44.1/48 kHz source", 0.40)
+        if esp.get("espejo_aliasing_detectado"):
+            penaliza(f"ultrasonic band mirrors the content below 22.05 kHz "
+                     f"(r = {esp.get('correlacion_espejo_22k', 0.0):.2f}): "
+                     f"unfiltered-interpolator upscale (spectral aliasing)", 0.40)
+        if esp.get("es_transferencia_dsd"):
+            problemas.append("DSD/SACD noise-shaping profile detected in 24-40 kHz "
+                             "(legitimate hi-res transfer)")
+
         # 3. Cut-off: it is only flagged if it is clearly below the Nyquist.
         max_v += 3
         if clase == "far_cutoff":
-            penaliza(f"artificial cut-off at {esp['frecuencia_corte']/1000:.1f} kHz "
-                     f"({rel_corte*100:.0f}% of Nyquist of {nyq_txt}): lossy codec signature",
-                     0.40)
+            if esp.get("es_transferencia_dsd") or esp.get("rolloff_analogico_genuino"):
+                problemas.append(f"band edge at {esp['frecuencia_corte']/1000:.1f} kHz "
+                                 f"({rel_corte*100:.0f}% of Nyquist): the musical band ends "
+                                 f"there, consistent with an analogue/DSD master")
+            else:
+                penaliza(f"artificial cut-off at {esp['frecuencia_corte']/1000:.1f} kHz "
+                         f"({rel_corte*100:.0f}% of Nyquist of {nyq_txt}): lossy codec signature",
+                         0.40)
         elif clase == "near_nyquist_cutoff":
             # It is neither flagged nor rewarded: the anti-alias filter of a
             # legitimate master lives here too. It is reported as inconclusive.
@@ -816,6 +1018,21 @@ def calcular_score(meta, esp, bdi):
                      bloquea_maximo=False)
         elif lsbs == "indeterminate" and bdi.get("error"):
             problemas.append(f"could not evaluate the LSB utilization: {bdi['error']}")
+
+        # Vector 4: native-integer audit (zero padding and quantisation comb).
+        forense = bdi.get("forense_bits") or {}
+        if forense.get("es_padded_16_en_24"):
+            problemas.append(f"Vector 4: every sample has "
+                             f"{forense.get('trailing_zeros_lsb', 0)} trailing zero bits "
+                             f"(16-bit zero-padded into 24 bits)")
+            if lsbs != "empty":
+                penaliza(f"the 8 low bits are always zero in the whole file: "
+                         f"16-bit content zero-padded into a {bits}-bit container", 0.40)
+        if forense.get("es_24bit_escalado_en_peine"):
+            penaliza(f"24-bit container with a quantisation comb in the 8 LSBs "
+                     f"(entropy {forense.get('lsb8_entropia_bits')} bits, "
+                     f"{forense.get('lsb8_cajones_ocupados')}/256 bins occupied): "
+                     f"a 16-bit source scaled into 24 bits", 0.40)
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
     # resultado["md5"] (verificar_md5), and an MD5 that does not match is a hard error.
@@ -952,12 +1169,10 @@ class AcumuladorPsicoacusticoSTFT:
         try:
             n = ventana.size
             suma_w = float(np.sum(ventana, dtype=np.float64))
-            suma_w2 = float(np.sum(ventana.astype(np.float64) ** 2))
             if suma_w <= 0.0:
                 return
             # Mean bin power of unit-variance white noise with this window/FFT.
-            ganancia = (n * suma_w2
-                        / (2.0 * suma_w * suma_w * (n / 2.0 + 1.0)))
+            ganancia = _ganancia_ruido_blanco(n, ventana)
             mask_banda = (freqs >= 4000.0) & (freqs <= 11000.0)
             if not np.any(mask_banda) or ganancia <= 0.0:
                 return
@@ -1078,6 +1293,7 @@ class _AcumuladorEspectral:
 
         ventana = np.hanning(nperseg + 1)[:-1].astype(np.float32)   # periodic Hann
         escala = np.float32(1.0 / float(ventana.sum()))
+        ganancia_ruido = _ganancia_ruido_blanco(nperseg, ventana)
         frames_estimados = sum((n - nperseg) // hop + 1
                                for n in largos if n >= nperseg)
         if frames_estimados <= 0:
@@ -1166,7 +1382,8 @@ class _AcumuladorEspectral:
         esp = _metricas_espectrales(freqs, mean_l, mean_r, self.sr,
                                     es_stereo=self.es_stereo,
                                     potencia=mean_total,
-                                    pot_mid=mean_mid, pot_side=mean_side)
+                                    pot_mid=mean_mid, pot_side=mean_side,
+                                    ganancia_ruido=ganancia_ruido)
         esp.update(self._psico.resultado())
         if self.guardar_png and png_pot:
             ruta_png, error = _guardar_espectrograma(
@@ -1177,6 +1394,92 @@ class _AcumuladorEspectral:
             if error:
                 esp["espectrograma_error"] = error
         return esp
+
+class AcumuladorForenseBits:
+    """Vector 4: 24-bit container audit on the native integer samples.
+
+    Detects two different fakes:
+      * zero padding (16-in-24): the eight low bits are always zero, so an OR of
+        every |sample| has at least 8 trailing zeros;
+      * 16 bits scaled into 24 (gain/ReplayGain/DSP): the low bits are no longer
+        zero, but their histogram is a quantisation comb, with Shannon entropy
+        below 7.45 bits or fewer than 235 of the 256 bins occupied.
+
+    Only samples between -48 and -90 dBFS are used for the histogram: there the
+    low bits carry no musical signal and a genuine 24-bit/dithered master spreads
+    them uniformly."""
+
+    MIN_MUESTRAS_BAJAS = 256
+
+    def __init__(self, bits_per_sample):
+        self.bits = int(bits_per_sample)
+        self.max_val = float(1 << (self.bits - 1))
+        self._or = 0
+        self._hist = np.zeros(256, dtype=np.int64)
+        self._muestras = 0
+        self._muestras_bajas = 0
+
+    def anadir(self, bloque):
+        if self.bits != 24 or bloque.shape[0] == 0:
+            return
+        q = np.rint(np.asarray(bloque, dtype=np.float64) * self.max_val)
+        q = np.clip(q, -self.max_val, self.max_val - 1.0).astype(np.int64)
+        self._muestras += int(q.size)
+        self._or |= int(np.bitwise_or.reduce(np.abs(q).ravel()))
+
+        absq = np.abs(q)
+        bajo = self.max_val * 10.0 ** (-90.0 / 20.0)
+        alto = self.max_val * 10.0 ** (-48.0 / 20.0)
+        seleccion = absq[(absq >= bajo) & (absq <= alto)]
+        if seleccion.size:
+            residuos = (seleccion & 0xFF).astype(np.uint8)
+            self._hist += np.bincount(residuos, minlength=256)
+            self._muestras_bajas += int(residuos.size)
+
+    def resultado(self):
+        if self.bits != 24 or self._muestras == 0:
+            return {"aplica": False}
+
+        valor_or = int(self._or)
+        if valor_or == 0:                      # digital silence: no grid to judge
+            ceros = self.bits
+        else:
+            ceros = (valor_or & -valor_or).bit_length() - 1
+        padded = bool(valor_or and ceros >= 8)
+
+        total = int(self._hist.sum())
+        if total:
+            p = self._hist[self._hist > 0] / float(total)
+            entropia = float(-np.sum(p * np.log2(p)))
+            ocupados = int(np.count_nonzero(self._hist))
+        else:
+            entropia, ocupados = None, 0
+
+        peine = bool(
+            not padded
+            and total >= self.MIN_MUESTRAS_BAJAS
+            and (entropia < 7.45 or ocupados < 235)
+        )
+        return {
+            "aplica":                    True,
+            "es_padded_16_en_24":        padded,
+            "trailing_zeros_lsb":        int(ceros),
+            "lsb8_entropia_bits":        round(entropia, 3) if entropia is not None else None,
+            "lsb8_cajones_ocupados":     ocupados,
+            "muestras_pasaje_bajo":      int(total),
+            "es_24bit_escalado_en_peine": peine,
+        }
+
+def _analizar_forense_bits(data, meta):
+    """Array-path counterpart of AcumuladorForenseBits (used by the oracle and
+    by direct API callers). It walks the same FRAMES_POR_BLOQUE blocks."""
+    bits = meta.get("bits_per_sample")
+    if bits != 24:
+        return {"aplica": False}
+    acumulador = AcumuladorForenseBits(bits)
+    for inicio in range(0, len(data), FRAMES_POR_BLOQUE):
+        acumulador.anadir(data[inicio : inicio + FRAMES_POR_BLOQUE])
+    return acumulador.resultado()
 
 class _AnalisisPorBloques:
     """Accumulates in a single pass the analyses that need the whole file."""
@@ -1214,6 +1517,9 @@ class _AnalisisPorBloques:
         self._muestras_n  = 0
         self._paso_muestreo = (max(1, int(round(self.total / MAX_MUESTRAS_BITS)))
                                if self.total < (1 << 62) else 1)
+        # Vector 4: native-integer audit over the WHOLE file (24-bit only).
+        self._forense_bits = (AcumuladorForenseBits(self.bits)
+                              if self.bits == 24 else None)
 
         # spectrum: the whole file is scored, the K most active blocks are kept
         self._espectro_acc = _AcumuladorEspectral(
@@ -1224,6 +1530,8 @@ class _AnalisisPorBloques:
         self._integridad_y_clipping(bloque)
         self._rango_dinamico(bloque)
         self._muestra_bits(bloque, offset)
+        if self._forense_bits is not None:
+            self._forense_bits.anadir(bloque)
         self._espectro_acc.anadir(bloque, offset)
 
     # ── per block ────────────────────────────────────────────────────────────
@@ -1304,7 +1612,14 @@ class _AnalisisPorBloques:
             muestra = np.concatenate(self._muestras)
         else:
             muestra = np.zeros((0, 1))
-        salida["bdi"] = analizar_bit_depth(muestra, self.meta)
+        bdi = analizar_bit_depth(muestra, self.meta, incluir_forense=False)
+        if self._forense_bits is not None:
+            bdi["forense_bits"] = self._forense_bits.resultado()
+        elif bdi.get("aplica"):
+            # Deeper than 16 bits but not 24: Vector 4 does not apply. The key
+            # matches the array path so both give identical results.
+            bdi["forense_bits"] = {"aplica": False}
+        salida["bdi"] = bdi
         salida["esp"] = self._resultado_espectral()
         return salida
 

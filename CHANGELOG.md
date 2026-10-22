@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vector 2: `AcumuladorPsicoacusticoSTFT` reports the temporal jitter of the
   per-frame cut-off (`iqr_corte_hz`) and the ratio of MDCT spectral holes
   (`ratio_huecos_mdct`); both add a score penalty when their signature appears.
+- Vector 3: `_diagnosticar_autenticidad_hires` classifies Hi-Res morphology:
+  CD/DAT brickwall (`muro_brickwall_nyquist`), spectral mirror
+  (`espejo_aliasing_detectado`), DSD/SACD noise shaping
+  (`es_transferencia_dsd`) and genuine analogue roll-off
+  (`rolloff_analogico_genuino`), which rescues the Queen-type master from the
+  old CD-limit penalty.
+- Vector 4: `AcumuladorForenseBits` audits the native 24-bit samples over the
+  whole file: zero padding (`es_padded_16_en_24`) and the quantisation comb of a
+  16-bit source scaled into 24 bits (`es_24bit_escalado_en_peine`, Shannon
+  entropy and occupied LSB bins).
 
 ### Changed
 

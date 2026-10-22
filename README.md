@@ -428,6 +428,7 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `bdi.lsbs` | `empty` · `partial` · `active` · `indeterminate` |
 | `bdi.resolucion_efectiva_bits` | Bits actually used (16 inside a 24-bit container → `16`) |
 | `bdi.fraccion_16bit_grid` | % of samples aligned with the 16-bit grid |
+| `bdi.forense_bits` | Vector 4 object (24-bit only): `es_padded_16_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `es_24bit_escalado_en_peine` |
 | `esp.techo_hz` | Highest frequency with energy above −60 dB |
 | `esp.techo_rel_nyquist` | That ceiling as a fraction of Nyquist |
 | `esp.clase_corte` | `no_cutoff` · `near_nyquist_cutoff` (≥ 88 % of Nyquist) · `far_cutoff` (< 88 %) |
@@ -442,6 +443,13 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `esp.es_dual_mono` | `true` when L and R are identical (Side more than 45 dB below Mid) |
 | `esp.iqr_corte_hz` | Interquartile range of the per-frame cut-off in high-energy frames (codec jitter) |
 | `esp.ratio_huecos_mdct` | Fraction of high-energy frames with a 600 Hz MDCT hole (> 22 dB below both neighbours) |
+| `esp.muro_brickwall_nyquist` | `true` for a Hi-Res container with a cliff at 22.05/24 kHz (upscale with a sinc filter) |
+| `esp.espejo_aliasing_detectado` | `true` when the 23–29 kHz band mirrors 15–21 kHz (unfiltered interpolator) |
+| `esp.rolloff_analogico_genuino` | `true` for a smooth analogue/acoustic roll-off with a continuous ultrasonic floor |
+| `esp.gradiente_nyquist_db_khz` | Steepest slope around the CD/DAT Nyquist, in dB/kHz |
+| `esp.salto_ultrasonico_db` | Level step between 18–20.8 kHz and 23.5–36 kHz |
+| `esp.correlacion_espejo_22k` | Detrended Pearson r of the mirrored bands |
+| `esp.es_transferencia_dsd` | `true` for a DSD/SACD noise-shaping ramp in 24–40 kHz |
 | `esp.espectrograma` | Path of the PNG, or `null` |
 
 #### Interpretation (`score`, `veredicto`, `problemas`)
