@@ -19,7 +19,7 @@ What is checked, in order:
   3. The engine analyses IN PARALLEL with 8 processes: it is the
      multiprocessing.freeze_support() path. Without it, each worker would start the
      application again and this would hang.
-  4. The engine generates PNG spectrograms and the PDF report (matplotlib and
+  4. The engine generates PNG spectrograms and the PDF report (Pillow and
      reportlab packaged).
   5. The EXACT command that the packaged GUI builds (it asks
      `gui.ruta_motor()`, it is not copied by hand) and the `--motor-cli` fallback on
@@ -211,7 +211,7 @@ class Comprobador:
                     f"{informe.get('paginas')} pages, {segundos:.1f} s)" if existe else ruta_pdf)
         carpeta_png = os.path.join(album, "_spectrograms")
         pngs = [f for f in os.listdir(carpeta_png)] if os.path.isdir(carpeta_png) else []
-        self.anotar("PNG spectrograms (matplotlib packaged)",
+        self.anotar("PNG spectrograms (Pillow packaged)",
                     any(f.endswith(".png") for f in pngs), f"{len(pngs)} file(s)")
 
     def paso_5_bandera_interna(self, album: str) -> None:

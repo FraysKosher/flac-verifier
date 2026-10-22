@@ -45,7 +45,7 @@ is expected of a change before it becomes a pull request.
   | Dependency | Needed for |
   |---|---|
   | `numpy`, `scipy`, `soundfile`, `mutagen` | The analysis itself (required) |
-  | `matplotlib` | PNG spectrograms and the images embedded in the PDF |
+  | `pillow` | PNG spectrograms (NumPy + Pillow LUT) and the images embedded in the PDF |
   | `reportlab` | The per-album PDF report |
   | `customtkinter` | The graphical interface |
   | `tkinterdnd2` | Dragging folders onto the window |
@@ -181,7 +181,7 @@ compares.
   limitations (`README.md`, "Known limits") and that is a feature: if a change
   removes or hides a documented limit, it needs a measured justification.
 - Do not introduce new runtime dependencies without discussing it first. numpy,
-  scipy, soundfile and mutagen are the required set; matplotlib, reportlab,
+  scipy, soundfile, mutagen and Pillow are the required set; reportlab,
   customtkinter and tkinterdnd2 are optional and must stay optional, with a clear
   message when they are missing.
 - Keep performance in mind: the analysis runs as a single streaming pass with

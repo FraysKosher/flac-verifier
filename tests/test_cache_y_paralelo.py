@@ -8,7 +8,7 @@ What is pinned down here:
     the right one;
   - the parallel analysis gives the same as the serial one and keeps the order;
   - an environment with no processes falls back to serial instead of failing;
-  - the spectrogram is drawn with imshow (raster) and not with pcolormesh(gouraud).
+  - the spectrogram is drawn as a NumPy+Pillow raster (the LUT), without matplotlib.
 """
 import json
 import os
@@ -273,30 +273,32 @@ class TestRenderizador(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_el_espectrograma_se_pinta_con_imshow(self):
-        """pcolormesh(shading='gouraud') with 2049x1500 cells took ~10 s per
-        track; imshow paints a raster and is of the order of 10 times faster."""
+    def test_el_espectrograma_se_pinta_con_pillow(self):
+        """The PNG comes from the 256-colour NumPy LUT and Image.fromarray:
+        no figure object, no Agg canvas, no matplotlib import."""
         fuente = open(fx.MOTOR, encoding="utf-8").read()
-        self.assertIn("ax.imshow(", fuente)
-        self.assertNotIn("ax.pcolormesh(", fuente)      # the comment does mention it
-        self.assertIn("shading=\"gouraud\"", fuente)    # only in the explanatory comment
+        self.assertIn("_LUT_ESPECTROGRAMA", fuente)
+        self.assertIn("Image.fromarray(", fuente)
+        self.assertIn("renderizar_espectrograma_rapido", fuente)
+        self.assertNotIn("import matplotlib", fuente)
+        self.assertNotIn("ax.imshow(", fuente)
 
     def test_huella_render_cambia_con_los_parametros(self):
         original_frames = motor.MAX_FRAMES_PNG
-        original_dpi = motor.DPI_ESPECTROGRAMA
+        original_ancho = motor.ANCHO_PNG
         base = motor.huella_render()
         try:
             motor.MAX_FRAMES_PNG = original_frames + 1
             self.assertNotEqual(motor.huella_render(), base)
             motor.MAX_FRAMES_PNG = original_frames
             self.assertEqual(motor.huella_render(), base)
-            motor.DPI_ESPECTROGRAMA = original_dpi + 1
+            motor.ANCHO_PNG = original_ancho + 1
             self.assertNotEqual(motor.huella_render(), base)
         finally:
             motor.MAX_FRAMES_PNG = original_frames
-            motor.DPI_ESPECTROGRAMA = original_dpi
+            motor.ANCHO_PNG = original_ancho
 
-    @unittest.skipUnless(motor.MATPLOTLIB_OK, "matplotlib not installed")
+    @unittest.skipUnless(motor.PIL_OK, "Pillow not installed")
     def test_el_png_sigue_saliendo_con_un_tamano_razonable(self):
         ruta = self.fx["ok16"]
         resultado = motor.analizar_archivo_datos(ruta, "center", None, True,
@@ -309,15 +311,15 @@ class TestRenderizador(unittest.TestCase):
 
     def test_un_fallo_al_pintar_se_informa(self):
         """The reason for the failure reaches the result (before, it was lost silently)."""
-        original = motor.plt
+        original = motor.Image
         try:
-            motor.plt = None                    # any use of plt will blow up
+            motor.Image = None                  # Image.fromarray() will blow up
             resultado = motor.analizar_archivo_datos(self.fx["ok16"], "center", None,
                                                      True, usar_cache=False)
             self.assertIsNone(resultado["esp"]["espectrograma"])
             self.assertIn("espectrograma_error", resultado["esp"])
         finally:
-            motor.plt = original
+            motor.Image = original
 
 
 if __name__ == "__main__":

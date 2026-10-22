@@ -7,7 +7,7 @@ proportions in this file are the single source of truth for the brand mark.
 
     python Logo/generar_logo.py        # rewrites the assets of this folder
 
-It only needs Pillow (it already comes with matplotlib/reportlab).
+It only needs Pillow (also used to render the spectrograms).
 """
 from __future__ import annotations
 

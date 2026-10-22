@@ -4,7 +4,6 @@ import json
 import math
 import os
 import sys
-import tempfile
 import time
 
 # ─── BLAS THREADS (before numpy/scipy are imported) ──────────────────────────
@@ -22,57 +21,12 @@ import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC, FLACNoHeaderError
 
-
-def preparar_cache_matplotlib():
-    """Where matplotlib keeps its font cache (and why it has to be decided).
-
-    Matplotlib builds that cache the first time it draws and reuses it
-    afterwards. If the default directory (`~/.matplotlib`) is not writable —an
-    installation in a protected folder, a restricted user profile, an environment
-    without write permission— matplotlib warns on stderr and rebuilds it on every
-    run. That warning is harmless, but here it gets in the way: the engine talks
-    to the GUI over stdout with JSON lines, and a stray warning ends up in the
-    window log as an unreadable line.
-
-    It is given a folder of its own under the user data directory and, if that is
-    not possible either, under the temporary directory; if nothing can be created,
-    the default value (`~/.matplotlib`) is left in place, which is what matplotlib
-    would do on its own. It is never a fatal error: it returns the chosen folder,
-    or None if nothing was touched.
-    """
-    if os.environ.get("MPLCONFIGDIR"):
-        return None                    # if the user configured it, that value wins
-    candidatas = []
-    if os.environ.get("LOCALAPPDATA"):
-        candidatas.append(os.path.join(os.environ["LOCALAPPDATA"], "FLAC_VERIFIER"))
-    candidatas.append(os.path.join(tempfile.gettempdir(), "FLAC_VERIFIER"))
-    for raiz in candidatas:
-        carpeta = os.path.join(raiz, "matplotlib")
-        try:
-            os.makedirs(carpeta, exist_ok=True)
-        except OSError:
-            continue                   # no permission there: try the next one
-        os.environ["MPLCONFIGDIR"] = carpeta
-        return carpeta
-    return None
-
-
-# It has to be decided BEFORE importing matplotlib: the variable is read on load.
-preparar_cache_matplotlib()
-
 try:
-    import matplotlib
-    matplotlib.use('Agg')          # headless backend: safe in worker processes
-    # pyplot is kept at module level because the spectrogram uses plt.Figure (the
-    # OO Figure class, which does not touch pyplot's global state); the test suite
-    # injects failures through `motor.plt`.
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    MATPLOTLIB_OK = True
-except ImportError:
-    plt = None
-    FigureCanvasAgg = None
-    MATPLOTLIB_OK = False
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_OK = True
+except ImportError:                    # the report and the PNGs are unavailable
+    Image = ImageDraw = ImageFont = None
+    PIL_OK = False
 
 # ─── BASIC CHECKS ─────────────────────────────────────────────────────────────
 
@@ -97,15 +51,15 @@ VERSION_MOTOR = "9.4"
 VERSION_ESQUEMA_CACHE = "2.2.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
-FIGURA_ESPECTROGRAMA = (14, 5)      # inches
-DPI_ESPECTROGRAMA    = 150
+ANCHO_PNG = 1400                    # canvas width in pixels (axes included)
+ALTO_PNG  = 560                     # canvas height in pixels
 FPS_ESPECTROGRAMA_PNG = 20          # display time resolution (metrics use every frame)
 
 def huella_render():
     """Parameters that define the PNG. If any of them changes, the spectrogram
     cache is no longer valid (the analysis itself can still be reused)."""
     return (f"v{VERSION_MOTOR}-f{MAX_FRAMES_PNG}-p{SEGUNDOS_ESPECTRO}-"
-            f"{FIGURA_ESPECTROGRAMA[0]}x{FIGURA_ESPECTROGRAMA[1]}@{DPI_ESPECTROGRAMA}-imshow")
+            f"{ANCHO_PNG}x{ALTO_PNG}-pil-lut")
 
 def forzar_utf8_salida():
     """Forces UTF-8 on stdout/stderr.
@@ -346,10 +300,127 @@ def analizar_bit_depth(data, meta, incluir_forense=True):
             salida["forense_bits"] = forense
         return salida
 
+def _crear_lut_inferno_256():
+    """256-level RGB lookup table (Inferno/Magma style), pure NumPy."""
+    nodos_pos = np.array([0.0, 0.20, 0.45, 0.70, 0.90, 1.0], dtype=np.float32)
+    nodos_rgb = np.array([
+        [4, 4, 20],       # -120 dBFS: deep blue-black
+        [48, 12, 84],     # -96 dBFS:  dark violet
+        [132, 30, 108],   # -72 dBFS:  purple / magenta
+        [212, 72, 66],    # -48 dBFS:  orange-red
+        [250, 158, 22],   # -24 dBFS:  bright amber
+        [252, 250, 164],  #    0 dBFS:  incandescent yellow
+    ], dtype=np.float32)
+    x = np.linspace(0.0, 1.0, 256, dtype=np.float32)
+    lut = np.empty((256, 3), dtype=np.uint8)
+    for canal in range(3):
+        lut[:, canal] = np.clip(
+            np.interp(x, nodos_pos, nodos_rgb[:, canal]), 0, 255).astype(np.uint8)
+    return lut
+
+_LUT_ESPECTROGRAMA = _crear_lut_inferno_256()
+
+def _fuente_png(tam=14):
+    """Default bitmap font at a readable size (Pillow's size argument)."""
+    try:
+        return ImageFont.load_default(size=tam)
+    except TypeError:                  # very old Pillow: no size parameter
+        return ImageFont.load_default()
+
+def renderizar_espectrograma_rapido(matriz_db, sample_rate, ruta_salida_png,
+                                    db_min=-120.0, db_max=0.0,
+                                    ancho_px=ANCHO_PNG, alto_px=ALTO_PNG,
+                                    titulo=None, techo_hz=None,
+                                    frecuencia_corte=None):
+    """Renders a (frequency, time) dB matrix to PNG with NumPy + Pillow.
+
+    No figure objects, no Agg canvas, no matplotlib: the LUT maps every cell in
+    one C-level array lookup and `Image.fromarray` writes the raster directly.
+    Labels are strictly English (test_idioma.py).
+    """
+    if not PIL_OK:
+        raise RuntimeError("Pillow is not available")
+    matriz = np.asarray(matriz_db, dtype=np.float32)
+    if matriz.ndim != 2 or matriz.shape[0] == 0 or matriz.shape[1] == 0:
+        raise ValueError("empty spectrogram matrix")
+
+    spec = matriz.T[::-1, :]           # high frequencies on top
+    norm = (spec - float(db_min)) / max(float(db_max - db_min), 1.0)
+    idx = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
+    rgb = _LUT_ESPECTROGRAMA[idx]
+    img_spec = Image.fromarray(rgb, mode="RGB").resize(
+        (ancho_px, alto_px), resample=Image.Resampling.BILINEAR)
+
+    margen_izq, margen_der, margen_sup, margen_inf = 96, 26, 46, 52
+    lienzo = Image.new(
+        "RGB", (ancho_px + margen_izq + margen_der,
+                alto_px + margen_sup + margen_inf),
+        (18, 18, 24))
+    lienzo.paste(img_spec, (margen_izq, margen_sup))
+    dibujo = ImageDraw.Draw(lienzo)
+    fuente = _fuente_png(14)
+    fuente_peq = _fuente_png(12)
+    color_eje = (180, 180, 195)
+    color_texto = (220, 220, 230)
+
+    nyquist_khz = (float(sample_rate) / 2.0) / 1000.0
+    paso_khz = 4 if nyquist_khz <= 24.0 else 8
+    for khz in range(0, int(nyquist_khz) + 1, paso_khz):
+        frac_y = 1.0 - (float(khz) / nyquist_khz if nyquist_khz else 0.0)
+        y_px = margen_sup + int(round(frac_y * alto_px))
+        dibujo.line([(margen_izq - 6, y_px), (margen_izq, y_px)],
+                    fill=color_eje, width=1)
+        dibujo.text((6, y_px - 7), f"{khz} kHz", fill=color_texto, font=fuente_peq)
+
+    def y_de(freq_hz):
+        frac = 1.0 - (float(freq_hz) / (nyquist_khz * 1000.0)
+                      if nyquist_khz else 0.0)
+        return margen_sup + int(round(frac * alto_px))
+
+    # CD Nyquist reference line on hi-res files.
+    if nyquist_khz > 24.0:
+        y_cd = y_de(22050.0)
+        for x_p in range(margen_izq, margen_izq + ancho_px, 12):
+            dibujo.line([(x_p, y_cd), (min(x_p + 6, margen_izq + ancho_px), y_cd)],
+                        fill=(0, 220, 255), width=1)
+        dibujo.text((margen_izq + 8, max(margen_sup + 2, y_cd - 16)),
+                    "22.05 kHz (CD Nyquist)", fill=(0, 220, 255), font=fuente_peq)
+
+    if techo_hz:
+        y_techo = y_de(float(techo_hz))
+        dibujo.line([(margen_izq, y_techo), (margen_izq + ancho_px, y_techo)],
+                    fill=(0, 220, 255), width=1)
+        dibujo.text((margen_izq + ancho_px - 190, max(margen_sup + 2, y_techo - 16)),
+                    f"Ceiling: {float(techo_hz)/1000:.1f} kHz",
+                    fill=(0, 220, 255), font=fuente_peq)
+    if frecuencia_corte:
+        y_corte = y_de(float(frecuencia_corte))
+        dibujo.line([(margen_izq, y_corte), (margen_izq + ancho_px, y_corte)],
+                    fill=(235, 70, 70), width=2)
+        dibujo.text((margen_izq + 8, min(margen_sup + alto_px - 16, y_corte + 4)),
+                    f"Cut-off: {float(frecuencia_corte)/1000:.1f} kHz",
+                    fill=(245, 120, 120), font=fuente_peq)
+
+    dibujo.rectangle(
+        [margen_izq, margen_sup, margen_izq + ancho_px, margen_sup + alto_px],
+        outline=(90, 90, 110), width=1)
+    dibujo.text((margen_izq, 12),
+                (titulo or "Spectrogram")[:80], fill=color_texto, font=fuente)
+    dibujo.text((margen_izq + ancho_px - 160, 16), "dB relative to peak",
+                fill=color_eje, font=fuente_peq)
+    dibujo.text((margen_izq + ancho_px // 2 - 24, margen_sup + alto_px + 22),
+                "Time (s)", fill=color_texto, font=fuente)
+    dibujo.text((10, margen_sup + alto_px // 2), "Frequency (kHz)",
+                fill=color_texto, font=fuente)
+    lienzo.save(ruta_salida_png, format="PNG", compress_level=3)
+
+
 def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_hz, frecuencia_corte):
     """Draws the spectrogram. Returns (ruta_png, error): it never raises, and the
     reason for the failure is kept so that it can be reported."""
     try:
+        if not PIL_OK:
+            return None, "Pillow is not available: PNG spectrograms are disabled"
         carpeta        = os.path.dirname(ruta_audio)
         nombre         = os.path.splitext(os.path.basename(ruta_audio))[0]
         directorio_png = os.path.join(carpeta, "_spectrograms")
@@ -357,49 +428,22 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
 
         ruta_png = os.path.join(directorio_png, nombre + "_espectrograma.png")
 
-        # 1) Decimate BEFORE the transcendental step: log10 runs on far fewer
-        #    cells when the window has more frames than the PNG can show.
+        # Decimate before the transcendental step: log10 runs on far fewer cells
+        # when the window has more frames than the PNG can show.
         mezcla_arr = np.asarray(mezcla, dtype=np.float32)
         if mezcla_arr.shape[1] > MAX_FRAMES_PNG:
             step       = max(1, mezcla_arr.shape[1] // MAX_FRAMES_PNG)
             mezcla_arr = mezcla_arr[:, ::step]
-            times      = times[::step]
 
-        # 2) log10 in place, in float32 (half the memory bandwidth of float64).
         db = np.maximum(mezcla_arr, 1e-28)
         np.log10(db, out=db)
         db *= 10.0
         db -= float(np.max(db))
 
-        # 3) OO API through plt.Figure: it returns the matplotlib.figure.Figure
-        #    class directly, so pyplot's global state is not touched, yet the
-        #    module-level `plt` stays as the fault-injection point the tests use.
-        fig = plt.Figure(figsize=FIGURA_ESPECTROGRAMA, dpi=DPI_ESPECTROGRAMA)
-        FigureCanvasAgg(fig)
-        ax  = fig.add_subplot(111)
-
-        # imshow paints a raster: with a grid of ~2049x1500 cells it is ~10 times
-        # faster than pcolormesh(shading="gouraud") and more faithful (gouraud
-        # interpolated between cell centres, smoothing the result).
-        img = ax.imshow(db, aspect="auto", origin="lower", cmap="inferno",
-                        vmin=-80, vmax=0, interpolation="auto",
-                        extent=[times[0], times[-1], freqs[0] / 1000, freqs[-1] / 1000])
-        fig.colorbar(img, ax=ax, label="dB (relative to peak)")
-        ax.set_ylabel("Frequency (kHz)")
-        ax.set_xlabel("Time (s)")
-        ax.set_title(f"Spectrogram — {os.path.basename(ruta_audio)}")
-        ax.set_ylim(0, samplerate / 2000)
-        if techo_hz:
-            ax.axhline(techo_hz / 1000, color="cyan",  lw=1.2, ls="--", alpha=0.85,
-                       label=f"Ceiling: {techo_hz/1000:.1f} kHz")
-        if frecuencia_corte:
-            ax.axhline(frecuencia_corte / 1000, color="red", lw=1.5, ls="--", alpha=0.9,
-                       label=f"Corte: {frecuencia_corte/1000:.1f} kHz")
-        if techo_hz or frecuencia_corte:
-            ax.legend(loc="upper right", fontsize=8)
-
-        fig.tight_layout()
-        fig.savefig(ruta_png, dpi=DPI_ESPECTROGRAMA)
+        renderizar_espectrograma_rapido(
+            db, samplerate, ruta_png, db_min=-80.0, db_max=0.0,
+            titulo=f"Spectrogram - {os.path.basename(ruta_audio)}",
+            techo_hz=techo_hz, frecuencia_corte=frecuencia_corte)
         return ruta_png, None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
@@ -756,7 +800,7 @@ def analizar_espectro(data, samplerate, modo, segundos=None, guardar_png=False, 
         es_stereo = data.shape[1] >= 2
         acumulador = _AcumuladorEspectral(
             samplerate, es_stereo,
-            guardar_png=bool(guardar_png) and MATPLOTLIB_OK and bool(ruta),
+            guardar_png=bool(guardar_png) and PIL_OK and bool(ruta),
             ruta=ruta)
         for inicio in range(0, len(data), FRAMES_POR_BLOQUE):
             acumulador.anadir(data[inicio : inicio + FRAMES_POR_BLOQUE], inicio)
@@ -1619,7 +1663,7 @@ class _AnalisisPorBloques:
         self.bits  = meta["bits_per_sample"]
         self.total = int(total_frames) if total_frames and total_frames > 0 else (1 << 62)
         self.ruta  = ruta
-        self.guardar_png = bool(guardar_png) and MATPLOTLIB_OK and bool(ruta)
+        self.guardar_png = bool(guardar_png) and PIL_OK and bool(ruta)
 
         # MD5 (the same PCM as verificar_md5, hashed incrementally). It is only
         # hashed if there is something to compare with: with no recorded MD5 or
@@ -1911,7 +1955,7 @@ def escribir_cache(ruta, meta, modo, segundos, resultado):
 
 # ─── PARALLELISATION (Block 8) ───────────────────────────────────────────────
 # Each track is independent, so the tracks are spread across processes. PROCESSES
-# are used and not threads because matplotlib is not thread-safe and because
+# are used and not threads because the workers are CPU-bound and because
 # numpy/scipy release the GIL only for part of the work; each process imports
 # motor_flac on its own and keeps the Agg backend, sharing no state with the
 # others.
@@ -1936,7 +1980,7 @@ def _sonda_procesos():
     Some environments do not allow it (sandboxes that block Windows named pipes).
     In that case the analysis runs in series: slower, but correct. The answer is
     cached for the lifetime of the process: probing starts a whole child
-    interpreter (numpy, scipy, matplotlib, soundfile), which is wasteful to repeat
+    interpreter (numpy, scipy, soundfile, Pillow), which is wasteful to repeat
     on every batch.
     """
     global _SONDA_PROCESOS_CACHE

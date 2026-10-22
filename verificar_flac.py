@@ -173,7 +173,7 @@ def pedir_modo():
     return modo, segundos
 
 def pedir_espectrograma():
-    if not motor.MATPLOTLIB_OK:
+    if not motor.PIL_OK:
         return False
     resp = input('\nSave a PNG spectrogram per track? (y/N): ').strip().lower()
     return resp in AFIRMATIVOS
@@ -248,7 +248,7 @@ def ejecutar_analisis(ruta, modo, segundos, guardar_png, guardar_pdf=False):
               f"{verdicts['PROBABLE UPSCALE']} ❌ UPSCALE"
               + (f"  |  {fallos} ❌ WITH ERRORS" if fallos else ""))
         print(f"{'═'*60}")
-        if guardar_png and motor.MATPLOTLIB_OK:
+        if guardar_png and motor.PIL_OK:
             print(f"📊 Spectrograms in: {os.path.join(ruta, '_spectrograms')}")
 
     if guardar_pdf:
@@ -280,13 +280,13 @@ def main(argv=None):
 
     print(f"verificar_flac {VERSION} — advanced FLAC authenticity analysis")
     print("═" * 60)
-    print("  Optional dependencies: pip install matplotlib  (PNG spectrograms)")
+    print("  Optional dependencies: pip install pillow      (PNG spectrograms)")
     print("                         pip install reportlab    (PDF report)")
     print("                         pip install customtkinter  (graphical interface)")
     print()
-    if not motor.MATPLOTLIB_OK:
-        print("⚠️  matplotlib not found — PNG spectrograms disabled.")
-        print('   Install it with: pip install matplotlib\n')
+    if not motor.PIL_OK:
+        print("⚠️  Pillow not found — PNG spectrograms disabled.")
+        print('   Install it with: pip install pillow\n')
     print('ℹ️  Type "exit" or "q" as the path to quit.')
     print('ℹ️  For the graphical interface:  python verificar_flac.py --gui\n')
 

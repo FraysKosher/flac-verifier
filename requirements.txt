@@ -5,7 +5,7 @@
 #
 # Reference versions verified for this project:
 #     Python 3.10.11 | numpy 2.2.6 | scipy 1.15.3 | soundfile 0.13.1
-#     mutagen 1.47.0 | matplotlib 3.10.3 | reportlab 5.0.1
+#     mutagen 1.47.0 | pillow 12.3.0 | reportlab 5.0.1
 #
 # The tests need no extra dependency: they use unittest from the standard library.
 # To run them:
@@ -15,18 +15,15 @@ numpy>=1.24
 scipy>=1.10
 soundfile>=0.12
 mutagen>=1.46
+pillow>=9.1
 
 # ─── OPTIONAL ────────────────────────────────────────────────────────────────
 # The program works normally without these; only the matching feature is lost, and
 # it says so with a clear message instead of failing.
 
-# Only for PNG spectrograms (the engine's --png flag, or answering "y" in the
-# interactive CLI menu).
-matplotlib>=3.6
-
 # Only for the per-album PDF report (the engine's --pdf flag, or answering "y" in
-# the interactive CLI menu). It needs Pillow to embed the spectrograms, which is
-# already installed if matplotlib is.
+# the interactive CLI menu). It uses Pillow (already required) to embed the
+# spectrograms.
 reportlab>=4.0
 
 # Only for the graphical interface (python gui.py or python verificar_flac.py --gui).

@@ -60,13 +60,12 @@ pip install -r requirements.txt
 ```
 
 Verified with Python 3.10.11, numpy 2.2.6, scipy 1.15.3, soundfile 0.13.1,
-mutagen 1.47.0, matplotlib 3.10.3, reportlab 5.0.1 and customtkinter 5.2.2.
+mutagen 1.47.0, pillow 12.3.0, reportlab 5.0.1 and customtkinter 5.2.2.
 
-Four dependencies are **optional** and the program works without them:
+Three dependencies are **optional** and the program works without them:
 
 | Dependency | What it is for | If missing |
 |---|---|---|
-| `matplotlib` | PNG spectrograms (`--png`) | PNG output is disabled and a warning is shown |
 | `reportlab` | Per-album PDF report (`--pdf`) | A warning is shown and the analysis continues unchanged |
 | `customtkinter` | Graphical interface (`--gui`) | A warning is shown and the CLI is left |
 | `tkinterdnd2` | Dragging folders onto the window | The window still works: the "Browse" button is used |
@@ -185,36 +184,32 @@ you like, `build.py` recreates it on the next build.
 dist/FLAC_Verifier/
 ├── FLAC_Verifier.exe     the application (no console: double click and done)
 ├── flac_motor.exe        the engine in a console, which the GUI launches as a subprocess
-└── _internal/            Python, numpy, scipy, matplotlib, reportlab, tk…
+└── _internal/            Python, numpy, scipy, Pillow, reportlab, tk…
 ```
 
 The whole folder is copied or compressed into a ZIP: **the `.exe` alone does not
 work**, it needs its `_internal/` next to it. That is about 186 MB on disk
-(81 MB in a ZIP), because it includes NumPy, SciPy, Matplotlib and the Python
-interpreter. The first launch takes a few seconds (that is normal: there is
+(81 MB in a ZIP in the 2.1.0 release), because it includes NumPy, SciPy and the
+Python interpreter; the current spec no longer bundles matplotlib, so it is
+smaller. The first launch takes a few seconds (that is normal: there is
 nothing to unpack in `%TEMP%`, which is exactly the reason for using folder mode
 instead of a single `.exe`).
 
 Where those 186 MB come from: `scipy` with its DLLs (≈63 MB), the OpenBLAS
-libraries that numpy and scipy each ship (≈39 MB together), `matplotlib` (≈12 MB),
-`PIL` (≈6 MB, used by reportlab for the images), `reportlab` (≈4 MB) and the
-Python interpreter with Tcl/Tk and `libsndfile`.
+libraries that numpy and scipy each ship (≈39 MB together), `PIL` (≈6 MB, used for
+the spectrograms and the PDF images), `reportlab` (≈4 MB) and the Python
+interpreter with Tcl/Tk and `libsndfile`.
 
 The 2.1.0 build also trimmed what the program never loads: `PIL._avif` (an image
 codec it never opens, ≈7.5 MB), `reportlab.graphics` (the chart stack `platypus`
-never imports), every **non-Agg** matplotlib backend (Qt, GTK, Tk, Wx, PDF, SVG,
-PS, Cairo, WebAgg…) and the non-Windows `tkinterdnd2` builds (only `win-x64` is
-kept). `collect_all()` was also called with `include_py_files=False`: by default
+never imports), **matplotlib** (the spectrogram is now rendered with Pillow) and
+the non-Windows `tkinterdnd2` builds (only `win-x64` is kept). `collect_all()` was also called with `include_py_files=False`: by default
 it copies every `.py` again as *data*, which bloated the bundle and defeated the
 `excludes`.
 
-Collecting matplotlib with `collect_all` also pulled in `pandas`, `pyarrow`,
-`cryptography` and `lxml` —107 MB— because `matplotlib.testing` imports them:
-they are for matplotlib's own tests, not for this program. That is why the
-matplotlib `.spec` collects only its data (fonts, `mpl-data`) and lets
-PyInstaller's own hook add the `Agg` backend, and those four libraries are in
-`excludes`. The result: from 340 MB to 186 MB (154 MB inside `_internal/`), and
-the `.exe` files from 19.0 to 12.2 MB. If the `.spec` is ever touched, it is worth
+Matplotlib used to drag in `pandas`, `pyarrow`, `cryptography` and `lxml`
+—107 MB— through `matplotlib.testing`. The whole package is now in `excludes`, so
+those libraries stay out as well. If the `.spec` is ever touched, it is worth
 looking at the size of `dist/`: a jump of 100 MB means they have come back in.
 
 > One exclusion is deliberately **not** made: `scipy.optimize._highspy`. The
@@ -320,7 +315,7 @@ limit, so a hang is detected and reported instead of staying there:
 | 1 | `--version` on both `.exe` files | That they start and that the version resources are there |
 | 2 | `flac_motor.exe --path … --workers 1` | That the engine works frozen, invoked the way a user would (no extra flags) |
 | 3 | The same command with `--workers 8` | That `freeze_support()` is in place and the workers do not reopen the app |
-| 4 | PDF report with spectrograms | That matplotlib and reportlab made it into the bundle |
+| 4 | PDF report with spectrograms | That Pillow and reportlab made it into the bundle |
 | 5 | The exact command the GUI builds (it asks `gui.ruta_motor()`) and `FLAC_Verifier.exe --motor-cli` | That the subprocess the window launches is the right one and that the fallback flag exists |
 | 6 | Opening and closing the window | That the GUI starts without leaving hung processes or windows |
 | 7 | The frozen executable against the source code, on the same album | That packaging did not change the analysis: the records must match field by field (verdict, score, MD5, DR, problems…) |
@@ -572,7 +567,7 @@ Behaviour details:
   That way it cannot overflow onto the next page and be left loose, separated from
   its title. If the list of problems is so long that not even the minimum fits,
   the title and the image move together to the next page (`KeepTogether`).
-- **Without spectrograms** (for example with no `matplotlib`) the report is still
+- **Without spectrograms** (for example with no `Pillow`) the report is still
   generated and the note `(no image: …)` appears instead.
 - **Files with an error** (corrupt, digital silence…) take up their page with the
   reason, marked in red and with no verdict: one is never invented for them.
@@ -614,14 +609,9 @@ They are physical limits, not bugs. They are measured and documented on purpose.
    not supported by the content, which happens in an upscale from 44.1/48 kHz and
    also in a high-rate master that has been trimmed. A 96/24 master with an
    analogue roll-off at 30 kHz (ceiling ~26 kHz) does not fall into that case.
-8. **The system environment can leave a matplotlib warning in the log.** The
-   first time it draws, matplotlib writes a font cache; the engine gives it its
-   own writable folder (`%LOCALAPPDATA%\FLAC_VERIFIER`, or the temporary
-   directory if that one cannot be used), but there are systems that also block
-   the lock file matplotlib creates next to the cache. When that happens,
-   matplotlib warns on `stderr` and the GUI log shows that line loose among the
-   JSON events. The analysis comes out identical: only the font cache is rebuilt
-   on each run (a couple of seconds the first time spectrograms are requested).
+8. **The spectrogram renderer writes nothing to `stderr`.** Since Phase 3 it is a
+   NumPy + Pillow raster, with no font cache, no lock file and no backend: the
+   JSON lines the GUI reads are never mixed with library warnings.
 
 ---
 

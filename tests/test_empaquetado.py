@@ -14,9 +14,7 @@ What matters and is pinned down here:
 import json
 import os
 import re
-import shutil
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -252,7 +250,7 @@ class TestEspecificacion(unittest.TestCase):
 
     def test_recolecta_los_paquetes_con_datos(self):
         for paquete in ("customtkinter", "tkinterdnd2", "soundfile",
-                        "reportlab", "matplotlib"):
+                        "reportlab", "PIL"):
             with self.subTest(paquete=paquete):
                 self.assertIn(f'"{paquete}"', self.fuente)
         self.assertIn("collect_all", self.fuente)
@@ -400,57 +398,28 @@ class TestComparacionConLaFuente(unittest.TestCase):
         self.assertNotIn("veredicto", ficha)
 
 
-class TestCacheDeMatplotlib(unittest.TestCase):
-    """The font cache must not pollute the protocol the GUI reads.
+class TestRenderizadorSinMatplotlib(unittest.TestCase):
+    """The spectrogram is a NumPy + Pillow raster: matplotlib is not packaged."""
 
-    If matplotlib cannot write its cache, it warns on stderr; the engine talks to
-    the GUI on stdout with JSON lines, so that warning would appear in the
-    window's log as an unreadable line. Worse still: it would rebuild the cache on
-    every run (slower on every spectrogram).
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        import motor_flac
-        cls.motor = motor_flac
-
-    def setUp(self):
-        self.entorno = mock.patch.dict(os.environ, {}, clear=False)
-        self.entorno.start()
-        os.environ.pop("MPLCONFIGDIR", None)
-
-    def tearDown(self):
-        self.entorno.stop()
-
-    def test_se_elige_una_carpeta_escribible_del_usuario(self):
-        # The checks go inside the `with`: on exit, mock undoes the environment
-        # dictionary and with it the variable it has just set.
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": tempfile.gettempdir()}):
-            elegida = self.motor.preparar_cache_matplotlib()
-            self.assertTrue(elegida, "no folder was chosen")
-            self.assertTrue(os.path.isdir(elegida))
-            self.assertEqual(os.environ["MPLCONFIGDIR"], elegida)
-            self.assertIn("FLAC_VERIFIER", elegida)
-            shutil.rmtree(os.path.dirname(elegida), ignore_errors=True)
-
-    def test_lo_que_configura_el_usuario_no_se_toca(self):
-        with mock.patch.dict(os.environ, {"MPLCONFIGDIR": "C:/mine"}):
-            self.assertIsNone(self.motor.preparar_cache_matplotlib())
-            self.assertEqual(os.environ["MPLCONFIGDIR"], "C:/mine")
-
-    def test_si_no_se_puede_crear_no_se_rompe_nada(self):
-        """With no permission on any candidate, the default value is left."""
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": "C:/made_up"}), \
-             mock.patch.object(self.motor.os, "makedirs", side_effect=PermissionError):
-            self.assertIsNone(self.motor.preparar_cache_matplotlib())
-        self.assertNotIn("MPLCONFIGDIR", os.environ)
-
-    def test_se_decide_antes_de_importar_matplotlib(self):
+    def test_el_motor_no_importa_matplotlib(self):
         fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
-        llamada = fuente.index("preparar_cache_matplotlib()\n\ntry:")
-        self.assertLess(llamada, fuente.index("import matplotlib"),
-                        "the variable is read when matplotlib is imported: the call goes before")
+        self.assertNotIn("import matplotlib", fuente)
+        self.assertNotIn("matplotlib.use", fuente)
 
+    def test_el_motor_usa_pillow_y_la_lut(self):
+        fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
+        self.assertIn("from PIL import Image", fuente)
+        self.assertIn("_LUT_ESPECTROGRAMA", fuente)
+        self.assertIn("Image.fromarray(", fuente)
+
+    def test_el_spec_excluye_matplotlib(self):
+        fuente = open(SPEC, encoding="utf-8").read()
+        bloque = fuente.split("excludes=[", 1)[1]
+        self.assertIn('"matplotlib"', bloque)
+        self.assertNotIn('collect_data_files("matplotlib")', fuente)
+
+    def test_el_spec_recolecta_pillow(self):
+        self.assertIn('"PIL"', open(SPEC, encoding="utf-8").read())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

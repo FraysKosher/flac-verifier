@@ -259,7 +259,7 @@ def _insignia(res, est):
 def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
     """Returns (flowable, warning). The warning explains why there is no image.
 
-    matplotlib PNG files weigh ~1.2 MB each; for the PDF they are rescaled and
+    The PNG files weigh several hundred KB each; for the PDF they are rescaled and
     recompressed to JPEG inside a temporary directory (reportlab needs a file
     path). Without Pillow the original PNG is embedded: the report comes out the
     same either way.
@@ -271,7 +271,7 @@ def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
     alto_max  = alto_max or 62 * mm
     ruta = (res.get("esp") or {}).get("espectrograma")
     if not ruta:
-        return None, "spectrogram not generated (matplotlib not available)"
+        return None, "spectrogram not generated (Pillow not available)"
     if not os.path.exists(ruta):
         return None, "the spectrogram file is no longer available"
 

@@ -54,12 +54,13 @@ class TestCapaFina(unittest.TestCase):
 
     def test_la_dependencia_del_pdf_queda_aislada(self):
         """Neither the engine nor the CLI imports reportlab: only informe_pdf uses
-        it, and that is why both work even when reportlab is not installed."""
+        it, and that is why both work even when reportlab is not installed.
+        Pillow is different: since Phase 3 the engine renders the spectrograms
+        with it, so it is imported (guarded) by motor_flac itself."""
         for ruta in (fx.MOTOR, fx.CLI):
             with self.subTest(modulo=os.path.basename(ruta)):
                 fuente = open(ruta, encoding="utf-8").read()
                 self.assertNotRegex(fuente, r"(?m)^\s*(?:import|from)\s+reportlab")
-                self.assertNotRegex(fuente, r"(?m)^\s*(?:import|from)\s+PIL")
 
     def test_el_informe_no_usa_reportlab_al_importar(self):
         """A default value in the signature is evaluated when the module is
@@ -175,7 +176,7 @@ class TestEspectrogramaPNG(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    @unittest.skipUnless(motor.MATPLOTLIB_OK, "matplotlib not installed")
+    @unittest.skipUnless(motor.PIL_OK, "Pillow not installed")
     def test_se_genera_el_png_y_se_reporta_la_ruta(self):
         res = motor.analizar_archivo_datos(self.fx["ok16"], "center", None, True)
         self.assertNotIn("error", res, res.get("error"))

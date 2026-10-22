@@ -2,7 +2,7 @@
 """PyInstaller specification for FLAC VERIFIER 2.1.0 (Windows 10/11 x64).
 
 The build uses FOLDER mode (`--onedir`): this is the recommended choice for
-applications with NumPy/SciPy/Matplotlib because it starts instantly and does not
+applications with NumPy/SciPy/Pillow because it starts instantly and does not
 unpack hundreds of megabytes into %TEMP% on every run (nor does it block when
 several processes open at once, which is exactly what the parallel analysis
 does).
@@ -23,8 +23,8 @@ Build:
 """
 import os
 
-from PyInstaller.utils.hooks import (collect_all, collect_data_files,
-                                     collect_dynamic_libs, collect_submodules)
+from PyInstaller.utils.hooks import (collect_all, collect_dynamic_libs,
+                                     collect_submodules)
 
 # ─── Collection of data, binaries and hidden imports ────────────────────────
 datas: list = []
@@ -43,12 +43,7 @@ for paquete in ("customtkinter", "tkinterdnd2", "soundfile", "reportlab", "PIL")
     binaries += b
     hiddenimports += h
 
-# Matplotlib is collected ONLY by its data (fonts, mpl-data, stylelib…). With
-# `collect_all` its submodules would enter as well, and among them matplotlib.testing
-# drags in pandas, pyarrow, cryptography and lxml: 107 MB of libraries that this
-# project does not use at all (the Agg backend and pyplot are added by
-# PyInstaller's own hook, which also detects the `matplotlib.use("Agg")` of the engine).
-datas += collect_data_files("matplotlib")
+# The spectrogram is rendered with NumPy + Pillow (no matplotlib at all).
 
 # The native libsndfile DLL, in case the hook does not classify it as a binary.
 binaries += collect_dynamic_libs("soundfile")
@@ -139,11 +134,11 @@ a = Analysis(
     excludes=[
         "pytest", "setuptools", "pip", "wheel",
         "IPython", "jupyter", "notebook", "nbformat",
-        "matplotlib.tests", "numpy.tests", "scipy.tests",
+        "matplotlib", "numpy.tests", "scipy.tests",
         "PyQt5", "PyQt6", "PySide2", "PySide6", "wx",
-        # They entered through matplotlib.testing (which is no longer collected)
-        # and add up to more than 100 MB: nothing this program does needs them,
-        # and keeping them in the list stops a future hook dragging them in again.
+        # They used to enter through matplotlib.testing (now excluded): nothing
+        # this program does needs them, and keeping them in the list stops a
+        # future hook from dragging them in again.
         "pandas", "pyarrow", "cryptography", "lxml",
         "openpyxl", "xlrd", "sqlalchemy", "ipykernel", "sphinx",
         # Optional codec the app never opens (only PNG in, JPEG out).
@@ -151,36 +146,6 @@ a = Analysis(
         # reportlab's chart/graphics stack: `platypus` never imports it (verified),
         # so the report renders fine without it.
         "reportlab.graphics",
-        # Matplotlib backends: the engine forces the Agg backend, so every other
-        # one (Qt, GTK, Tk, Wx, PDF, SVG, PS, Cairo, WebAgg…) is dead weight.
-        "matplotlib.backends.backend_pdf",
-        "matplotlib.backends.backend_svg",
-        "matplotlib.backends.backend_ps",
-        "matplotlib.backends.backend_pgf",
-        "matplotlib.backends.backend_cairo",
-        "matplotlib.backends.backend_gtk3",
-        "matplotlib.backends.backend_gtk3agg",
-        "matplotlib.backends.backend_gtk3cairo",
-        "matplotlib.backends.backend_gtk4",
-        "matplotlib.backends.backend_gtk4agg",
-        "matplotlib.backends.backend_gtk4cairo",
-        "matplotlib.backends.backend_qt",
-        "matplotlib.backends.backend_qtagg",
-        "matplotlib.backends.backend_qtcairo",
-        "matplotlib.backends.backend_tkagg",
-        "matplotlib.backends.backend_tkcairo",
-        "matplotlib.backends.backend_wx",
-        "matplotlib.backends.backend_wxagg",
-        "matplotlib.backends.backend_wxcairo",
-        "matplotlib.backends.backend_macosx",
-        "matplotlib.backends.backend_nbagg",
-        "matplotlib.backends.backend_webagg",
-        "matplotlib.backends.backend_webagg_core",
-        "matplotlib.backends.backend_template",
-        "matplotlib.backends.backend_mixed",
-        "matplotlib.backends._tkagg",
-        "matplotlib.backends._backend_tk",
-        "matplotlib.backends._backend_gtk",
         # NOTE: scipy.optimize._highspy is deliberately NOT excluded: `import
         # scipy.signal` pulls in scipy.optimize._linprog_highs, which imports
         # _highspy eagerly, so removing it would break the engine at start-up

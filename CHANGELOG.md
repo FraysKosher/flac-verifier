@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The spectrogram is rendered with a NumPy 256-level LUT and Pillow
+  (`renderizar_espectrograma_rapido`) instead of matplotlib. Matplotlib is no
+  longer imported by the engine and is excluded from the PyInstaller spec.
 - The spectral analysis no longer measures a fixed window: every block of the
   whole file is scored by its transient/high-frequency energy (RMS above
   -65 dBFS) and the most active ones, about 45-60 s of audio, are transformed.
