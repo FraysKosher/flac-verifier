@@ -209,6 +209,33 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertTrue(res["esp"]["sospecha_corte_opus_20k"])
         self.assertEqual(res["veredicto"], "SUSPICIOUS")
 
+    def test_11_bajo_fuerte_con_filtro_estatico_no_dispara_jitter(self):
+        """Strong bass plus a static 20 kHz low-pass must not fake cut-off jitter.
+
+        The instantaneous threshold is referenced to the 4-11 kHz band energy of
+        each frame, not to its peak: a loud bass line cannot drag the reference.
+        """
+        sr = 44100
+        rng = np.random.default_rng(2026)
+        n = sr * 6
+        t = np.arange(n) / float(sr)
+        ruido = rng.standard_normal((n, 2)) * 0.25
+        bajo = 0.9 * np.sin(2.0 * np.pi * 55.0 * t)[:, None]
+        x = ruido + bajo
+        x /= max(1.0, np.max(np.abs(x))) * 1.05
+        espectro = np.fft.rfft(x, axis=0)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+        espectro[freqs > 20000.0] = 0.0
+        y = np.fft.irfft(espectro, n, axis=0)
+
+        ruta = self.base_path / "strong_bass_static_20k.flac"
+        sf.write(ruta, np.clip(y, -0.99, 0.99), sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
+        self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
+        self.assertFalse(any("jitter" in p.lower() for p in res["problemas"]))
+
     def test_10_falso_24bit_escalado_en_peine_es_detectado(self):
         """16-bit grid scaled by a gain into 24 bits: LSB quantisation comb."""
         sig = _crear_pista_referencia(44100, duracion=6.0, seed=110)
