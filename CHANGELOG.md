@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The spectral analysis no longer measures a fixed window: every block of the
+  whole file is scored by its transient/high-frequency energy (RMS above
+  -65 dBFS) and the most active ones, about 45-60 s of audio, are transformed.
+  A quiet intro no longer lowers the measured ceiling of a genuine track.
+- The STFT runs in float32 with `sliding_window_view` and Mid/Side separation,
+  without `np.sqrt`, and the spectrogram shows the selected blocks.
+
 ### Planned
 
 - Rename the remaining Spanish internal identifiers in the JSON protocol and the

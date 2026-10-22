@@ -90,7 +90,7 @@ chosen with "Browse".
 | Control | What it does |
 |---|---|
 | Path + Browse | The album folder, or a single `.flac` file |
-| Spectral mode | `center` (default), `full` or `seconds` with a slider from 5 to 120 s |
+| Spectral mode | `center` (default), `full` or `seconds` with a slider from 5 to 120 s. The analysis now measures the most active blocks of the whole track, so the mode only labels the cache entry |
 | Generate PDF report | Checked by default |
 | Parallel processing | Automatic (up to 8 processes) or a fixed number; off = sequential |
 | Ignore cache | Forces an analysis from scratch |
@@ -146,8 +146,8 @@ python motor_flac.py --path "C:/Music/album" --pdf --no-cache   # clean analysis
 | Option | Values | Description |
 |---|---|---|
 | `--path` | path | `.flac` file or folder (required) |
-| `--mode` | `seconds` \| `center` \| `full` | Spectral analysis window (default `center`) |
-| `--seconds` | integer | Starting seconds when `--mode seconds` (default 15) |
+| `--mode` | `seconds` \| `center` \| `full` | Spectral mode label (default `center`). The energy-guided selector always covers the whole track, so the value only identifies the cache entry |
+| `--seconds` | integer | Starting-seconds label when `--mode seconds` (default 15); the selector still covers the whole track |
 | `--png` | — | Saves one spectrogram per track in `<folder>/_spectrograms/` |
 | `--pdf` | — | Generates `flac_verifier_report.pdf` in the album folder (implies generating the spectrograms; requires `reportlab`) |
 | `--workers` | integer | Parallel processes. `0` (default) = automatic up to 8; `1` = sequential |

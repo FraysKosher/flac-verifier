@@ -1,4 +1,5 @@
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -19,7 +20,6 @@ del _variable_blas
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import stft
 from mutagen.flac import FLAC, FLACNoHeaderError
 
 
@@ -80,7 +80,10 @@ except ImportError:
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.0"
+VERSION_MOTOR = "9.1"
+# 9.1: the spectrum is measured on the K most active blocks of the whole file
+#      (energy-guided selector) with a float32 sliding_window_view STFT and
+#      Mid/Side separation, instead of a fixed 45 s window.
 
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
@@ -90,6 +93,7 @@ VERSION_ESQUEMA_CACHE = "2.2.0"
 # Spectrogram presentation (affects only the PNG, never the metrics).
 FIGURA_ESPECTROGRAMA = (14, 5)      # inches
 DPI_ESPECTROGRAMA    = 150
+FPS_ESPECTROGRAMA_PNG = 20          # display time resolution (metrics use every frame)
 
 def huella_render():
     """Parameters that define the PNG. If any of them changes, the spectrogram
@@ -339,7 +343,7 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
             times      = times[::step]
 
         # 2) log10 in place, in float32 (half the memory bandwidth of float64).
-        db = np.maximum(mezcla_arr, 1e-30)
+        db = np.maximum(mezcla_arr, 1e-28)
         np.log10(db, out=db)
         db *= 10.0
         db -= float(np.max(db))
@@ -377,17 +381,20 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
-def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None):
+def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, potencia=None):
     """Core of the spectral analysis: everything is derived from the
     time-averaged power spectrum (one entry per bin). It does not depend on how
     it was obtained.
 
     es_stereo is passed explicitly: in mono, pot_l and pot_r can be distinct
-    arrays holding the same values, so identity is not a usable hint."""
+    arrays holding the same values, so identity is not a usable hint.
+    potencia is the total power spectrum; the Mid/Side decomposition provides it
+    directly (|M|^2 + |S|^2 = (|L|^2 + |R|^2) / 2)."""
     if es_stereo is None:
         es_stereo = pot_l is not pot_r
-    potencia  = (pot_l + pot_r) / 2
-    pot_db    = 10 * np.log10(potencia + 1e-30)
+    if potencia is None:
+        potencia = (pot_l + pot_r) / 2
+    pot_db    = 10.0 * np.log10(np.maximum(potencia, 1e-28))
     pot_db_n  = pot_db - np.max(pot_db)
 
     mask_act = pot_db_n > -60
@@ -470,44 +477,20 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None):
 def analizar_espectro(data, samplerate, modo, segundos=None, guardar_png=False, ruta=None):
     """Spectral analysis over an already loaded array (direct API and oracle of
     the tests). The production path uses _AnalisisPorBloques, which does not load
-    the track."""
+    the track. Both paths share the selector and the float32 STFT, so they must
+    give exactly the same metrics.
+
+    `modo` and `segundos` are kept in the signature for API/cache compatibility;
+    the selector already covers the whole file, so they do not narrow the window."""
     try:
         es_stereo = data.shape[1] >= 2
-        canal_l   = data[:, 0]
-        canal_r   = data[:, 1] if es_stereo else data[:, 0]
-
-        if modo == "seconds" and segundos:
-            canal_l = canal_l[: samplerate * segundos]
-            canal_r = canal_r[: samplerate * segundos]
-        elif modo == "center":
-            mitad   = len(canal_l) // 2
-            n       = samplerate * 30
-            canal_l = canal_l[mitad : mitad + n]
-            canal_r = canal_r[mitad : mitad + n]
-
-        nperseg = max(256, min(4096, len(canal_l) // 8))
-        hop     = nperseg // 2
-        freqs, times, Zxx_l = stft(canal_l, samplerate, nperseg=nperseg, noverlap=hop)
-        pot_l_z = np.abs(Zxx_l) ** 2
-        del Zxx_l
-        if es_stereo:
-            _, _, Zxx_r = stft(canal_r, samplerate, nperseg=nperseg, noverlap=hop)
-            pot_r_z = np.abs(Zxx_r) ** 2
-            del Zxx_r
-        else:
-            pot_r_z = pot_l_z                    # single FFT in mono
-
-        esp = _metricas_espectrales(freqs, np.mean(pot_l_z, axis=1),
-                                    np.mean(pot_r_z, axis=1), samplerate,
-                                    es_stereo=es_stereo)
-        if guardar_png and MATPLOTLIB_OK and ruta:
-            ruta_png, error = _guardar_espectrograma(
-                freqs, times, (pot_l_z + pot_r_z) / 2, samplerate, ruta,
-                esp["techo_hz"], esp["frecuencia_corte"])
-            esp["espectrograma"] = ruta_png
-            if error:
-                esp["espectrograma_error"] = error
-        return esp
+        acumulador = _AcumuladorEspectral(
+            samplerate, es_stereo,
+            guardar_png=bool(guardar_png) and MATPLOTLIB_OK and bool(ruta),
+            ruta=ruta)
+        for inicio in range(0, len(data), FRAMES_POR_BLOQUE):
+            acumulador.anadir(data[inicio : inicio + FRAMES_POR_BLOQUE], inicio)
+        return acumulador.resultado()
     except Exception as e:
         return {"error": str(e)}
 
@@ -745,7 +728,7 @@ def calcular_score(meta, esp, bdi):
 # float64 and the whole STFT was built: a 10-minute 24/96 asked for ~2.8 GB.
 
 FRAMES_POR_BLOQUE = 1 << 18            # 262 144 frames (~6 s at 44.1 kHz) per read
-SEGUNDOS_ESPECTRO = 45                 # size of the STFT pieces (30-60 s)
+SEGUNDOS_ESPECTRO = 45                 # minimum seconds of active audio selected for the STFT
 MAX_MUESTRAS_BITS = 1 << 20            # sample for the LSB test
 MAX_FRAMES_PNG    = 1500
 
@@ -757,6 +740,221 @@ def _leer_bloques(ruta, frames_por_bloque=FRAMES_POR_BLOQUE):
             if bloque.shape[0] == 0:
                 return
             yield bloque
+
+# ─── ENERGY-GUIDED SPECTRAL SELECTOR ────────────────────────────────────────
+# The spectrum used to be measured on the first/central 45 s, which is exactly
+# the wrong window when a track opens with 90 s of soft analogue synth or an
+# acoustic intro: the ceiling came out artificially low and a genuine file was
+# penalised. The whole file is already being read for the MD5, so every block is
+# scored by its transient/high-frequency energy and only the K most active ones
+# are transformed. That keeps the STFT work bounded (~45-60 s of audio) while
+# guaranteeing that the sections with drums and cymbals are the ones measured.
+
+UMBRAL_RMS_ACTIVO_DB = -65.0      # below this a block is silence for the selector
+
+def _bloques_activos_necesarios(samplerate):
+    """K blocks, chosen so that the selected audio is at least SEGUNDOS_ESPECTRO
+    long. With FRAMES_POR_BLOQUE fixed, K grows with the sample rate."""
+    return max(1, int(math.ceil(SEGUNDOS_ESPECTRO * float(samplerate) / FRAMES_POR_BLOQUE)))
+
+def _puntuacion_actividad(bloque, ultima_muestra=None):
+    """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
+    cheap high-frequency/transient indicator: it is large on cymbals and attacks
+    and almost zero on a sustained bass line. The last sample of the previous
+    block is carried over so the difference is not lost at the boundary."""
+    if bloque.ndim > 1:
+        n_ch = bloque.shape[1]
+        if n_ch == 1:
+            mono = bloque[:, 0]
+        else:
+            mono = bloque.mean(axis=1)
+    else:
+        mono = bloque
+    if mono.size == 0:
+        return -math.inf, 0.0
+
+    sumsq = float(np.dot(mono, mono))
+    if sumsq > 0.0:
+        rms_db = 10.0 * math.log10(sumsq / mono.size)
+    else:
+        rms_db = -math.inf
+
+    if ultima_muestra is None:
+        diferencias = np.diff(mono)
+    else:
+        diferencias = np.diff(np.concatenate(([ultima_muestra], mono)))
+    if diferencias.size:
+        e_diff = float(np.dot(diferencias, diferencias) / diferencias.size)
+    else:
+        e_diff = 0.0
+    return rms_db, e_diff
+
+def _stft_complejo(canal, nperseg, hop, ventana, escala):
+    """float32 STFT with sliding_window_view: no copies beyond the windowed
+    frames, and the result stays in single precision (half the RAM of float64)."""
+    x = np.asarray(canal, dtype=np.float32)
+    marcos = np.lib.stride_tricks.sliding_window_view(x, nperseg)[::hop]
+    marcos = marcos * ventana
+    espectro = np.fft.rfft(marcos, axis=1)
+    espectro *= escala
+    return espectro
+
+def _potencia_desde_fft(espectro):
+    """|Z|^2 without np.sqrt, with the same 1e-28 floor used for the dB scale."""
+    potencia = espectro.real ** 2 + espectro.imag ** 2
+    np.maximum(potencia, 1e-28, out=potencia)
+    return potencia
+
+class _AcumuladorEspectral:
+    """Keeps the K most active blocks in memory and runs the STFT on them at the
+    end. Shared by the streaming path and the array path so both give the same
+    metrics. Blocks are never concatenated: a frame must not cross the splice
+    between two non-adjacent blocks, which would invent high-frequency content."""
+
+    def __init__(self, samplerate, es_stereo=None, guardar_png=False, ruta=None):
+        self.sr = int(samplerate)
+        self.es_stereo = es_stereo
+        self.guardar_png = bool(guardar_png)
+        self.ruta = ruta
+        self._k = _bloques_activos_necesarios(self.sr)
+        self._seleccion = []          # min-heap by (E_diff, -index)
+        self._respaldo = None         # loudest block, used if none passes -65 dBFS
+        self._indice = 0
+        self._ultima = None
+        self._error = None
+
+    def anadir(self, bloque, inicio=0):
+        if self._error or bloque.shape[0] == 0:
+            return
+        try:
+            rms_db, e_diff = _puntuacion_actividad(bloque, self._ultima)
+            if bloque.ndim > 1:
+                self._ultima = float(np.mean(bloque[-1]))
+                if self.es_stereo is None:
+                    self.es_stereo = bloque.shape[1] >= 2
+            else:
+                self._ultima = float(bloque[-1])
+                self.es_stereo = False
+
+            audio = np.asarray(bloque, dtype=np.float32)
+            indice = self._indice
+            self._indice += 1
+            entrada = (e_diff, -indice, indice, int(inicio), audio)
+
+            if self._respaldo is None or rms_db > self._respaldo[0]:
+                self._respaldo = (rms_db, -indice, indice, int(inicio), audio)
+
+            if rms_db <= UMBRAL_RMS_ACTIVO_DB:
+                return                    # silence: never a candidate
+            if len(self._seleccion) < self._k:
+                heapq.heappush(self._seleccion, entrada)
+            elif entrada[:2] > self._seleccion[0][:2]:
+                heapq.heapreplace(self._seleccion, entrada)
+        except Exception as e:            # never abort the analysis of the file
+            self._error = str(e)
+
+    def resultado(self):
+        if self._error:
+            return {"error": self._error}
+        elegidos = self._seleccion or ([self._respaldo] if self._respaldo else [])
+        if not elegidos:
+            return {"error": "could not analyze the spectrum"}
+        elegidos = sorted(elegidos, key=lambda entrada: entrada[2])   # chronological
+
+        largos = [len(entrada[4]) for entrada in elegidos]
+        total_muestras = sum(largos)
+        nperseg = max(256, min(4096, total_muestras // 8))
+        nperseg = min(nperseg, max(largos))
+        nperseg = max(32, nperseg)
+        hop = max(1, nperseg // 8)      # 87.5 % overlap: enough time detail for the PNG
+
+        ventana = np.hanning(nperseg + 1)[:-1].astype(np.float32)   # periodic Hann
+        escala = np.float32(1.0 / float(ventana.sum()))
+        frames_estimados = sum((n - nperseg) // hop + 1
+                               for n in largos if n >= nperseg)
+        if frames_estimados <= 0:
+            return {"error": "could not analyze the spectrum"}
+        paso_png = max(1, frames_estimados // MAX_FRAMES_PNG)
+        # Display-only cap: a 75-87 % overlap gives far more frames than the PNG
+        # can show, and that per-column detail is random noise that JPEG cannot
+        # compress (it used to bloat the PDF). One displayed frame per 1/25 s
+        # keeps the image faithful and the PDF small; metrics still average all
+        # frames, so no evidence is lost.
+        paso_png = max(paso_png,
+                       int(round(self.sr / (hop * float(FPS_ESPECTROGRAMA_PNG)))))
+
+        suma_l = suma_r = suma_total = None
+        freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
+        frames = 0
+        frames_global = 0
+        png_pot, png_times, png_n = [], [], 0
+
+        for _, _, _, inicio, audio in elegidos:
+            if len(audio) < nperseg:
+                continue                  # a very short trailing block
+            zl = _stft_complejo(audio[:, 0], nperseg, hop, ventana, escala)
+            pot_l = _potencia_desde_fft(zl)
+            if self.es_stereo:
+                zr = _stft_complejo(audio[:, 1], nperseg, hop, ventana, escala)
+                pot_r = _potencia_desde_fft(zr)
+                medio = np.float32(0.5)
+                zm = (zl + zr) * medio
+                zs = (zl - zr) * medio
+                pot_mid = _potencia_desde_fft(zm)
+                pot_side = _potencia_desde_fft(zs)
+                pot_total = pot_mid + pot_side
+                del zr, zm, zs, pot_mid, pot_side
+            else:
+                pot_r = pot_l
+                pot_total = pot_l
+            del zl
+
+            suma_l = (pot_l.sum(axis=0, dtype=np.float32) if suma_l is None
+                      else suma_l + pot_l.sum(axis=0, dtype=np.float32))
+            if self.es_stereo:
+                suma_r = (pot_r.sum(axis=0, dtype=np.float32) if suma_r is None
+                          else suma_r + pot_r.sum(axis=0, dtype=np.float32))
+                suma_total = (pot_total.sum(axis=0, dtype=np.float32)
+                              if suma_total is None
+                              else suma_total + pot_total.sum(axis=0, dtype=np.float32))
+            else:
+                suma_r = suma_l
+                suma_total = suma_l
+
+            n_frames = pot_total.shape[0]
+            if self.guardar_png:
+                restantes = MAX_FRAMES_PNG - png_n
+                if restantes > 0:
+                    i0 = (-frames_global) % paso_png
+                    idx = np.arange(i0, n_frames, paso_png)[:restantes]
+                    if idx.size:
+                        # pot_total is (frames, bins): keep the time rows here and
+                        # transpose once, so the PNG gets (bins, frames).
+                        png_pot.append(pot_total[idx])
+                        png_times.append((inicio + idx * hop) / float(self.sr))
+                        png_n += idx.size
+            frames_global += n_frames
+            frames += n_frames
+            del pot_l, pot_r, pot_total
+
+        if frames == 0 or suma_l is None:
+            return {"error": "could not analyze the spectrum"}
+
+        mean_l = suma_l / np.float32(frames)
+        mean_r = mean_l if not self.es_stereo else suma_r / np.float32(frames)
+        mean_total = suma_total / np.float32(frames)
+        esp = _metricas_espectrales(freqs, mean_l, mean_r, self.sr,
+                                    es_stereo=self.es_stereo,
+                                    potencia=mean_total)
+        if self.guardar_png and png_pot:
+            ruta_png, error = _guardar_espectrograma(
+                freqs, np.concatenate(png_times),
+                np.concatenate(png_pot, axis=0).T,
+                self.sr, self.ruta, esp["techo_hz"], esp["frecuencia_corte"])
+            esp["espectrograma"] = ruta_png
+            if error:
+                esp["espectrograma_error"] = error
+        return esp
 
 class _AnalisisPorBloques:
     """Accumulates in a single pass the analyses that need the whole file."""
@@ -795,42 +993,16 @@ class _AnalisisPorBloques:
         self._paso_muestreo = (max(1, int(round(self.total / MAX_MUESTRAS_BITS)))
                                if self.total < (1 << 62) else 1)
 
-        # spectrum
-        self.ini, self.fin = self._ventana(modo, segundos)
-        largo      = max(1, self.fin - self.ini)
-        self._nperseg = max(256, min(4096, largo // 8))
-        self._hop     = max(1, self._nperseg // 2)
-        self._pot_l   = None
-        self._pot_r   = None
-        self._freqs   = None
-        self._es_stereo = None
-        self._esp_frames = 0
-        self._error_espectro = None
-        # The samples of the window are gathered into pieces of SEGUNDOS_ESPECTRO
-        # seconds before the STFT: fewer calls and bounded memory all the same.
-        self._largo_pieza = max(self._nperseg, self.sr * SEGUNDOS_ESPECTRO)
-        self._buf_espera  = []
-        self._buf_espera_n = 0
-        self._esp_consumidos = 0
-        frames_est    = max(1, (largo - self._nperseg) // self._hop + 1)
-        self._paso_png = max(1, frames_est // MAX_FRAMES_PNG)
-        self._png_pot   = []
-        self._png_times = []
-        self._png_n     = 0
-
-    def _ventana(self, modo, segundos):
-        if modo == "seconds" and segundos:
-            return 0, min(self.total, self.sr * int(segundos))
-        if modo == "center":
-            ini = (self.total // 2)
-            return ini, min(self.total, ini + self.sr * 30)
-        return 0, self.total                       # "full" (or an unknown mode)
+        # spectrum: the whole file is scored, the K most active blocks are kept
+        self._espectro_acc = _AcumuladorEspectral(
+            self.sr, meta.get("canales", 0) >= 2 if meta.get("canales") else None,
+            guardar_png=self.guardar_png, ruta=ruta)
 
     def anadir(self, bloque, offset):
         self._integridad_y_clipping(bloque)
         self._rango_dinamico(bloque)
         self._muestra_bits(bloque, offset)
-        self._espectro(bloque, offset)
+        self._espectro_acc.anadir(bloque, offset)
 
     # ── per block ────────────────────────────────────────────────────────────
     def _integridad_y_clipping(self, bloque):
@@ -891,92 +1063,8 @@ class _AnalisisPorBloques:
         self._muestras.append(bloque)
         self._muestras_n += bloque.shape[0]
 
-    def _espectro(self, bloque, offset):
-        """Gathers the samples of the analysis window and processes them in pieces."""
-        if self._error_espectro or self.fin <= self.ini:
-            return
-        a = max(0, self.ini - offset)
-        b = min(bloque.shape[0], self.fin - offset)
-        if b <= a:
-            return
-        self._buf_espera.append(bloque[a:b])
-        self._buf_espera_n += b - a
-        if self._buf_espera_n >= self._largo_pieza:
-            self._vaciar_espectro()
-
-    def _vaciar_espectro(self):
-        if not self._buf_espera:
-            return
-        pieza = (self._buf_espera[0] if len(self._buf_espera) == 1
-                 else np.concatenate(self._buf_espera))
-        self._buf_espera = []
-        self._buf_espera_n = 0
-        if pieza.shape[0] < self._nperseg:
-            return                              # piece too short for the STFT
-        inicio = self.ini + self._esp_consumidos
-        self._esp_consumidos += pieza.shape[0]
-        try:
-            # Each piece is contiguous signal: no frame crosses the boundary
-            # between blocks, so no splice artefact slips in.
-            freqs, _, Zl = stft(pieza[:, 0], self.sr, nperseg=self._nperseg,
-                                noverlap=self._hop)
-            # |Z|^2 bit-for-bit identical to np.abs(Zl) ** 2 (same C square
-            # kernel), but squaring in place after freeing Zl avoids a second
-            # float64 temporary.
-            pot_l = np.abs(Zl)
-            del Zl
-            np.square(pot_l, out=pot_l)
-            es_stereo = pieza.shape[1] >= 2
-            if es_stereo:
-                _, _, Zr = stft(pieza[:, 1], self.sr, nperseg=self._nperseg,
-                                noverlap=self._hop)
-                pot_r = np.abs(Zr)
-                del Zr
-                np.square(pot_r, out=pot_r)
-            else:
-                pot_r = pot_l                   # single FFT in mono
-            self._es_stereo = es_stereo
-
-            if self.guardar_png:
-                self._guardar_frames(pot_l, pot_r, inicio)
-
-            sum_l = np.sum(pot_l, axis=1)
-            sum_r = np.sum(pot_r, axis=1) if es_stereo else sum_l.copy()
-            if self._pot_l is None:
-                self._freqs = freqs
-                self._pot_l = sum_l
-                self._pot_r = sum_r
-            else:
-                self._pot_l += sum_l
-                self._pot_r += sum_r
-            self._esp_frames += pot_l.shape[1]
-            del pot_l, pot_r, pieza
-        except Exception as e:
-            self._error_espectro = str(e)
-
-    def _guardar_frames(self, pot_l, pot_r, inicio_muestras):
-        """Vectorised frame selection: only the needed columns are sliced, and the
-        channels are mixed after the slice (bounded memory, far fewer operations)."""
-        restantes = MAX_FRAMES_PNG - self._png_n
-        if restantes <= 0:
-            return
-        n_cols = pot_l.shape[1]
-        i0     = (-self._esp_frames) % self._paso_png
-        if i0 >= n_cols:
-            return
-        idx = np.arange(i0, n_cols, self._paso_png)[:restantes]
-        if pot_l is pot_r:                      # mono: no point averaging with itself
-            sub = pot_l[:, idx].astype(np.float32)
-        else:
-            sub = ((pot_l[:, idx] + pot_r[:, idx]) * 0.5).astype(np.float32)
-        tiempos = (inicio_muestras - self.ini + idx * self._hop) / float(self.sr)
-        self._png_pot.append(sub)
-        self._png_times.append(tiempos)
-        self._png_n += len(idx)
-
     # ── result ───────────────────────────────────────────────────────────────
     def resultado(self):
-        self._vaciar_espectro()                 # remainder of the window still waiting
         if self._clip_abierta >= 3:
             self._clip_runs += 1                # run that ends exactly with the file
         salida = {
@@ -999,25 +1087,7 @@ class _AnalisisPorBloques:
         return salida
 
     def _resultado_espectral(self):
-        if self._error_espectro:
-            return {"error": self._error_espectro}
-        if self._pot_l is None or not self._esp_frames:
-            return {"error": "could not analyze the spectrum"}
-        esp = _metricas_espectrales(self._freqs,
-                                    self._pot_l / self._esp_frames,
-                                    self._pot_r / self._esp_frames,
-                                    self.sr, es_stereo=getattr(self, "_es_stereo", None))
-        if self.guardar_png and self._png_pot:
-            ruta_png, error = _guardar_espectrograma(
-                self._freqs,
-                np.concatenate(self._png_times),
-                np.concatenate(self._png_pot, axis=1),
-                self.sr, self.ruta,
-                esp["techo_hz"], esp["frecuencia_corte"])
-            esp["espectrograma"] = ruta_png
-            if error:
-                esp["espectrograma_error"] = error
-        return esp
+        return self._espectro_acc.resultado()
 
 def _analizar_en_streaming(ruta, meta, modo, segundos, guardar_png):
     """A single read of the file, with memory bounded per block."""
