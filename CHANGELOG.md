@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Vector 1: Mid/Side high-band asymmetry (`caida_side_agudos_db`,
+  `delta_corte_ms_hz`, `sospecha_joint_stereo`, `es_dual_mono`), which catches
+  joint-stereo lossy encoders that cut the Side channel before Mid.
+- Vector 2: `AcumuladorPsicoacusticoSTFT` reports the temporal jitter of the
+  per-frame cut-off (`iqr_corte_hz`) and the ratio of MDCT spectral holes
+  (`ratio_huecos_mdct`); both add a score penalty when their signature appears.
+
 ### Changed
 
 - The spectral analysis no longer measures a fixed window: every block of the

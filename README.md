@@ -436,6 +436,12 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `esp.ratio` / `ratio_aplica` | Energy in the band above 18 kHz versus 15–18 kHz; `false` if that band does not exist |
 | `esp.var_alta_db` | Variance of the spectrum above 18 kHz |
 | `esp.separacion_stereo` | L−R difference in the high band versus the mid band; `null` in mono |
+| `esp.caida_side_agudos_db` | Extra Mid−Side drop in 15.5–19.8 kHz versus 2–8 kHz (joint-stereo collapse) |
+| `esp.delta_corte_ms_hz` | Mid cut-off minus Side cut-off: a lossy joint-stereo encoder cuts Side first |
+| `esp.sospecha_joint_stereo` | `true` when the Side channel collapses and cuts before Mid |
+| `esp.es_dual_mono` | `true` when L and R are identical (Side more than 45 dB below Mid) |
+| `esp.iqr_corte_hz` | Interquartile range of the per-frame cut-off in high-energy frames (codec jitter) |
+| `esp.ratio_huecos_mdct` | Fraction of high-energy frames with a 600 Hz MDCT hole (> 22 dB below both neighbours) |
 | `esp.espectrograma` | Path of the PNG, or `null` |
 
 #### Interpretation (`score`, `veredicto`, `problemas`)

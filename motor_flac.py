@@ -80,7 +80,9 @@ except ImportError:
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.1"
+VERSION_MOTOR = "9.2"
+# 9.2: Vector 1 (Mid/Side high-band asymmetry) and Vector 2 (temporal cut-off
+#      jitter + MDCT spectral holes) added to the spectral result and the score.
 # 9.1: the spectrum is measured on the K most active blocks of the whole file
 #      (energy-guided selector) with a float32 sliding_window_view STFT and
 #      Mid/Side separation, instead of a fixed 45 s window.
@@ -381,7 +383,81 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
-def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, potencia=None):
+def _potencia_db(potencia):
+    """Power spectrum in dB (floor 1e-28, no np.sqrt)."""
+    return 10.0 * np.log10(np.maximum(np.asarray(potencia, dtype=np.float64), 1e-28))
+
+def _analizar_asimetria_mid_side(espectro_mid_db, espectro_side_db, freqs_hz,
+                                 sample_rate, es_mono_real):
+    """Vector 1: spectral Mid/Side asymmetry (joint-stereo lossy detector).
+
+    In a genuine lossless stereo recording, mastering filters act on L and R
+    equally, so Mid (L+R) and Side (L-R) reach the same ceiling. A lossy codec in
+    joint-stereo mode (MP3 320/V0, AAC, Vorbis) quantises the Side channel more
+    aggressively above 15 kHz: Side collapses and cuts before Mid.
+
+    Returns caida_side_agudos_db, delta_corte_ms_hz, sospecha_joint_stereo and
+    es_dual_mono (L and R essentially identical, > 45 dB of Mid-Side offset).
+    Pure mono is not dual-mono: there is no Side channel at all."""
+    salida = {
+        "caida_side_agudos_db": 0.0,
+        "delta_corte_ms_hz":    0.0,
+        "sospecha_joint_stereo": False,
+        "es_dual_mono":         False,
+    }
+    if es_mono_real or sample_rate < 44100:
+        return salida
+
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    mid = np.asarray(espectro_mid_db, dtype=np.float64)
+    side = np.asarray(espectro_side_db, dtype=np.float64)
+    if freqs.size < 2 or mid.shape != freqs.shape or side.shape != freqs.shape:
+        return salida
+    if not (np.all(np.isfinite(mid)) and np.all(np.isfinite(side))):
+        return salida
+
+    # Dual mono: in a stereo container the Side channel is essentially empty.
+    diferencia = mid - side
+    if np.all(np.isfinite(diferencia)):
+        salida["es_dual_mono"] = bool(float(np.median(diferencia)) > 45.0)
+
+    mask_media = (freqs >= 2000.0) & (freqs <= 8000.0)
+    mask_aguda = (freqs >= 15500.0) & (freqs <= 19800.0)
+    if not np.any(mask_media) or not np.any(mask_aguda):
+        return salida
+
+    diff_media_db = float(np.median(diferencia[mask_media]))
+    diff_aguda_db = float(np.median(diferencia[mask_aguda]))
+    colapso = diff_aguda_db - diff_media_db
+
+    mask_alta = (freqs >= 13000.0) & (freqs <= 21000.0)
+    mask_pivote = (freqs >= 6000.0) & (freqs <= 10000.0)
+    if not np.any(mask_alta) or not np.any(mask_pivote):
+        return salida
+    f_alta = freqs[mask_alta]
+
+    umbral_mid = max(float(np.percentile(mid[mask_pivote], 75)) - 38.0, -92.0)
+    umbral_side = max(float(np.percentile(side[mask_pivote], 75)) - 38.0, -95.0)
+    activos_mid = np.flatnonzero(mid[mask_alta] > umbral_mid)
+    activos_side = np.flatnonzero(side[mask_alta] > umbral_side)
+    techo_mid_hz = float(f_alta[activos_mid[-1]]) if activos_mid.size else 13000.0
+    techo_side_hz = float(f_alta[activos_side[-1]]) if activos_side.size else 13000.0
+    delta_corte = max(0.0, techo_mid_hz - techo_side_hz)
+
+    sospecha = (
+        not salida["es_dual_mono"]
+        and diff_media_db < 14.0
+        and techo_mid_hz >= 17500.0
+        and ((colapso > 11.5 and delta_corte > 1100.0) or colapso > 16.5)
+    )
+
+    salida["caida_side_agudos_db"] = round(colapso, 2) if math.isfinite(colapso) else 0.0
+    salida["delta_corte_ms_hz"] = round(delta_corte, 1) if math.isfinite(delta_corte) else 0.0
+    salida["sospecha_joint_stereo"] = bool(sospecha)
+    return salida
+
+def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, potencia=None,
+                          pot_mid=None, pot_side=None):
     """Core of the spectral analysis: everything is derived from the
     time-averaged power spectrum (one entry per bin). It does not depend on how
     it was obtained.
@@ -454,6 +530,18 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         dm  = _media_segura(np.abs(pot_l[mask_m] - pot_r[mask_m]))
         sep = float(da / (dm + 1e-30))
 
+    # Vector 1: Mid/Side asymmetry. Without the decomposition (direct API use)
+    # the detector is not applicable: never guess it from L/R, which would flag
+    # an ordinary stereo difference as joint-stereo collapse.
+    if pot_mid is None or pot_side is None:
+        asimetria = _analizar_asimetria_mid_side(
+            _potencia_db(pot_l), _potencia_db(pot_r), freqs, samplerate,
+            es_mono_real=True)
+    else:
+        asimetria = _analizar_asimetria_mid_side(
+            _potencia_db(pot_mid), _potencia_db(pot_side), freqs, samplerate,
+            es_mono_real=not es_stereo)
+
     return {
         "error":              None,
         "techo_hz":           round(techo_hz),
@@ -470,6 +558,11 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         "ratio_aplica":       ratio_aplica,
         "var_alta_db":        var_alta,
         "separacion_stereo":  sep,
+        # Vector 1 (additive keys: old consumers ignore them).
+        "caida_side_agudos_db": asimetria["caida_side_agudos_db"],
+        "delta_corte_ms_hz":    asimetria["delta_corte_ms_hz"],
+        "sospecha_joint_stereo": asimetria["sospecha_joint_stereo"],
+        "es_dual_mono":         asimetria["es_dual_mono"],
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }
@@ -675,6 +768,26 @@ def calcular_score(meta, esp, bdi):
             if sep > 0.1:
                 votos += 1
 
+        # 4b. Vector 1 (Mid/Side) and Vector 2 (cut-off jitter + MDCT holes).
+        # Only ADD penalties when the signature is present: existing keys, votes
+        # and verdicts of files without it stay exactly as they were.
+        if esp.get("es_dual_mono"):
+            problemas.append("dual-mono (L and R identical): stereo separation is "
+                             "not informative")
+        if esp.get("sospecha_joint_stereo"):
+            penaliza(f"the Side channel (L-R) collapses at high frequency "
+                     f"(Mid-Side drop {esp.get('caida_side_agudos_db', 0.0):.1f} dB, "
+                     f"cut-off delta {esp.get('delta_corte_ms_hz', 0.0):.0f} Hz): "
+                     f"joint-stereo lossy codec signature", 0.30)
+        iqr = esp.get("iqr_corte_hz") or 0.0
+        if iqr > 550.0:
+            penaliza(f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
+                     f"frame-adaptive codec signature", 0.20, bloquea_maximo=False)
+        huecos = esp.get("ratio_huecos_mdct") or 0.0
+        if huecos > 0.10:
+            penaliza(f"MDCT spectral holes in {huecos*100:.0f}% of the high-energy "
+                     f"frames: lossy codec signature", 0.25, bloquea_maximo=False)
+
         # 5. Format/content coherence: claiming 24 bits at a CD sample rate
         #    demands some content above the CD band. It is the only signal that
         #    separates a 320 kbps MP3 repackaged as 24 bits from a real 16-bit
@@ -805,6 +918,100 @@ def _potencia_desde_fft(espectro):
     np.maximum(potencia, 1e-28, out=potencia)
     return potencia
 
+class AcumuladorPsicoacusticoSTFT:
+    """Vector 2: temporal jitter of the cut-off and MDCT spectral holes.
+
+    An LTI mastering filter cuts at the same frequency in every frame; a lossy
+    codec decides per frame, so its instantaneous cut-off wanders (high IQR) and
+    it zeroes whole 600 Hz sub-bands that look like rectangular holes. Only
+    frames with real energy in 4-11 kHz are judged: silence has no cut-off to
+    measure.
+
+    The power spectra come from `_stft_complejo`, already normalised by the
+    window sum; the unit-variance white-noise gain is removed so the -52 dBFS
+    gate is independent of nperseg."""
+
+    UMBRAL_BANDA_DBFS = -52.0
+    INICIO_SUBBANDA_HZ = 13500.0
+    ANCHO_SUBBANDA_HZ = 600.0
+    N_SUBBANDAS = 10
+    CAIDA_HUECO_DB = 22.0
+    MIN_TRAMAS_FC = 8
+
+    def __init__(self, samplerate):
+        self.sr = int(samplerate)
+        self._fc = []
+        self._tramas = 0
+        self._tramas_con_hueco = 0
+        self._error = None
+
+    def anadir(self, potencia, freqs, ventana):
+        """Consumes the (frames, bins) power of one selected block."""
+        if self._error or potencia.shape[0] == 0:
+            return
+        try:
+            n = ventana.size
+            suma_w = float(np.sum(ventana, dtype=np.float64))
+            suma_w2 = float(np.sum(ventana.astype(np.float64) ** 2))
+            if suma_w <= 0.0:
+                return
+            # Mean bin power of unit-variance white noise with this window/FFT.
+            ganancia = (n * suma_w2
+                        / (2.0 * suma_w * suma_w * (n / 2.0 + 1.0)))
+            mask_banda = (freqs >= 4000.0) & (freqs <= 11000.0)
+            if not np.any(mask_banda) or ganancia <= 0.0:
+                return
+
+            banda = (potencia[:, mask_banda].mean(axis=1, dtype=np.float64)
+                     / ganancia)
+            activas = banda > 10.0 ** (self.UMBRAL_BANDA_DBFS / 10.0)
+            if not np.any(activas):
+                return
+            pot = potencia[activas]
+            self._tramas += int(pot.shape[0])
+
+            # Instantaneous cut-off: last bin above -60 dB relative to the frame
+            # peak (same criterion as the global ceiling).
+            pot_db = 10.0 * np.log10(np.maximum(pot, 1e-28))
+            pot_db -= pot_db.max(axis=1, keepdims=True)
+            sobre = pot_db > -60.0
+            ultimo = pot.shape[1] - 1 - np.argmax(sobre[:, ::-1], axis=1)
+            self._fc.extend(freqs[ultimo].tolist())
+
+            # MDCT holes: 10 x 600 Hz sub-bands in 13.5-19.5 kHz.
+            if self.sr < 39000:
+                return                     # the band does not exist
+            subbandas = []
+            for i in range(self.N_SUBBANDAS):
+                lo = self.INICIO_SUBBANDA_HZ + i * self.ANCHO_SUBBANDA_HZ
+                hi = lo + self.ANCHO_SUBBANDA_HZ
+                mask = (freqs >= lo) & (freqs < hi)
+                if not np.any(mask):
+                    return
+                subbandas.append(10.0 * np.log10(
+                    np.maximum(pot[:, mask].mean(axis=1), 1e-28)))
+            sb = np.column_stack(subbandas)
+            hueco = np.zeros(sb.shape[0], dtype=bool)
+            for i in range(1, self.N_SUBBANDAS - 1):
+                hueco |= ((sb[:, i] < sb[:, i - 1] - self.CAIDA_HUECO_DB)
+                          & (sb[:, i] < sb[:, i + 1] - self.CAIDA_HUECO_DB))
+            self._tramas_con_hueco += int(np.count_nonzero(hueco))
+        except Exception as e:             # never abort the analysis of a file
+            self._error = str(e)
+
+    def resultado(self):
+        fc = np.asarray(self._fc, dtype=np.float64)
+        if fc.size >= self.MIN_TRAMAS_FC and np.all(np.isfinite(fc)):
+            iqr = float(np.percentile(fc, 75) - np.percentile(fc, 25))
+        else:
+            iqr = 0.0
+        ratio = (self._tramas_con_hueco / float(self._tramas)
+                 if self._tramas else 0.0)
+        return {
+            "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
+            "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
+        }
+
 class _AcumuladorEspectral:
     """Keeps the K most active blocks in memory and runs the STFT on them at the
     end. Shared by the streaming path and the array path so both give the same
@@ -822,6 +1029,7 @@ class _AcumuladorEspectral:
         self._indice = 0
         self._ultima = None
         self._error = None
+        self._psico = AcumuladorPsicoacusticoSTFT(self.sr)
 
     def anadir(self, bloque, inicio=0):
         if self._error or bloque.shape[0] == 0:
@@ -884,6 +1092,7 @@ class _AcumuladorEspectral:
                        int(round(self.sr / (hop * float(FPS_ESPECTROGRAMA_PNG)))))
 
         suma_l = suma_r = suma_total = None
+        suma_mid = suma_side = None
         freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
         frames = 0
         frames_global = 0
@@ -903,7 +1112,7 @@ class _AcumuladorEspectral:
                 pot_mid = _potencia_desde_fft(zm)
                 pot_side = _potencia_desde_fft(zs)
                 pot_total = pot_mid + pot_side
-                del zr, zm, zs, pot_mid, pot_side
+                del zr, zm, zs
             else:
                 pot_r = pot_l
                 pot_total = pot_l
@@ -917,9 +1126,16 @@ class _AcumuladorEspectral:
                 suma_total = (pot_total.sum(axis=0, dtype=np.float32)
                               if suma_total is None
                               else suma_total + pot_total.sum(axis=0, dtype=np.float32))
+                suma_mid = (pot_mid.sum(axis=0, dtype=np.float32) if suma_mid is None
+                            else suma_mid + pot_mid.sum(axis=0, dtype=np.float32))
+                suma_side = (pot_side.sum(axis=0, dtype=np.float32)
+                             if suma_side is None
+                             else suma_side + pot_side.sum(axis=0, dtype=np.float32))
             else:
                 suma_r = suma_l
                 suma_total = suma_l
+
+            self._psico.anadir(pot_total, freqs, ventana)
 
             n_frames = pot_total.shape[0]
             if self.guardar_png:
@@ -936,6 +1152,8 @@ class _AcumuladorEspectral:
             frames_global += n_frames
             frames += n_frames
             del pot_l, pot_r, pot_total
+            if self.es_stereo:
+                del pot_mid, pot_side
 
         if frames == 0 or suma_l is None:
             return {"error": "could not analyze the spectrum"}
@@ -943,9 +1161,13 @@ class _AcumuladorEspectral:
         mean_l = suma_l / np.float32(frames)
         mean_r = mean_l if not self.es_stereo else suma_r / np.float32(frames)
         mean_total = suma_total / np.float32(frames)
+        mean_mid = (suma_mid / np.float32(frames)) if self.es_stereo else None
+        mean_side = (suma_side / np.float32(frames)) if self.es_stereo else None
         esp = _metricas_espectrales(freqs, mean_l, mean_r, self.sr,
                                     es_stereo=self.es_stereo,
-                                    potencia=mean_total)
+                                    potencia=mean_total,
+                                    pot_mid=mean_mid, pot_side=mean_side)
+        esp.update(self._psico.resultado())
         if self.guardar_png and png_pot:
             ruta_png, error = _guardar_espectrograma(
                 freqs, np.concatenate(png_times),
