@@ -118,8 +118,9 @@ MODOS = ["center", "full", "seconds"]
 OPCIONES_WORKERS = ["Automatic", "1", "2", "4", "8"]
 
 # ─── UI throughput and memory limits ─────────────────────────────────────────
-LOTE_DRENADO = 200             # engine events processed per UI tick (keeps Tk responsive)
-INTERVALO_ACTIVO_MS = 20       # reschedule fast while events are pending
+LOTE_DRENADO = 200             # hard cap of engine events per UI tick
+MAX_RESULTADOS_POR_TICK = 24   # redraw the progress bar once per batch
+INTERVALO_ACTIVO_MS = 30       # reschedule fast while events are pending
 INTERVALO_REPOSO_MS = 100      # gentle polling while the engine works quietly
 MAX_EVENTOS_EN_MEMORIA = 5000  # result events kept on screen / for the final summary
 MAX_LINEAS_LOG = 3000          # log lines kept in the text box
@@ -746,29 +747,49 @@ if CTK_OK:
             alive, while the reader thread is still alive (it may not have queued
             the final `__fin__` yet) or while a full batch was just processed."""
             procesados = 0
+            resultados = 0
             try:
-                while procesados < LOTE_DRENADO:
+                while (procesados < LOTE_DRENADO
+                       and resultados < MAX_RESULTADOS_POR_TICK):
                     canal, evento = self.cola.get_nowait()
+                    es_resultado = (canal == "stdout"
+                                    and evento.get("tipo") == "resultado")
                     try:
-                        self._procesar(canal, evento)
+                        # Non-result events keep their immediate handling; the
+                        # progress widgets are redrawn once per batch below.
+                        self._procesar(canal, evento,
+                                       actualizar_progreso=not es_resultado)
                     except Exception as e:      # one bad event cannot stall the UI
                         self._log(f"Could not process an engine event: "
                                   f"{type(e).__name__}: {e}", "error")
                     procesados += 1
+                    if es_resultado:
+                        resultados += 1
             except queue.Empty:
                 pass
+
+            if resultados:
+                self._actualizar_progreso()
 
             try:
                 if not self.winfo_exists():
                     return
             except Exception:
                 return
-            backlog = procesados >= LOTE_DRENADO
+            backlog = resultados >= MAX_RESULTADOS_POR_TICK or procesados >= LOTE_DRENADO
             if backlog or self.gestor.activo or self.gestor.hilo_activo:
                 self.after(INTERVALO_ACTIVO_MS if backlog else INTERVALO_REPOSO_MS,
                            self._drenar_cola)
 
-        def _procesar(self, canal: str, evento: Evento) -> None:
+        def _actualizar_progreso(self) -> None:
+            """One redraw of the bar and the counter per drained batch."""
+            if not self.total:
+                return
+            self.barra.set(min(1.0, self.recibidos / self.total))
+            self.lbl_progreso.configure(text=f"{self.recibidos} of {self.total}")
+
+        def _procesar(self, canal: str, evento: Evento,
+                      actualizar_progreso: bool = True) -> None:
             tipo = evento.get("tipo")
             if canal == "stderr" or tipo == "__stderr__":
                 self._log(f"motor: {evento.get('mensaje', '').strip()}", "aviso")
@@ -788,9 +809,10 @@ if CTK_OK:
                 elif evento.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE"):
                     etiqueta = "aviso"
                 self._log(formatear_resultado(evento), etiqueta)
-                if self.total:
-                    self.barra.set(min(1.0, self.recibidos / self.total))
-                    self.lbl_progreso.configure(text=f"{self.recibidos} of {self.total}")
+                for evidencia in evento.get("evidencias_forenses") or []:
+                    self._log(f"    evidence: {evidencia}", "info")
+                if actualizar_progreso:
+                    self._actualizar_progreso()
             elif tipo == "informe":
                 self.ruta_pdf = evento.get("ruta")
                 self._log(f"PDF report: {self.ruta_pdf} "

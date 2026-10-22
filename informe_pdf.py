@@ -347,6 +347,15 @@ def _ficha_cancion(indice, total, res, est, temporal):
             elemento.append(Paragraph(f"• {problema}", est["problema"]))
     else:
         elemento.append(Paragraph("No issues detected.", est["normal"]))
+
+    evidencias = res.get("evidencias_forenses") or []
+    # With a very long issue list the page budget is already at its limit: the
+    # issues themselves are the evidence then, so the duplicate block is skipped.
+    if evidencias and len(problemas) < 8:
+        elemento.append(Spacer(1, 3 * mm))
+        elemento.append(Paragraph("Forensic evidence", est["seccion"]))
+        for evidencia in evidencias:
+            elemento.append(Paragraph(f"• {evidencia}", est["problema"]))
     elemento.append(Spacer(1, 4 * mm))
 
     # The image is measured and adjusted so that the heading and the spectrogram
