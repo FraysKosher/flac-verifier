@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole file: zero padding (`es_padded_16_en_24`) and the quantisation comb of a
   16-bit source scaled into 24 bits (`es_24bit_escalado_en_peine`, Shannon
   entropy and occupied LSB bins).
+- Vector 5: the psychoacoustic accumulator detects the libopus fullband cliff at
+  20.00 kHz (`sospecha_corte_opus_20k`, `caida_opus_20k_db`); it is scored only
+  with corroborating codec evidence because a mastering low-pass can look the
+  same in isolation.
+- Vector 6: `_clasificar_naturaleza_clipping` separates Gibbs overshoot
+  (`clipping_reconstruccion_lossy`) from a mastering limiter
+  (`clipping_mastering_limitador`), and `aplicar_coherencia_album` raises 1–2
+  acoustic/low-HF tracks to PROBABLY LOSSLESS when at least 80% of the album is
+  GENUINE LOSSLESS in the same format.
 
 ### Changed
 

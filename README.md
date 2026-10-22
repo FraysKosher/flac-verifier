@@ -450,12 +450,21 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `esp.salto_ultrasonico_db` | Level step between 18–20.8 kHz and 23.5–36 kHz |
 | `esp.correlacion_espejo_22k` | Detrended Pearson r of the mirrored bands |
 | `esp.es_transferencia_dsd` | `true` for a DSD/SACD noise-shaping ramp in 24–40 kHz |
+| `esp.sospecha_corte_opus_20k` | `true` for a 20.00 kHz cliff (> 45 dB between 19.85 and 20.15 kHz) with a flat 18–19.7 kHz band |
+| `esp.caida_opus_20k_db` | Depth of that cliff in dB |
+| `esp.clipping_eventos` / `clipping_longitud_media` | Saturation runs and their mean length |
+| `esp.clipping_fraccion_cortos` | Fraction of clipping events lasting only 1–2 samples |
+| `esp.clipping_reconstruccion_lossy` | `true` for Gibbs overshoot (short events with a band limit below 20.5 kHz) |
+| `esp.clipping_mastering_limitador` | `true` for 4+ sample plateaus with content up to Nyquist (observation, not a defect) |
 | `esp.espectrograma` | Path of the PNG, or `null` |
 
 #### Interpretation (`score`, `veredicto`, `problemas`)
 
 With the cache enabled, every `resultado` also carries **`desde_cache`** (`true` if
 the file has not changed since the last analysis and the result was reused).
+When a batch is analysed as an album, a rescued acoustic/low-HF track also
+carries **`coherencia_album: true`** and the note
+`Acoustic/low-HF track validated by album-level master consistency`.
 
 `veredicto` is one of: `GENUINE LOSSLESS`, `PROBABLY LOSSLESS`, `SUSPICIOUS`,
 `PROBABLE UPSCALE`, `indeterminate`. `problemas` is the list of reasons, in plain

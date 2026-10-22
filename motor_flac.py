@@ -80,7 +80,9 @@ except ImportError:
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.3"
+VERSION_MOTOR = "9.4"
+# 9.4: Vector 5 (libopus 20.00 kHz cliff) and Vector 6 (clipping nature and
+#      album-level coherence).
 # 9.3: Vector 3 (Hi-Res morphology: brickwall, spectral mirror, DSD and
 #      analogue roll-off) and Vector 4 (native-bit padding/comb audit).
 # 9.2: Vector 1 (Mid/Side high-band asymmetry) and Vector 2 (temporal cut-off
@@ -791,6 +793,60 @@ def detectar_clipping(data):
         print(f"[clipping] {e}")
         return None
 
+def _clasificar_rachas(longitudes, techo_hz=None, frecuencia_corte=None, nyquist=None):
+    """Vector 6 classification from the lengths of the saturation runs.
+
+    * Lossy reconstruction (Gibbs overshoot): most events are 1-2 isolated
+      samples and the spectral cut-off sits below 20.5 kHz.
+    * Mastering limiter: runs of 4+ consecutive samples on average while the
+      spectrum still reaches Nyquist. It is an observation, never a defect."""
+    largos = [int(l) for l in longitudes if int(l) > 0]
+    eventos = len(largos)
+    if not eventos:
+        return {
+            "clipping_eventos": 0,
+            "clipping_fraccion_cortos": 0.0,
+            "clipping_longitud_media": 0.0,
+            "clipping_racha_maxima": 0,
+            "clipping_reconstruccion_lossy": False,
+            "clipping_mastering_limitador": False,
+        }
+    cortos = sum(1 for largo in largos if largo <= 2)
+    fraccion = cortos / float(eventos)
+    media = sum(largos) / float(eventos)
+    corte_efectivo = (frecuencia_corte if frecuencia_corte is not None
+                      else techo_hz)
+    lossy = bool(fraccion > 0.75 and corte_efectivo is not None
+                 and corte_efectivo < 20500.0)
+    master = bool(media >= 4.0 and techo_hz is not None and nyquist
+                  and techo_hz >= 0.97 * nyquist)
+    return {
+        "clipping_eventos":            eventos,
+        "clipping_fraccion_cortos":    round(fraccion, 4),
+        "clipping_longitud_media":     round(media, 2),
+        "clipping_racha_maxima":       max(largos),
+        "clipping_reconstruccion_lossy": lossy,
+        "clipping_mastering_limitador":  master,
+    }
+
+def _clasificar_naturaleza_clipping(muestras_int, max_val_entero,
+                                    techo_hz=None, frecuencia_corte=None,
+                                    nyquist=None):
+    """Vector 6 from native integer samples (array/direct API path).
+
+    `max_val_entero` is the positive full-scale integer (32767 for 16 bits,
+    8388607 for 24 bits). Spectral arguments are optional: without them only the
+    run statistics are produced, because both classifications need the spectrum."""
+    try:
+        muestras = np.asarray(muestras_int).reshape(-1)
+        en_clip = np.abs(muestras) >= int(max_val_entero)
+        rachas, abierta = _rachas(en_clip)
+        if abierta:
+            rachas.append(abierta)
+        return _clasificar_rachas(rachas, techo_hz, frecuencia_corte, nyquist)
+    except Exception as e:
+        return {"clipping_eventos": 0, "error": str(e)}
+
 def _dr_desde_rms(rms_list, pico, n_bloques):
     """Dynamic range formula in O(n) via np.partition, shared by the array path and
     the block path. It accepts a Python list or an ndarray alike."""
@@ -990,6 +1046,38 @@ def calcular_score(meta, esp, bdi):
             penaliza(f"MDCT spectral holes in {huecos*100:.0f}% of the high-energy "
                      f"frames: lossy codec signature", 0.25, bloquea_maximo=False)
 
+        # Vector 5: libopus fullband cliff at 20.00 kHz. In isolation it is
+        # indistinguishable from a mastering anti-alias low-pass, so it is scored
+        # only together with another codec signature; on its own it stays a fact.
+        if (esp.get("sospecha_corte_opus_20k")
+                and not (esp.get("es_transferencia_dsd")
+                         or esp.get("rolloff_analogico_genuino"))):
+            corroborado = bool(
+                esp.get("sospecha_joint_stereo")
+                or (esp.get("iqr_corte_hz") or 0.0) > 550.0
+                or (esp.get("ratio_huecos_mdct") or 0.0) > 0.10
+            )
+            if corroborado:
+                penaliza(f"20.00 kHz cliff of "
+                         f"{esp.get('caida_opus_20k_db', 0.0):.0f} dB with other "
+                         f"codec evidence: libopus fullband transcode signature", 0.30)
+            else:
+                problemas.append("a 20.00 kHz cliff is consistent with libopus fullband "
+                                 "and also with a mastering low-pass: inconclusive "
+                                 "without other codec evidence")
+
+        # Vector 6: nature of the clipping. Only Gibbs overshoot is evidence of
+        # lossy reconstruction; a mastering limiter is reported, never penalised.
+        if esp.get("clipping_reconstruccion_lossy"):
+            penaliza(f"clipping made of isolated 1-2 sample events "
+                     f"({esp.get('clipping_fraccion_cortos', 0.0)*100:.0f}% of them) "
+                     f"with a band limit below 20.5 kHz: Gibbs overshoot from lossy "
+                     f"reconstruction", 0.25, bloquea_maximo=False)
+        if esp.get("clipping_mastering_limitador"):
+            problemas.append("clipping runs of 4+ consecutive samples with content up to "
+                             "Nyquist: mastering brickwall limiter (observation, not an "
+                             "authenticity defect)")
+
         # 5. Format/content coherence: claiming 24 bits at a CD sample rate
         #    demands some content above the CD band. It is the only signal that
         #    separates a 320 kbps MP3 repackaged as 24 bits from a real 16-bit
@@ -1160,6 +1248,8 @@ class AcumuladorPsicoacusticoSTFT:
         self._fc = []
         self._tramas = 0
         self._tramas_con_hueco = 0
+        self._suma_pot = None
+        self._freqs = None
         self._error = None
 
     def anadir(self, potencia, freqs, ventana):
@@ -1184,6 +1274,10 @@ class AcumuladorPsicoacusticoSTFT:
                 return
             pot = potencia[activas]
             self._tramas += int(pot.shape[0])
+            self._freqs = freqs
+            suma = pot.sum(axis=0, dtype=np.float64)
+            self._suma_pot = (suma if self._suma_pot is None
+                              else self._suma_pot + suma)
 
             # Instantaneous cut-off: last bin above -60 dB relative to the frame
             # peak (same criterion as the global ceiling).
@@ -1222,9 +1316,43 @@ class AcumuladorPsicoacusticoSTFT:
             iqr = 0.0
         ratio = (self._tramas_con_hueco / float(self._tramas)
                  if self._tramas else 0.0)
+
+        # Vector 5: libopus fullband applies a deterministic 20.00 kHz low-pass
+        # (a >45 dB cliff between 19.85 and 20.15 kHz) while 18-19.7 kHz stays
+        # flat. A mastering anti-alias filter can look the same in isolation, so
+        # this is reported as a fact and only scored with corroborating evidence.
+        caida_opus = 0.0
+        sospecha_opus = False
+        if (self._suma_pot is not None and self._freqs is not None
+                and self._tramas >= self.MIN_TRAMAS_FC and self.sr >= 41000):
+            freqs = self._freqs
+            media = self._suma_pot / float(self._tramas)
+
+            def nivel_db(lo, hi):
+                mask = (freqs >= lo) & (freqs < hi)
+                if not np.any(mask):
+                    return -300.0
+                return 10.0 * math.log10(max(float(np.mean(media[mask])), 1e-28))
+
+            bajo = nivel_db(18000.0, 19700.0)
+            antes = nivel_db(19700.0, 19850.0)
+            despues = nivel_db(20150.0, 20300.0)
+            caida_opus = antes - despues
+            mask_plano = (freqs >= 18000.0) & (freqs <= 19700.0)
+            plano = False
+            if np.count_nonzero(mask_plano) > 8:
+                curva = 10.0 * np.log10(np.maximum(media[mask_plano], 1e-28))
+                plano = bool(np.percentile(curva, 95)
+                             - np.percentile(curva, 5) < 6.0)
+            sospecha_opus = bool(caida_opus > 45.0 and plano
+                                 and despues < bajo - 40.0)
+
         return {
             "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
             "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
+            "caida_opus_20k_db": (round(caida_opus, 2)
+                                  if math.isfinite(caida_opus) else 0.0),
+            "sospecha_corte_opus_20k": sospecha_opus,
         }
 
 class _AcumuladorEspectral:
@@ -1504,6 +1632,7 @@ class _AnalisisPorBloques:
         # clipping + global peak
         self._clip_runs   = 0
         self._clip_abierta = 0
+        self._clip_longitudes = []      # Vector 6: all run lengths, including 1-2
         self._pico        = 0.0
 
         # dynamic range (3 s blocks, carrying the incomplete block over)
@@ -1555,6 +1684,7 @@ class _AnalisisPorBloques:
             if pico > self._pico:
                 self._pico = pico
         rachas, self._clip_abierta = _rachas(amp >= 0.9999, self._clip_abierta)
+        self._clip_longitudes.extend(rachas)
         self._clip_runs += sum(1 for largo in rachas if largo >= 3)
 
     def _rango_dinamico(self, bloque):
@@ -1595,6 +1725,8 @@ class _AnalisisPorBloques:
 
     # ── result ───────────────────────────────────────────────────────────────
     def resultado(self):
+        if self._clip_abierta:
+            self._clip_longitudes.append(self._clip_abierta)   # run open at EOF
         if self._clip_abierta >= 3:
             self._clip_runs += 1                # run that ends exactly with the file
         salida = {
@@ -1624,7 +1756,15 @@ class _AnalisisPorBloques:
         return salida
 
     def _resultado_espectral(self):
-        return self._espectro_acc.resultado()
+        esp = self._espectro_acc.resultado()
+        if not esp.get("error"):
+            # Vector 6: the nature of the clipping needs the spectrum (cut-off
+            # below 20.5 kHz or content up to Nyquist).
+            esp.update(_clasificar_rachas(self._clip_longitudes,
+                                          esp.get("techo_hz"),
+                                          esp.get("frecuencia_corte"),
+                                          self.sr // 2))
+        return esp
 
 def _analizar_en_streaming(ruta, meta, modo, segundos, guardar_png):
     """A single read of the file, with memory bounded per block."""
@@ -1810,6 +1950,99 @@ def _sonda_procesos():
             _SONDA_PROCESOS_CACHE = False
     return _SONDA_PROCESOS_CACHE
 
+NOTA_COHERENCIA_ALBUM = ("Acoustic/low-HF track validated by album-level "
+                        "master consistency")
+
+def _merece_coherencia_album(resultado):
+    """True when the only evidence against the track is a low spectral ceiling."""
+    esp = resultado.get("esp") or {}
+    bdi = resultado.get("bdi") or {}
+    if esp.get("error"):
+        return False
+    if (resultado.get("md5") or {}).get("estado") != "match":
+        return False
+    if esp.get("corte_detectado"):
+        return False                       # a step is not "only a low ceiling"
+    if (esp.get("techo_rel_nyquist") or 1.0) >= 0.88:
+        return False
+    for clave in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
+                  "sospecha_joint_stereo", "sospecha_corte_opus_20k",
+                  "clipping_reconstruccion_lossy"):
+        if esp.get(clave):
+            return False
+    if (esp.get("ratio_huecos_mdct") or 0.0) > 0.10:
+        return False
+    forense = bdi.get("forense_bits") or {}
+    if (forense.get("es_padded_16_en_24")
+            or forense.get("es_24bit_escalado_en_peine")
+            or bdi.get("lsbs") == "empty"):
+        return False
+    permitidos = ("spectral ceiling", "partial hi-res content",
+                  "reduced high band", "high band is destroyed",
+                  "high/mid ratio")
+    for problema in resultado.get("problemas") or []:
+        if not any(texto in problema.lower() for texto in permitidos):
+            return False
+    return True
+
+def aplicar_coherencia_album(resultados):
+    """Vector 6: rescue 1-2 acoustic/low-HF tracks of a consistent album.
+
+    When at least 80% of the tracks in a directory are GENUINE LOSSLESS with the
+    same sample rate and bit depth, and one or two short/acoustic tracks were
+    flagged only because their spectral ceiling is low, the album context is
+    stronger evidence than the isolated spectrum: they are raised to PROBABLY
+    LOSSLESS. Returns how many tracks were raised. Modifies the list in place."""
+    from collections import Counter
+
+    grupos = {}
+    for resultado in resultados:
+        if not isinstance(resultado, dict) or resultado.get("error"):
+            continue
+        ruta = resultado.get("ruta")
+        if not ruta:
+            continue
+        grupos.setdefault(os.path.dirname(os.path.abspath(ruta)), []).append(resultado)
+
+    elevados = 0
+    for pistas in grupos.values():
+        validas = [r for r in pistas
+                   if (r.get("meta") or {}).get("sample_rate")
+                   and r.get("veredicto")]
+        if len(validas) < 2:
+            continue
+        genuinas = [r for r in validas if r.get("veredicto") == "GENUINE LOSSLESS"]
+        if not genuinas:
+            continue
+        referencia = Counter(
+            (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
+            for r in genuinas).most_common(1)[0][0]
+        genuinas_ref = [r for r in genuinas
+                        if (r["meta"]["sample_rate"],
+                            r["meta"]["bits_per_sample"]) == referencia]
+        if len(genuinas_ref) / float(len(validas)) < 0.80:
+            continue
+
+        candidatos = []
+        for r in validas:
+            if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE"):
+                continue
+            meta = r.get("meta") or {}
+            if (meta.get("sample_rate"), meta.get("bits_per_sample")) != referencia:
+                continue
+            if _merece_coherencia_album(r):
+                candidatos.append(r)
+        if not 1 <= len(candidatos) <= 2:
+            continue
+
+        for r in candidatos:
+            r["veredicto"] = "PROBABLY LOSSLESS"
+            r["score"] = max(float(r.get("score") or 0.0), 0.60)
+            r["problemas"] = list(r.get("problemas") or []) + [NOTA_COHERENCIA_ALBUM]
+            r["coherencia_album"] = True
+            elevados += 1
+    return elevados
+
 def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
                       usar_cache=True):
     """Yields the results in order. Returns (generator, workers_efectivos).
@@ -1861,16 +2094,19 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
 
     def en_orden():
         calculados = calcular_pendientes() if pendientes else None
+        lote = []
         for _, ruta, cacheado in plan:
             if cacheado is not None:
-                yield cacheado
+                lote.append(cacheado)
                 continue
             resultado = next(calculados, None) if calculados is not None else None
             if resultado is None:
-                yield {"archivo": os.path.basename(ruta), "ruta": ruta,
-                       "error": "could not get the analysis result"}
-            else:
-                yield resultado
+                resultado = {"archivo": os.path.basename(ruta), "ruta": ruta,
+                             "error": "could not get the analysis result"}
+            lote.append(resultado)
+        # Album-level consistency needs the whole directory before deciding.
+        aplicar_coherencia_album(lote)
+        yield from lote
 
     return en_orden(), workers_efectivos
 
