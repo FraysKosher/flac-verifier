@@ -32,6 +32,15 @@ import multiprocessing
 import os
 import sys
 
+# ─── BLAS THREADS (before numpy/scipy are imported) ──────────────────────────
+# One BLAS thread per process: the parallel analysis already spreads the tracks
+# across processes, so extra internal pools would only oversubscribe the CPU.
+for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                       "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                       "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_variable_blas, "1")
+del _variable_blas
+
 VERSION = "2.1.0"
 NOMBRE_MOTOR_EXE = "flac_motor.exe"
 

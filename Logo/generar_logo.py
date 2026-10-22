@@ -1,9 +1,9 @@
-"""Generates the FLAC VERIFIER logo assets from the splash design.
+"""Generates the FLAC VERIFIER logo assets.
 
-The design is NOT invented here: `splashscreen.html` defines the identity (background
-#0f0f0d, five white bars of 8 px with radius 3 and the teal check #4f98a3) and this
-script reproduces it in units so that it can be rasterised at the sizes the
-application needs. All the proportions come from that file.
+The design is defined here, in the constants below (background #0f0f0d, five white
+bars of 8 px with radius 3 and the teal check #4f98a3), and this script renders it
+in units so that it can be rasterised at the sizes the application needs. All the
+proportions in this file are the single source of truth for the brand mark.
 
     python Logo/generar_logo.py        # rewrites the assets of this folder
 

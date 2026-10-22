@@ -4,6 +4,19 @@ import math
 import os
 import sys
 import tempfile
+import time
+
+# ─── BLAS THREADS (before numpy/scipy are imported) ──────────────────────────
+# The album is analysed by a pool of processes; if every process opened its own
+# BLAS pool, the machine would run dozens of threads competing for the same
+# cores (thread oversubscription) and the analysis would get slower, not faster.
+# Each worker is pinned to one BLAS thread; parallelism comes from the pool.
+for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                       "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                       "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_variable_blas, "1")
+del _variable_blas
+
 import numpy as np
 import soundfile as sf
 from scipy.signal import stft
@@ -69,6 +82,11 @@ except ImportError:
 #      on 96/24 masters with an analogue roll-off).
 VERSION_MOTOR = "9.0"
 
+# Version of the cache entry layout and of the metrics it stores. It is part of
+# the cache key, so improving the detection formulas recomputes old entries
+# instead of serving verdicts produced by an older engine.
+VERSION_ESQUEMA_CACHE = "2.2.0"
+
 # Spectrogram presentation (affects only the PNG, never the metrics).
 FIGURA_ESPECTROGRAMA = (14, 5)      # inches
 DPI_ESPECTROGRAMA    = 150
@@ -124,16 +142,39 @@ def _media_segura(valores):
     m = float(np.mean(valores))
     return m if math.isfinite(m) else 0.0
 
+def _normalizar_ruta_fs(ruta):
+    r"""Returns `ruta` in a form the Windows API can open even past MAX_PATH.
+
+    On Windows the classic file APIs stop at 260 characters, so a classical album
+    with long folder and track names can raise FileNotFoundError while the file is
+    perfectly readable. The extended-length prefix (\\?\\) lifts that limit; UNC
+    paths use \\?\UNC\ instead. Only long ABSOLUTE paths are rewritten (the prefix
+    requires an absolute path), and on other systems the path is returned as is.
+    """
+    if os.name != "nt" or not isinstance(ruta, str) or not ruta:
+        return ruta
+    if ruta.startswith("\\\\?\\"):
+        return ruta
+    # ntpath.isabs() returns False for UNC paths without a drive (\\server\share),
+    # so the two leading-separator forms are accepted explicitly.
+    es_absoluta = os.path.isabs(ruta) or ruta.startswith(("\\\\", "//"))
+    if not es_absoluta or len(ruta) <= 240:
+        return ruta
+    ruta = ruta.replace("/", "\\")
+    if ruta.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + ruta[2:]
+    return "\\\\?\\" + ruta
+
 def verificar_firma(ruta):
     try:
-        with open(ruta, "rb") as f:
+        with open(_normalizar_ruta_fs(ruta), "rb") as f:
             return f.read(4) == b"fLaC"
     except (FileNotFoundError, PermissionError):
         return False
 
 def verificar_metadatos(ruta):
     try:
-        audio = FLAC(ruta)
+        audio = FLAC(_normalizar_ruta_fs(ruta))
         info  = audio.info
         return {
             "valido":           True,
@@ -152,7 +193,7 @@ def verificar_metadatos(ruta):
 
 def leer_audio(ruta):
     try:
-        data, sr = sf.read(ruta, dtype="float64", always_2d=True)
+        data, sr = sf.read(_normalizar_ruta_fs(ruta), dtype="float64", always_2d=True)
         return data, sr
     except Exception:
         return None, None
@@ -710,7 +751,7 @@ MAX_FRAMES_PNG    = 1500
 
 def _leer_bloques(ruta, frames_por_bloque=FRAMES_POR_BLOQUE):
     """Generator of blocks: it never loads the whole track into memory."""
-    with sf.SoundFile(ruta) as f:
+    with sf.SoundFile(_normalizar_ruta_fs(ruta)) as f:
         while True:
             bloque = f.read(frames_por_bloque, dtype="float64", always_2d=True)
             if bloque.shape[0] == 0:
@@ -980,7 +1021,7 @@ class _AnalisisPorBloques:
 
 def _analizar_en_streaming(ruta, meta, modo, segundos, guardar_png):
     """A single read of the file, with memory bounded per block."""
-    with sf.SoundFile(ruta) as f:
+    with sf.SoundFile(_normalizar_ruta_fs(ruta)) as f:
         sr    = f.samplerate
         total = f.frames
         acumulador = _AnalisisPorBloques(meta, sr, total, modo, segundos,
@@ -1044,19 +1085,21 @@ def _ruta_cache(ruta_audio, modo, segundos):
 def _identidad(ruta, meta):
     """Cheap and robust fingerprint of the file: size, date and STREAMINFO MD5."""
     try:
-        info = os.stat(ruta)
+        info = os.stat(_normalizar_ruta_fs(ruta))
         return {"tamano": info.st_size, "mtime_ns": info.st_mtime_ns,
                 "md5": meta.get("md5") if isinstance(meta.get("md5"), int) else None}
     except OSError:
         return None
 
 def _clave_analisis(modo, segundos):
-    return {"motor": VERSION_MOTOR, "modo": modo, "seconds": segundos}
+    return {"motor": VERSION_MOTOR, "esquema": VERSION_ESQUEMA_CACHE,
+            "modo": modo, "seconds": segundos}
 
 def leer_cache(ruta, meta, modo, segundos, requiere_png):
     """Returns the cached result, or None if it cannot be reused."""
     try:
-        with open(_ruta_cache(ruta, modo, segundos), encoding="utf-8") as f:
+        with open(_normalizar_ruta_fs(_ruta_cache(ruta, modo, segundos)),
+                  encoding="utf-8") as f:
             entrada = json.load(f)
     except (OSError, ValueError):
         return None                    # no cache, or an unreadable entry
@@ -1086,10 +1129,24 @@ def leer_cache(ruta, meta, modo, segundos, requiere_png):
     copia["esp"].pop("espectrograma_error", None)
     return copia
 
+def _reemplazar_con_reintentos(origen, destino, intentos=3, espera=0.015):
+    """os.replace with a short retry: on Windows, another worker or the antivirus
+    indexer can hold the destination open for a few milliseconds and os.replace
+    then raises PermissionError. The retry does not hide the failure: after the
+    last attempt the exception is raised and the caller decides."""
+    for intento in range(intentos):
+        try:
+            os.replace(origen, destino)
+            return
+        except PermissionError:
+            if intento == intentos - 1:
+                raise
+            time.sleep(espera)
+
 def escribir_cache(ruta, meta, modo, segundos, resultado):
     """Stores the result. A failure while writing cannot affect the analysis."""
     try:
-        carpeta = os.path.join(_carpeta_png(ruta), "_cache")
+        carpeta = _normalizar_ruta_fs(os.path.join(_carpeta_png(ruta), "_cache"))
         os.makedirs(carpeta, exist_ok=True)
         entrada = {
             "identidad": _identidad(ruta, meta),
@@ -1097,11 +1154,11 @@ def escribir_cache(ruta, meta, modo, segundos, resultado):
             "render":    huella_render(),
             "resultado": resultado,
         }
-        destino = _ruta_cache(ruta, modo, segundos)
+        destino = _normalizar_ruta_fs(_ruta_cache(ruta, modo, segundos))
         temporal = destino + ".tmp"
         with open(temporal, "w", encoding="utf-8") as f:
             json.dump(_sanear(entrada), f, ensure_ascii=False)
-        os.replace(temporal, destino)      # atomic: it never leaves a half-written JSON
+        _reemplazar_con_reintentos(temporal, destino)  # atomic, with a short retry
     except Exception:
         pass
 

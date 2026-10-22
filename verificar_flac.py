@@ -13,6 +13,14 @@ import os
 import sys
 from collections import Counter
 
+# ─── BLAS THREADS (before numpy/scipy are imported) ──────────────────────────
+# Pinned to one thread per process; the engine parallelises across processes.
+for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                       "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                       "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_variable_blas, "1")
+del _variable_blas
+
 # Allows the script to be run from any working directory.
 _DIRECTORIO = os.path.dirname(os.path.abspath(__file__))
 if _DIRECTORIO not in sys.path:

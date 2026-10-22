@@ -40,6 +40,11 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
+# ─── Local audit environment ─────────────────────────────────────────────────
+# Per-project directories used to isolate LOCALAPPDATA/TEMP while verifying.
+.localappdata/
+.tmp/
+
 # ─── Test audio ──────────────────────────────────────────────────────────────
 # The tests generate their own fixtures in a temporary directory, so no .flac
 # should ever reach the repository.

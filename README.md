@@ -349,10 +349,10 @@ cases.
 
 ## Visual identity
 
-The logo design **is not new**: it is taken from `Logo/splashscreen.html`, the
-application splash screen, and `Logo/generar_logo.py` reproduces it in the formats
-each place needs (five white bars on a `#0f0f0d` background with a teal check
-`#4f98a3`).
+`Logo/generar_logo.py` defines the brand mark and generates every format the
+application needs (five white bars on a `#0f0f0d` background with a teal check
+`#4f98a3`). The design is kept in that script, which is the single source of truth
+for the proportions.
 
 | File | What it is for |
 |---|---|
@@ -364,12 +364,8 @@ each place needs (five white bars on a `#0f0f0d` background with a teal check
 | `Logo/generar_logo.py` | Regenerates all of the above from the design: `python Logo/generar_logo.py` |
 
 In the window, the header composes the 46 px brand mark next to the name and the
-subtitle in the same teal as the splash screen, so a rasterised horizontal version
-with the text is not needed.
-
-> `Logo/vite.svg` and `Logo/tauri.svg` are the **Vite** and **Tauri** logos that
-> came with the project scaffolding: they are third-party assets and are not used
-> as the application's identity.
+subtitle in the same teal as the brand, so a rasterised horizontal version with the
+text is not needed.
 
 ---
 

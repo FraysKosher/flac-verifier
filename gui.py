@@ -91,8 +91,8 @@ def ruta_motor() -> list[str]:
         return [sys.executable, BANDERA_MOTOR_CLI]
     return [sys.executable, "-u", MOTOR]
 
-# Visual identity: the assets are generated with Logo/generar_logo.py from the
-# design in splashscreen.html. If they are missing, the window still works (it only warns).
+# Visual identity: the assets are generated with Logo/generar_logo.py, which
+# defines the design. If they are missing, the window still works (it only warns).
 LOGO_CARPETA = os.path.join(DIRECTORIO, "Logo")
 LOGO_ICONO   = os.path.join(LOGO_CARPETA, "icono_app.ico")           # window and .exe
 LOGO_ICONPHOTO = os.path.join(LOGO_CARPETA, "logo_flac_verifier_128.png")  # outside Windows
