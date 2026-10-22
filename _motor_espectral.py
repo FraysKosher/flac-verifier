@@ -773,13 +773,17 @@ class AcumuladorPsicoacusticoSTFT:
             # strong bass sweep the reference and produced fake cut-off jitter.
             pot_db = 10.0 * np.log10(np.maximum(pot, 1e-28))
             ref_db = 10.0 * np.log10(np.maximum(
-                pot[:, mask_banda].mean(axis=1, dtype=np.float64), 1e-28))
-            sobre = (pot_db - ref_db[:, None]) > -60.0
+                pot[:, mask_banda].mean(axis=1), np.float32(1e-28)))
+            umbral = (ref_db - np.float32(60.0))[:, None]
+            sobre = pot_db > umbral
             # Only frames with a measurable edge contribute: a frame whose HF
             # floor is below the threshold has no cut-off, it is not a Nyquist
             # cut-off (that used to create fake jitter).
             con_corte = np.flatnonzero(np.any(sobre, axis=1))
-            if con_corte.size:
+            if con_corte.size == pot.shape[0]:
+                ultimo = pot.shape[1] - 1 - np.argmax(sobre[:, ::-1], axis=1)
+                self._fc.extend(freqs[ultimo].tolist())
+            elif con_corte.size:
                 ultimo = (pot.shape[1] - 1
                           - np.argmax(sobre[con_corte, ::-1], axis=1))
                 self._fc.extend(freqs[ultimo].tolist())
