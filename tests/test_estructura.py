@@ -57,7 +57,12 @@ class TestCapaFina(unittest.TestCase):
         it, and that is why both work even when reportlab is not installed.
         Pillow is different: since Phase 3 the engine renders the spectrograms
         with it, so it is imported (guarded) by motor_flac itself."""
-        for ruta in (fx.MOTOR, fx.CLI):
+        modulos = (fx.MOTOR, fx.CLI,
+                   os.path.join(fx.RAIZ, "_motor_bits.py"),
+                   os.path.join(fx.RAIZ, "_motor_espectral.py"),
+                   os.path.join(fx.RAIZ, "_motor_veredicto.py"),
+                   os.path.join(fx.RAIZ, "_motor_cache.py"))
+        for ruta in modulos:
             with self.subTest(modulo=os.path.basename(ruta)):
                 fuente = open(ruta, encoding="utf-8").read()
                 self.assertNotRegex(fuente, r"(?m)^\s*(?:import|from)\s+reportlab")

@@ -48,7 +48,7 @@ def calcular_score(meta, esp, bdi):
                 problemas.append(f"partial hi-res content: ceiling of {techo/1000:.1f} kHz "
                                  f"({rel_techo*100:.0f}% of Nyquist of {nyq_txt})")
             else:
-                penaliza(f"reclama {sr/1000:.1f} kHz but the ceiling is {techo/1000:.1f} kHz, "
+                penaliza(f"claims {sr/1000:.1f} kHz but the ceiling is {techo/1000:.1f} kHz, "
                          f"below the CD band: upscaled from 44.1/48 kHz", 0.40)
 
         # 2. High band. The reference depends on the sample rate:
@@ -205,7 +205,7 @@ def calcular_score(meta, esp, bdi):
                          if esp.get("frecuencia_corte") else
                          f"limited to {rel_techo*100:.0f}% of Nyquist "
                          f"({techo/1000:.1f} kHz)")
-            penaliza(f"declara {bits} bits a {sr/1000:.1f} kHz but its high band is "
+            penaliza(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
                      f"{corte_txt}: the declared resolution is not backed by the "
                      f"content (consistent with a repackaged high-rate transcode)",
                      0.25)

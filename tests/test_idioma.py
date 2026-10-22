@@ -33,7 +33,9 @@ sys.path.insert(0, RAIZ)
 # Everything the user can read: the application modules and the two tools that are
 # run by hand (the builder and the executable checker).
 MODULOS = ("main.py", "motor_flac.py", "gui.py", "verificar_flac.py",
-           "informe_pdf.py", "build.py", "comprobar_ejecutable.py")
+           "informe_pdf.py", "build.py", "comprobar_ejecutable.py",
+           "_motor_bits.py", "_motor_espectral.py", "_motor_veredicto.py",
+           "_motor_cache.py")
 
 PROPIOS = re.compile(r"[ñÑáéíóúÁÉÍÓÚüÜ¿¡]")
 
@@ -44,7 +46,8 @@ PALABRAS = re.compile(
     r"archivo|archivos|carpeta|carpetas|ruta|rutas|modo|modos|segundos|informe|"
     r"informes|problema|problemas|veredicto|veredictos|pista|pistas|canci[oó]n|"
     r"canciones|an[aá]lisis|banda|bandas|resoluci[oó]n|muestra|muestras|rejilla|"
-    r"v[aá]cios|parciales|cortada|cortado|declarada|declarado|compatible|filtro|"
+    r"v[aá]cios|parciales|cortada|cortado|declarada|declarado|reclama|reclaman|"
+    r"declara|declaran|compatible|filtro|"
     r"tasa|leg[ií]timo|concluyente|[aá]lbum|contenido|profundidad|techo|techos|"
     r"descarta|prueba|origen|nivel|pico|frecuencia|tiempo|activos|inactivos|"
     r"p[eé]rdida|maestro|ejecutable|procesos|proceso|salir|racha|rachas|"
