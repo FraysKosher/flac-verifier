@@ -152,7 +152,13 @@ def renderizar_espectrograma_rapido(matriz_db, sample_rate, ruta_salida_png,
     alto = max(80, alto_total - margen_sup - margen_inf)
     x_fin, y_fin = margen_izq + ancho, margen_sup + alto
 
-    spec = matriz.T[::-1, :]           # high frequencies on top
+    # `_guardar_espectrograma` passes (bins, frames): axis 0 is frequency and
+    # axis 1 is time. Transpose only if a caller passed the old (frames, bins)
+    # layout (recognisable because `times` then matches axis 0).
+    if (times is not None and len(times) == matriz.shape[0]
+            and matriz.shape[0] != matriz.shape[1]):
+        matriz = matriz.T
+    spec = matriz[::-1, :]             # high frequencies on top (image Y=0)
     norm = (spec - float(db_min)) / max(float(db_max - db_min), 1.0)
     idx = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
     rgb = _LUT_ESPECTROGRAMA[idx]
