@@ -318,7 +318,8 @@ def _espectro_dbfs(potencia, ganancia_ruido=1.0):
     return 10.0 * np.log10(np.maximum(np.asarray(potencia, dtype=np.float64),
                                       1e-28) / ganancia)
 
-def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate):
+def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
+                                     corte_hz=None):
     """Vector 3: morphology of a Hi-Res spectrum (>= 88.2 kHz).
 
     Distinguishes three physically different cases that the old CD-limit rule
@@ -419,6 +420,16 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate):
         corr_espejo = 0.0
     espejo_aliasing = bool(corr_espejo > 0.82 and salto_db < 18.0 and not es_dsd)
 
+    # A genuine analogue roll-off falls from the mid-high band into the
+    # ultrasonic floor. A lossy source cut at 15-16 kHz and then re-sampled with
+    # a flat dither floor has no such 14-17 kHz drop and, crucially, a prior
+    # abrupt cut-off: it must never be excused as an analogue master.
+    mask_14_17k = (freqs >= 14000.0) & (freqs <= 17000.0)
+    nivel_14_17k = (float(np.median(curva[mask_14_17k]))
+                    if np.any(mask_14_17k) else -120.0)
+    caida_14_17k_db = nivel_14_17k - nivel_despues_db
+    corte_previo = corte_hz is not None and corte_hz < 22050.0
+
     rolloff_analogico = bool(
         not muro_brickwall
         and not espejo_aliasing
@@ -426,6 +437,8 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate):
         and peor_pendiente > -17.5
         and salto_db < 14.5
         and nivel_despues_db > -124.0
+        and not corte_previo
+        and caida_14_17k_db > 8.0
     )
 
     salida.update({
@@ -602,7 +615,8 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
                                          ganancia_ruido)
     else:
         espectro_mid_db = mid_db
-    hires = _diagnosticar_autenticidad_hires(freqs, espectro_mid_db, samplerate)
+    hires = _diagnosticar_autenticidad_hires(freqs, espectro_mid_db, samplerate,
+                                             corte_hz=corte_hz)
 
     return {
         "error":              None,

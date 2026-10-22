@@ -277,5 +277,30 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn(res["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 
 
+    def test_12_transcode_lossy_con_dither_a_96k_no_es_rolloff_analogico(self):
+        """A lossy source cut at 15.8 kHz, re-sampled to 24/96 with flat dither.
+
+        The dither floor is continuous up to Nyquist, but there is a prior abrupt
+        cut and no 14-17 kHz roll-off toward the ultrasonic floor. It must not be
+        accepted as an analogue master or escape the far-cutoff penalty.
+        """
+        sr = 96000
+        rng = np.random.default_rng(2026)
+        sig = _crear_pista_referencia(sr, duracion=6.0, seed=112)
+        espectro = np.fft.rfft(sig, axis=0)
+        freqs = np.fft.rfftfreq(len(sig), 1.0 / sr)
+        espectro[freqs > 15800.0] = 0.0
+        lossy = np.fft.irfft(espectro, len(sig), axis=0)
+        dither = rng.normal(0.0, 10 ** (-105.0 / 20.0), size=lossy.shape)
+        y = lossy + dither
+
+        ruta = self.base_path / "lossy_16k_dither_24_96.flac"
+        sf.write(ruta, np.clip(y, -0.98, 0.98), sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertFalse(res["esp"]["rolloff_analogico_genuino"])
+        self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

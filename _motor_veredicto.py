@@ -98,6 +98,9 @@ def calcular_score(meta, esp, bdi):
                              "(legitimate hi-res transfer)")
 
         # 3. Cut-off: it is only flagged if it is clearly below the Nyquist.
+        # A prior cut plus a flat dither floor is never an analogue roll-off:
+        # `rolloff_analogico_genuino` is false in that case, so a Hi-Res
+        # far_cutoff cannot bypass this penalty.
         max_v += 3
         if clase == "far_cutoff":
             if esp.get("es_transferencia_dsd") or esp.get("rolloff_analogico_genuino"):
