@@ -50,6 +50,77 @@ SIN_VENTANA = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 LIMITE = 300
 
 
+def _titulos_ventanas_visibles(pid: int) -> list[str]:
+    """Visible top-level window titles owned by `pid` (Win32, via ctypes).
+
+    Tk/CustomTkinter keeps the real toplevel under the root window; PowerShell's
+    Get-Process.MainWindowTitle can return an empty string for it. EnumWindows
+    gives every top-level window, then the PID and IsWindowVisible filters keep
+    only the window the user can actually see.
+    """
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    prototipo = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [prototipo, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                                ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+
+    titulos: list[str] = []
+
+    def visitar(hwnd, _lparam):
+        pid_ventana = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_ventana))
+        if pid_ventana.value != pid:
+            return True
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        largo = user32.GetWindowTextLengthW(hwnd)
+        if largo > 0:
+            buffer = ctypes.create_unicode_buffer(largo + 1)
+            user32.GetWindowTextW(hwnd, buffer, largo + 1)
+            titulo = buffer.value.strip()
+            if titulo:
+                titulos.append(titulo)
+        return True
+
+    user32.EnumWindows(prototipo(visitar), 0)
+    return titulos
+
+
+def _cerrar_proceso_y_hijos(proceso: subprocess.Popen) -> None:
+    """Terminates the GUI and, if it does not exit, its whole process tree."""
+    if proceso.poll() is not None:
+        return
+    proceso.terminate()
+    try:
+        proceso.wait(timeout=30)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proceso.pid), "/T", "/F"],
+                       capture_output=True, text=True, timeout=30,
+                       creationflags=SIN_VENTANA)
+    else:
+        proceso.kill()
+    try:
+        proceso.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _utf8() -> None:
     for nombre in ("stdout", "stderr"):
         try:
@@ -271,30 +342,26 @@ class Comprobador:
         proceso = subprocess.Popen([self.gui, "--gui"], creationflags=SIN_VENTANA)
         try:
             titulo = ""
+            titulos: list[str] = []
             for _ in range(40):                     # up to 20 s
                 time.sleep(0.5)
                 if proceso.poll() is not None:
                     break
-                ventanas = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command",
-                     f"(Get-Process -Id {proceso.pid} -ErrorAction SilentlyContinue)"
-                     ".MainWindowTitle"],
-                    capture_output=True, text=True, timeout=60,
-                    creationflags=SIN_VENTANA)
-                titulo = (ventanas.stdout or "").strip()
-                if "FLAC" in titulo.upper():
+                titulos = _titulos_ventanas_visibles(proceso.pid)
+                titulo = next((t for t in titulos if "FLAC" in t.upper()), "")
+                if titulo:
                     break
-            bien = proceso.poll() is None and "FLAC" in titulo.upper()
-            self.anotar("the window opens", bien,
-                        f"title: '{titulo}'" if bien else f"title: '{titulo}' (exit code "
-                        f"{proceso.poll()})")
+            bien = proceso.poll() is None and bool(titulo)
+            if bien:
+                detalle = f"title: '{titulo}'"
+            elif titulos:
+                detalle = (f"no visible FLAC window; titles: "
+                           + ", ".join(repr(t) for t in titulos[:3]))
+            else:
+                detalle = f"no visible FLAC window (exit code {proceso.poll()})"
+            self.anotar("the window opens", bien, detalle)
         finally:
-            if proceso.poll() is None:
-                proceso.terminate()
-                try:
-                    proceso.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    proceso.kill()
+            _cerrar_proceso_y_hijos(proceso)
         time.sleep(1.5)
         sobran = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
