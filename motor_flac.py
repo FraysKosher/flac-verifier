@@ -592,18 +592,37 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
     def en_orden():
         calculados = calcular_pendientes() if pendientes else None
         lote = []
+        retenidas = []
         for _, ruta, cacheado in plan:
             if cacheado is not None:
-                lote.append(cacheado)
-                continue
-            resultado = next(calculados, None) if calculados is not None else None
-            if resultado is None:
-                resultado = {"archivo": os.path.basename(ruta), "ruta": ruta,
-                             "error": "could not get the analysis result"}
+                resultado = cacheado
+            else:
+                resultado = next(calculados, None) if calculados is not None else None
+                if resultado is None:
+                    resultado = {"archivo": os.path.basename(ruta), "ruta": ruta,
+                                 "error": "could not get the analysis result"}
             lote.append(resultado)
+            # Everything that cannot be rescued by album context is streamed
+            # immediately. Only suspicious tracks that `_merece_coherencia_album`
+            # could elevate are held back until the whole batch is known.
+            candidata = (resultado.get("veredicto") in
+                         ("SUSPICIOUS", "PROBABLE UPSCALE")
+                         and _merece_coherencia_album(resultado))
+            if candidata:
+                retenidas.append((ruta, resultado))
+            else:
+                yield resultado
+
         # Album-level consistency needs the whole directory before deciding.
         aplicar_coherencia_album(lote)
-        yield from lote
+        for ruta, resultado in retenidas:
+            if resultado.get("coherencia_album") and usar_cache:
+                meta = resultado.get("meta")
+                if meta:
+                    # Persist the rescued verdict, otherwise the next run would
+                    # read the old suspicious entry from the cache.
+                    escribir_cache(ruta, meta, modo, segundos, resultado)
+            yield resultado
 
     return en_orden(), workers_efectivos
 

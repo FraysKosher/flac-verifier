@@ -15,7 +15,9 @@ import os
 import re
 import shutil
 import sys
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
@@ -261,6 +263,49 @@ class TestParalelizacion(unittest.TestCase):
         resultados = list(analisis)
         self.assertEqual(workers, 1, "it should not start processes when everything is cached")
         self.assertTrue(all(r.get("desde_cache") for r in resultados))
+
+
+class TestStreamingProgresivo(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = fx.Fixtures()
+        cls.carpeta = cls.fx.subcarpeta("streaming", ("ok16", "ok24", "ok16_mono"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.cerrar()
+
+    def test_los_resultados_llegan_antes_de_terminar_el_lote(self):
+        """The generator must stream non-candidate tracks, not buffer them all."""
+        archivos = [os.path.join(self.carpeta, nombre)
+                    for nombre in sorted(os.listdir(self.carpeta))
+                    if nombre.endswith(".flac")]
+        original = motor.analizar_archivo_datos
+
+        def lento(*args, **kwargs):
+            time.sleep(0.25)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(motor, "analizar_archivo_datos", side_effect=lento):
+            analisis, workers = motor.analizar_archivos(
+                archivos, "center", None, False, workers=1, usar_cache=False)
+            inicio = time.perf_counter()
+            llegadas = []
+            resultados = []
+            for resultado in analisis:
+                llegadas.append(time.perf_counter() - inicio)
+                resultados.append(resultado)
+            fin = time.perf_counter() - inicio
+
+        self.assertEqual(workers, 1)
+        self.assertEqual(len(resultados), 3)
+        self.assertEqual(len(llegadas), 3)
+        # Old buffered implementation yielded all three at `fin`: the first
+        # arrival would be (almost) the same instant as the end.
+        self.assertGreater(llegadas[0], 0.15)
+        self.assertGreater(fin - llegadas[0], 0.15)
+        self.assertGreater(llegadas[-1] - llegadas[0], 0.15)
 
 
 class TestRenderizador(unittest.TestCase):
