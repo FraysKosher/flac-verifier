@@ -18,9 +18,9 @@ except ImportError:
 
 from _motor_bits import FRAMES_POR_BLOQUE, _clasificar_rachas
 
-ANCHO_PNG = 1400                    # canvas width in pixels (axes included)
+ANCHO_PNG = 2100                    # total canvas width (14 in at 150 dpi)
 
-ALTO_PNG  = 560                     # canvas height in pixels
+ALTO_PNG  = 750                      # total canvas height (5 in at 150 dpi)
 
 FPS_ESPECTROGRAMA_PNG = 20          # display time resolution (metrics use every frame)
 
@@ -57,22 +57,88 @@ def _crear_lut_inferno_256():
 _LUT_ESPECTROGRAMA = _crear_lut_inferno_256()
 
 def _fuente_png(tam=14):
-    """Default bitmap font at a readable size (Pillow's size argument)."""
+    """TrueType font with support for the em dash; bitmap fallback otherwise."""
+    for nombre in ("arial.ttf", "segoeui.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(nombre, tam)
+        except OSError:
+            continue
     try:
         return ImageFont.load_default(size=tam)
     except TypeError:                  # very old Pillow: no size parameter
         return ImageFont.load_default()
 
+def _texto_vertical(lienzo, xy, texto, fuente, color):
+    """Draws rotated (90 CCW) text for the axis/colorbar labels."""
+    caja = ImageDraw.Draw(lienzo).textbbox((0, 0), texto, font=fuente)
+    ancho, alto = caja[2] - caja[0], caja[3] - caja[1]
+    capa = Image.new("RGBA", (ancho + 4, alto + 4), (0, 0, 0, 0))
+    ImageDraw.Draw(capa).text((2 - caja[0], 2 - caja[1]), texto,
+                              font=fuente, fill=color)
+    capa = capa.rotate(90, expand=True)
+    lienzo.paste(capa, xy, capa)
+
+def _linea_discontinua(dibujo, x0, x1, y, color, ancho=1, salto=10, hueco=7):
+    x = x0
+    while x < x1:
+        dibujo.line([(x, y), (min(x + salto, x1), y)], fill=color, width=ancho)
+        x += salto + hueco
+
+def _paso_tiempo(duracion):
+    """A readable time-tick step: 25 s on normal tracks, finer on short clips."""
+    if duracion <= 10.0:
+        return 1.0
+    if duracion <= 30.0:
+        return 5.0
+    if duracion <= 60.0:
+        return 10.0
+    return 25.0
+
+def _dibujar_colorbar(lienzo, dibujo, x0, y0, ancho, alto, db_min, db_max, fuente):
+    """Vertical LUT gradient from db_min (bottom) to db_max (top), with ticks."""
+    indices = np.linspace(255, 0, int(alto), dtype=np.uint8).reshape(-1, 1)
+    gradiente = _LUT_ESPECTROGRAMA[indices]              # (alto, 1, 3)
+    barra = Image.fromarray(gradiente, mode="RGB").resize((ancho, int(alto)))
+    lienzo.paste(barra, (x0, y0))
+    dibujo.rectangle([x0, y0, x0 + ancho, y0 + alto], outline=(120, 120, 135), width=1)
+
+    for valor in np.arange(db_min, db_max + 1e-9, 10.0):
+        frac = (float(valor) - db_min) / max(db_max - db_min, 1.0)
+        y = y0 + int(round((1.0 - frac) * alto))
+        dibujo.line([(x0 + ancho, y), (x0 + ancho + 6, y)],
+                    fill=(190, 190, 200), width=1)
+        dibujo.text((x0 + ancho + 10, y), f"{valor:.0f}",
+                    fill=(215, 215, 225), font=fuente, anchor="lm")
+
+def _dibujar_leyenda(lienzo, dibujo, x1, y0, entradas, fuente):
+    """Boxed upper-right legend with a dashed sample line per entry."""
+    if not entradas:
+        return
+    anchos = [dibujo.textbbox((0, 0), texto, font=fuente)[2] for _, _, texto in entradas]
+    ancho = max(anchos) + 70
+    alto = 14 + 23 * len(entradas)
+    x0 = x1 - ancho
+    capa = Image.new("RGBA", lienzo.size, (0, 0, 0, 0))
+    lapiz = ImageDraw.Draw(capa)
+    lapiz.rounded_rectangle([x0, y0, x1, y0 + alto], radius=5,
+                            fill=(15, 15, 22, 215), outline=(140, 140, 160, 255),
+                            width=1)
+    lienzo.alpha_composite(capa)
+    for indice, (color, _, texto) in enumerate(entradas):
+        y = y0 + 12 + indice * 23
+        _linea_discontinua(dibujo, x0 + 10, x0 + 48, y, color, salto=8, hueco=5)
+        dibujo.text((x0 + 56, y - 8), texto, fill=(230, 230, 235), font=fuente)
+
 def renderizar_espectrograma_rapido(matriz_db, sample_rate, ruta_salida_png,
-                                    db_min=-120.0, db_max=0.0,
+                                    db_min=-80.0, db_max=0.0,
                                     ancho_px=ANCHO_PNG, alto_px=ALTO_PNG,
                                     titulo=None, techo_hz=None,
-                                    frecuencia_corte=None):
-    """Renders a (frequency, time) dB matrix to PNG with NumPy + Pillow.
+                                    frecuencia_corte=None, times=None):
+    """Renders a (frequency, time) dB matrix to a 2100 x 750 PNG (Pillow only).
 
-    No figure objects, no Agg canvas, no matplotlib: the LUT maps every cell in
-    one C-level array lookup and `Image.fromarray` writes the raster directly.
-    Labels are strictly English (test_idioma.py).
+    The layout follows the old matplotlib figure: central raster, numeric axes,
+    vertical dB colorbar, and a boxed upper-right legend for the ceiling,
+    cut-off and CD-Nyquist reference lines. No matplotlib is imported.
     """
     if not PIL_OK:
         raise RuntimeError("Pillow is not available")
@@ -80,75 +146,92 @@ def renderizar_espectrograma_rapido(matriz_db, sample_rate, ruta_salida_png,
     if matriz.ndim != 2 or matriz.shape[0] == 0 or matriz.shape[1] == 0:
         raise ValueError("empty spectrogram matrix")
 
+    ancho_total, alto_total = int(ancho_px), int(alto_px)
+    margen_izq, margen_der, margen_sup, margen_inf = 130, 160, 55, 75
+    ancho = max(80, ancho_total - margen_izq - margen_der)
+    alto = max(80, alto_total - margen_sup - margen_inf)
+    x_fin, y_fin = margen_izq + ancho, margen_sup + alto
+
     spec = matriz.T[::-1, :]           # high frequencies on top
     norm = (spec - float(db_min)) / max(float(db_max - db_min), 1.0)
     idx = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
     rgb = _LUT_ESPECTROGRAMA[idx]
     img_spec = Image.fromarray(rgb, mode="RGB").resize(
-        (ancho_px, alto_px), resample=Image.Resampling.BILINEAR)
+        (ancho, alto), resample=Image.Resampling.BILINEAR)
 
-    margen_izq, margen_der, margen_sup, margen_inf = 96, 26, 46, 52
-    lienzo = Image.new(
-        "RGB", (ancho_px + margen_izq + margen_der,
-                alto_px + margen_sup + margen_inf),
-        (18, 18, 24))
+    lienzo = Image.new("RGBA", (ancho_total, alto_total), (18, 18, 24, 255))
     lienzo.paste(img_spec, (margen_izq, margen_sup))
     dibujo = ImageDraw.Draw(lienzo)
-    fuente = _fuente_png(14)
-    fuente_peq = _fuente_png(12)
-    color_eje = (180, 180, 195)
-    color_texto = (220, 220, 230)
+    fuente = _fuente_png(19)
+    fuente_eje = _fuente_png(16)
+    fuente_tick = _fuente_png(14)
+    color_eje = (185, 185, 198)
+    color_texto = (225, 225, 232)
 
     nyquist_khz = (float(sample_rate) / 2.0) / 1000.0
-    paso_khz = 4 if nyquist_khz <= 24.0 else 8
-    for khz in range(0, int(nyquist_khz) + 1, paso_khz):
-        frac_y = 1.0 - (float(khz) / nyquist_khz if nyquist_khz else 0.0)
-        y_px = margen_sup + int(round(frac_y * alto_px))
-        dibujo.line([(margen_izq - 6, y_px), (margen_izq, y_px)],
-                    fill=color_eje, width=1)
-        dibujo.text((6, y_px - 7), f"{khz} kHz", fill=color_texto, font=fuente_peq)
 
     def y_de(freq_hz):
         frac = 1.0 - (float(freq_hz) / (nyquist_khz * 1000.0)
                       if nyquist_khz else 0.0)
-        return margen_sup + int(round(frac * alto_px))
+        return margen_sup + int(round(frac * alto))
 
-    # CD Nyquist reference line on hi-res files.
+    # Y axis: 0, 2.5, 5.0 ... kHz
+    for valor in np.arange(0.0, nyquist_khz + 1e-9, 2.5):
+        y = y_de(valor * 1000.0)
+        dibujo.line([(margen_izq - 7, y), (margen_izq, y)], fill=color_eje, width=1)
+        dibujo.text((margen_izq - 12, y), f"{valor:.1f}",
+                    fill=color_texto, font=fuente_tick, anchor="rm")
+    _texto_vertical(lienzo, (8, margen_sup + alto // 2 - 70),
+                    "Frequency (kHz)", fuente_eje, color_texto)
+
+    # X axis: real times, 25 s steps (finer for short clips)
+    tiempos = (np.asarray(times, dtype=np.float64).reshape(-1)
+               if times is not None else np.array([]))
+    if tiempos.size != matriz.shape[1] or not np.all(np.isfinite(tiempos)):
+        tiempos = np.arange(matriz.shape[1], dtype=np.float64)
+    t0, t1 = float(tiempos[0]), float(tiempos[-1])
+    duracion = max(0.0, t1 - t0)
+    paso = _paso_tiempo(duracion)
+    if duracion > 0.0:
+        for valor in np.arange(0.0, duracion + 1e-9, paso):
+            x = margen_izq + int(round((valor / duracion) * ancho))
+            dibujo.line([(x, y_fin), (x, y_fin + 7)], fill=color_eje, width=1)
+            dibujo.text((x, y_fin + 12), f"{valor:.0f}",
+                        fill=color_texto, font=fuente_tick, anchor="ma")
+    dibujo.text(((margen_izq + x_fin) // 2, y_fin + 44), "Time (s)",
+                fill=color_texto, font=fuente_eje, anchor="ma")
+
+    # Reference lines
+    entradas = []
     if nyquist_khz > 24.0:
-        y_cd = y_de(22050.0)
-        for x_p in range(margen_izq, margen_izq + ancho_px, 12):
-            dibujo.line([(x_p, y_cd), (min(x_p + 6, margen_izq + ancho_px), y_cd)],
-                        fill=(0, 220, 255), width=1)
-        dibujo.text((margen_izq + 8, max(margen_sup + 2, y_cd - 16)),
-                    "22.05 kHz (CD Nyquist)", fill=(0, 220, 255), font=fuente_peq)
-
+        _linea_discontinua(dibujo, margen_izq, x_fin, y_de(22050.0),
+                           (0, 220, 255), salto=8, hueco=6)
+        entradas.append(((0, 220, 255), True, "22.05 kHz (CD Nyquist)"))
     if techo_hz:
-        y_techo = y_de(float(techo_hz))
-        dibujo.line([(margen_izq, y_techo), (margen_izq + ancho_px, y_techo)],
-                    fill=(0, 220, 255), width=1)
-        dibujo.text((margen_izq + ancho_px - 190, max(margen_sup + 2, y_techo - 16)),
-                    f"Ceiling: {float(techo_hz)/1000:.1f} kHz",
-                    fill=(0, 220, 255), font=fuente_peq)
+        _linea_discontinua(dibujo, margen_izq, x_fin, y_de(float(techo_hz)),
+                           (0, 220, 255), ancho=2, salto=10, hueco=6)
+        entradas.append(((0, 220, 255), True,
+                         f"Ceiling: {float(techo_hz)/1000:.1f} kHz"))
     if frecuencia_corte:
-        y_corte = y_de(float(frecuencia_corte))
-        dibujo.line([(margen_izq, y_corte), (margen_izq + ancho_px, y_corte)],
-                    fill=(235, 70, 70), width=2)
-        dibujo.text((margen_izq + 8, min(margen_sup + alto_px - 16, y_corte + 4)),
-                    f"Cut-off: {float(frecuencia_corte)/1000:.1f} kHz",
-                    fill=(245, 120, 120), font=fuente_peq)
+        _linea_discontinua(dibujo, margen_izq, x_fin, y_de(float(frecuencia_corte)),
+                           (235, 70, 70), ancho=2, salto=10, hueco=6)
+        entradas.append(((235, 70, 70), True,
+                         f"Cut-off: {float(frecuencia_corte)/1000:.1f} kHz"))
 
-    dibujo.rectangle(
-        [margen_izq, margen_sup, margen_izq + ancho_px, margen_sup + alto_px],
-        outline=(90, 90, 110), width=1)
-    dibujo.text((margen_izq, 12),
-                (titulo or "Spectrogram")[:80], fill=color_texto, font=fuente)
-    dibujo.text((margen_izq + ancho_px - 160, 16), "dB relative to peak",
-                fill=color_eje, font=fuente_peq)
-    dibujo.text((margen_izq + ancho_px // 2 - 24, margen_sup + alto_px + 22),
-                "Time (s)", fill=color_texto, font=fuente)
-    dibujo.text((10, margen_sup + alto_px // 2), "Frequency (kHz)",
+    dibujo.rectangle([margen_izq, margen_sup, x_fin, y_fin],
+                     outline=(90, 90, 110), width=1)
+    _dibujar_leyenda(lienzo, dibujo, x_fin - 12, margen_sup + 12,
+                     entradas, _fuente_png(14))
+
+    # Colorbar and title
+    _dibujar_colorbar(lienzo, dibujo, x_fin + 32, margen_sup, 26, alto,
+                      float(db_min), float(db_max), fuente_tick)
+    _texto_vertical(lienzo, (ancho_total - 24, margen_sup + alto // 2 - 65),
+                    "dB (relative to peak)", fuente_eje, color_texto)
+
+    dibujo.text((margen_izq, 14), (titulo or "Spectrogram")[:85],
                 fill=color_texto, font=fuente)
-    lienzo.save(ruta_salida_png, format="PNG", compress_level=3)
+    lienzo.convert("RGB").save(ruta_salida_png, format="PNG", compress_level=3)
 
 def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_hz, frecuencia_corte):
     """Draws the spectrogram. Returns (ruta_png, error): it never raises, and the
@@ -166,9 +249,11 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
         # Decimate before the transcendental step: log10 runs on far fewer cells
         # when the window has more frames than the PNG can show.
         mezcla_arr = np.asarray(mezcla, dtype=np.float32)
+        tiempos = np.asarray(times, dtype=np.float64).reshape(-1)
         if mezcla_arr.shape[1] > MAX_FRAMES_PNG:
             step       = max(1, mezcla_arr.shape[1] // MAX_FRAMES_PNG)
             mezcla_arr = mezcla_arr[:, ::step]
+            tiempos    = tiempos[::step]
 
         db = np.maximum(mezcla_arr, 1e-28)
         np.log10(db, out=db)
@@ -177,8 +262,9 @@ def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio, techo_h
 
         renderizar_espectrograma_rapido(
             db, samplerate, ruta_png, db_min=-80.0, db_max=0.0,
-            titulo=f"Spectrogram - {os.path.basename(ruta_audio)}",
-            techo_hz=techo_hz, frecuencia_corte=frecuencia_corte)
+            titulo=f"Spectrogram — {os.path.basename(ruta_audio)}",
+            techo_hz=techo_hz, frecuencia_corte=frecuencia_corte,
+            times=tiempos)
         return ruta_png, None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
