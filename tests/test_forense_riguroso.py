@@ -67,6 +67,36 @@ def _dsd_like(sr: int, duracion: float, seed: int) -> np.ndarray:
     return mezcla / (np.max(np.abs(mezcla)) * 1.05)
 
 
+def _opus_fullband(x: np.ndarray, sr: int) -> np.ndarray:
+    """Simulates libopus fullband: 20.00 kHz cliff plus frame-varying cut-off.
+
+    The codec does not apply one ideal low-pass to the whole song: its cut-off
+    moves between frames. Every sixth 200 ms segment is cut at 19.6 kHz while the
+    rest stay at 20.0 kHz, which produces the >550 Hz IQR the detector looks for
+    without faking an ideal brickwall.
+    """
+    n = len(x)
+    espectro = np.fft.rfft(x, axis=0)
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    espectro[freqs > 20000.0] = 0.0
+    y = np.fft.irfft(espectro, n, axis=0)
+
+    segmento = max(512, int(sr * 0.2))
+    for indice, inicio in enumerate(range(0, n, segmento)):
+        fin = min(n, inicio + segmento)
+        if fin - inicio < 512:
+            continue
+        bloque = y[inicio:fin].copy()
+        if indice % 6 == 0:
+            transformada = np.fft.rfft(bloque, axis=0)
+            f_bloque = np.fft.rfftfreq(fin - inicio, 1.0 / sr)
+            transformada[f_bloque > 19600.0] = 0.0
+            bloque = np.fft.irfft(transformada, fin - inicio, axis=0)
+        y[inicio:fin] = bloque
+    y /= max(1.0, np.max(np.abs(y))) * 1.1
+    return y
+
+
 class TestForenseRiguroso(unittest.TestCase):
 
     def setUp(self):
@@ -195,18 +225,16 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
     def test_09_transcode_opus_20k_es_detectado(self):
-        """libopus fullband 20.00 kHz brickwall with a jittering cut-off."""
+        """Realistic libopus fullband: 20.00 kHz cliff + frame-varying cut-off."""
         sr = 44100
         sig = _crear_pista_referencia(sr, duracion=6.0, seed=109)
-        espectro = np.fft.rfft(sig, axis=0)
-        freqs = np.fft.rfftfreq(len(sig), 1.0 / sr)
-        espectro[freqs > 20000.0] = 0.0
-        opus = np.fft.irfft(espectro, len(sig), axis=0)
+        opus = _opus_fullband(sig, sr)
         ruta = self.base_path / "opus_fullband_20k.flac"
         sf.write(ruta, np.clip(opus, -0.98, 0.98), sr, subtype="PCM_16")
 
         res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
         self.assertTrue(res["esp"]["sospecha_corte_opus_20k"])
+        self.assertGreater(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertEqual(res["veredicto"], "SUSPICIOUS")
 
     def test_11_bajo_fuerte_con_filtro_estatico_no_dispara_jitter(self):

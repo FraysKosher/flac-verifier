@@ -118,4 +118,12 @@ joint stereo, Opus fullband 20 kHz, 16-in-24 padding and gain comb).
 
 Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **PASS**.
 
+### Album coherence (batch, addition A)
+
+A second batch runs through `analizar_archivos`: 8 homogeneous GENUINE tracks and
+1 acoustic low-ceiling track in the same directory. The acoustic track must be
+raised to PROBABLY LOSSLESS with `coherencia_album = true`:
+
+**PASS**
+
 <!-- BENCHMARK:END -->
