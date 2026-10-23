@@ -5,11 +5,11 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.1.0](https://img.shields.io/badge/version-2.1.0-blue)](CHANGELOG.md)
+[![Version: 2.2.0](https://img.shields.io/badge/version-2.2.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests: 230](https://img.shields.io/badge/tests-230-brightgreen)](README.md#tests)
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the version history (current: **2.1.0**).
+See [`CHANGELOG.md`](CHANGELOG.md) for the version history (current: **2.2.0**).
 
 A tool for deciding whether a FLAC file is **genuinely lossless** or fake
 lossless: a transcode from a lossy format (MP3, AAC…) or a bit-depth upgrade
@@ -189,7 +189,7 @@ dist/FLAC_Verifier/
 
 The whole folder is copied or compressed into a ZIP: **the `.exe` alone does not
 work**, it needs its `_internal/` next to it. That is about 186 MB on disk
-(81 MB in a ZIP in the 2.1.0 release), because it includes NumPy, SciPy and the
+(81 MB in a ZIP in the 2.2.0 release), because it includes NumPy, SciPy and the
 Python interpreter; the current spec no longer bundles matplotlib, so it is
 smaller. The first launch takes a few seconds (that is normal: there is
 nothing to unpack in `%TEMP%`, which is exactly the reason for using folder mode
@@ -200,7 +200,7 @@ libraries that numpy and scipy each ship (≈39 MB together), `PIL` (≈6 MB, us
 the spectrograms and the PDF images), `reportlab` (≈4 MB) and the Python
 interpreter with Tcl/Tk and `libsndfile`.
 
-The 2.1.0 build also trimmed what the program never loads: `PIL._avif` (an image
+The 2.2.0 build also trimmed what the program never loads: `PIL._avif` (an image
 codec it never opens, ≈7.5 MB), `reportlab.graphics` (the chart stack `platypus`
 never imports), **matplotlib** (the spectrogram is now rendered with Pillow) and
 the non-Windows `tkinterdnd2` builds (only `win-x64` is kept). `collect_all()` was also called with `include_py_files=False`: by default
