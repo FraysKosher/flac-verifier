@@ -208,6 +208,35 @@ class TestInformePDF(unittest.TestCase):
         self.assertTrue(os.path.exists(destino))
         self.assertGreater(os.path.getsize(destino), 4 * 1024)
 
+    @unittest.skipUnless(_fitz_disponible(), "PyMuPDF not installed")
+    def test_generar_directo_ordena_por_indice_original(self):
+        """The direct API restores track order before writing the pages."""
+        import fitz
+
+        base = {"ruta": self.fx["ok16"], "veredicto": "GENUINE LOSSLESS",
+                "score": 1.0, "problemas": [], "evidencias_forenses": [],
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16,
+                         "canales": 2, "duracion": 2.0},
+                "esp": {}, "bdi": {}, "md5": {}, "clip": {}}
+        desordenados = []
+        for indice in (2, 0, 1):
+            ficha = dict(base)
+            ficha["archivo"] = f"track_{indice}.flac"
+            ficha["indice_original"] = indice
+            desordenados.append(ficha)
+
+        destino = os.path.join(self.fx.dir, "orden_directo.pdf")
+        informe = pdf.generar(self.album, desordenados, destino=destino)
+        self.assertTrue(informe["ok"], informe.get("error"))
+        documento = fitz.open(destino)
+        try:
+            self.assertEqual(documento.page_count, 5)   # cover + 3 + summary
+            for posicion, indice in enumerate((0, 1, 2)):
+                texto = documento[1 + posicion].get_text()
+                self.assertIn(f"track_{indice}.flac", texto)
+        finally:
+            documento.close()
+
     def test_las_imagenes_no_hinchan_el_pdf(self):
         """The PNGs are recompressed: the PDF weighs noticeably less than its originals."""
         try:

@@ -73,7 +73,8 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.6"
+VERSION_MOTOR = "9.7"
+# 9.7: cache invalidation for the final Phase 7 detectors.
 # 9.6: Phase 5 forensic suite and validation benchmark (mirror threshold and
 #      Opus scoring refined); results invalidate older caches.
 # 9.5: modular facade; each result carries the additive `evidencias_forenses`
@@ -714,9 +715,7 @@ def generar_informe_pdf(ruta_analizada, resultados, modo=None):
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": f"could not load the report generator ({type(e).__name__}: {e})"}
-    resultados_ordenados = sorted(resultados,
-                                   key=lambda r: r.get("indice_original", 0))
-    return informe_pdf.generar(ruta_analizada, resultados_ordenados, modo=modo)
+    return informe_pdf.generar(ruta_analizada, resultados, modo=modo)
 
 def cli_principal(argv: "list[str] | None" = None) -> int:
     """Engine CLI. Returns the exit code (0 = OK).

@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
 
 import motor_flac as motor
+import informe_pdf
 
 PROCESOS = motor._sonda_procesos()
 CAMPOS_VOLATILES = ("desde_cache", "tipo", "indice", "total")
@@ -368,9 +369,11 @@ class TestCacheYOrdenConCoherencia(unittest.TestCase):
                          [0, 2, 3, 4, 1])   # the retained one arrives last
         self.assertTrue(resultados[-1].get("coherencia_album"))
 
-        with mock.patch("informe_pdf.generar", return_value={"ok": True}) as generar:
-            motor.generar_informe_pdf(carpeta, resultados)
-        enviados = generar.call_args[0][1]
+        with mock.patch("informe_pdf._elementos",
+                        side_effect=lambda *a, **k: iter(())) as elementos:
+            informe = motor.generar_informe_pdf(carpeta, resultados)
+        self.assertTrue(informe["ok"], informe.get("error"))
+        enviados = elementos.call_args[0][1]
         self.assertEqual([r["indice_original"] for r in enviados],
                          [0, 1, 2, 3, 4])
 

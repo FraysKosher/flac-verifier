@@ -561,6 +561,11 @@ def generar(ruta_analizada, resultados, destino=None, modo=None):
     if not resultados:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": "there are no results to include in the report"}
+    # The direct API must honour the original track order even when the caller
+    # passes a streamed/suspicious-last list. Missing indices keep input order.
+    resultados = [r for _, r in sorted(
+        enumerate(resultados),
+        key=lambda par: par[1].get("indice_original", par[0]))]
 
     destino = destino or ruta_informe(ruta_analizada)
     est = _estilos()
