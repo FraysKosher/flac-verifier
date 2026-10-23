@@ -593,7 +593,7 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
         calculados = calcular_pendientes() if pendientes else None
         lote = []
         retenidas = []
-        for _, ruta, cacheado in plan:
+        for indice, ruta, cacheado in plan:
             if cacheado is not None:
                 resultado = cacheado
             else:
@@ -601,6 +601,7 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
                 if resultado is None:
                     resultado = {"archivo": os.path.basename(ruta), "ruta": ruta,
                                  "error": "could not get the analysis result"}
+            resultado["indice_original"] = indice
             lote.append(resultado)
             # Everything that cannot be rescued by album context is streamed
             # immediately. Only suspicious tracks that `_merece_coherencia_album`
@@ -615,13 +616,10 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
 
         # Album-level consistency needs the whole directory before deciding.
         aplicar_coherencia_album(lote)
-        for ruta, resultado in retenidas:
-            if resultado.get("coherencia_album") and usar_cache:
-                meta = resultado.get("meta")
-                if meta:
-                    # Persist the rescued verdict, otherwise the next run would
-                    # read the old suspicious entry from the cache.
-                    escribir_cache(ruta, meta, modo, segundos, resultado)
+        for _ruta, resultado in retenidas:
+            # The rescue belongs to this batch context only: the individual
+            # on-disk cache keeps the suspicious verdict, so analysing the file
+            # alone later does not inherit an album-level elevation.
             yield resultado
 
     return en_orden(), workers_efectivos
@@ -716,7 +714,9 @@ def generar_informe_pdf(ruta_analizada, resultados, modo=None):
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": f"could not load the report generator ({type(e).__name__}: {e})"}
-    return informe_pdf.generar(ruta_analizada, resultados, modo=modo)
+    resultados_ordenados = sorted(resultados,
+                                   key=lambda r: r.get("indice_original", 0))
+    return informe_pdf.generar(ruta_analizada, resultados_ordenados, modo=modo)
 
 def cli_principal(argv: "list[str] | None" = None) -> int:
     """Engine CLI. Returns the exit code (0 = OK).

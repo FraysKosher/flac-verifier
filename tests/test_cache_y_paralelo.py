@@ -15,6 +15,10 @@ import os
 import re
 import shutil
 import sys
+
+import numpy as np
+import soundfile as sf
+from scipy import signal
 import time
 import unittest
 from unittest import mock
@@ -306,6 +310,69 @@ class TestStreamingProgresivo(unittest.TestCase):
         self.assertGreater(llegadas[0], 0.15)
         self.assertGreater(fin - llegadas[0], 0.15)
         self.assertGreater(llegadas[-1] - llegadas[0], 0.15)
+
+
+class TestCacheYOrdenConCoherencia(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = fx.Fixtures()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.cerrar()
+
+    @staticmethod
+    def _acustica(ruta):
+        sr = 44100
+        x = fx.ruido_banda_completa(sr=sr, dur=4.0, seed=7)
+        y = signal.sosfilt(signal.butter(4, 15000.0, btype="low", fs=sr,
+                                          output="sos"), x, axis=0)
+        y /= max(1.0, np.max(np.abs(y)))
+        sf.write(ruta, y, sr, subtype="PCM_16")
+
+    def _album(self, nombre, cantidad, posicion_candidata):
+        carpeta = os.path.join(self.fx.dir, nombre)
+        os.makedirs(carpeta, exist_ok=True)
+        for indice in range(cantidad):
+            destino = os.path.join(carpeta, f"{indice + 1:02d}_track.flac")
+            if indice == posicion_candidata:
+                self._acustica(destino)
+            else:
+                shutil.copy(self.fx["ok16"], destino)
+        return carpeta
+
+    def test_la_cache_individual_no_hereda_la_coherencia_del_lote(self):
+        carpeta = self._album("cache_coherencia", 9, 0)
+        archivos = [os.path.join(carpeta, nombre)
+                    for nombre in sorted(os.listdir(carpeta))]
+        lote = list(motor.analizar_archivos(
+            archivos, "center", None, False, workers=1, usar_cache=True)[0])
+        rescatada = next(r for r in lote if r["archivo"].startswith("01_"))
+        self.assertTrue(rescatada.get("coherencia_album"))
+        self.assertEqual(rescatada["veredicto"], "PROBABLY LOSSLESS")
+
+        sola = motor.analizar_archivo_datos(
+            rescatada["ruta"], "center", None, False, usar_cache=True)
+        self.assertFalse(sola.get("coherencia_album"))
+        self.assertIn(sola["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
+
+    def test_el_pdf_recupera_el_orden_original_tras_retencion(self):
+        carpeta = self._album("orden_coherencia", 5, 1)
+        archivos = [os.path.join(carpeta, nombre)
+                    for nombre in sorted(os.listdir(carpeta))]
+        resultados = list(motor.analizar_archivos(
+            archivos, "center", None, False, workers=1, usar_cache=False)[0])
+        self.assertEqual(len(resultados), 5)
+        self.assertEqual([r["indice_original"] for r in resultados],
+                         [0, 2, 3, 4, 1])   # the retained one arrives last
+        self.assertTrue(resultados[-1].get("coherencia_album"))
+
+        with mock.patch("informe_pdf.generar", return_value={"ok": True}) as generar:
+            motor.generar_informe_pdf(carpeta, resultados)
+        enviados = generar.call_args[0][1]
+        self.assertEqual([r["indice_original"] for r in enviados],
+                         [0, 1, 2, 3, 4])
 
 
 class TestRenderizador(unittest.TestCase):
