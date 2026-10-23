@@ -185,7 +185,7 @@ def crear_dataset(directorio):
         casos.append((p, False, "16-bit padded into 24"))
 
     for i in range(2):                                    # Quantisation comb
-        x = np.round(pista_referencia(sr, 4.0, 5500 + i) * 32767.0) / 32768.0
+        x = np.round(pista_referencia(sr, 6.0, 5500 + i) * 32767.0) / 32768.0
         p = os.path.join(directorio, f"fake_comb_{i}.flac")
         _guardar(p, x * 0.96605, sr, "PCM_24")
         casos.append((p, False, "16-bit gain comb into 24"))

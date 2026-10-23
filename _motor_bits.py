@@ -291,7 +291,7 @@ class AcumuladorForenseBits:
     low bits carry no musical signal and a genuine 24-bit/dithered master spreads
     them uniformly."""
 
-    MIN_MUESTRAS_BAJAS = 256
+    MIN_MUESTRAS_BAJAS = 2048
 
     def __init__(self, bits_per_sample):
         self.bits = int(bits_per_sample)

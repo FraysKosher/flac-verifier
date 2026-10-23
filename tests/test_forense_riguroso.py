@@ -302,5 +302,41 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
 
 
+    def test_13_pista_24bit_pocas_muestras_bajas_no_dispara_falso_peine(self):
+        """Only 500 samples in the low range: occupancy alone is not a comb.
+
+        With 256 samples the 256-bin histogram is expected to fill only ~160
+        bins, which used to look like a 16-bit quantisation comb. Genuine 24-bit
+        dither with fewer than 2048 low samples must not trigger the penalty.
+        """
+        sr = 44100
+        rng = np.random.default_rng(2026)
+        n = sr * 4
+        plano = rng.uniform(0.005, 0.3, size=(n, 2))
+        plano *= rng.choice([-1.0, 1.0], size=(n, 2))
+        aplanado = plano.reshape(-1)
+        indices = rng.choice(aplanado.size, size=500, replace=False)
+        bajas = rng.uniform(1e-4, 0.003, size=500)
+        bajas *= rng.choice([-1.0, 1.0], size=500)
+        aplanado[indices] = bajas
+        plano = aplanado.reshape(n, 2)
+
+        # TPDF dither of +/-1 LSB at 24 bits: genuine low bits, not padding.
+        lsb = 2.0 ** -23
+        dither = (rng.random(plano.shape) - rng.random(plano.shape)) * lsb
+        y = np.clip(plano + dither, -0.98, 0.98)
+
+        ruta = self.base_path / "genuine_24bit_few_low_samples.flac"
+        sf.write(ruta, y, sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        forense = res["bdi"]["forense_bits"]
+
+        self.assertGreater(forense["muestras_pasaje_bajo"], 0)
+        self.assertLess(forense["muestras_pasaje_bajo"], 2048)
+        self.assertFalse(forense["es_24bit_escalado_en_peine"])
+        self.assertFalse(any("quantisation comb" in p.lower()
+                             for p in res["problemas"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
