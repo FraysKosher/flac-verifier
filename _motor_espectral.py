@@ -795,13 +795,19 @@ class AcumuladorPsicoacusticoSTFT:
             # 10-14 kHz; otherwise a voice/guitar frame with no cymbals looks
             # like a codec cutting and its on/off nature fakes jitter.
             mask_presencia = (freqs >= 10000.0) & (freqs <= 14000.0)
-            presencia_db = 10.0 * np.log10(np.maximum(
-                pot[:, mask_presencia].mean(axis=1), np.float32(1e-28)))
-            activas_presencia = presencia_db > (ref_db - np.float32(25.0))
             mask_hf = freqs >= 11000.0
-            sobre_hf = sobre[:, mask_hf]
-            con_corte = np.flatnonzero(activas_presencia
-                                       & np.any(sobre_hf, axis=1))
+            if not np.any(mask_presencia) or not np.any(mask_hf):
+                # Low sample rates (Nyquist <= 12 kHz) have no 10-14 kHz band
+                # or no bins above 11 kHz: no measurable cut-off.
+                activas_presencia = np.zeros(pot.shape[0], dtype=bool)
+                con_corte = np.empty(0, dtype=int)
+            else:
+                presencia_db = 10.0 * np.log10(np.maximum(
+                    pot[:, mask_presencia].mean(axis=1), np.float32(1e-28)))
+                activas_presencia = presencia_db > (ref_db - np.float32(25.0))
+                sobre_hf = sobre[:, mask_hf]
+                con_corte = np.flatnonzero(activas_presencia
+                                           & np.any(sobre_hf, axis=1))
             if con_corte.size:
                 ultimo = (sobre_hf.shape[1] - 1
                           - np.argmax(sobre_hf[con_corte, ::-1], axis=1))
