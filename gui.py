@@ -605,7 +605,8 @@ if CTK_OK:
             self.btn_abrir_pdf.grid(row=0, column=0, sticky="w")
 
         # ── view helpers ────────────────────────────────────────────────────
-        def _log(self, texto: str, etiqueta: str = "info") -> None:
+        def _log(self, texto: str, etiqueta: str = "info",
+                 scroll: bool = True) -> None:
             marca = time.strftime("%H:%M:%S")
             self.log.configure(state="normal")
             self.log.insert("end", f"[{marca}] {texto}\n")
@@ -615,7 +616,8 @@ if CTK_OK:
                 pass
             self._recortar_log()
             self.log.configure(state="disabled")
-            self.log.see("end")
+            if scroll:
+                self.log.see("end")
 
         def _recortar_log(self) -> None:
             """Keeps the text box bounded: drops the oldest lines past the limit."""
@@ -808,9 +810,14 @@ if CTK_OK:
                     etiqueta = "error"
                 elif evento.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE"):
                     etiqueta = "aviso"
-                self._log(formatear_resultado(evento), etiqueta)
+                self._log(formatear_resultado(evento), etiqueta, scroll=False)
                 for evidencia in evento.get("evidencias_forenses") or []:
-                    self._log(f"    evidence: {evidencia}", "info")
+                    self._log(f"    evidence: {evidencia}", "info", scroll=False)
+                # One layout/scroll per result block, not once per evidence line.
+                try:
+                    self.log.see("end")
+                except Exception:
+                    pass
                 if actualizar_progreso:
                     self._actualizar_progreso()
             elif tipo == "informe":

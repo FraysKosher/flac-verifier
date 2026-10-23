@@ -188,6 +188,26 @@ class TestInformePDF(unittest.TestCase):
         sin_png = sum(1 for r in resultados if not (r.get("esp") or {}).get("espectrograma"))
         self.assertEqual(texto.count("no image"), sin_png)
 
+    def test_caracteres_especiales_xml_en_ruta_y_nombres_no_rompen_pdf(self):
+        """Dynamic text is XML-escaped before ReportLab parses it."""
+        album = "AC & DC - <Live> [Deluxe]"
+        resultado = {
+            "archivo": "01. Rock & Roll <Intro> & Outro.flac",
+            "ruta": self.fx["ok16"],
+            "veredicto": "SUSPICIOUS",
+            "score": 0.5,
+            "problemas": ["problem <tag> & more"],
+            "evidencias_forenses": ["evidence <b> & value"],
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16,
+                     "canales": 2, "duracion": 2.0},
+            "esp": {}, "bdi": {}, "md5": {}, "clip": {},
+        }
+        destino = os.path.join(self.fx.dir, "special_chars.pdf")
+        informe = pdf.generar(album, [resultado], destino=destino)
+        self.assertTrue(informe["ok"], informe.get("error"))
+        self.assertTrue(os.path.exists(destino))
+        self.assertGreater(os.path.getsize(destino), 4 * 1024)
+
     def test_las_imagenes_no_hinchan_el_pdf(self):
         """The PNGs are recompressed: the PDF weighs noticeably less than its originals."""
         try:

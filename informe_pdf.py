@@ -12,6 +12,7 @@ Report structure:
        spectrogram.
     3. Final page: global table of every song.
 """
+import html
 import os
 import shutil
 import tempfile
@@ -175,7 +176,8 @@ def _tabla_tecnica(res, est):
     clip = res.get("clip") or {}
 
     def valor(clave, texto):
-        return [Paragraph(clave, est["etiqueta"]), Paragraph(texto, est["celda"])]
+        return [Paragraph(clave, est["etiqueta"]),
+                Paragraph(html.escape(str(texto)), est["celda"])]
 
     duracion = meta.get("duracion")
     partes = [
@@ -328,13 +330,17 @@ def _ajustar_imagen(imagen, disponible):
 
 def _ficha_cancion(indice, total, res, est, temporal):
     """Page for one song."""
-    elemento = [Paragraph(f"{indice} of {total} &nbsp;·&nbsp; {res.get('archivo', '?')}",
-                          est["cancion"]),
+    elemento = [Paragraph(
+        f"{indice} of {total} &nbsp;·&nbsp; "
+        f"{html.escape(str(res.get('archivo', '?')))}",
+        est["cancion"]),
                 _insignia(res, est),
                 Spacer(1, 3 * mm)]
 
     if res.get("error"):
-        elemento.append(Paragraph(f"<b>Could not analyze:</b> {res['error']}", est["normal"]))
+        elemento.append(Paragraph(
+            f"<b>Could not analyze:</b> {html.escape(str(res['error']))}",
+            est["normal"]))
         elemento.append(Spacer(1, 3 * mm))
 
     elemento.append(_tabla_tecnica(res, est))
@@ -344,7 +350,8 @@ def _ficha_cancion(indice, total, res, est, temporal):
     elemento.append(Paragraph("Detected issues", est["seccion"]))
     if problemas:
         for problema in problemas:
-            elemento.append(Paragraph(f"• {problema}", est["problema"]))
+            elemento.append(Paragraph(
+                f"• {html.escape(str(problema))}", est["problema"]))
     else:
         elemento.append(Paragraph("No issues detected.", est["normal"]))
 
@@ -355,7 +362,8 @@ def _ficha_cancion(indice, total, res, est, temporal):
         elemento.append(Spacer(1, 3 * mm))
         elemento.append(Paragraph("Forensic evidence", est["seccion"]))
         for evidencia in evidencias:
-            elemento.append(Paragraph(f"• {evidencia}", est["problema"]))
+            elemento.append(Paragraph(
+                f"• {html.escape(str(evidencia))}", est["problema"]))
     elemento.append(Spacer(1, 4 * mm))
 
     # The image is measured and adjusted so that the heading and the spectrogram
@@ -370,7 +378,8 @@ def _ficha_cancion(indice, total, res, est, temporal):
         elemento.append(KeepTogether([titulo_espectro, imagen]))
     else:
         elemento.append(titulo_espectro)
-        elemento.append(Paragraph(f"(no image: {aviso})", est["normal"]))
+        elemento.append(Paragraph(
+            f"(no image: {html.escape(str(aviso))})", est["normal"]))
     return elemento
 
 
@@ -411,13 +420,16 @@ def _portada(ruta_album, resultados, modo, est):
         Paragraph("Fake lossless detection: lossy transcodes and "
                   "bit-depth upgrades.", est["subtitulo"]),
         Spacer(1, 6 * mm),
-        Paragraph(f"<b>Album analyzed:</b> {ruta_album}", est["normal"]),
+        Paragraph(f"<b>Album analyzed:</b> {html.escape(str(ruta_album))}",
+                  est["normal"]),
         Paragraph(f"<b>Analysis date:</b> "
                   f"{time.strftime('%Y-%m-%d %H:%M:%S')}", est["normal"]),
         Paragraph(f"<b>Files analyzed:</b> {total}", est["normal"]),
     ]
     if modo:
-        elemento.append(Paragraph(f"<b>Spectral analysis mode:</b> {modo}", est["normal"]))
+        elemento.append(Paragraph(
+            f"<b>Spectral analysis mode:</b> {html.escape(str(modo))}",
+            est["normal"]))
     elemento += [Spacer(1, 6 * mm),
                  Paragraph("Executive summary", est["seccion"]),
                  _tabla(filas, [72 * mm, 30 * mm, 30 * mm], est, comandos),
@@ -443,7 +455,8 @@ def _tabla_final(resultados, est):
     for i, res in enumerate(resultados, start=1):
         etiqueta, color_texto, color_fondo = _estilo_veredicto(res)
         filas.append([Paragraph(str(i), est["celda"]),
-                      Paragraph(res.get("archivo", "?"), est["celda"]),
+                      Paragraph(html.escape(str(res.get("archivo", "?"))),
+                                est["celda"]),
                       Paragraph(f'<font color="{color_texto}"><b>{etiqueta}</b></font>',
                                 est["celda"]),
                       Paragraph(_pct(res.get("score")), est["celda"]),
