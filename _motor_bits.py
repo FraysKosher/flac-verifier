@@ -12,6 +12,19 @@ FRAMES_POR_BLOQUE = 1 << 18            # 262 144 frames (~6 s at 44.1 kHz) per r
 
 MAX_MUESTRAS_BITS = 1 << 20            # sample for the LSB test
 
+# Vector 4 (lattice): absolute values kept to measure the quantisation step.
+MAX_MUESTRAS_RETICULA  = 1 << 18        # 262 144 samples are plenty for a median
+MIN_MUESTRAS_RETICULA  = 4096           # below this the median step is noise
+
+# Vector 4 (high-amplitude slices). A hyper-compressed master has no sample in
+# the [-90, -48] dBFS window, so the comb is looked for around -18 and -12 dBFS
+# instead: 1 050 000 / 8 388 608 is -18.05 dBFS and 2 100 000 is -12.03 dBFS.
+# Each slice is one 16-bit grid step wide (32 768 integers) because that is the
+# period of the comb left behind by a 16-bit source scaled into 24 bits.
+REBANADA_1_BASE = 1050000
+REBANADA_2_BASE = 2100000
+REBANADA_ANCHO  = 32768
+
 def _normalizar_ruta_fs(ruta):
     r"""Returns `ruta` in a form the Windows API can open even past MAX_PATH.
 
@@ -284,22 +297,66 @@ class AcumuladorForenseBits:
       * zero padding (16-in-24): the eight low bits are always zero, so an OR of
         every |sample| has at least 8 trailing zeros;
       * 16 bits scaled into 24 (gain/ReplayGain/DSP): the low bits are no longer
-        zero, but their histogram is a quantisation comb, with Shannon entropy
-        below 7.45 bits or fewer than 235 of the 256 bins occupied.
+        zero, but they form a quantisation comb, with Shannon entropy below
+        7.45 bits or fewer than 235 of the 256 bins occupied.
 
-    Only samples between -48 and -90 dBFS are used for the histogram: there the
-    low bits carry no musical signal and a genuine 24-bit/dithered master spreads
-    them uniformly."""
+    Three measurements are kept, because one is not enough:
+      * low range: samples between -90 and -48 dBFS, where the low bits carry no
+        musical signal and a genuine 24-bit/dithered master spreads them
+        uniformly;
+      * high-amplitude slices around -18 and -12 dBFS: a hyper-compressed master
+        never leaves the loud range, so without them the comb detector simply
+        switches itself off;
+      * lattice: the median distance between distinct absolute values. A 16-bit
+        source scaled into 24 bits keeps landing on the same sparse grid (a step
+        close to 256 x its gain), whereas genuine 24-bit dither visits
+        neighbouring integers.
 
-    MIN_MUESTRAS_BAJAS = 2048
+    A fourth, independent measurement looks for DoP 1.0 (DSD over PCM) framing:
+    at 24 bits and 176.4 kHz or above, a DoP stream marks every sample with
+    0x05 or 0xFA in its top byte, alternating."""
 
-    def __init__(self, bits_per_sample):
+    MIN_MUESTRAS_BAJAS     = 2048
+    MIN_MUESTRAS_REBANADA  = 2048
+
+    def __init__(self, bits_per_sample, sample_rate=0):
         self.bits = int(bits_per_sample)
+        self.sr = int(sample_rate or 0)
         self.max_val = float(1 << (self.bits - 1))
         self._or = 0
         self._hist = np.zeros(256, dtype=np.int64)
         self._muestras = 0
         self._muestras_bajas = 0
+        # High-amplitude slices: only meaningful when the low range is empty.
+        self._hist_reb1 = np.zeros(256, dtype=np.int64)
+        self._hist_reb2 = np.zeros(256, dtype=np.int64)
+        # Lattice: a bounded sample of the active absolute values.
+        self._muestra_absq = []
+        self._total_muestra_absq = 0
+        # DoP 1.0 framing counters (0x05 / 0xFA marker bytes).
+        self._dop_validos = 0
+        self._dop_pares = 0
+        self._dop_ultimo = None
+
+    def _seguir_dop(self, q):
+        """Counts DoP marker transitions in the top byte of consecutive samples.
+
+        The marker lives in the most significant byte of the 24-bit integer, so
+        the shift is applied to the SIGNED sample: 0xFA0000 is a negative value
+        whose byte is 0xFA, which |q| would report as 0x06."""
+        tops = ((q.ravel() >> 16) & 0xFF).astype(np.int16)
+        if self._dop_ultimo is not None:
+            tops = np.concatenate((np.array([self._dop_ultimo], dtype=np.int16), tops))
+        if tops.size == 0:
+            return
+        if tops.size >= 2:
+            anterior  = tops[:-1]
+            siguiente = tops[1:]
+            validos = (((anterior == 0x05) & (siguiente == 0xFA))
+                       | ((anterior == 0xFA) & (siguiente == 0x05)))
+            self._dop_pares += int(validos.size)
+            self._dop_validos += int(np.count_nonzero(validos))
+        self._dop_ultimo = int(tops[-1])
 
     def anadir(self, bloque):
         if self.bits != 24 or bloque.shape[0] == 0:
@@ -318,6 +375,36 @@ class AcumuladorForenseBits:
             self._hist += np.bincount(residuos, minlength=256)
             self._muestras_bajas += int(residuos.size)
 
+        # High-amplitude slices: the same low-byte histogram, an octave and a
+        # half above the quiet window.
+        for base, hist in ((REBANADA_1_BASE, self._hist_reb1),
+                           (REBANADA_2_BASE, self._hist_reb2)):
+            sel = absq[(absq >= base) & (absq < base + REBANADA_ANCHO)]
+            if sel.size:
+                hist += np.bincount((sel & 0xFF).astype(np.uint8), minlength=256)
+
+        # Lattice: keep a bounded sample of the active absolute values.
+        if self._total_muestra_absq < MAX_MUESTRAS_RETICULA:
+            activos = absq[absq > 0]
+            if activos.size:
+                margen = MAX_MUESTRAS_RETICULA - self._total_muestra_absq
+                tomar = activos[:margen]
+                self._muestra_absq.append(tomar)
+                self._total_muestra_absq += int(tomar.size)
+
+        if self.bits == 24 and self.sr >= 176400:
+            self._seguir_dop(q)
+
+    def _paso_reticula(self):
+        """Median distance between distinct absolute values (1.0 if unknown)."""
+        if self._total_muestra_absq < MIN_MUESTRAS_RETICULA:
+            return 1.0
+        arr_muestras = np.concatenate(self._muestra_absq)
+        unicos = np.unique(arr_muestras)
+        if unicos.size < 64:
+            return 1.0
+        return float(np.median(np.diff(unicos)))
+
     def resultado(self):
         if self.bits != 24 or self._muestras == 0:
             return {"aplica": False}
@@ -329,27 +416,59 @@ class AcumuladorForenseBits:
             ceros = (valor_or & -valor_or).bit_length() - 1
         padded = bool(valor_or and ceros >= 8)
 
-        total = int(self._hist.sum())
-        if total:
-            p = self._hist[self._hist > 0] / float(total)
-            entropia = float(-np.sum(p * np.log2(p)))
-            ocupados = int(np.count_nonzero(self._hist))
-        else:
-            entropia, ocupados = None, 0
+        def _calc_h(hist):
+            """(entropy in bits, occupied bins, total samples) of a 256-bin LSB
+            histogram. Entropy is None when the histogram is empty."""
+            tot = int(hist.sum())
+            if not tot:
+                return None, 0, 0
+            p = hist[hist > 0] / float(tot)
+            return float(-np.sum(p * np.log2(p))), int(np.count_nonzero(hist)), tot
 
-        peine = bool(
-            not padded
-            and total >= self.MIN_MUESTRAS_BAJAS
-            and (entropia < 7.45 or ocupados < 235)
-        )
+        entropia_bajo, ocupados_bajo, tot_bajo = _calc_h(self._hist)
+        entropia_reb1, ocupados_reb1, tot_reb1 = _calc_h(self._hist_reb1)
+        entropia_reb2, ocupados_reb2, tot_reb2 = _calc_h(self._hist_reb2)
+
+        paso_reticula = self._paso_reticula()
+
+        if not padded:
+            if tot_bajo >= self.MIN_MUESTRAS_BAJAS:
+                peine = bool(entropia_bajo < 7.45 or ocupados_bajo < 235)
+                entropia_rep, ocupados_rep = entropia_bajo, ocupados_bajo
+            else:
+                # No quiet samples: judge the loud slices and the lattice instead.
+                peine_reb = False
+                entropia_rep, ocupados_rep = None, 0
+                for e_r, o_r, t_r in ((entropia_reb1, ocupados_reb1, tot_reb1),
+                                      (entropia_reb2, ocupados_reb2, tot_reb2)):
+                    if t_r >= self.MIN_MUESTRAS_REBANADA and (e_r < 7.20 or o_r < 180):
+                        peine_reb = True
+                        entropia_rep, ocupados_rep = e_r, o_r
+                        break
+                peine = bool(peine_reb or (paso_reticula > 16.0))
+                if not peine_reb:
+                    entropia_rep, ocupados_rep = entropia_bajo, ocupados_bajo
+        else:
+            peine = False
+            entropia_rep, ocupados_rep = entropia_bajo, ocupados_bajo
+
+        dop_pares = int(self._dop_pares)
+        dop_ratio = (self._dop_validos / float(dop_pares)) if dop_pares else 0.0
+        es_flujo_dop = bool(self.bits == 24 and self.sr >= 176400
+                            and dop_pares >= 100 and dop_ratio >= 0.90)
+
         return {
-            "aplica":                    True,
-            "es_padded_16_en_24":        padded,
-            "trailing_zeros_lsb":        int(ceros),
-            "lsb8_entropia_bits":        round(entropia, 3) if entropia is not None else None,
-            "lsb8_cajones_ocupados":     ocupados,
-            "muestras_pasaje_bajo":      int(total),
+            "aplica":                     True,
+            "es_padded_16_en_24":         padded,
+            "trailing_zeros_lsb":         int(ceros),
+            "lsb8_entropia_bits":         round(entropia_rep, 3) if entropia_rep is not None else None,
+            "lsb8_cajones_ocupados":      ocupados_rep,
+            "muestras_pasaje_bajo":       int(tot_bajo),
+            "paso_reticula_mediano":      round(paso_reticula, 2),
             "es_24bit_escalado_en_peine": peine,
+            "es_flujo_dop":              es_flujo_dop,
+            "dop_pares_inspeccionados":   dop_pares,
+            "dop_ratio":                  round(dop_ratio, 4),
         }
 
 def _analizar_forense_bits(data, meta):
@@ -358,7 +477,8 @@ def _analizar_forense_bits(data, meta):
     bits = meta.get("bits_per_sample")
     if bits != 24:
         return {"aplica": False}
-    acumulador = AcumuladorForenseBits(bits)
+    acumulador = AcumuladorForenseBits(bits,
+                                       sample_rate=meta.get("sample_rate", 0))
     for inicio in range(0, len(data), FRAMES_POR_BLOQUE):
         acumulador.anadir(data[inicio : inicio + FRAMES_POR_BLOQUE])
     return acumulador.resultado()

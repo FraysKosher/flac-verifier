@@ -329,7 +329,7 @@ class _AnalisisPorBloques:
         self._paso_muestreo = (max(1, int(round(self.total / MAX_MUESTRAS_BITS)))
                                if self.total < (1 << 62) else 1)
         # Vector 4: native-integer audit over the WHOLE file (24-bit only).
-        self._forense_bits = (AcumuladorForenseBits(self.bits)
+        self._forense_bits = (AcumuladorForenseBits(self.bits, sample_rate=self.sr)
                               if self.bits == 24 else None)
 
         # spectrum: the whole file is scored, the K most active blocks are kept

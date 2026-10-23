@@ -521,6 +521,52 @@ def _analizar_asimetria_mid_side(espectro_mid_db, espectro_side_db, freqs_hz,
     salida["sospecha_joint_stereo"] = bool(sospecha)
     return salida
 
+def _gradiente_borde_db_khz(freqs_hz, pot_db, techo_hz, nyquist):
+    """Steepest smoothed descent (dB/kHz) in the transition band around the ceiling.
+
+    The band covers 1.5 kHz below the ceiling and 0.5 kHz above it, clamped to
+    12 kHz and Nyquist. A 500 Hz moving average removes the bin-to-bin variance
+    of real noise, which otherwise looks like a cliff on its own. A studio
+    anti-alias filter leaves a gentle slope (well under 35 dB/kHz), while a
+    brickwall or a resampler exceeds it.
+
+    Returns a positive number for a descent, 0.0 when the band cannot be
+    measured."""
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    pot_db = np.asarray(pot_db, dtype=np.float64)
+    if freqs.size < 8 or pot_db.shape != freqs.shape or not techo_hz:
+        return 0.0
+    f_min = max(12000.0, float(techo_hz) - 1500.0)
+    f_max = min(float(nyquist), float(techo_hz) + 500.0)
+    if f_max <= f_min:
+        return 0.0
+    mascara = (freqs >= f_min) & (freqs <= f_max)
+    if np.count_nonzero(mascara) < 8:
+        return 0.0
+    f = freqs[mascara]
+    d = pot_db[mascara]
+    if not np.all(np.isfinite(d)):
+        return 0.0
+    paso_hz = float(f[1] - f[0])
+    if paso_hz <= 0.0:
+        return 0.0
+
+    ventana = max(1, int(round(500.0 / paso_hz)))
+    if 1 < ventana <= d.size:
+        # 'valid' keeps the window inside the band: with 'same' the convolution
+        # zero-pads the ends and invents a cliff right there.
+        nucleo = np.ones(ventana, dtype=np.float64) / ventana
+        d = np.convolve(d, nucleo, mode="valid")
+        f = f[(ventana - 1) // 2 : (ventana - 1) // 2 + d.size]
+    if d.size < 2:
+        return 0.0
+
+    pendiente = -np.diff(d) / np.diff(f) * 1000.0       # dB/kHz
+    gradiente = float(np.max(pendiente))
+    if not math.isfinite(gradiente):
+        return 0.0
+    return round(max(0.0, gradiente), 2)
+
 def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, potencia=None,
                           pot_mid=None, pot_side=None, ganancia_ruido=1.0):
     """Core of the spectral analysis: everything is derived from the
@@ -618,6 +664,10 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
     hires = _diagnosticar_autenticidad_hires(freqs, espectro_mid_db, samplerate,
                                              corte_hz=corte_hz)
 
+    # Transition-band slope around the ceiling: distinguishes a studio
+    # anti-aliasing filter (gentle) from a brickwall or a resampler (a cliff).
+    gradiente_borde = _gradiente_borde_db_khz(freqs, pot_db_n, techo_hz, nyquist)
+
     return {
         "error":              None,
         "techo_hz":           round(techo_hz),
@@ -647,6 +697,8 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         "salto_ultrasonico_db":     hires["salto_ultrasonico_db"],
         "correlacion_espejo_22k":   hires["correlacion_espejo_22k"],
         "es_transferencia_dsd":     hires["es_transferencia_dsd"],
+        # Transition band around the ceiling (dB/kHz of steepest descent).
+        "gradiente_borde_db_khz":   gradiente_borde,
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }

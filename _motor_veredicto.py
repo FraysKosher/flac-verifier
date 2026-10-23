@@ -202,16 +202,43 @@ def calcular_score(meta, esp, bdi):
         # 5. Format/content coherence: claiming 24 bits at a CD sample rate
         #    demands some content above the CD band. It is the only signal that
         #    separates a 320 kbps MP3 repackaged as 24 bits from a real 16-bit
-        #    master.
-        if bits > 16 and sr <= 48000 and (rel_techo < 0.95 or clase == "far_cutoff"):
+        #    master. A ceiling between 88 % and 95 % of Nyquist can still be a
+        #    genuine 24-bit master whose converters have a gentle anti-aliasing
+        #    filter, so that band is only penalised when the bit depth itself or
+        #    the morphology smells like a transcode.
+        if bits > 16 and sr <= 48000:
             corte_txt = (f"cut at {esp['frecuencia_corte']/1000:.1f} kHz"
                          if esp.get("frecuencia_corte") else
                          f"limited to {rel_techo*100:.0f}% of Nyquist "
                          f"({techo/1000:.1f} kHz)")
-            penaliza(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
-                     f"{corte_txt}: the declared resolution is not backed by the "
-                     f"content (consistent with a repackaged high-rate transcode)",
-                     0.25)
+            forense = bdi.get("forense_bits") or {}
+            if clase == "far_cutoff" or rel_techo < 0.88:
+                penaliza(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
+                         f"{corte_txt}: the declared resolution is not backed by the "
+                         f"content (consistent with a repackaged high-rate transcode)",
+                         0.25, bloquea_maximo=True)
+            elif 0.88 <= rel_techo < 0.95:
+                bits_limpios = (
+                    bdi.get("lsbs") == "active"
+                    and not forense.get("es_padded_16_en_24")
+                    and not forense.get("es_24bit_escalado_en_peine")
+                )
+                sin_codec_ni_brickwall = (
+                    clase == "no_cutoff"
+                    and not esp.get("sospecha_joint_stereo")
+                    and not esp.get("sospecha_corte_opus_20k")
+                    and (esp.get("iqr_corte_hz") or 0.0) <= 550.0
+                    and (esp.get("ratio_huecos_mdct") or 0.0) <= 0.10
+                    and (esp.get("gradiente_borde_db_khz") or 0.0) < 35.0
+                )
+                if not (bits_limpios and sin_codec_ni_brickwall):
+                    penaliza(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
+                             f"{corte_txt}: the declared resolution is not backed by the "
+                             f"content (consistent with a repackaged high-rate transcode)",
+                             0.25, bloquea_maximo=True)
+                else:
+                    problemas.append("Vector 5: 24-bit master with studio anti-aliasing transition band "
+                                     f"({rel_techo*100:.0f}% of Nyquist, clean LSB lattice and no lossy signature)")
 
     # 6. LSB utilisation: it ONLY penalises (Block 4).
     if bdi.get("aplica"):

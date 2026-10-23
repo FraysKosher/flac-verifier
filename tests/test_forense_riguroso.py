@@ -356,6 +356,105 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertFalse(any("jitter" in p.lower() for p in res["problemas"]))
 
+    def test_15_falso_24bit_hipercomprimido_dr3_sin_muestras_bajas_es_detectado(self):
+        """Hyper-compressed 16-bit source scaled into 24 bits, with no quiet samples.
+
+        Every sample stays between -18 and -1 dBFS, so the [-90, -48] dBFS
+        histogram that used to carry the whole comb detector is empty. The
+        lattice test must still see the 16-bit grid (a step near 247 integers).
+        """
+        sr = 44100
+        sig = _crear_pista_referencia(sr, duracion=6.0, seed=115)
+        pico = float(np.max(np.abs(sig)))
+        suelo, techo = 10 ** (-18.0 / 20.0), 10 ** (-1.0 / 20.0)
+        # Loudness-war squash: keep the waveform shape but fill the whole window.
+        comprimido = np.sign(sig) * (suelo + (np.abs(sig) / pico) * (techo - suelo))
+        q16 = np.round(comprimido * 32768.0)
+        # +0.2 dB of digital gain, straight from a real 16-bit master.
+        escalado = np.clip(q16 * 0.96605 / 32768.0, -1.0, 1.0)
+
+        ruta = self.base_path / "fake_24bit_loud_no_quiet_samples.flac"
+        sf.write(ruta, escalado, sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        forense = res["bdi"]["forense_bits"]
+
+        self.assertEqual(forense["muestras_pasaje_bajo"], 0)
+        self.assertTrue(forense["es_24bit_escalado_en_peine"])
+        self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
+
+    def test_16_master_estudio_24_48_techo_21k_suave_es_genuino_pero_mp3_320_dither_no(self):
+        """A 24/48 master whose anti-alias filter is gentle is not a transcode.
+
+        Both files end up with a ceiling around 21 kHz (88-95 % of Nyquist), which
+        the old rule accused blindly. The genuine one keeps a clean 24-bit lattice
+        and a slow transition band; the other is a 20 kHz brickwall (order 12) of
+        the kind a resampler or a 320 kbps MP3 leaves behind, re-dithered to 24
+        bits, and it must stay penalised.
+        """
+        sr = 48000
+        lsb = 2.0 ** -23
+        base = _crear_pista_referencia(sr, duracion=6.0, seed=116)
+        ruido = np.random.default_rng(7)
+        base = base + 0.05 * ruido.standard_normal(base.shape)
+        base /= max(1.0, float(np.max(np.abs(base)))) * 1.02
+
+        suave = signal.sosfilt(
+            signal.butter(2, 20500.0, btype="low", fs=sr, output="sos"),
+            base, axis=0)
+        dither = (ruido.random(suave.shape) - ruido.random(suave.shape)) * lsb
+        ruta_ok = self.base_path / "master_24_48_soft_aa_filter.flac"
+        sf.write(ruta_ok, np.clip(suave + dither, -0.99, 0.99), sr, subtype="PCM_24")
+        res_ok = motor_flac.analizar_archivo_datos(str(ruta_ok), usar_cache=False)
+
+        esp_ok = res_ok["esp"]
+        self.assertTrue(0.88 <= esp_ok["techo_rel_nyquist"] < 0.95,
+                        f"ceiling {esp_ok['techo_hz']} Hz outside the test window")
+        self.assertEqual(esp_ok["clase_corte"], "no_cutoff")
+        self.assertLess(esp_ok["gradiente_borde_db_khz"], 35.0)
+        self.assertFalse(res_ok["bdi"]["forense_bits"]["es_24bit_escalado_en_peine"])
+        self.assertEqual(res_ok["veredicto"], "GENUINE LOSSLESS")
+
+        duro = signal.sosfilt(
+            signal.butter(12, 20000.0, btype="low", fs=sr, output="sos"),
+            base, axis=0)
+        dither = (ruido.random(duro.shape) - ruido.random(duro.shape)) * lsb
+        ruta_mal = self.base_path / "upstream_brickwall_20k_redither_24.flac"
+        sf.write(ruta_mal, np.clip(duro + dither, -0.99, 0.99), sr, subtype="PCM_24")
+        res_mal = motor_flac.analizar_archivo_datos(str(ruta_mal), usar_cache=False)
+
+        self.assertNotEqual(res_mal["veredicto"], "GENUINE LOSSLESS")
+        self.assertTrue(any("not backed by the content" in p
+                            for p in res_mal["problemas"]))
+
+    def test_dop_detection_marker_24bit_176k(self):
+        """DoP 1.0 framing: alternating 0x05 / 0xFA bytes in the top 8 bits.
+
+        It is a histogram of the native integers, so ordinary 24-bit audio at the
+        same rate (or the same markers at 44.1 kHz) must not be reported as DoP.
+        """
+        sr = 176400
+        n = 16384
+        rng = np.random.default_rng(2026)
+        marcador = np.where(np.arange(n) % 2 == 0, 0x05, 0xFA).astype(np.int64)
+        carga = rng.integers(0, 1 << 16, size=n, dtype=np.int64)
+        crudo = (marcador << 16) | carga
+        crudo = np.where(crudo >= (1 << 23), crudo - (1 << 24), crudo)
+        bloque = (crudo.astype(np.float64) / float(1 << 23)).reshape(-1, 1)
+
+        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
+        acumulador.anadir(bloque)
+        self.assertTrue(acumulador.resultado()["es_flujo_dop"])
+
+        ordinario = rng.uniform(-0.5, 0.5, size=(n, 1))
+        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
+        acumulador.anadir(ordinario)
+        self.assertFalse(acumulador.resultado()["es_flujo_dop"])
+
+        # Same bytes at a CD sample rate: not a DoP stream, no DoP flag.
+        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=44100)
+        acumulador.anadir(bloque)
+        self.assertFalse(acumulador.resultado()["es_flujo_dop"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
