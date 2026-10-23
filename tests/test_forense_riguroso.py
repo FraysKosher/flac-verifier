@@ -338,5 +338,24 @@ class TestForenseRiguroso(unittest.TestCase):
                              for p in res["problemas"]))
 
 
+    def test_14_voces_sin_platillos_no_disparan_jitter_artificial(self):
+        """Voice/guitar frames without cymbals have no >14 kHz intermittency."""
+        sr = 44100
+        base = _crear_pista_referencia(sr, duracion=6.0, seed=114)
+        vocal = signal.sosfilt(signal.butter(6, 9000.0, btype="low", fs=sr,
+                                             output="sos"), base, axis=0)
+        t = np.arange(len(vocal)) / float(sr)
+        envolvente = 0.35 + 0.65 * (np.sin(2.0 * np.pi * 0.7 * t) ** 2)
+        y = vocal * envolvente[:, None]
+        y /= max(1.0, np.max(np.abs(y))) * 1.05
+
+        ruta = self.base_path / "voice_without_cymbals.flac"
+        sf.write(ruta, np.clip(y, -0.98, 0.98), sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
+        self.assertFalse(any("jitter" in p.lower() for p in res["problemas"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

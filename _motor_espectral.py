@@ -790,17 +790,22 @@ class AcumuladorPsicoacusticoSTFT:
                 pot[:, mask_banda].mean(axis=1), np.float32(1e-28)))
             umbral = (ref_db - np.float32(60.0))[:, None]
             sobre = pot_db > umbral
-            # Only frames with a measurable edge contribute: a frame whose HF
-            # floor is below the threshold has no cut-off, it is not a Nyquist
-            # cut-off (that used to create fake jitter).
-            con_corte = np.flatnonzero(np.any(sobre, axis=1))
-            if con_corte.size == pot.shape[0]:
-                ultimo = pot.shape[1] - 1 - np.argmax(sobre[:, ::-1], axis=1)
-                self._fc.extend(freqs[ultimo].tolist())
-            elif con_corte.size:
-                ultimo = (pot.shape[1] - 1
-                          - np.argmax(sobre[con_corte, ::-1], axis=1))
-                self._fc.extend(freqs[ultimo].tolist())
+
+            # A cut-off is only meaningful when the frame also has energy in
+            # 10-14 kHz; otherwise a voice/guitar frame with no cymbals looks
+            # like a codec cutting and its on/off nature fakes jitter.
+            mask_presencia = (freqs >= 10000.0) & (freqs <= 14000.0)
+            presencia_db = 10.0 * np.log10(np.maximum(
+                pot[:, mask_presencia].mean(axis=1), np.float32(1e-28)))
+            activas_presencia = presencia_db > (ref_db - np.float32(25.0))
+            mask_hf = freqs >= 11000.0
+            sobre_hf = sobre[:, mask_hf]
+            con_corte = np.flatnonzero(activas_presencia
+                                       & np.any(sobre_hf, axis=1))
+            if con_corte.size:
+                ultimo = (sobre_hf.shape[1] - 1
+                          - np.argmax(sobre_hf[con_corte, ::-1], axis=1))
+                self._fc.extend(freqs[mask_hf][ultimo].tolist())
 
             # MDCT holes: 10 x 600 Hz sub-bands in 13.5-19.5 kHz.
             if self.sr < 39000:
