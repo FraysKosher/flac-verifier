@@ -61,6 +61,30 @@ def calcular_score(meta, esp, bdi):
         #      ceiling at ~26 kHz and is legitimate. The reference becomes the CD
         #      limit: content above 22.05 kHz is real ultrasonic content and is NOT
         #      penalised.
+        # A low ceiling is only a defect when it cannot be explained: an acoustic
+        # or low-centroid mix with clean bits and no codec signature ends its band
+        # early because there is nothing above it.
+        forense_bdi = bdi.get("forense_bits") or {}
+        bits_ok_acustico = (
+            bdi.get("lsbs") != "empty"
+            and not forense_bdi.get("es_padded_16_en_24")
+            and not forense_bdi.get("es_24bit_escalado_en_peine")
+        )
+        sin_firmas_lossy = (
+            clase == "no_cutoff"
+            and not esp.get("sospecha_joint_stereo")
+            and not esp.get("sospecha_corte_opus_20k")
+            and not esp.get("clipping_reconstruccion_lossy")
+            and not esp.get("islas_mdct_sfb21")
+            and not esp.get("sospecha_excitador_armonico")
+            and (esp.get("iqr_corte_hz") or 0.0) <= 550.0
+            and (esp.get("ratio_huecos_mdct") or 0.0) <= 0.10
+        )
+        exencion_acustica = bool(
+            esp.get("decaimiento_acustico_suave")
+            and bits_ok_acustico
+            and sin_firmas_lossy
+        )
         max_v += 3
         if sr > 48000:
             if techo >= LIMITE_CD_HZ:
@@ -77,8 +101,21 @@ def calcular_score(meta, esp, bdi):
             votos += 3
         elif rel_techo >= 0.70:
             votos += 1.5
+            if exencion_acustica:
+                problemas.append(f"spectral ceiling {techo/1000:.1f} kHz "
+                                 f"({rel_techo*100:.0f}% of Nyquist of {nyq_txt}): "
+                                 f"low spectral ceiling consistent with solo "
+                                 f"acoustic/low-centroid instrumentation")
+            else:
+                problemas.append(f"spectral ceiling {techo/1000:.1f} kHz "
+                                 f"({rel_techo*100:.0f}% of Nyquist of {nyq_txt}): "
+                                 f"reduced high band")
+        elif exencion_acustica:
+            votos += 1.5
             problemas.append(f"spectral ceiling {techo/1000:.1f} kHz "
-                             f"({rel_techo*100:.0f}% of Nyquist of {nyq_txt}): reduced high band")
+                             f"({rel_techo*100:.0f}% of Nyquist of {nyq_txt}): "
+                             f"low spectral ceiling consistent with solo "
+                             f"acoustic/low-centroid instrumentation")
         else:
             penaliza(f"spectral ceiling {techo/1000:.1f} kHz ({rel_techo*100:.0f}% of Nyquist "
                      f"of {nyq_txt}): the high band is destroyed", 0.40)
@@ -166,6 +203,23 @@ def calcular_score(meta, esp, bdi):
             penaliza(f"MDCT spectral holes in {huecos*100:.0f}% of the high-energy "
                      f"frames: lossy codec signature", 0.25, bloquea_maximo=False)
 
+        # Vector 7: sfb21 islands and harmonic-exciter / SBR signature. Both are
+        # positive proof of a codec: the top scalefactor band switches on and off
+        # frame by frame, or the high band is rebuilt from the 8-14 kHz envelope
+        # and leaves a notch where the original band was cut.
+        if esp.get("islas_mdct_sfb21"):
+            penaliza(f"intermittent MDCT spectral islands in 16-20.5 kHz "
+                     f"(P90-P10 gap {esp.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB, "
+                     f"{(esp.get('ratio_huecos_sfb21') or esp.get('ratio_apagado_sfb21') or 0.0)*100:.0f}% "
+                     f"of frames zeroed): lowpass-disabled lossy codec signature",
+                     0.25, bloquea_maximo=True)
+        if esp.get("sospecha_excitador_armonico"):
+            penaliza(f"synthetic high-frequency harmonic exciter / SBR signature "
+                     f"(envelope correlation r = {esp.get('corr_env_excitador', 0.0):.2f}, "
+                     f"{esp.get('muesca_excitador_db', 0.0):.1f} dB notch): "
+                     f"adversarial bandwidth extension",
+                     0.30, bloquea_maximo=True)
+
         # Vector 5: libopus fullband cliff at 20.00 kHz. In isolation it is
         # indistinguishable from a mastering anti-alias low-pass, so it is scored
         # only together with another codec signature; on its own it stays a fact.
@@ -212,7 +266,7 @@ def calcular_score(meta, esp, bdi):
                          f"limited to {rel_techo*100:.0f}% of Nyquist "
                          f"({techo/1000:.1f} kHz)")
             forense = bdi.get("forense_bits") or {}
-            if clase == "far_cutoff" or rel_techo < 0.88:
+            if clase == "far_cutoff" or (rel_techo < 0.88 and not exencion_acustica):
                 penaliza(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
                          f"{corte_txt}: the declared resolution is not backed by the "
                          f"content (consistent with a repackaged high-rate transcode)",
@@ -313,7 +367,8 @@ def _merece_coherencia_album(resultado):
         return False
     for clave in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
                   "sospecha_joint_stereo", "sospecha_corte_opus_20k",
-                  "clipping_reconstruccion_lossy"):
+                  "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
+                  "sospecha_excitador_armonico"):
         if esp.get(clave):
             return False
     if (esp.get("ratio_huecos_mdct") or 0.0) > 0.10:
@@ -436,6 +491,13 @@ def evidencias_forenses(resultado):
         evidencias.append("Clipping: isolated 1-2 sample Gibbs overshoot")
     if esp.get("clipping_mastering_limitador"):
         evidencias.append("Clipping: 4+ sample mastering limiter plateaus")
+    if esp.get("islas_mdct_sfb21"):
+        evidencias.append(f"Intermittent sfb21 MDCT islands: "
+                          f"{esp.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB P90-P10 gap")
+    if esp.get("sospecha_excitador_armonico"):
+        evidencias.append(f"Harmonic exciter / SBR signature: "
+                          f"r = {esp.get('corr_env_excitador', 0.0):.2f}, "
+                          f"{esp.get('muesca_excitador_db', 0.0):.1f} dB notch")
     forense = bdi.get("forense_bits") or {}
     if forense.get("es_padded_16_en_24"):
         evidencias.append("16-bit content zero-padded into a 24-bit container")

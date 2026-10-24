@@ -1002,6 +1002,219 @@ class TestForenseRiguroso(unittest.TestCase):
             self.assertEqual(res["esp"]["clipping_eventos"], eventos)
             self.assertIs(res["esp"]["clipping_reconstruccion_lossy"], False)
 
+    def test_21_islas_mdct_sfb21_sin_lowpass(self):
+        """A codec that disables its low-pass zeroes sfb21 only in some frames.
+
+        The top scalefactor band (16-20.5 kHz) switches on and off frame by
+        frame, so the level of that band relative to 4-11 kHz has a huge
+        P90-P10 gap while the file still reaches ~21 kHz and has no cut-off.
+        The presence band is boosted so the 4-11 kHz reference sits at a
+        realistic level: on this synthetic source the band floor is only about
+        30 dB below an unboosted reference, which is not enough to read a
+        zeroed sfb21 as -55 dB.
+        """
+        sr = 44100
+        duracion = 6.0
+        n = int(sr * duracion)
+        t = np.arange(n) / float(sr)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+
+        base = _crear_pista_referencia(sr, duracion=duracion, seed=125)
+        espectro = np.fft.rfft(base, axis=0)
+        espectro[(freqs >= 4000.0) & (freqs <= 11000.0)] *= 10.0 ** (30.0 / 20.0)
+        base = np.fft.irfft(espectro, n, axis=0)
+        base /= np.max(np.abs(base)) * 1.05
+
+        espectro = np.fft.rfft(base, axis=0)
+        sfb21 = espectro.copy()
+        sfb21[(freqs < 16000.0) | (freqs > 20500.0)] = 0.0
+        resto = np.fft.irfft(espectro - sfb21, n, axis=0)
+        sfb21_t = np.fft.irfft(sfb21, n, axis=0)
+
+        # 2.5 Hz gate, 12 ms raised-cosine edges: half of the time the band is
+        # gone, without the broadband splatter a hard splice would create.
+        bruto = (np.sin(2.0 * np.pi * 2.5 * t) > 0.0).astype(np.float64)
+        k = int(sr * 0.012)
+        nucleo = np.hanning(k) / np.hanning(k).sum()
+        puerta = np.clip(np.convolve(bruto, nucleo, mode="same") * 3.0, 0.0, 1.0)
+        y = resto + sfb21_t * puerta[:, None]
+        y /= np.max(np.abs(y)) * 1.02
+
+        ruta = self.base_path / "lame_v0_sin_lowpass_16bit.flac"
+        sf.write(ruta, y, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreaterEqual(res["esp"]["techo_hz"], 20500)
+        self.assertIs(res["esp"]["corte_detectado"], False)
+        self.assertGreater(res["esp"]["brecha_p90_p10_agudos_db"], 28.0)
+        self.assertGreaterEqual(res["esp"]["ratio_apagado_sfb21"], 0.20)
+        self.assertLessEqual(res["esp"]["ratio_apagado_sfb21"], 0.85)
+        self.assertIs(res["esp"]["islas_mdct_sfb21"], True)
+        self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
+
+        # Control: strong bass modulated at 3 Hz plus continuous highs. The
+        # 4-11 kHz reference does not follow the bass, so the band never looks
+        # intermittent (a 1-8 kHz reference would have fired here).
+        rng = np.random.default_rng(2033)
+        ruido_hf = (rng.standard_normal((freqs.size, 2))
+                    + 1j * rng.standard_normal((freqs.size, 2)))
+        ruido_hf *= np.where(freqs >= 12000.0, 1.0, 0.0)[:, None]
+        ruido_hf = np.fft.irfft(ruido_hf, n, axis=0)
+        ruido_hf *= 0.02 / np.max(np.abs(ruido_hf))
+        bajo = 0.45 * np.sin(2.0 * np.pi * 2000.0 * t) * (
+            0.5 + 0.5 * np.sin(2.0 * np.pi * 3.0 * t))
+        control = base + bajo[:, None] + ruido_hf
+        control /= np.max(np.abs(control)) * 1.02
+
+        ruta = self.base_path / "control_bajo_modulado_agudos_continuos.flac"
+        sf.write(ruta, control, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreaterEqual(res["esp"]["techo_hz"], 20500)
+        self.assertIs(res["esp"]["islas_mdct_sfb21"], False)
+
+    def test_21b_excitador_armonico_notch_sbr(self):
+        """SBR / harmonic exciter: correlated envelopes plus a deep notch.
+
+        The band is cut at 15.2 kHz and 16.2-20.5 kHz is regenerated from the
+        8-14 kHz envelope (a single-sideband shift keeps the envelope, so the
+        two measured envelopes correlate almost perfectly) while the cut leaves
+        a deep notch where the original band ended.
+        """
+        sr = 44100
+        duracion = 6.0
+        n = int(sr * duracion)
+        t = np.arange(n) / float(sr)
+
+        base = _crear_pista_referencia(sr, duracion=duracion, seed=126)
+        rng = np.random.default_rng(2031)
+        blanco = rng.standard_normal((n, 2))
+        env = (0.10 + 0.90 * (np.sin(2.0 * np.pi * 2.2 * t) ** 8))[:, None]
+        fuerte = signal.sosfilt(
+            signal.butter(6, [8000.0, 14000.0], btype="band", fs=sr, output="sos"),
+            blanco * env, axis=0)
+        fuerte *= 0.35 / np.max(np.abs(fuerte))
+        fuente = base * 0.5 + fuerte
+        fuente /= np.max(np.abs(fuente)) * 1.02
+
+        corte = signal.sosfilt(
+            signal.ellip(8, 0.5, 80.0, 15200.0, btype="low", fs=sr, output="sos"),
+            fuente, axis=0)
+        banda = signal.sosfilt(
+            signal.butter(6, [8000.0, 14000.0], btype="band", fs=sr, output="sos"),
+            fuente, axis=0)
+        desplazada = np.empty_like(banda)
+        for canal in range(2):
+            analitica = signal.hilbert(banda[:, canal])
+            desplazada[:, canal] = np.real(analitica
+                                           * np.exp(2j * np.pi * 8000.0 * t))
+        regenerada = desplazada * (np.sqrt(np.mean(banda ** 2))
+                                   / np.sqrt(np.mean(desplazada ** 2)))
+
+        y = corte + regenerada
+        y /= np.max(np.abs(y)) * 1.02
+        ruta = self.base_path / "excitador_sbr_notch_16bit.flac"
+        sf.write(ruta, y, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
+        self.assertGreaterEqual(res["esp"]["muesca_excitador_db"], 15.0)
+        self.assertIs(res["esp"]["sospecha_excitador_armonico"], True)
+        self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
+
+        # Control: the same correlation with the notch filled, so the depth is
+        # the only difference left.
+        relleno = signal.sosfilt(
+            signal.butter(6, [14500.0, 16500.0], btype="band", fs=sr, output="sos"),
+            blanco * env, axis=0)
+        relleno *= 0.35 / np.max(np.abs(relleno))
+        control = corte + regenerada + relleno * 0.4
+        control /= np.max(np.abs(control)) * 1.02
+
+        ruta = self.base_path / "control_notch_superficial_16bit.flac"
+        sf.write(ruta, control, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
+        self.assertLess(res["esp"]["muesca_excitador_db"], 10.0)
+        self.assertIs(res["esp"]["sospecha_excitador_armonico"], False)
+
+    def test_21c_acustico_bajo_centroide_sin_romper_regla_cd(self):
+        """A solo acoustic mix ends its band early and is not an upscale.
+
+        The centroid sits around 1400 Hz (a rule with a 1200 Hz threshold would
+        miss it), the band decays smoothly from 8 kHz with no cut-off, and the
+        bits are clean: the low ceiling is the instrumentation, not a defect.
+        """
+        sr = 44100
+        duracion = 6.0
+        n = int(sr * duracion)
+        t = np.arange(n) / float(sr)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+
+        rng = np.random.default_rng(2032)
+        ruido = (rng.standard_normal((freqs.size, 2))
+                 + 1j * rng.standard_normal((freqs.size, 2)))
+        nivel_db = np.full(freqs.shape, -400.0)
+        rosa = (freqs >= 45.0) & (freqs <= 8000.0)
+        nivel_db[rosa] = -11.0 * np.log10(freqs[rosa] / 45.0)
+        nivel_8k = -11.0 * np.log10(8000.0 / 45.0)
+        caida = (freqs > 8000.0) & (freqs <= 15000.0)
+        nivel_db[caida] = nivel_8k - 6.0 * (freqs[caida] - 8000.0) / 1000.0
+        nivel_db[freqs > 15000.0] = nivel_8k - 6.0 * 7.0
+        ruido *= (10.0 ** (nivel_db / 20.0))[:, None]
+        acustico = np.fft.irfft(ruido, n, axis=0)
+        acustico /= np.max(np.abs(acustico)) * 1.05
+        acustico *= (0.35 + 0.65
+                     * (np.sin(2.0 * np.pi * 0.8 * t) ** 2))[:, None]
+        acustico /= np.max(np.abs(acustico)) * 1.02
+
+        ruta = self.base_path / "solo_acustico_centroide_bajo.flac"
+        sf.write(ruta, acustico, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        esp = res["esp"]
+
+        self.assertGreater(esp["centroide_hz"], 1250.0)
+        self.assertLess(esp["centroide_hz"], 1800.0)
+        self.assertGreaterEqual(esp["techo_hz"], 11500)
+        self.assertLessEqual(esp["techo_hz"], 15000)
+        self.assertLess(esp["techo_rel_nyquist"], 0.70)
+        self.assertIs(esp["corte_detectado"], False)
+        self.assertLess(esp["gradiente_borde_db_khz"], 20.0)
+        self.assertIs(esp["decaimiento_acustico_suave"], True)
+        self.assertEqual(res["veredicto"], "PROBABLY LOSSLESS")
+        self.assertIn("solo acoustic/low-centroid", " ".join(res["problemas"]))
+
+        # Rule 2, checked on the verdict tree directly. In the 0.70-0.88 band the
+        # exemption must not add a single extra vote; below 0.70 it replaces the
+        # 0.40 penalty with 1.5 votes.
+        meta = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2,
+                "duracion": 100.0}
+        bdi = {"aplica": False}
+
+        def _esp_con_techo(techo_hz, acustico_suave):
+            return {"techo_hz": techo_hz,
+                    "techo_rel_nyquist": round(techo_hz / 22050.0, 4),
+                    "clase_corte": "no_cutoff", "frecuencia_corte": None,
+                    "distancia_nyquist": None, "corte_detectado": False,
+                    "ratio": 1.0, "ratio_aplica": True, "var_alta_db": 0.0,
+                    "separacion_stereo": 1.0,
+                    "decaimiento_acustico_suave": acustico_suave}
+
+        medio_con, _, _ = motor_flac.calcular_score(meta, _esp_con_techo(16500, True), bdi)
+        medio_sin, _, _ = motor_flac.calcular_score(meta, _esp_con_techo(16500, False), bdi)
+        self.assertEqual(medio_con, medio_sin)
+        self.assertLess(medio_con, 0.80)          # 1.5 votes, never 3.0
+
+        bajo_con, _, prob_bajo_con = motor_flac.calcular_score(
+            meta, _esp_con_techo(13000, True), bdi)
+        bajo_sin, _, prob_bajo_sin = motor_flac.calcular_score(
+            meta, _esp_con_techo(13000, False), bdi)
+        self.assertGreater(bajo_con, bajo_sin)
+        self.assertIn("solo acoustic/low-centroid", " ".join(prob_bajo_con))
+        self.assertFalse(any("destroyed" in p for p in prob_bajo_con))
+        self.assertTrue(any("destroyed" in p for p in prob_bajo_sin))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

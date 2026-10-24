@@ -761,6 +761,20 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
     # anti-aliasing filter (gentle) from a brickwall or a resampler (a cliff).
     gradiente_borde = _gradiente_borde_db_khz(freqs, pot_db_n, techo_hz, nyquist)
 
+    # Spectral centroid and acoustic decay: a solo instrument or a low-centroid
+    # acoustic mix ends its band early without any codec signature, and that is
+    # the only case where a low ceiling is not a defect. The centroid separates
+    # it from a bass-heavy electronic mix (centroid far below 1800 Hz).
+    suma_pot = float(np.sum(potencia))
+    centroide_hz = (float(np.sum(freqs * potencia) / suma_pot)
+                    if suma_pot > 1e-30 else 0.0)
+    decaimiento_acustico_suave = bool(
+        0.0 < centroide_hz < 1800.0
+        and corte_hz is None
+        and techo_hz >= 11000.0
+        and gradiente_borde < 20.0
+    )
+
     return {
         "error":              None,
         "techo_hz":           round(techo_hz),
@@ -793,6 +807,22 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         "perfil_dsd":               hires["perfil_dsd"],
         # Transition band around the ceiling (dB/kHz of steepest descent).
         "gradiente_borde_db_khz":   gradiente_borde,
+        "centroide_hz":             (round(centroide_hz, 1)
+                                     if math.isfinite(centroide_hz) else 0.0),
+        "decaimiento_acustico_suave": decaimiento_acustico_suave,
+        # Psychoacoustic metrics: the streaming path overwrites them with
+        # _psico.resultado(). Direct callers get the neutral default so every key
+        # exists without an STFT-driven accumulator.
+        "iqr_corte_hz":             0.0,
+        "ratio_huecos_mdct":        0.0,
+        "caida_opus_20k_db":        0.0,
+        "sospecha_corte_opus_20k":  False,
+        "brecha_p90_p10_agudos_db": 0.0,
+        "ratio_apagado_sfb21":      0.0,
+        "islas_mdct_sfb21":         False,
+        "corr_env_excitador":       0.0,
+        "muesca_excitador_db":      0.0,
+        "sospecha_excitador_armonico": False,
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }
@@ -900,6 +930,11 @@ class AcumuladorPsicoacusticoSTFT:
         self._suma_pot = None
         self._freqs = None
         self._error = None
+        # sfb21 islands (per active frame, dB relative to the 4-11 kHz band) and
+        # the paired envelopes used by the harmonic-exciter detector.
+        self._e_sfb21 = []
+        self._env_8_14 = []
+        self._env_16_20 = []
 
     def anadir(self, potencia, freqs, ventana):
         """Consumes the (frames, bins) power of one selected block."""
@@ -934,6 +969,22 @@ class AcumuladorPsicoacusticoSTFT:
             pot_db = 10.0 * np.log10(np.maximum(pot, 1e-28))
             ref_db = 10.0 * np.log10(np.maximum(
                 pot[:, mask_banda].mean(axis=1), np.float32(1e-28)))
+
+            # sfb21 islands and the exciter envelopes. Both are referenced to the
+            # 4-11 kHz band of the SAME frame: a 1-8 kHz reference would follow a
+            # strong bass line and make a continuous high band look intermittent.
+            if self.sr >= 41000:
+                mask_8_14 = (freqs >= 8000.0) & (freqs <= 14000.0)
+                mask_sfb21 = (freqs >= 16000.0) & (freqs <= 20500.0)
+                if np.any(mask_8_14) and np.any(mask_sfb21):
+                    db_8_14 = 10.0 * np.log10(np.maximum(
+                        pot[:, mask_8_14].mean(axis=1, dtype=np.float64), 1e-28))
+                    db_16_20 = 10.0 * np.log10(np.maximum(
+                        pot[:, mask_sfb21].mean(axis=1, dtype=np.float64), 1e-28))
+                    e_sfb21 = db_16_20 - ref_db.astype(np.float64)
+                    self._e_sfb21.extend(e_sfb21.tolist())
+                    self._env_8_14.extend(db_8_14.tolist())
+                    self._env_16_20.extend(db_16_20.tolist())
             umbral = (ref_db - np.float32(60.0))[:, None]
             sobre = pot_db > umbral
 
@@ -1019,12 +1070,74 @@ class AcumuladorPsicoacusticoSTFT:
             sospecha_opus = bool(caida_opus > 45.0 and plano
                                  and despues < bajo - 40.0)
 
+        # sfb21 islands: a lowpass-disabled lossy codec (LAME -V 0, AAC without
+        # lowpass) zeroes the top scalefactor band in some frames but not in
+        # others, so 16-20.5 kHz switches on and off relative to 4-11 kHz.
+        brecha_sfb21 = 0.0
+        ratio_apagado = 0.0
+        islas_sfb21 = False
+        if len(self._e_sfb21) >= 24:
+            arr_sfb = np.asarray(self._e_sfb21, dtype=np.float64)
+            if np.all(np.isfinite(arr_sfb)):
+                brecha_sfb21 = float(np.percentile(arr_sfb, 90)
+                                     - np.percentile(arr_sfb, 10))
+                ratio_apagado = float(np.mean(arr_sfb < -55.0))
+                islas_sfb21 = bool(brecha_sfb21 > 28.0
+                                   and 0.20 <= ratio_apagado <= 0.85)
+
+        # Harmonic exciter / SBR: a bandwidth extension rebuilds the high band
+        # from the 8-14 kHz envelope (so both move together) and leaves a notch
+        # or a step where the original band was cut.
+        corr_env = 0.0
+        muesca_db = 0.0
+        sospecha_excitador = False
+        if (len(self._env_8_14) >= 24 and self._suma_pot is not None
+                and self._freqs is not None and self.sr >= 41000):
+            arr_lo = np.asarray(self._env_8_14, dtype=np.float64)
+            arr_hi = np.asarray(self._env_16_20, dtype=np.float64)
+            if (np.all(np.isfinite(arr_lo)) and np.all(np.isfinite(arr_hi))
+                    and float(np.std(arr_lo)) > 1.5
+                    and float(np.std(arr_hi)) > 1.5):
+                corr_env = float(np.corrcoef(arr_lo, arr_hi)[0, 1])
+                if not math.isfinite(corr_env):
+                    corr_env = 0.0
+            freqs = self._freqs
+            media = self._suma_pot / float(self._tramas)
+            curva_db = 10.0 * np.log10(np.maximum(media, 1e-28))
+            mask_pre = (freqs >= 14500.0) & (freqs <= 15800.0)
+            mask_post = (freqs >= 16200.0) & (freqs <= 17500.0)
+            mask_notch = (freqs >= 14800.0) & (freqs <= 16500.0)
+            mask_flank_lo = (freqs >= 13500.0) & (freqs < 14800.0)
+            mask_flank_hi = (freqs > 16500.0) & (freqs <= 18500.0)
+            salto_banda = 0.0
+            if np.any(mask_pre) and np.any(mask_post):
+                salto_banda = float(abs(np.mean(curva_db[mask_pre])
+                                        - np.mean(curva_db[mask_post])))
+            prof_notch = 0.0
+            if (np.any(mask_notch) and np.any(mask_flank_lo)
+                    and np.any(mask_flank_hi)):
+                flancos = 0.5 * float(np.mean(curva_db[mask_flank_lo])
+                                      + np.mean(curva_db[mask_flank_hi]))
+                prof_notch = float(flancos - np.min(curva_db[mask_notch]))
+            muesca_db = max(0.0, salto_banda, prof_notch)
+            sospecha_excitador = bool(corr_env > 0.92 and muesca_db >= 15.0)
+
         return {
             "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
             "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
             "caida_opus_20k_db": (round(caida_opus, 2)
                                   if math.isfinite(caida_opus) else 0.0),
             "sospecha_corte_opus_20k": sospecha_opus,
+            "brecha_p90_p10_agudos_db": (round(brecha_sfb21, 2)
+                                         if math.isfinite(brecha_sfb21) else 0.0),
+            "ratio_apagado_sfb21":      (round(ratio_apagado, 4)
+                                         if math.isfinite(ratio_apagado) else 0.0),
+            "islas_mdct_sfb21":         islas_sfb21,
+            "corr_env_excitador":       (round(corr_env, 4)
+                                         if math.isfinite(corr_env) else 0.0),
+            "muesca_excitador_db":      (round(muesca_db, 2)
+                                         if math.isfinite(muesca_db) else 0.0),
+            "sospecha_excitador_armonico": sospecha_excitador,
         }
 
 class _AcumuladorEspectral:
