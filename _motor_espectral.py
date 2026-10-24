@@ -342,6 +342,7 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
         "salto_ultrasonico_db":     0.0,
         "correlacion_espejo_22k":   0.0,
         "es_transferencia_dsd":     False,
+        "perfil_dsd":               None,
     }
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     espectro = np.asarray(espectro_mid_db, dtype=np.float64)
@@ -387,7 +388,13 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
     # look correlated with the musical band after detrending. The profile does not
     # depend on the sample rate being a multiple of 44.1 kHz: DSD transfers are
     # also stored at 96 and 192 kHz.
+    #
+    # Guard: noise-shaped dither on a lossy transcode also rises above 24 kHz, but
+    # it lives in the thermal floor (below -90 dBFS per bin) and only appears after
+    # a massive cliff (more than 25 dB). A real delta-sigma transfer is loud and
+    # continuous, so both conditions must hold for every profile.
     es_dsd = False
+    perfil_dsd = None
     mask_dsd = (freqs >= 24000.0) & (freqs <= 40000.0)
     if np.count_nonzero(mask_dsd) > 8:
         y = curva[mask_dsd]
@@ -395,7 +402,10 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
         pendiente = float(np.polyfit(x, y, 1)[0] * 1000.0)
         subida = float(y[-1] - y[0])
         monotona = float(np.mean(np.diff(y) >= 0.0)) >= 0.6
-        es_dsd = bool(pendiente > 0.8 and subida > 12.0 and monotona)
+        if (pendiente > 0.8 and subida > 12.0 and monotona
+                and float(np.max(y)) > -90.0 and salto_db < 25.0):
+            es_dsd = True
+            perfil_dsd = "direct_24_40k"
 
     # Profile B: a Scarlet Book (SACD) master keeps the noise-shaping hump around
     # 30 kHz but the protective filter cuts the ramp Profile A needs: the band
@@ -415,8 +425,27 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
             mono_up = float(np.mean(np.diff(y_up) >= 0.0)) >= 0.60
             caida_post_pico = float(np.max(y_up) - y_dn[-1])
             if (pend_up > 0.8 and sub_up >= 8.0
-                    and mono_up and caida_post_pico >= 6.0):
+                    and mono_up and caida_post_pico >= 6.0
+                    and float(np.max(y_up)) > -90.0 and salto_db < 25.0):
                 es_dsd = True
+                perfil_dsd = "scarlet_30k"
+
+    # Profile C: a DSD128 transfer at 176.4/192 kHz has its own noise-shaping ramp
+    # one octave higher. The slope is gentler because the same power is spread
+    # over twice the band, so the threshold is 0.35 dB/kHz instead of 0.8.
+    if not es_dsd and sample_rate >= 176400:
+        mask_c = ((freqs >= 40000.0)
+                  & (freqs <= min(80000.0, sample_rate * 0.45)))
+        if np.count_nonzero(mask_c) > 8:
+            y_c = curva[mask_c]
+            x_c = freqs[mask_c]
+            pend_c = float(np.polyfit(x_c, y_c, 1)[0] * 1000.0)
+            sub_c = float(y_c[-1] - y_c[0])
+            mono_c = float(np.mean(np.diff(y_c) >= 0.0)) >= 0.60
+            if (pend_c > 0.35 and sub_c > 12.0 and mono_c
+                    and float(np.max(y_c)) > -90.0 and salto_db < 25.0):
+                es_dsd = True
+                perfil_dsd = "dsd128_40_80k"
 
     if es_dsd and muro_brickwall:
         # A DSD transfer always has ultrasonic content: never a brickwall.
@@ -476,6 +505,7 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
         "salto_ultrasonico_db":     round(salto_db, 2),
         "correlacion_espejo_22k":   round(corr_espejo, 3),
         "es_transferencia_dsd":     es_dsd,
+        "perfil_dsd":               perfil_dsd,
     })
     return salida
 
@@ -760,6 +790,7 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         "salto_ultrasonico_db":     hires["salto_ultrasonico_db"],
         "correlacion_espejo_22k":   hires["correlacion_espejo_22k"],
         "es_transferencia_dsd":     hires["es_transferencia_dsd"],
+        "perfil_dsd":               hires["perfil_dsd"],
         # Transition band around the ceiling (dB/kHz of steepest descent).
         "gradiente_borde_db_khz":   gradiente_borde,
         "nyquist":            samplerate // 2,

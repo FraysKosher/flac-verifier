@@ -727,7 +727,65 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["esp"]["perfil_dsd"], "direct_24_40k")
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+        # The same direct transfer at 192 kHz: same profile, same verdict.
+        sr = 192000
+        sig = _dsd_like(sr, duracion=4.0, seed=119)
+
+        ruta = self.base_path / "dsd_transfer_192k.flac"
+        sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["esp"]["perfil_dsd"], "direct_24_40k")
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+        # DSD128 at 192 kHz: the noise-shaping ramp sits one octave higher, so
+        # neither Profile A (24-40 kHz) nor Profile B (30 kHz hump) applies.
+        ruta = self.base_path / "dsd128_transfer_192k.flac"
+        sf.write(ruta, self._dsd128_192k(), sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["esp"]["perfil_dsd"], "dsd128_40_80k")
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    @staticmethod
+    def _dsd128_192k(sr=192000, duracion=4.0, seed=119):
+        """DSD128 transfer: music below 20 kHz and a shaped floor above it.
+
+        The floor sits about 22 dB below the 18-20 kHz music band (roughly
+        -53 dBFS per bin) and climbs another 20 dB between 40 and 86 kHz, which
+        is how a DSD128 transfer looks. The ramp is carried past 80 kHz because
+        the 1 kHz smoothing of the engine reaches into the band edge; the level
+        is high enough that the file is not mistaken for shaped dither on a
+        lossy transcode (a cliff of more than 25 dB would be)."""
+        n = int(sr * duracion)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+
+        musica = _crear_pista_referencia(sr, duracion=duracion, seed=seed)
+        espectro = np.fft.rfft(musica, axis=0)
+        espectro[freqs > 20000.0] = 0.0
+        musica = np.fft.irfft(espectro, n, axis=0)
+        musica /= np.max(np.abs(musica)) * 1.05
+
+        nivel_db = np.full(freqs.shape, -400.0)
+        nivel_db[(freqs >= 20000.0) & (freqs <= 40000.0)] = 0.0
+        rampa = (freqs > 40000.0) & (freqs <= 86000.0)
+        nivel_db[rampa] = 20.0 * (freqs[rampa] - 40000.0) / 40000.0
+
+        rng = np.random.default_rng(2026)
+        ruido = (rng.standard_normal((freqs.size, 2))
+                 + 1j * rng.standard_normal((freqs.size, 2)))
+        ruido *= (10.0 ** (nivel_db / 20.0))[:, None]
+        ruido = np.fft.irfft(ruido, n, axis=0)
+        ruido *= 0.035 / np.max(np.abs(ruido))
+
+        lsb = 2.0 ** -23
+        dither = (rng.random((n, 2)) - rng.random((n, 2))) * lsb
+        return np.clip(musica + ruido + dither, -0.999, 0.999)
 
     def test_19b_dsd_scarlet_book_30k_aislado(self):
         """Scarlet Book: the 30 kHz hump survives the SACD protective filter.
@@ -736,37 +794,13 @@ class TestForenseRiguroso(unittest.TestCase):
         30 kHz protective filter of a SACD master cuts that ramp, so the file
         only keeps the noise-shaping hump between 23 and 31 kHz. The fixture is
         built so that Profile A cannot fire (a 1.5 dB total rise and 41 % of
-        rising steps), which isolates Profile B.
+        rising steps), and the reported profile pins which profile fired.
         """
-        sr = 96000
         duracion = 4.0
+        sr = 96000
         n = int(sr * duracion)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
-
-        musica = _crear_pista_referencia(sr, duracion=duracion, seed=121)
-        espectro = np.fft.rfft(musica, axis=0)
-        espectro[freqs > 20000.0] = 0.0                  # SACD passband
-        musica = np.fft.irfft(espectro, n, axis=0)
-        musica /= np.max(np.abs(musica)) * 1.05
-
-        # Noise-shaping hump: +11 dB from 23 to 30.5 kHz, then the protective
-        # filter takes 8 dB away between 30.5 and 40 kHz.
-        nivel_db = np.full(freqs.shape, -400.0)
-        subida = (freqs >= 23000.0) & (freqs <= 30500.0)
-        nivel_db[subida] = 11.0 * (freqs[subida] - 23000.0) / 7500.0
-        caida = (freqs > 30500.0) & (freqs <= 40000.0)
-        nivel_db[caida] = 11.0 - 8.0 * (freqs[caida] - 30500.0) / 9500.0
-
-        rng = np.random.default_rng(2026)
-        ruido = (rng.standard_normal((freqs.size, 2))
-                 + 1j * rng.standard_normal((freqs.size, 2)))
-        ruido *= (10.0 ** (nivel_db / 20.0))[:, None]
-        ruido = np.fft.irfft(ruido, n, axis=0)
-        ruido *= 0.03 / np.max(np.abs(ruido))
-
-        lsb = 2.0 ** -23
-        dither = (rng.random((n, 2)) - rng.random((n, 2))) * lsb
-        mezcla = np.clip(musica + ruido + dither, -0.999, 0.999)
+        nivel_db, mezcla = self._scarlet_book(sr, duracion)
 
         # Profile A is ruled out by construction on this fixture.
         mask_a = (freqs >= 24000.0) & (freqs <= 40000.0)
@@ -789,18 +823,104 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["esp"]["perfil_dsd"], "scarlet_30k")
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
-    def test_19c_hires_24_96_no_dsd_control(self):
-        """A plain 24/96 studio master has no noise-shaping hump: not DSD."""
-        sr = 96000
-        sig = _crear_pista_referencia(sr, duracion=4.0, seed=120)
+        # The same SACD master stored at 192 kHz: the profile does not depend on
+        # the sample rate.
+        sr = 192000
+        _, mezcla = self._scarlet_book(sr, duracion)
+        ruta = self.base_path / "dsd_scarlet_book_30k_24_192.flac"
+        sf.write(ruta, mezcla, sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
 
-        ruta = self.base_path / "hires_24_96_studio_control.flac"
-        sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
+        self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["esp"]["perfil_dsd"], "scarlet_30k")
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    @staticmethod
+    def _scarlet_book(sr, duracion=4.0, seed=121):
+        """SACD master: music to 20 kHz, 30 kHz hump and protective filter.
+
+        Returns the designed per-bin envelope in dB and the stereo waveform."""
+        n = int(sr * duracion)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+
+        musica = _crear_pista_referencia(sr, duracion=duracion, seed=seed)
+        espectro = np.fft.rfft(musica, axis=0)
+        espectro[freqs > 20000.0] = 0.0                  # SACD passband
+        musica = np.fft.irfft(espectro, n, axis=0)
+        musica /= np.max(np.abs(musica)) * 1.05
+
+        # Noise-shaping hump: +11 dB from 23 to 30.5 kHz, then the protective
+        # filter takes 8 dB away between 30.5 and 40 kHz.
+        nivel_db = np.full(freqs.shape, -400.0)
+        subida = (freqs >= 23000.0) & (freqs <= 30500.0)
+        nivel_db[subida] = 11.0 * (freqs[subida] - 23000.0) / 7500.0
+        caida = (freqs > 30500.0) & (freqs <= 40000.0)
+        nivel_db[caida] = 11.0 - 8.0 * (freqs[caida] - 30500.0) / 9500.0
+
+        rng = np.random.default_rng(2026)
+        ruido = (rng.standard_normal((freqs.size, 2))
+                 + 1j * rng.standard_normal((freqs.size, 2)))
+        ruido *= (10.0 ** (nivel_db / 20.0))[:, None]
+        ruido = np.fft.irfft(ruido, n, axis=0)
+        ruido *= 0.03 / np.max(np.abs(ruido))
+
+        lsb = 2.0 ** -23
+        dither = (rng.random((n, 2)) - rng.random((n, 2))) * lsb
+        return nivel_db, np.clip(musica + ruido + dither, -0.999, 0.999)
+
+    def test_19c_hires_24_96_no_dsd_control(self):
+        """A plain studio master is not DSD, and shaped dither is not a ramp.
+
+        Three controls: a 24/96 and a 24/192 studio reference (no profile at
+        all), and a lossy 20 kHz brickwall re-dithered with noise-shaped dither
+        above 20 kHz (a rising floor, but 32 dB below the music band and after a
+        cliff), which must stay accused.
+        """
+        for sr, nombre in ((96000, "hires_24_96_studio_control"),
+                           (192000, "hires_24_192_studio_control")):
+            sig = _crear_pista_referencia(sr, duracion=4.0, seed=120)
+            ruta = self.base_path / f"{nombre}.flac"
+            sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
+            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+            self.assertFalse(res["esp"]["es_transferencia_dsd"])
+            self.assertIsNone(res["esp"]["perfil_dsd"])
+
+        # Lossy 20 kHz brickwall + noise-shaped dither: the floor rises above
+        # 20 kHz, so the level guard alone would let it through (about -82 dBFS
+        # per bin). The 32 dB cliff is what keeps it out of the DSD profiles,
+        # and the cut keeps its codec penalty.
+        sr = 96000
+        duracion = 4.0
+        n = int(sr * duracion)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+        base = _crear_pista_referencia(sr, duracion=duracion, seed=124)
+        sos = signal.ellip(12, 0.1, 80.0, 20000.0, btype="low", fs=sr, output="sos")
+        cortado = signal.sosfilt(sos, base, axis=0)
+        cortado /= np.max(np.abs(cortado)) * 1.05
+
+        nivel_db = np.full(freqs.shape, -400.0)
+        alta = (freqs >= 20000.0) & (freqs <= 40000.0)
+        nivel_db[alta] = 6.0 * (freqs[alta] - 20000.0) / 20000.0
+        rng = np.random.default_rng(2027)
+        ruido = (rng.standard_normal((freqs.size, 2))
+                 + 1j * rng.standard_normal((freqs.size, 2)))
+        ruido *= (10.0 ** (nivel_db / 20.0))[:, None]
+        ruido = np.fft.irfft(ruido, n, axis=0)
+        ruido *= 0.0012 / np.max(np.abs(ruido))
+
+        ruta = self.base_path / "lossy_20k_shaped_dither_24_96.flac"
+        sf.write(ruta, np.clip(cortado + ruido, -0.999, 0.999), sr, subtype="PCM_24")
         res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
 
         self.assertFalse(res["esp"]["es_transferencia_dsd"])
+        self.assertIsNone(res["esp"]["perfil_dsd"])
+        self.assertGreater(res["esp"]["salto_ultrasonico_db"], 25.0)
+        self.assertIs(res["esp"]["corte_detectado"], True)
+        self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
 
     def test_20_vinilo_con_3_chasquidos_aislados_no_dispara_gibbs_lossy(self):
         """Three vinyl clicks are not a lossy reconstruction pattern.
