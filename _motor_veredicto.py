@@ -134,7 +134,7 @@ def calcular_score(meta, esp, bdi):
                 votos += 1
 
         sep = esp.get("separacion_stereo")
-        if sep is not None:
+        if sep is not None and not esp.get("es_dual_mono"):
             max_v += 1
             if sep > 0.1:
                 votos += 1
@@ -143,8 +143,8 @@ def calcular_score(meta, esp, bdi):
         # Only ADD penalties when the signature is present: existing keys, votes
         # and verdicts of files without it stay exactly as they were.
         if esp.get("es_dual_mono"):
-            problemas.append("dual-mono (L and R identical): stereo separation is "
-                             "not informative")
+            problemas.append("dual-mono (left and right carry the same programme): "
+                             "stereo separation is not informative")
         if esp.get("sospecha_joint_stereo"):
             penaliza(f"the Side channel (L-R) collapses at high frequency "
                      f"(Mid-Side drop {esp.get('caida_side_agudos_db', 0.0):.1f} dB, "
@@ -265,10 +265,19 @@ def calcular_score(meta, esp, bdi):
                 penaliza(f"the 8 low bits are always zero in the whole file: "
                          f"16-bit content zero-padded into a {bits}-bit container", 0.40)
         if forense.get("es_24bit_escalado_en_peine"):
+            paso = forense.get("paso_reticula_mediano")
+            cajones = forense.get("lsb8_cajones_ocupados")
+            entropia = forense.get("lsb8_entropia_bits")
+            # A loud compressed fake caught by the global lattice still occupies
+            # every bin with ~8 bits of entropy: quoting them would contradict the
+            # comb itself, so the lattice step is the evidence in that case.
+            if isinstance(cajones, int) and 0 < cajones < 256:
+                detalle_peine = (f"lattice step {paso}, entropy {entropia} bits, "
+                                 f"{cajones}/256 bins occupied")
+            else:
+                detalle_peine = f"global lattice step {paso} integers"
             penaliza(f"24-bit container with a quantisation comb in the 8 LSBs "
-                     f"(entropy {forense.get('lsb8_entropia_bits')} bits, "
-                     f"{forense.get('lsb8_cajones_ocupados')}/256 bins occupied): "
-                     f"a 16-bit source scaled into 24 bits", 0.40)
+                     f"({detalle_peine}): a 16-bit source scaled into 24 bits", 0.40)
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
     # resultado["md5"] (verificar_md5), and an MD5 that does not match is a hard error.
@@ -413,7 +422,7 @@ def evidencias_forenses(resultado):
                           f"{esp.get('caida_side_agudos_db', 0.0):.1f} dB, "
                           f"cut-off delta {esp.get('delta_corte_ms_hz', 0.0):.0f} Hz")
     if esp.get("es_dual_mono"):
-        evidencias.append("Dual-mono: left and right channels are identical")
+        evidencias.append("Dual-mono: left and right carry the same programme")
     if (esp.get("iqr_corte_hz") or 0.0) > 550.0:
         evidencias.append(f"Instantaneous cut-off jitter: "
                           f"IQR {esp.get('iqr_corte_hz', 0.0):.0f} Hz")
@@ -431,9 +440,15 @@ def evidencias_forenses(resultado):
     if forense.get("es_padded_16_en_24"):
         evidencias.append("16-bit content zero-padded into a 24-bit container")
     if forense.get("es_24bit_escalado_en_peine"):
-        evidencias.append(f"24-bit quantisation comb: entropy "
-                          f"{forense.get('lsb8_entropia_bits')} bits, "
-                          f"{forense.get('lsb8_cajones_ocupados')}/256 bins")
+        paso = forense.get("paso_reticula_mediano")
+        cajones = forense.get("lsb8_cajones_ocupados")
+        entropia = forense.get("lsb8_entropia_bits")
+        if isinstance(cajones, int) and 0 < cajones < 256:
+            evidencias.append(f"24-bit quantisation comb: lattice step {paso}, "
+                              f"entropy {entropia} bits, {cajones}/256 bins")
+        else:
+            evidencias.append(f"24-bit quantisation comb: global lattice step "
+                              f"{paso} integers")
     if (resultado.get("md5") or {}).get("estado") == "match":
         evidencias.append("STREAMINFO MD5 verified (match)")
     if resultado.get("coherencia_album"):

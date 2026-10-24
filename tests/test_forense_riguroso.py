@@ -406,6 +406,12 @@ class TestForenseRiguroso(unittest.TestCase):
             self.assertGreater(r["paso_reticula_mediano"], 100.0)
             self.assertIsNotNone(r["lsb8_entropia_bits"])
             self.assertGreater(r["lsb8_cajones_ocupados"], 0)
+            # A loud comb caught by the global lattice occupies all 256 bins, so
+            # quoting "256/256 bins occupied" next to "quantisation comb" would
+            # contradict itself: the lattice step is the evidence in that case.
+            texto = " ".join(res["problemas"] + res["evidencias_forenses"])
+            self.assertNotIn("256/256", texto)
+            self.assertIn("lattice step", " ".join(res["problemas"]))
 
         # The same -6 dBFS window, but with genuine 24-bit dither: not a comb.
         rng = np.random.default_rng(2026)
@@ -549,6 +555,13 @@ class TestForenseRiguroso(unittest.TestCase):
         for frecuencia in (440.0, 1000.0, 3000.0):
             tono = amplitud * envolvente * np.sin(2.0 * np.pi * frecuencia * t)
 
+            # A mathematically pure sine (no tremolo) touches only a few hundred
+            # integers, so its lattice is sparse: it must never be called a comb.
+            tono_puro = amplitud * np.sin(2.0 * np.pi * frecuencia * t)
+            dither_puro = (rng.random(n) - rng.random(n)) * lsb
+            r_puro = _forense(np.clip(tono_puro + dither_puro, -0.999, 0.999))
+            self.assertFalse(r_puro["es_24bit_escalado_en_peine"])
+
             dither = (rng.random(n) - rng.random(n)) * lsb
             r = _forense(np.clip(tono + dither, -0.999, 0.999))
             self.assertFalse(r["es_24bit_escalado_en_peine"])
@@ -558,6 +571,146 @@ class TestForenseRiguroso(unittest.TestCase):
                 r = _forense(np.clip(q16 * ganancia, -0.999, 0.999))
                 self.assertTrue(r["es_24bit_escalado_en_peine"])
                 self.assertGreater(r["paso_reticula_mediano"], 100.0)
+
+    def test_17_subbajo_808_masivo_no_ciega_techo_espectral(self):
+        """A dominant 50 Hz line must not hide the ceiling of the rest of the band.
+
+        With the global peak as reference level every other band sits more than
+        60 dB below the sub-bass and the -60 dB activity window stops before the
+        real content ends, so the file was flagged as a low-ceiling upscale. The
+        sub-bass re-anchor keeps the ceiling measurable.
+        """
+        sr = 44100
+        duracion = 6.0
+        t = np.arange(int(sr * duracion)) / float(sr)
+        pista = _crear_pista_referencia(sr, duracion=duracion, seed=117) * 0.12
+        # 0.85 against a 0.12 backing track: the 50 Hz line beats the whole
+        # 150-6000 Hz band by more than 20 dB.
+        subbajo = 0.85 * np.sin(2.0 * np.pi * 50.0 * t)
+        mezcla = pista + subbajo[:, None]
+        mezcla = np.clip(mezcla, -0.98, 0.98)
+
+        ruta = self.base_path / "808_subbass_16bit.flac"
+        sf.write(ruta, mezcla, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreaterEqual(res["esp"]["techo_hz"], 20000)
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    def test_17b_bajo_moderado_no_altera_ancla_global(self):
+        """Normal bass keeps the global-maximum normalization, bin for bin.
+
+        The re-anchor must only fire on a sub-bass peak that takes over the whole
+        spectrum (> 6 dB over the 150-6000 Hz band). `_metricas_espectrales` is
+        the shared core of `analizar_espectro` and of the streaming path, so the
+        comparison is made on a synthetic spectrum where the expected ceiling can
+        be computed exactly.
+        """
+        sr = 44100
+        freqs = np.arange(0.0, sr / 2.0 + 5.0, 5.0)
+
+        def _espectro(picos):
+            """Flat 150-6000 Hz programme band, -0.004 dB/Hz above it, + peaks."""
+            pot_db = np.full(freqs.shape, -130.0)
+            banda = (freqs >= 150.0) & (freqs <= 6000.0)
+            pot_db[banda] = 0.0
+            agudos = freqs > 6000.0
+            pot_db[agudos] = -0.004 * (freqs[agudos] - 6000.0)
+            for frecuencia, nivel_db in picos:
+                idx = int(np.argmin(np.abs(freqs - frecuencia)))
+                pot_db[idx] = max(pot_db[idx], nivel_db)
+            return 10.0 ** (pot_db / 10.0)
+
+        def _techo_con_ancla(potencia, ancla_db):
+            """Last bin above -60 dB relative to the given reference level."""
+            pot_db_n = 10.0 * np.log10(np.maximum(potencia, 1e-28)) - ancla_db
+            mask = pot_db_n > -60.0
+            idx = len(freqs) - 1 - int(np.argmax(mask[::-1]))
+            return round(float(freqs[idx]))
+
+        def _techo_medido(potencia):
+            metricas = motor_flac._metricas_espectrales(
+                freqs, potencia, potencia, sr, es_stereo=False)
+            return metricas["techo_hz"]
+
+        # +3 dB of sub-bass: below the 6 dB takeover margin, no re-anchor.
+        potencia = _espectro([(60.0, 3.0)])
+        self.assertEqual(_techo_medido(potencia), _techo_con_ancla(potencia, 3.0))
+
+        # Peak already at 1000 Hz: the global maximum is the anchor as well.
+        potencia = _espectro([(60.0, -10.0), (1000.0, 0.0)])
+        self.assertEqual(_techo_medido(potencia), _techo_con_ancla(potencia, 0.0))
+
+        # Control: +20 dB of sub-bass does re-anchor, so the comparison above is
+        # meaningful and the ceiling is reported from the programme band.
+        potencia = _espectro([(60.0, 20.0)])
+        self.assertEqual(_techo_medido(potencia), _techo_con_ancla(potencia, 0.0))
+        self.assertGreater(_techo_medido(potencia), _techo_con_ancla(potencia, 20.0))
+
+    def test_18_dual_mono_digital_no_pierde_voto_estereo(self):
+        """L == R: stereo separation cannot vote, and the file stays genuine.
+
+        The separation vote is no longer lost because the metric is not
+        informative, which used to cap the score below 1.0. The quiet 19.5/20.75
+        kHz shimmer only gives the high band the bin-to-bin structure that the
+        high-band variability vote looks for: a purely smooth pink-noise track
+        caps at 0.9 for reasons that have nothing to do with dual mono.
+        """
+        sr = 44100
+        duracion = 6.0
+        t = np.arange(int(sr * duracion)) / float(sr)
+        mono = _crear_pista_referencia(sr, duracion=duracion, seed=118)[:, 0]
+        shimmer = 0.02 * (np.sin(2.0 * np.pi * 19500.0 * t)
+                          + 0.6 * np.sin(2.0 * np.pi * 20750.0 * t))
+        mono = mono + shimmer
+        estereo = np.column_stack([mono, mono])
+
+        ruta = self.base_path / "dual_mono_digital_16bit.flac"
+        sf.write(ruta, np.clip(estereo, -0.98, 0.98), sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertIs(res["esp"]["es_dual_mono"], True)
+        self.assertEqual(res["score"], 1.0)
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    def test_18b_dual_mono_analogico_espectral_24_20_db_y_control_estereo(self):
+        """Analogue dual mono sits 20-32 dB below Mid, not 45: it must be caught.
+
+        Two converters fed with the same mono signal leave a Side channel that is
+        far from digitally empty, so the old > 45 dB rule missed it and the track
+        could be accused of a joint-stereo collapse. The stereo control keeps the
+        detector honest.
+        """
+        sr = 44100
+        duracion = 6.0
+        t = np.arange(int(sr * duracion)) / float(sr)
+        shimmer = 0.02 * (np.sin(2.0 * np.pi * 19500.0 * t)
+                          + 0.6 * np.sin(2.0 * np.pi * 20750.0 * t))
+        referencia = _crear_pista_referencia(sr, duracion=duracion, seed=118)
+        mono = referencia[:, 0] + shimmer
+        rng = np.random.default_rng(2028)
+        ruido = rng.normal(0.0, 10 ** (-62.0 / 20.0), size=mono.shape)
+        # 0.94 is a ~-30 dB Side/Mid offset: analogue, never digital dual mono.
+        analogico = np.column_stack([mono, mono * 0.94 + ruido])
+
+        ruta = self.base_path / "dual_mono_analogue_16bit.flac"
+        sf.write(ruta, np.clip(analogico, -0.98, 0.98), sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        # Far from the 45 dB digital rule, yet the > 24 / > 20 dB spectral rule
+        # catches it and no joint-stereo accusation follows.
+        self.assertLess(res["esp"]["caida_side_agudos_db"], 45.0)
+        self.assertIs(res["esp"]["sospecha_joint_stereo"], False)
+        self.assertIs(res["esp"]["es_dual_mono"], True)
+        self.assertEqual(res["score"], 1.0)
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+        control = np.column_stack([referencia[:, 0] + shimmer,
+                                   referencia[:, 1] + shimmer])
+        ruta = self.base_path / "stereo_control_16bit.flac"
+        sf.write(ruta, np.clip(control, -0.98, 0.98), sr, subtype="PCM_16")
+        res_est = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        self.assertIs(res_est["esp"]["es_dual_mono"], False)
 
 
 if __name__ == "__main__":

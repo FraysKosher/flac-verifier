@@ -462,8 +462,10 @@ def _analizar_asimetria_mid_side(espectro_mid_db, espectro_side_db, freqs_hz,
     aggressively above 15 kHz: Side collapses and cuts before Mid.
 
     Returns caida_side_agudos_db, delta_corte_ms_hz, sospecha_joint_stereo and
-    es_dual_mono (L and R essentially identical, > 45 dB of Mid-Side offset).
-    Pure mono is not dual-mono: there is no Side channel at all."""
+    es_dual_mono. Dual mono has two forms, and both are detected: digital (L and R
+    identical, more than 45 dB of Mid-Side offset) and analogue (the same mono
+    programme through two converters, 20-32 dB of Mid-Side offset over the whole
+    band). Pure mono is not dual-mono: there is no Side channel at all."""
     salida = {
         "caida_side_agudos_db": 0.0,
         "delta_corte_ms_hz":    0.0,
@@ -493,6 +495,12 @@ def _analizar_asimetria_mid_side(espectro_mid_db, espectro_side_db, freqs_hz,
 
     diff_media_db = float(np.median(diferencia[mask_media]))
     diff_aguda_db = float(np.median(diferencia[mask_aguda]))
+    # Analogue dual mono: the Side channel is not digitally empty, but a dual-mono
+    # master sent through two converters already sits 20-32 dB below Mid over the
+    # whole band. Without this, only the > 45 dB digital case was protected.
+    if (math.isfinite(diff_media_db) and math.isfinite(diff_aguda_db)
+            and diff_media_db > 24.0 and diff_aguda_db > 20.0):
+        salida["es_dual_mono"] = True
     colapso = diff_aguda_db - diff_media_db
 
     mask_alta = (freqs >= 13000.0) & (freqs <= 21000.0)
@@ -582,7 +590,26 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
     if potencia is None:
         potencia = (pot_l + pot_r) / 2
     pot_db    = 10.0 * np.log10(np.maximum(potencia, 1e-28))
-    pot_db_n  = pot_db - np.max(pot_db)
+    # The reference level is usually the global peak, but a huge sub-bass line
+    # (an 808 or a kick) would drag every other band below the -60 dB activity
+    # window and hide the real ceiling. The sub-bass peak is used as the anchor
+    # only when it takes over the whole spectrum: it must sit below 150 Hz AND
+    # exceed the [150, 6000] Hz peak by more than 6 dB. Ordinary bass never does.
+    idx_max = int(np.argmax(pot_db))
+    max_global = float(pot_db[idx_max])
+    freq_pico = float(freqs[idx_max]) if freqs.size else 0.0
+    mask_sin_subbajo = (freqs >= 150.0) & (freqs <= 6000.0)
+    # The DC bin is not a sub-bass programme peak: a 1/f tilt puts the maximum at
+    # 0 Hz, and re-anchoring on it would push a low-passed master back above the
+    # 88% of Nyquist window and hide its ceiling.
+    pico_grave = 0.0 < freq_pico < 150.0
+    if pico_grave and np.any(mask_sin_subbajo):
+        ref_sin_subbajo = float(np.max(pot_db[mask_sin_subbajo]))
+        ref_techo_db = (ref_sin_subbajo if (max_global - ref_sin_subbajo) > 6.0
+                        else max_global)
+    else:
+        ref_techo_db = max_global
+    pot_db_n  = pot_db - ref_techo_db
 
     mask_act = pot_db_n > -60
     if np.any(mask_act):
