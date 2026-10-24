@@ -712,6 +712,176 @@ class TestForenseRiguroso(unittest.TestCase):
         res_est = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
         self.assertIs(res_est["esp"]["es_dual_mono"], False)
 
+    def test_19_dsd_96khz_rampa_directa(self):
+        """A DSD transfer stored at 96 kHz is DSD: the profile is universal.
+
+        The DSD detector used to require a sample rate that is a multiple of
+        44.1 kHz, so a 96 kHz transfer fell through to the mirror/brickwall
+        rules even though its 24-40 kHz noise-shaping ramp is unmistakable.
+        """
+        sr = 96000
+        sig = _dsd_like(sr, duracion=4.0, seed=119)
+
+        ruta = self.base_path / "dsd_transfer_96k.flac"
+        sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    def test_19b_dsd_scarlet_book_30k_aislado(self):
+        """Scarlet Book: the 30 kHz hump survives the SACD protective filter.
+
+        Profile A needs a ramp that rises more than 12 dB from 24 to 40 kHz. The
+        30 kHz protective filter of a SACD master cuts that ramp, so the file
+        only keeps the noise-shaping hump between 23 and 31 kHz. The fixture is
+        built so that Profile A cannot fire (a 1.5 dB total rise and 41 % of
+        rising steps), which isolates Profile B.
+        """
+        sr = 96000
+        duracion = 4.0
+        n = int(sr * duracion)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+
+        musica = _crear_pista_referencia(sr, duracion=duracion, seed=121)
+        espectro = np.fft.rfft(musica, axis=0)
+        espectro[freqs > 20000.0] = 0.0                  # SACD passband
+        musica = np.fft.irfft(espectro, n, axis=0)
+        musica /= np.max(np.abs(musica)) * 1.05
+
+        # Noise-shaping hump: +11 dB from 23 to 30.5 kHz, then the protective
+        # filter takes 8 dB away between 30.5 and 40 kHz.
+        nivel_db = np.full(freqs.shape, -400.0)
+        subida = (freqs >= 23000.0) & (freqs <= 30500.0)
+        nivel_db[subida] = 11.0 * (freqs[subida] - 23000.0) / 7500.0
+        caida = (freqs > 30500.0) & (freqs <= 40000.0)
+        nivel_db[caida] = 11.0 - 8.0 * (freqs[caida] - 30500.0) / 9500.0
+
+        rng = np.random.default_rng(2026)
+        ruido = (rng.standard_normal((freqs.size, 2))
+                 + 1j * rng.standard_normal((freqs.size, 2)))
+        ruido *= (10.0 ** (nivel_db / 20.0))[:, None]
+        ruido = np.fft.irfft(ruido, n, axis=0)
+        ruido *= 0.03 / np.max(np.abs(ruido))
+
+        lsb = 2.0 ** -23
+        dither = (rng.random((n, 2)) - rng.random((n, 2))) * lsb
+        mezcla = np.clip(musica + ruido + dither, -0.999, 0.999)
+
+        # Profile A is ruled out by construction on this fixture.
+        mask_a = (freqs >= 24000.0) & (freqs <= 40000.0)
+        y_a = nivel_db[mask_a]
+        self.assertLessEqual(float(y_a[-1] - y_a[0]), 12.0)
+        self.assertLess(float(np.mean(np.diff(y_a) >= 0.0)), 0.60)
+        # Profile B conditions do hold: rise, slope, monotony and post-peak drop.
+        mask_b = (freqs >= 23000.0) & (freqs <= 31000.0)
+        y_b = nivel_db[mask_b]
+        self.assertGreaterEqual(float(np.max(y_b) - y_b[0]), 8.0)
+        self.assertGreater(float(np.polyfit(freqs[mask_b], y_b, 1)[0] * 1000.0), 0.8)
+        self.assertGreaterEqual(float(np.mean(np.diff(y_b) >= 0.0)), 0.60)
+        caida_post_pico = float(np.max(y_b) - nivel_db[(freqs >= 31000.0)
+                                                      & (freqs <= 40000.0)][-1])
+        self.assertGreaterEqual(caida_post_pico, 6.0)
+        self.assertLess(caida_post_pico, 10.0)
+
+        ruta = self.base_path / "dsd_scarlet_book_30k_24_96.flac"
+        sf.write(ruta, mezcla, sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertTrue(res["esp"]["es_transferencia_dsd"])
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    def test_19c_hires_24_96_no_dsd_control(self):
+        """A plain 24/96 studio master has no noise-shaping hump: not DSD."""
+        sr = 96000
+        sig = _crear_pista_referencia(sr, duracion=4.0, seed=120)
+
+        ruta = self.base_path / "hires_24_96_studio_control.flac"
+        sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertFalse(res["esp"]["es_transferencia_dsd"])
+
+    def test_20_vinilo_con_3_chasquidos_aislados_no_dispara_gibbs_lossy(self):
+        """Three vinyl clicks are not a lossy reconstruction pattern.
+
+        Isolated 1-sample events with a band limit below 20.5 kHz used to be
+        enough to accuse the file of Gibbs overshoot. A handful of clicks is what
+        a vinyl transfer sounds like, not what a codec leaves behind.
+        """
+        sr = 44100
+        duracion = 6.0
+        base = _crear_pista_referencia(sr, duracion=duracion, seed=122)
+        sos = signal.butter(6, 19000.0, btype="low", fs=sr, output="sos")
+        y = signal.sosfilt(sos, base, axis=0)
+        y = y / (np.max(np.abs(y)) * 1.05)
+        for indice in (int(sr * 0.5), int(sr * 1.5), int(sr * 2.5)):
+            y[indice, 0] = 1.0                      # full-scale pop, one sample
+
+        ruta = self.base_path / "vinyl_3_clicks_19k.flac"
+        sf.write(ruta, y, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertLess(res["esp"]["techo_hz"], 20500)
+        self.assertEqual(res["esp"]["clipping_eventos"], 3)
+        self.assertFalse(res["esp"]["clipping_reconstruccion_lossy"])
+
+    def test_20b_gibbs_positivo_10_eventos_8_cortos(self):
+        """The Gibbs rule needs a pattern: 10 events and 8 short ones.
+
+        Nine events or only seven short ones in ten must not be enough, on the
+        classifier and on a real signal alike.
+        """
+        clasificar = motor_flac._clasificar_rachas
+
+        lossy = clasificar([1] * 8 + [4, 4], None, 20000.0, 22050)
+        self.assertIs(lossy["clipping_reconstruccion_lossy"], True)
+        self.assertEqual(lossy["clipping_eventos"], 10)
+
+        pocos = clasificar([1] * 9, None, 20000.0, 22050)
+        self.assertIs(pocos["clipping_reconstruccion_lossy"], False)
+        self.assertEqual(pocos["clipping_eventos"], 9)
+
+        largos = clasificar([1] * 7 + [4, 4, 4], None, 20000.0, 22050)
+        self.assertIs(largos["clipping_reconstruccion_lossy"], False)
+        self.assertEqual(largos["clipping_fraccion_cortos"], 0.7)
+
+        # A band limit of 20.5 kHz or more is not a lossy reconstruction.
+        sin_banda = clasificar([1] * 8 + [4, 4], None, 20500.0, 22050)
+        self.assertIs(sin_banda["clipping_reconstruccion_lossy"], False)
+
+        sr = 44100
+        duracion = 6.0
+        base = _crear_pista_referencia(sr, duracion=duracion, seed=123)
+        sos = signal.butter(6, 19000.0, btype="low", fs=sr, output="sos")
+        limpio = signal.sosfilt(sos, base, axis=0)
+        limpio = limpio / (np.max(np.abs(limpio)) * 1.05)
+
+        def _con_eventos(cantidad, cortos):
+            """`cortos` 1-sample pops followed by 4-sample plateaus."""
+            y = limpio.copy()
+            for k in range(cantidad):
+                inicio = int(sr * 0.3) + k * int(sr * 0.35)
+                if k < cortos:
+                    y[inicio, 0] = 1.0
+                else:
+                    y[inicio : inicio + 4, 0] = 1.0
+            return y
+
+        ruta = self.base_path / "gibbs_10_eventos_8_cortos.flac"
+        sf.write(ruta, _con_eventos(10, 8), sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        self.assertEqual(res["esp"]["clipping_eventos"], 10)
+        self.assertIs(res["esp"]["clipping_reconstruccion_lossy"], True)
+
+        for nombre, eventos, cortos in (("9_eventos", 9, 9),
+                                        ("10_eventos_7_cortos", 10, 7)):
+            ruta = self.base_path / f"gibbs_{nombre}.flac"
+            sf.write(ruta, _con_eventos(eventos, cortos), sr, subtype="PCM_16")
+            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            self.assertEqual(res["esp"]["clipping_eventos"], eventos)
+            self.assertIs(res["esp"]["clipping_reconstruccion_lossy"], False)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

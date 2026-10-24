@@ -224,8 +224,16 @@ def _clasificar_rachas(longitudes, techo_hz=None, frecuencia_corte=None, nyquist
     media = sum(largos) / float(eventos)
     corte_efectivo = (frecuencia_corte if frecuencia_corte is not None
                       else techo_hz)
-    lossy = bool(fraccion > 0.75 and corte_efectivo is not None
-                 and corte_efectivo < 20500.0)
+    # Lossy reconstruction needs a pattern, not a few isolated events: a vinyl
+    # rip with three clicks and a 19 kHz ceiling used to be accused of Gibbs
+    # overshoot. At least 10 events, 8 of them short, are required.
+    lossy = bool(
+        eventos >= 10
+        and cortos >= 8
+        and fraccion > 0.75
+        and corte_efectivo is not None
+        and corte_efectivo < 20500.0
+    )
     master = bool(media >= 4.0 and techo_hz is not None and nyquist
                   and techo_hz >= 0.97 * nyquist)
     return {

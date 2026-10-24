@@ -384,16 +384,43 @@ def _diagnosticar_autenticidad_hires(freqs_hz, espectro_mid_db, sample_rate,
 
     # DSD64/128 to PCM: rising noise-shaping ramp between 24 and 40 kHz. It is
     # checked before the mirror because an independent rising ultrasonic ramp can
-    # look correlated with the musical band after detrending.
+    # look correlated with the musical band after detrending. The profile does not
+    # depend on the sample rate being a multiple of 44.1 kHz: DSD transfers are
+    # also stored at 96 and 192 kHz.
     es_dsd = False
     mask_dsd = (freqs >= 24000.0) & (freqs <= 40000.0)
-    if (sample_rate % 44100 == 0 and np.count_nonzero(mask_dsd) > 8):
+    if np.count_nonzero(mask_dsd) > 8:
         y = curva[mask_dsd]
         x = freqs[mask_dsd]
         pendiente = float(np.polyfit(x, y, 1)[0] * 1000.0)
         subida = float(y[-1] - y[0])
         monotona = float(np.mean(np.diff(y) >= 0.0)) >= 0.6
         es_dsd = bool(pendiente > 0.8 and subida > 12.0 and monotona)
+
+    # Profile B: a Scarlet Book (SACD) master keeps the noise-shaping hump around
+    # 30 kHz but the protective filter cuts the ramp Profile A needs: the band
+    # rises from 23 to 31 kHz and then falls into the filter. Both shapes are
+    # independent evidence, so either one marks the transfer as DSD.
+    if not es_dsd:
+        mask_sb_subida = (freqs >= 23000.0) & (freqs <= 31000.0)
+        mask_sb_caida = ((freqs >= 31000.0)
+                         & (freqs <= min(40000.0, sample_rate * 0.45)))
+        if (np.count_nonzero(mask_sb_subida) >= 5
+                and np.count_nonzero(mask_sb_caida) >= 5):
+            y_up = curva[mask_sb_subida]
+            x_up = freqs[mask_sb_subida]
+            y_dn = curva[mask_sb_caida]
+            pend_up = float(np.polyfit(x_up, y_up, 1)[0] * 1000.0)
+            sub_up = float(np.max(y_up) - y_up[0])
+            mono_up = float(np.mean(np.diff(y_up) >= 0.0)) >= 0.60
+            caida_post_pico = float(np.max(y_up) - y_dn[-1])
+            if (pend_up > 0.8 and sub_up >= 8.0
+                    and mono_up and caida_post_pico >= 6.0):
+                es_dsd = True
+
+    if es_dsd and muro_brickwall:
+        # A DSD transfer always has ultrasonic content: never a brickwall.
+        muro_brickwall = False
 
     # Spectral mirror around the CD Nyquist (unfiltered interpolation). The fine
     # 250 Hz curve keeps the texture the mirror copies; the coarse curve is only
@@ -690,6 +717,15 @@ def _metricas_espectrales(freqs, pot_l, pot_r, samplerate, es_stereo=None, poten
         espectro_mid_db = mid_db
     hires = _diagnosticar_autenticidad_hires(freqs, espectro_mid_db, samplerate,
                                              corte_hz=corte_hz)
+
+    # A DSD transfer closes its musical band at the SACD passband (20 kHz) while
+    # the noise-shaping ramp continues above it. That edge is the passband of the
+    # format, not a codec band limit and not a Nyquist-relative step, so it is not
+    # reported as a cut-off at all: the ramp itself rules the truncation out.
+    if hires["es_transferencia_dsd"] and corte_hz is not None:
+        corte_hz = None
+        clase_corte = "no_cutoff"
+        distancia = None
 
     # Transition-band slope around the ceiling: distinguishes a studio
     # anti-aliasing filter (gentle) from a brickwall or a resampler (a cliff).
