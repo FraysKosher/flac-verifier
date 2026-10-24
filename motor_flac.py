@@ -73,7 +73,8 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.7"
+VERSION_MOTOR = "9.8"
+# 9.8: Phase 8 detectors (24-bit lattice, DSD/Scarlet/DSD128, sfb21 islands, exciter, acoustic centroid).
 # 9.7: cache invalidation for the final Phase 7 detectors.
 # 9.6: Phase 5 forensic suite and validation benchmark (mirror threshold and
 #      Opus scoring refined); results invalidate older caches.
@@ -605,10 +606,12 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
             resultado["indice_original"] = indice
             lote.append(resultado)
             # Everything that cannot be rescued by album context is streamed
-            # immediately. Only suspicious tracks that `_merece_coherencia_album`
-            # could elevate are held back until the whole batch is known.
+            # immediately. Only tracks that `_merece_coherencia_album` could
+            # elevate are held back until the whole batch is known: a low
+            # ceiling is suspicious (SUSPICIOUS/PROBABLE UPSCALE) or already
+            # excused on its own by the acoustic exemption (PROBABLY LOSSLESS).
             candidata = (resultado.get("veredicto") in
-                         ("SUSPICIOUS", "PROBABLE UPSCALE")
+                         ("SUSPICIOUS", "PROBABLE UPSCALE", "PROBABLY LOSSLESS")
                          and _merece_coherencia_album(resultado))
             if candidata:
                 retenidas.append((ruta, resultado))

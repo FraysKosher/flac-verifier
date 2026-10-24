@@ -432,7 +432,8 @@ def aplicar_coherencia_album(resultados):
 
         candidatos = []
         for r in validas:
-            if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE"):
+            if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE",
+                                          "PROBABLY LOSSLESS"):
                 continue
             meta = r.get("meta") or {}
             if (meta.get("sample_rate"), meta.get("bits_per_sample")) != referencia:
