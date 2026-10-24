@@ -65,10 +65,16 @@ def calcular_score(meta, esp, bdi):
         # or low-centroid mix with clean bits and no codec signature ends its band
         # early because there is nothing above it.
         forense_bdi = bdi.get("forense_bits") or {}
+        # Fail-closed on 24-bit: when the bit-depth audit applies, only a fully
+        # active LSB lattice earns the acoustic exemption. "partial",
+        # "indeterminate" and None all mean "not verified", not "clean".
         bits_ok_acustico = (
-            bdi.get("lsbs") != "empty"
-            and not forense_bdi.get("es_padded_16_en_24")
-            and not forense_bdi.get("es_24bit_escalado_en_peine")
+            (not bdi.get("aplica"))
+            or (
+                bdi.get("lsbs") == "active"
+                and not forense_bdi.get("es_padded_16_en_24")
+                and not forense_bdi.get("es_24bit_escalado_en_peine")
+            )
         )
         sin_firmas_lossy = (
             clase == "no_cutoff"
@@ -266,7 +272,7 @@ def calcular_score(meta, esp, bdi):
                          f"limited to {rel_techo*100:.0f}% of Nyquist "
                          f"({techo/1000:.1f} kHz)")
             forense = bdi.get("forense_bits") or {}
-            if clase == "far_cutoff" or (rel_techo < 0.88 and not exencion_acustica):
+            if clase == "far_cutoff" or rel_techo < 0.88:
                 penaliza(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
                          f"{corte_txt}: the declared resolution is not backed by the "
                          f"content (consistent with a repackaged high-rate transcode)",

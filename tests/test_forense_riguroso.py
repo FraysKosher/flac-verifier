@@ -1047,10 +1047,28 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertGreaterEqual(res["esp"]["techo_hz"], 20500)
         self.assertIs(res["esp"]["corte_detectado"], False)
         self.assertGreater(res["esp"]["brecha_p90_p10_agudos_db"], 28.0)
-        self.assertGreaterEqual(res["esp"]["ratio_apagado_sfb21"], 0.20)
+        self.assertGreaterEqual(res["esp"]["ratio_apagado_sfb21"], 0.25)
         self.assertLessEqual(res["esp"]["ratio_apagado_sfb21"], 0.85)
         self.assertIs(res["esp"]["islas_mdct_sfb21"], True)
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
+
+        # Regression guard for the 0.20 -> 0.25 lower bound: the same gated
+        # band, but on ~78 % of the time, leaves a shut-off ratio between 0.20
+        # and 0.25 with the same P90-P10 gap. The 0.20 bound fired here; with
+        # 0.25 the gap alone is not enough evidence of sfb21 islands.
+        bruto = (np.sin(2.0 * np.pi * 2.5 * t) > -0.40).astype(np.float64)
+        puerta = np.clip(np.convolve(bruto, nucleo, mode="same") * 3.0, 0.0, 1.0)
+        parcial = resto + sfb21_t * puerta[:, None]
+        parcial /= np.max(np.abs(parcial)) * 1.02
+
+        ruta = self.base_path / "control_sfb21_apagado_bajo_25.flac"
+        sf.write(ruta, parcial, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreater(res["esp"]["brecha_p90_p10_agudos_db"], 28.0)
+        self.assertGreaterEqual(res["esp"]["ratio_apagado_sfb21"], 0.20)
+        self.assertLess(res["esp"]["ratio_apagado_sfb21"], 0.25)
+        self.assertIs(res["esp"]["islas_mdct_sfb21"], False)
 
         # Control: strong bass modulated at 3 Hz plus continuous highs. The
         # 4-11 kHz reference does not follow the bass, so the band never looks
@@ -1085,6 +1103,7 @@ class TestForenseRiguroso(unittest.TestCase):
         duracion = 6.0
         n = int(sr * duracion)
         t = np.arange(n) / float(sr)
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
 
         base = _crear_pista_referencia(sr, duracion=duracion, seed=126)
         rng = np.random.default_rng(2031)
@@ -1137,6 +1156,40 @@ class TestForenseRiguroso(unittest.TestCase):
 
         self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
         self.assertLess(res["esp"]["muesca_excitador_db"], 10.0)
+        self.assertIs(res["esp"]["sospecha_excitador_armonico"], False)
+
+        # Control: an ASCENDING step. The high band rises +22 dB from 15.8 kHz
+        # while the 16-20.5 kHz envelope still tracks the 8-14 kHz one. The
+        # unsigned distance between the two flanks is huge, but the sign says
+        # "rising": there is no notch, so the exciter detector must stay quiet.
+        escalon_banda = signal.sosfilt(
+            signal.butter(6, [13000.0, 20500.0], btype="band", fs=sr, output="sos"),
+            blanco * env, axis=0)
+        escalon_banda *= 0.35 / np.max(np.abs(escalon_banda))
+        musica = signal.sosfilt(
+            signal.ellip(8, 0.5, 80.0, 13000.0, btype="low", fs=sr, output="sos"),
+            fuente, axis=0)
+        rampa = np.clip((freqs - 15800.0) / (16200.0 - 15800.0), 0.0, 1.0)
+        ganancia = 10.0 ** (22.0 * (0.5 - 0.5 * np.cos(np.pi * rampa)) / 20.0)
+        escalon = np.fft.irfft(
+            np.fft.rfft(escalon_banda, axis=0) * ganancia[:, None], n, axis=0)
+        subida = musica + escalon
+        subida /= np.max(np.abs(subida)) * 1.02
+
+        # The step itself, measured on the file: mean(16.2-17.5 kHz) minus
+        # mean(14.5-15.8 kHz) is at least +20 dB.
+        curva = 20.0 * np.log10(np.maximum(
+            np.abs(np.fft.rfft(subida, axis=0)).mean(axis=1), 1e-12))
+        pre = float(np.mean(curva[(freqs >= 14500.0) & (freqs <= 15800.0)]))
+        post = float(np.mean(curva[(freqs >= 16200.0) & (freqs <= 17500.0)]))
+        self.assertGreaterEqual(post - pre, 20.0)
+
+        ruta = self.base_path / "control_escalon_ascendente_16bit.flac"
+        sf.write(ruta, subida, sr, subtype="PCM_16")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+
+        self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
+        self.assertLess(res["esp"]["muesca_excitador_db"], 15.0)
         self.assertIs(res["esp"]["sospecha_excitador_armonico"], False)
 
     def test_21c_acustico_bajo_centroide_sin_romper_regla_cd(self):
@@ -1214,6 +1267,60 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn("solo acoustic/low-centroid", " ".join(prob_bajo_con))
         self.assertFalse(any("destroyed" in p for p in prob_bajo_con))
         self.assertTrue(any("destroyed" in p for p in prob_bajo_sin))
+
+        # 24-bit: the acoustic exemption is fail-closed. Only a fully active
+        # LSB lattice earns it; "partial", "indeterminate" and None all mean
+        # "unverified", not "clean".
+        meta_24 = {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2,
+                   "duracion": 100.0}
+        bdi_24_limpio = {"aplica": True, "lsbs": "active",
+                         "forense_bits": {"es_padded_16_en_24": False,
+                                          "es_24bit_escalado_en_peine": False}}
+        esp_13000 = _esp_con_techo(13000, True)
+        _, veredicto, prob = motor_flac.calcular_score(
+            meta_24, esp_13000, bdi_24_limpio)
+        self.assertIn("solo acoustic/low-centroid", " ".join(prob))
+        self.assertFalse(any("destroyed" in p for p in prob))
+        # Rule 5 is untouched by the exemption: 24 bits below 88 % of Nyquist
+        # is not backed by the content and blocks the maximum verdict.
+        self.assertTrue(any("not backed by the content" in p for p in prob))
+        self.assertNotEqual(veredicto, "GENUINE LOSSLESS")
+
+        for estado in ("partial", "indeterminate", None):
+            bdi_24 = {"aplica": True, "lsbs": estado, "forense_bits": {}}
+
+            _, _, prob = motor_flac.calcular_score(
+                meta_24, _esp_con_techo(13000, True), bdi_24)
+            self.assertTrue(any("destroyed" in p for p in prob), estado)
+            self.assertNotIn("solo acoustic/low-centroid", " ".join(prob), estado)
+
+            esp_075 = _esp_con_techo(16538, True)
+            self.assertGreaterEqual(esp_075["techo_rel_nyquist"], 0.70)
+            self.assertLess(esp_075["techo_rel_nyquist"], 0.88)
+            _, veredicto, prob = motor_flac.calcular_score(meta_24, esp_075, bdi_24)
+            self.assertTrue(any("not backed by the content" in p for p in prob),
+                            estado)
+            self.assertNotEqual(veredicto, "GENUINE LOSSLESS", estado)
+            # A blocked score never reaches the two lossless labels, so the
+            # unverified LSB states cannot be rescued as "probably lossless"
+            # either.
+            if estado in ("indeterminate", None):
+                self.assertEqual(veredicto, "SUSPICIOUS", estado)
+
+        # A synthetic 24-bit upscale of the same low-centroid mix: clean active
+        # LSBs earn the Rule 2 exemption, but Rule 5 blocks (the first file),
+        # and a 16-bit grid inside a 24-bit container is caught by the comb.
+        for nombre, datos in (
+                ("solo_acustico_24bit_upscale.flac", acustico),
+                ("solo_acustico_16bit_en_24.flac",
+                 np.round(acustico * 32767.0) / 32767.0)):
+            ruta = self.base_path / nombre
+            sf.write(ruta, datos, sr, subtype="PCM_24")
+            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            self.assertEqual(res["meta"]["bits_per_sample"], 24)
+            self.assertIs(res["bdi"]["aplica"], True)
+            self.assertLess(res["esp"]["techo_rel_nyquist"], 0.88)
+            self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS", nombre)
 
 
 if __name__ == "__main__":

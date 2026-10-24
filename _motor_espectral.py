@@ -1083,7 +1083,7 @@ class AcumuladorPsicoacusticoSTFT:
                                      - np.percentile(arr_sfb, 10))
                 ratio_apagado = float(np.mean(arr_sfb < -55.0))
                 islas_sfb21 = bool(brecha_sfb21 > 28.0
-                                   and 0.20 <= ratio_apagado <= 0.85)
+                                   and 0.25 <= ratio_apagado <= 0.85)
 
         # Harmonic exciter / SBR: a bandwidth extension rebuilds the high band
         # from the 8-14 kHz envelope (so both move together) and leaves a notch
@@ -1111,8 +1111,11 @@ class AcumuladorPsicoacusticoSTFT:
             mask_flank_hi = (freqs > 16500.0) & (freqs <= 18500.0)
             salto_banda = 0.0
             if np.any(mask_pre) and np.any(mask_post):
-                salto_banda = float(abs(np.mean(curva_db[mask_pre])
-                                        - np.mean(curva_db[mask_post])))
+                # Signed: only a DROP going up in frequency is an exciter notch.
+                # An ascending step (mean(post) > mean(pre)) gives a negative
+                # value and must not fire the notch detector.
+                salto_banda = float(np.mean(curva_db[mask_pre])
+                                    - np.mean(curva_db[mask_post]))
             prof_notch = 0.0
             if (np.any(mask_notch) and np.any(mask_flank_lo)
                     and np.any(mask_flank_hi)):
