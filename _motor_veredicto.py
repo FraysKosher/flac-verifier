@@ -395,11 +395,18 @@ def _merece_coherencia_album(resultado):
 def aplicar_coherencia_album(resultados):
     """Vector 6: rescue 1-2 acoustic/low-HF tracks of a consistent album.
 
-    When at least 80% of the tracks in a directory are GENUINE LOSSLESS with the
-    same sample rate and bit depth, and one or two short/acoustic tracks were
-    flagged only because their spectral ceiling is low, the album context is
-    stronger evidence than the isolated spectrum: they are raised to PROBABLY
-    LOSSLESS. Returns how many tracks were raised. Modifies the list in place."""
+    A candidate is any track accepted by `_merece_coherencia_album` (only the
+    spectral ceiling is against it), whatever its current label: SUSPICIOUS or
+    PROBABLE UPSCALE, and also PROBABLY LOSSLESS when it was already excused on
+    its own by the Phase 8D acoustic exemption (`decaimiento_acustico_suave`
+    with clean bits and no lossy signature). When at least 80% of the tracks in a
+    directory are GENUINE LOSSLESS with the same sample rate and bit depth, the
+    album context is stronger evidence than the isolated spectrum, so those
+    candidates get the album validation (`coherencia_album = True` and
+    NOTA_COHERENCIA_ALBUM) and are at least PROBABLY LOSSLESS. That mark exists
+    only in this batch: it is never written into the per-file cache, so
+    analysing the track alone does not inherit it. Returns how many tracks were
+    raised or validated. Modifies the list in place."""
     from collections import Counter
 
     grupos = {}

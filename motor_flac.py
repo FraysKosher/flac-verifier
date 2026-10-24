@@ -75,6 +75,13 @@ from _motor_cache import (
 #      on 96/24 masters with an analogue roll-off).
 VERSION_MOTOR = "9.8"
 # 9.8: Phase 8 detectors (24-bit lattice, DSD/Scarlet/DSD128, sfb21 islands, exciter, acoustic centroid).
+#      Album coherence now also covers the Phase 8D acoustic exemption: a
+#      low-centroid acoustic track that already reached PROBABLY LOSSLESS on its
+#      own (smooth decay + clean bits, no lossy signature) is still held back by
+#      `analizar_archivos` and, inside a directory that is >= 80% GENUINE LOSSLESS,
+#      `aplicar_coherencia_album` marks it with `coherencia_album = True` and
+#      NOTA_COHERENCIA_ALBUM. The elevation lives only in the batch result: the
+#      individual on-disk cache keeps the track's own verdict.
 # 9.7: cache invalidation for the final Phase 7 detectors.
 # 9.6: Phase 5 forensic suite and validation benchmark (mirror threshold and
 #      Opus scoring refined); results invalidate older caches.
