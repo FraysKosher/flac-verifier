@@ -92,7 +92,7 @@ VERSION_MOTOR = "9.7"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-VERSION_ESQUEMA_CACHE = "2.2.0"
+VERSION_ESQUEMA_CACHE = "2.3.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 

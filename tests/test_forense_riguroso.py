@@ -359,28 +359,63 @@ class TestForenseRiguroso(unittest.TestCase):
     def test_15_falso_24bit_hipercomprimido_dr3_sin_muestras_bajas_es_detectado(self):
         """Hyper-compressed 16-bit source scaled into 24 bits, with no quiet samples.
 
-        Every sample stays between -18 and -1 dBFS, so the [-90, -48] dBFS
-        histogram that used to carry the whole comb detector is empty. The
-        lattice test must still see the 16-bit grid (a step near 247 integers).
+        Every sample stays inside the loud window, so the [-90, -48] dBFS bitmap
+        that used to carry the whole comb detector is empty. The unique-level
+        lattice must still see the 16-bit grid: 0.96605 is a -0.3 dB digital
+        gain, so the comb step is 0.96605 x 256 = 247 integers and not the 256
+        that a +0.2 dB gain would leave.
+
+        The real loud-window cases are covered too: a DR3/DR5 master squashed to
+        [-10, -1] or [-6, -1] dBFS has no sample in the low range and none in the
+        -18 / -12 dBFS slices either, so only the global lattice can rule.
         """
         sr = 44100
         sig = _crear_pista_referencia(sr, duracion=6.0, seed=115)
         pico = float(np.max(np.abs(sig)))
-        suelo, techo = 10 ** (-18.0 / 20.0), 10 ** (-1.0 / 20.0)
-        # Loudness-war squash: keep the waveform shape but fill the whole window.
-        comprimido = np.sign(sig) * (suelo + (np.abs(sig) / pico) * (techo - suelo))
-        q16 = np.round(comprimido * 32768.0)
-        # +0.2 dB of digital gain, straight from a real 16-bit master.
-        escalado = np.clip(q16 * 0.96605 / 32768.0, -1.0, 1.0)
+
+        def _comprimir(suelo_db, techo_db):
+            """Loudness-war squash: keep the waveform shape, fill the window."""
+            suelo, techo = 10 ** (suelo_db / 20.0), 10 ** (techo_db / 20.0)
+            return np.sign(sig) * (suelo + (np.abs(sig) / pico) * (techo - suelo))
+
+        def _falso(comprimido):
+            """16-bit master with a -0.3 dB digital gain, written into 24 bits."""
+            q16 = np.round(comprimido * 32768.0)
+            return np.clip(q16 * 0.96605 / 32768.0, -1.0, 1.0)
 
         ruta = self.base_path / "fake_24bit_loud_no_quiet_samples.flac"
-        sf.write(ruta, escalado, sr, subtype="PCM_24")
+        sf.write(ruta, _falso(_comprimir(-18.0, -1.0)), sr, subtype="PCM_24")
         res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
         forense = res["bdi"]["forense_bits"]
 
         self.assertEqual(forense["muestras_pasaje_bajo"], 0)
         self.assertTrue(forense["es_24bit_escalado_en_peine"])
+        self.assertGreater(forense["paso_reticula_mediano"], 200.0)
+        self.assertIsNotNone(forense["lsb8_entropia_bits"])
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
+
+        for suelo_db in (-10.0, -6.0):
+            etiqueta = f"{abs(int(suelo_db))}db"
+            ruta = self.base_path / f"fake_24bit_loud_{etiqueta}_no_quiet_samples.flac"
+            sf.write(ruta, _falso(_comprimir(suelo_db, -1.0)), sr, subtype="PCM_24")
+            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            r = res["bdi"]["forense_bits"]
+
+            self.assertEqual(r["muestras_pasaje_bajo"], 0)
+            self.assertTrue(r["es_24bit_escalado_en_peine"])
+            self.assertGreater(r["paso_reticula_mediano"], 100.0)
+            self.assertIsNotNone(r["lsb8_entropia_bits"])
+            self.assertGreater(r["lsb8_cajones_ocupados"], 0)
+
+        # The same -6 dBFS window, but with genuine 24-bit dither: not a comb.
+        rng = np.random.default_rng(2026)
+        lsb = 2.0 ** -23
+        dither = (rng.random(sig.shape) - rng.random(sig.shape)) * lsb
+        genuino = np.clip(_comprimir(-6.0, -1.0) + dither, -0.999, 0.999)
+        ruta = self.base_path / "genuine_24bit_loud_dither.flac"
+        sf.write(ruta, genuino, sr, subtype="PCM_24")
+        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        self.assertFalse(res["bdi"]["forense_bits"]["es_24bit_escalado_en_peine"])
 
     def test_16_master_estudio_24_48_techo_21k_suave_es_genuino_pero_mp3_320_dither_no(self):
         """A 24/48 master whose anti-alias filter is gentle is not a transcode.
@@ -454,6 +489,75 @@ class TestForenseRiguroso(unittest.TestCase):
         acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=44100)
         acumulador.anadir(bloque)
         self.assertFalse(acumulador.resultado()["es_flujo_dop"])
+
+        def _crudo_stereo(desfase_derecha):
+            """Two-channel DoP stream, split in two blocks to test the join."""
+            def _canal(marcadores):
+                carga = rng.integers(0, 1 << 16, size=n, dtype=np.int64)
+                valores = (marcadores << 16) | carga
+                return np.where(valores >= (1 << 23), valores - (1 << 24), valores)
+
+            izquierda = _canal(np.where(np.arange(n) % 2 == 0, 0x05, 0xFA))
+            derecha = _canal(np.where(np.arange(n) % 2 == desfase_derecha,
+                                      0x05, 0xFA))
+            crudo = np.column_stack([izquierda, derecha]).astype(np.float64)
+            return crudo / float(1 << 23)
+
+        # Both channels in phase: ravel() would interleave 0x05, 0x05, 0xFA, 0xFA
+        # and see no pair at all, so every marker pair must be counted per channel.
+        estereo = _crudo_stereo(desfase_derecha=0)
+        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
+        acumulador.anadir(estereo[: n // 2])
+        acumulador.anadir(estereo[n // 2 :])
+        res = acumulador.resultado()
+        self.assertTrue(res["es_flujo_dop"])
+        self.assertGreaterEqual(res["dop_ratio"], 0.90)
+
+        # Out of phase: the left channel starts at 0x05 and the right one at 0xFA.
+        estereo = _crudo_stereo(desfase_derecha=1)
+        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
+        acumulador.anadir(estereo[: n // 2])
+        acumulador.anadir(estereo[n // 2 :])
+        res = acumulador.resultado()
+        self.assertTrue(res["es_flujo_dop"])
+        self.assertGreaterEqual(res["dop_ratio"], 0.90)
+
+    def test_tono_24bit_sostenido_no_es_peine_y_reticula_ganancias(self):
+        """A sustained 24-bit tone is not a comb, but a scaled 16-bit one is.
+
+        Tonal material is the worst case for a unique-level lattice: a
+        mathematically pure sine touches only a few hundred integers and leaves
+        the lattice test unevaluated. The generator therefore adds a 0.25 Hz,
+        +/-1 % tremolo, which is what any sustained note carries and what makes
+        the occupied levels dense enough to judge.
+        """
+        sr = 48000
+        duracion = 10.0
+        n = int(sr * duracion)
+        t = np.arange(n) / float(sr)
+        envolvente = 1.0 + 0.01 * np.sin(2.0 * np.pi * 0.25 * t)
+        envolvente /= float(np.max(np.abs(envolvente)))
+        amplitud = 10 ** (-18.0 / 20.0)
+        lsb = 2.0 ** -23
+
+        def _forense(muestras):
+            acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
+            acumulador.anadir(muestras.reshape(-1, 1))
+            return acumulador.resultado()
+
+        rng = np.random.default_rng(2027)
+        for frecuencia in (440.0, 1000.0, 3000.0):
+            tono = amplitud * envolvente * np.sin(2.0 * np.pi * frecuencia * t)
+
+            dither = (rng.random(n) - rng.random(n)) * lsb
+            r = _forense(np.clip(tono + dither, -0.999, 0.999))
+            self.assertFalse(r["es_24bit_escalado_en_peine"])
+
+            q16 = np.round(tono * 32768.0) / 32768.0
+            for ganancia in (0.5, 0.7071, 0.85):
+                r = _forense(np.clip(q16 * ganancia, -0.999, 0.999))
+                self.assertTrue(r["es_24bit_escalado_en_peine"])
+                self.assertGreater(r["paso_reticula_mediano"], 100.0)
 
 
 if __name__ == "__main__":

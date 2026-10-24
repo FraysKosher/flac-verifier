@@ -12,10 +12,6 @@ FRAMES_POR_BLOQUE = 1 << 18            # 262 144 frames (~6 s at 44.1 kHz) per r
 
 MAX_MUESTRAS_BITS = 1 << 20            # sample for the LSB test
 
-# Vector 4 (lattice): absolute values kept to measure the quantisation step.
-MAX_MUESTRAS_RETICULA  = 1 << 18        # 262 144 samples are plenty for a median
-MIN_MUESTRAS_RETICULA  = 4096           # below this the median step is noise
-
 # Vector 4 (high-amplitude slices). A hyper-compressed master has no sample in
 # the [-90, -48] dBFS window, so the comb is looked for around -18 and -12 dBFS
 # instead: 1 050 000 / 8 388 608 is -18.05 dBFS and 2 100 000 is -12.03 dBFS.
@@ -297,42 +293,60 @@ class AcumuladorForenseBits:
       * zero padding (16-in-24): the eight low bits are always zero, so an OR of
         every |sample| has at least 8 trailing zeros;
       * 16 bits scaled into 24 (gain/ReplayGain/DSP): the low bits are no longer
-        zero, but they form a quantisation comb, with Shannon entropy below
-        7.45 bits or fewer than 235 of the 256 bins occupied.
+        zero, but the distinct absolute values stay on a sparse grid, the
+        quantisation comb left behind by a 16-bit source.
 
-    Three measurements are kept, because one is not enough:
-      * low range: samples between -90 and -48 dBFS, where the low bits carry no
-        musical signal and a genuine 24-bit/dithered master spreads them
-        uniformly;
-      * high-amplitude slices around -18 and -12 dBFS: a hyper-compressed master
-        never leaves the loud range, so without them the comb detector simply
-        switches itself off;
-      * lattice: the median distance between distinct absolute values. A 16-bit
-        source scaled into 24 bits keeps landing on the same sparse grid (a step
-        close to 256 x its gain), whereas genuine 24-bit dither visits
-        neighbouring integers.
+    The comb is measured on unique levels, never on sample counts, so the result
+    does not depend on how loud or how dense the programme material is. Four
+    boolean bitmaps of the whole file are kept, one bit per absolute integer:
 
-    A fourth, independent measurement looks for DoP 1.0 (DSD over PCM) framing:
+      * low window (-90 to -48 dBFS), where a genuine 24-bit/dithered master
+        spreads the levels uniformly;
+      * two high-amplitude slices around -18 and -12 dBFS, one 16-bit grid step
+        wide: a hyper-compressed master never leaves the loud range, so without
+        them the detector would simply have nothing to look at;
+      * one global bitmap of every active level, which works at any level and is
+        the one that always sees the grid.
+
+    Each bitmap is judged by the distances between consecutive occupied levels:
+    a comb leaves steps close to 256 x gain, while genuine dither visits
+    neighbouring integers. The tenth percentile of those distances is reported
+    as the lattice step.
+
+    A fifth, independent measurement looks for DoP 1.0 (DSD over PCM) framing:
     at 24 bits and 176.4 kHz or above, a DoP stream marks every sample with
-    0x05 or 0xFA in its top byte, alternating."""
-
-    MIN_MUESTRAS_BAJAS     = 2048
-    MIN_MUESTRAS_REBANADA  = 2048
+    0x05 or 0xFA in its top byte, alternating. It is tracked per channel, so
+    interleaved stereo keeps its L/R pairs instead of mixing them."""
 
     def __init__(self, bits_per_sample, sample_rate=0):
         self.bits = int(bits_per_sample)
         self.sr = int(sample_rate or 0)
         self.max_val = float(1 << (self.bits - 1))
         self._or = 0
-        self._hist = np.zeros(256, dtype=np.int64)
         self._muestras = 0
+
+        # Integer bounds of the low window [-90, -48] dBFS.
+        self.bajo_int = int(np.rint(self.max_val * (10.0 ** (-90.0 / 20.0))))
+        self.alto_int = int(np.rint(self.max_val * (10.0 ** (-48.0 / 20.0))))
+        self.ancho_bajo = max(1, self.alto_int - self.bajo_int + 1)
+
+        if self.bits == 24:
+            self._bitmap_bajo = np.zeros(self.ancho_bajo, dtype=bool)
+            self._bitmap_reb1 = np.zeros(REBANADA_ANCHO, dtype=bool)
+            self._bitmap_reb2 = np.zeros(REBANADA_ANCHO, dtype=bool)
+            self._bitmap_global = np.zeros(int(self.max_val) + 1, dtype=bool)
+        else:
+            self._bitmap_bajo = None
+            self._bitmap_reb1 = None
+            self._bitmap_reb2 = None
+            self._bitmap_global = None
+
+        # Samples that fed each bitmap: they decide whether it is judged at all.
         self._muestras_bajas = 0
-        # High-amplitude slices: only meaningful when the low range is empty.
-        self._hist_reb1 = np.zeros(256, dtype=np.int64)
-        self._hist_reb2 = np.zeros(256, dtype=np.int64)
-        # Lattice: a bounded sample of the active absolute values.
-        self._muestra_absq = []
-        self._total_muestra_absq = 0
+        self._muestras_reb1 = 0
+        self._muestras_reb2 = 0
+        self._muestras_activas = 0
+
         # DoP 1.0 framing counters (0x05 / 0xFA marker bytes).
         self._dop_validos = 0
         self._dop_pares = 0
@@ -343,20 +357,25 @@ class AcumuladorForenseBits:
 
         The marker lives in the most significant byte of the 24-bit integer, so
         the shift is applied to the SIGNED sample: 0xFA0000 is a negative value
-        whose byte is 0xFA, which |q| would report as 0x06."""
-        tops = ((q.ravel() >> 16) & 0xFF).astype(np.int16)
-        if self._dop_ultimo is not None:
-            tops = np.concatenate((np.array([self._dop_ultimo], dtype=np.int16), tops))
-        if tops.size == 0:
+        whose byte is 0xFA, which |q| would report as 0x06. The scan stays 2D,
+        one column per channel: ravel() would interleave L and R and destroy
+        every marker pair of a stereo stream."""
+        vista = q[:, None] if q.ndim == 1 else q
+        if vista.shape[0] == 0:
             return
-        if tops.size >= 2:
-            anterior  = tops[:-1]
-            siguiente = tops[1:]
+        tops = ((vista >> 16) & 0xFF).astype(np.int16)
+        if self._dop_ultimo is not None and self._dop_ultimo.shape[0] == tops.shape[1]:
+            tops = np.vstack((self._dop_ultimo[None, :], tops))
+        if tops.shape[0] >= 2:
+            anterior = tops[:-1, :]
+            siguiente = tops[1:, :]
             validos = (((anterior == 0x05) & (siguiente == 0xFA))
-                       | ((anterior == 0xFA) & (siguiente == 0x05)))
+                       | ((anterior == 0xFA) & (siguiente == 0x05))
+                       | ((anterior == 0x06) & (siguiente == 0xF9))
+                       | ((anterior == 0xF9) & (siguiente == 0x06)))
             self._dop_pares += int(validos.size)
             self._dop_validos += int(np.count_nonzero(validos))
-        self._dop_ultimo = int(tops[-1])
+        self._dop_ultimo = tops[-1, :].copy()
 
     def anadir(self, bloque):
         if self.bits != 24 or bloque.shape[0] == 0:
@@ -364,46 +383,77 @@ class AcumuladorForenseBits:
         q = np.rint(np.asarray(bloque, dtype=np.float64) * self.max_val)
         q = np.clip(q, -self.max_val, self.max_val - 1.0).astype(np.int64)
         self._muestras += int(q.size)
-        self._or |= int(np.bitwise_or.reduce(np.abs(q).ravel()))
+        absq = np.abs(q).ravel()
+        self._or |= int(np.bitwise_or.reduce(absq))
 
-        absq = np.abs(q)
-        bajo = self.max_val * 10.0 ** (-90.0 / 20.0)
-        alto = self.max_val * 10.0 ** (-48.0 / 20.0)
-        seleccion = absq[(absq >= bajo) & (absq <= alto)]
-        if seleccion.size:
-            residuos = (seleccion & 0xFF).astype(np.uint8)
-            self._hist += np.bincount(residuos, minlength=256)
-            self._muestras_bajas += int(residuos.size)
+        mask_b = (absq >= self.bajo_int) & (absq <= self.alto_int)
+        if np.any(mask_b):
+            self._bitmap_bajo[absq[mask_b] - self.bajo_int] = True
+            self._muestras_bajas += int(np.count_nonzero(mask_b))
 
-        # High-amplitude slices: the same low-byte histogram, an octave and a
-        # half above the quiet window.
-        for base, hist in ((REBANADA_1_BASE, self._hist_reb1),
-                           (REBANADA_2_BASE, self._hist_reb2)):
-            sel = absq[(absq >= base) & (absq < base + REBANADA_ANCHO)]
-            if sel.size:
-                hist += np.bincount((sel & 0xFF).astype(np.uint8), minlength=256)
+        mask_1 = (absq >= REBANADA_1_BASE) & (absq < REBANADA_1_BASE + REBANADA_ANCHO)
+        if np.any(mask_1):
+            self._bitmap_reb1[absq[mask_1] - REBANADA_1_BASE] = True
+            self._muestras_reb1 += int(np.count_nonzero(mask_1))
 
-        # Lattice: keep a bounded sample of the active absolute values.
-        if self._total_muestra_absq < MAX_MUESTRAS_RETICULA:
-            activos = absq[absq > 0]
-            if activos.size:
-                margen = MAX_MUESTRAS_RETICULA - self._total_muestra_absq
-                tomar = activos[:margen]
-                self._muestra_absq.append(tomar)
-                self._total_muestra_absq += int(tomar.size)
+        mask_2 = (absq >= REBANADA_2_BASE) & (absq < REBANADA_2_BASE + REBANADA_ANCHO)
+        if np.any(mask_2):
+            self._bitmap_reb2[absq[mask_2] - REBANADA_2_BASE] = True
+            self._muestras_reb2 += int(np.count_nonzero(mask_2))
+
+        activos = absq[absq > 0]
+        if activos.size:
+            self._bitmap_global[activos] = True
+            self._muestras_activas += int(activos.size)
 
         if self.bits == 24 and self.sr >= 176400:
             self._seguir_dop(q)
 
-    def _paso_reticula(self):
-        """Median distance between distinct absolute values (1.0 if unknown)."""
-        if self._total_muestra_absq < MIN_MUESTRAS_RETICULA:
-            return 1.0
-        arr_muestras = np.concatenate(self._muestra_absq)
-        unicos = np.unique(arr_muestras)
-        if unicos.size < 64:
-            return 1.0
-        return float(np.median(np.diff(unicos)))
+    @staticmethod
+    def _evaluar_bitmap(bitmap, offset, n_muestras):
+        """Evaluates the unique-level lattice inside a boolean bitmap window.
+
+        Only the occupied levels matter, never how many samples hit them, so a
+        quiet window with few samples is reported as not evaluated instead of
+        being mistaken for a comb. The comb test is `p10 > 16`, the distance
+        that separates the 16-bit grid (256 x gain integers) from dither that
+        visits neighbouring levels."""
+        niveles_unicos = np.flatnonzero(bitmap) + int(offset)
+        n_unicos = int(niveles_unicos.size)
+        if n_muestras < 2048 or n_unicos < 64:
+            return {
+                "evaluado": False,
+                "es_peine": False,
+                "p10": 1.0,
+                "entropia": None,
+                "cajones": n_unicos,
+            }
+        hist_mod = np.bincount((niveles_unicos & 0xFF).astype(np.uint8), minlength=256)
+        cajones = int(np.count_nonzero(hist_mod))
+        p = hist_mod[hist_mod > 0] / float(n_unicos)
+        entropia = float(-np.sum(p * np.log2(p)))
+
+        diffs = np.diff(niveles_unicos)
+        diffs_locales = diffs[diffs <= 1024]
+        if diffs_locales.size < 32:
+            return {
+                "evaluado": False,
+                "es_peine": False,
+                "p10": 1.0,
+                "entropia": entropia,
+                "cajones": cajones,
+            }
+        p10 = float(np.percentile(diffs_locales, 10))
+        med = float(np.median(diffs_locales))
+        frac = float(np.mean(np.abs(diffs_locales - med) <= 2.0))
+        es_peine = bool(p10 > 16.0 and frac >= 0.70)
+        return {
+            "evaluado": True,
+            "es_peine": es_peine,
+            "p10": p10,
+            "entropia": entropia,
+            "cajones": cajones,
+        }
 
     def resultado(self):
         if self.bits != 24 or self._muestras == 0:
@@ -416,41 +466,43 @@ class AcumuladorForenseBits:
             ceros = (valor_or & -valor_or).bit_length() - 1
         padded = bool(valor_or and ceros >= 8)
 
-        def _calc_h(hist):
-            """(entropy in bits, occupied bins, total samples) of a 256-bin LSB
-            histogram. Entropy is None when the histogram is empty."""
-            tot = int(hist.sum())
-            if not tot:
-                return None, 0, 0
-            p = hist[hist > 0] / float(tot)
-            return float(-np.sum(p * np.log2(p))), int(np.count_nonzero(hist)), tot
-
-        entropia_bajo, ocupados_bajo, tot_bajo = _calc_h(self._hist)
-        entropia_reb1, ocupados_reb1, tot_reb1 = _calc_h(self._hist_reb1)
-        entropia_reb2, ocupados_reb2, tot_reb2 = _calc_h(self._hist_reb2)
-
-        paso_reticula = self._paso_reticula()
+        r_bajo = self._evaluar_bitmap(self._bitmap_bajo, self.bajo_int,
+                                      self._muestras_bajas)
+        r_reb1 = self._evaluar_bitmap(self._bitmap_reb1, REBANADA_1_BASE,
+                                      self._muestras_reb1)
+        r_reb2 = self._evaluar_bitmap(self._bitmap_reb2, REBANADA_2_BASE,
+                                      self._muestras_reb2)
+        r_glob = self._evaluar_bitmap(self._bitmap_global, 0, self._muestras_activas)
+        ventanas = (r_bajo, r_reb1, r_reb2, r_glob)
 
         if not padded:
-            if tot_bajo >= self.MIN_MUESTRAS_BAJAS:
-                peine = bool(entropia_bajo < 7.45 or ocupados_bajo < 235)
-                entropia_rep, ocupados_rep = entropia_bajo, ocupados_bajo
-            else:
-                # No quiet samples: judge the loud slices and the lattice instead.
-                peine_reb = False
-                entropia_rep, ocupados_rep = None, 0
-                for e_r, o_r, t_r in ((entropia_reb1, ocupados_reb1, tot_reb1),
-                                      (entropia_reb2, ocupados_reb2, tot_reb2)):
-                    if t_r >= self.MIN_MUESTRAS_REBANADA and (e_r < 7.20 or o_r < 180):
-                        peine_reb = True
-                        entropia_rep, ocupados_rep = e_r, o_r
+            peine = any(r["es_peine"] for r in ventanas)
+            # Representative window: the first one that saw the comb, otherwise
+            # the first one that could be measured at all (the low window if
+            # nothing could be measured).
+            rep = None
+            for r in ventanas:
+                if r["es_peine"]:
+                    rep = r
+                    break
+            if rep is None:
+                for r in ventanas:
+                    if r["evaluado"]:
+                        rep = r
                         break
-                peine = bool(peine_reb or (paso_reticula > 16.0))
-                if not peine_reb:
-                    entropia_rep, ocupados_rep = entropia_bajo, ocupados_bajo
+            if rep is None:
+                rep = r_bajo
+            entropia_rep = rep["entropia"]
+            ocupados_rep = rep["cajones"]
+            if peine:
+                paso_reticula = rep["p10"]
+            else:
+                paso_reticula = r_glob["p10"] if r_glob["evaluado"] else rep["p10"]
         else:
             peine = False
-            entropia_rep, ocupados_rep = entropia_bajo, ocupados_bajo
+            entropia_rep = r_bajo["entropia"]
+            ocupados_rep = r_bajo["cajones"]
+            paso_reticula = 1.0
 
         dop_pares = int(self._dop_pares)
         dop_ratio = (self._dop_validos / float(dop_pares)) if dop_pares else 0.0
@@ -463,7 +515,7 @@ class AcumuladorForenseBits:
             "trailing_zeros_lsb":         int(ceros),
             "lsb8_entropia_bits":         round(entropia_rep, 3) if entropia_rep is not None else None,
             "lsb8_cajones_ocupados":      ocupados_rep,
-            "muestras_pasaje_bajo":       int(tot_bajo),
+            "muestras_pasaje_bajo":       int(self._muestras_bajas),
             "paso_reticula_mediano":      round(paso_reticula, 2),
             "es_24bit_escalado_en_peine": peine,
             "es_flujo_dop":              es_flujo_dop,
