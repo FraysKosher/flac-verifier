@@ -106,7 +106,7 @@ class TestForenseRiguroso(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_01_hires_analog_rolloff_no_es_falso_positivo(self):
+    def test_01_hires_analog_rolloff_no_is_false_positive(self):
         """24/96 analogue master: smooth 18 kHz roll-off plus -104 dBFS dither."""
         sr = 96000
         rng = np.random.default_rng(2026)
@@ -121,7 +121,7 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
-    def test_02_upscale_brickwall_44_a_96_es_detectado(self):
+    def test_02_upscale_brickwall_44_96_is_detected(self):
         """CD 16/44.1 -> 24/96 with a sinc resampler: brickwall at 22.05 kHz."""
         sig_44 = _crear_pista_referencia(44100, duracion=8.0, seed=102)
         sig_96 = signal.resample_poly(sig_44, up=320, down=147, axis=0)
@@ -131,7 +131,7 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], ("PROBABLE UPSCALE", "SUSPICIOUS"))
 
-    def test_03_upscale_aliasing_espejo_sin_filtro_es_detectado(self):
+    def test_03_upscale_aliasing_mirror_without_filter_is_detected(self):
         """44.1 -> 88.2 linear interpolation: the image mirrors around 22.05 kHz."""
         sig_44 = _crear_pista_referencia(44100, duracion=8.0, seed=103)
         n = sig_44.shape[0]
@@ -146,7 +146,7 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS")
 
-    def test_04_falso_24bit_con_padding_de_16bit(self):
+    def test_04_false_24bit_with_padding_16bit(self):
         """16-bit samples stored in a 24-bit container (8 LSBs always zero)."""
         sig = _crear_pista_referencia(44100, duracion=6.0, seed=104)
         sig_q16 = np.round(sig * 32767.0) / 32768.0
@@ -175,7 +175,7 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
 
-    def test_06_intro_larga_suave_no_engana_al_motor(self):
+    def test_06_intro_long_smooth_no_fools_engine(self):
         """50 s of quiet low-frequency intro followed by 12 s of full band."""
         sr = 44100
         n_intro = sr * 50
@@ -192,7 +192,7 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
-    def test_07_pista_silencio_digital_no_produce_nan_ni_crash(self):
+    def test_07_track_silence_digital_no_produces_nan_nor_crash(self):
         """100% zeros: no verdict, no NaN/Inf, no exception."""
         sr = 44100
         ceros = np.zeros((sr * 4, 2), dtype=np.float32)
@@ -213,7 +213,7 @@ class TestForenseRiguroso(unittest.TestCase):
             for indice, hijo in enumerate(valor):
                 self._assert_finito(hijo, f"{ruta}[{indice}]")
 
-    def test_08_transferencia_dsd_detectada_y_no_penalizada(self):
+    def test_08_transfer_dsd_detected_no_penalized(self):
         """DSD64-like 88.2 kHz: music <20 kHz plus an ultrasonic noise ramp."""
         sr = 88200
         sig = _dsd_like(sr, duracion=4.0, seed=108)
@@ -224,7 +224,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
-    def test_09_transcode_opus_20k_es_detectado(self):
+    def test_09_transcode_opus_20k_is_detected(self):
         """Realistic libopus fullband: 20.00 kHz cliff + frame-varying cut-off."""
         sr = 44100
         sig = _crear_pista_referencia(sr, duracion=6.0, seed=109)
@@ -237,7 +237,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertGreater(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertEqual(res["veredicto"], "SUSPICIOUS")
 
-    def test_11_bajo_fuerte_con_filtro_estatico_no_dispara_jitter(self):
+    def test_11_low_strong_with_filter_static_no_triggers_jitter(self):
         """Strong bass plus a static 20 kHz low-pass must not fake cut-off jitter.
 
         The instantaneous threshold is referenced to the 4-11 kHz band energy of
@@ -264,7 +264,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
         self.assertFalse(any("jitter" in p.lower() for p in res["problemas"]))
 
-    def test_10_falso_24bit_escalado_en_peine_es_detectado(self):
+    def test_10_false_24bit_upscaled_comb_is_detected(self):
         """16-bit grid scaled by a gain into 24 bits: LSB quantisation comb."""
         sig = _crear_pista_referencia(44100, duracion=6.0, seed=110)
         q16 = np.round(sig * 32767.0) / 32768.0
@@ -277,7 +277,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn(res["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 
 
-    def test_12_transcode_lossy_con_dither_a_96k_no_es_rolloff_analogico(self):
+    def test_12_transcode_lossy_with_dither_96k_no_is_rolloff_analog(self):
         """A lossy source cut at 15.8 kHz, re-sampled to 24/96 with flat dither.
 
         The dither floor is continuous up to Nyquist, but there is a prior abrupt
@@ -302,7 +302,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
 
 
-    def test_13_pista_24bit_pocas_muestras_bajas_no_dispara_falso_peine(self):
+    def test_13_track_24bit_few_samples_low_no_triggers_false_comb(self):
         """Only 500 samples in the low range: occupancy alone is not a comb.
 
         With 256 samples the 256-bin histogram is expected to fill only ~160
@@ -338,7 +338,7 @@ class TestForenseRiguroso(unittest.TestCase):
                              for p in res["problemas"]))
 
 
-    def test_14_voces_sin_platillos_no_disparan_jitter_artificial(self):
+    def test_14_voices_without_cymbals_no_trigger_jitter_artificial(self):
         """Voice/guitar frames without cymbals have no >14 kHz intermittency."""
         sr = 44100
         base = _crear_pista_referencia(sr, duracion=6.0, seed=114)
@@ -356,7 +356,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertFalse(any("jitter" in p.lower() for p in res["problemas"]))
 
-    def test_15_falso_24bit_hipercomprimido_dr3_sin_muestras_bajas_es_detectado(self):
+    def test_15_false_24bit_hypercompressed_dr3_without_samples_low_is_detected(self):
         """Hyper-compressed 16-bit source scaled into 24 bits, with no quiet samples.
 
         Every sample stays inside the loud window, so the [-90, -48] dBFS bitmap
@@ -423,7 +423,7 @@ class TestForenseRiguroso(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertFalse(res["bdi"]["forense_bits"]["es_24bit_escalado_en_peine"])
 
-    def test_16_master_estudio_24_48_techo_21k_suave_es_genuino_pero_mp3_320_dither_no(self):
+    def test_16_master_studio_24_48_ceiling_21k_smooth_is_genuine_but_mp3_320_dither_no(self):
         """A 24/48 master whose anti-alias filter is gentle is not a transcode.
 
         Both files end up with a ceiling around 21 kHz (88-95 % of Nyquist), which
@@ -528,7 +528,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertTrue(res["es_flujo_dop"])
         self.assertGreaterEqual(res["dop_ratio"], 0.90)
 
-    def test_tono_24bit_sostenido_no_es_peine_y_reticula_ganancias(self):
+    def test_tone_24bit_sustained_no_is_comb_grid_gains(self):
         """A sustained 24-bit tone is not a comb, but a scaled 16-bit one is.
 
         Tonal material is the worst case for a unique-level lattice: a
@@ -572,7 +572,7 @@ class TestForenseRiguroso(unittest.TestCase):
                 self.assertTrue(r["es_24bit_escalado_en_peine"])
                 self.assertGreater(r["paso_reticula_mediano"], 100.0)
 
-    def test_17_subbajo_808_masivo_no_ciega_techo_espectral(self):
+    def test_17_subbass_808_massive_no_blinds_ceiling_spectral(self):
         """A dominant 50 Hz line must not hide the ceiling of the rest of the band.
 
         With the global peak as reference level every other band sits more than
@@ -597,7 +597,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertGreaterEqual(res["esp"]["techo_hz"], 20000)
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
-    def test_17b_bajo_moderado_no_altera_ancla_global(self):
+    def test_17b_low_moderate_no_changes_anchor_global(self):
         """Normal bass keeps the global-maximum normalization, bin for bin.
 
         The re-anchor must only fire on a sub-bass peak that takes over the whole
@@ -647,7 +647,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertEqual(_techo_medido(potencia), _techo_con_ancla(potencia, 0.0))
         self.assertGreater(_techo_medido(potencia), _techo_con_ancla(potencia, 20.0))
 
-    def test_18_dual_mono_digital_no_pierde_voto_estereo(self):
+    def test_18_dual_mono_digital_no_loses_vote_stereo(self):
         """L == R: stereo separation cannot vote, and the file stays genuine.
 
         The separation vote is no longer lost because the metric is not
@@ -673,7 +673,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertEqual(res["score"], 1.0)
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
-    def test_18b_dual_mono_analogico_espectral_24_20_db_y_control_estereo(self):
+    def test_18b_dual_mono_analog_spectral_24_20_db_control_stereo(self):
         """Analogue dual mono sits 20-32 dB below Mid, not 45: it must be caught.
 
         Two converters fed with the same mono signal leave a Side channel that is
@@ -922,7 +922,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertIs(res["esp"]["corte_detectado"], True)
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
 
-    def test_20_vinilo_con_3_chasquidos_aislados_no_dispara_gibbs_lossy(self):
+    def test_20_vinyl_with_3_clicks_isolated_no_triggers_gibbs_lossy(self):
         """Three vinyl clicks are not a lossy reconstruction pattern.
 
         Isolated 1-sample events with a band limit below 20.5 kHz used to be
@@ -946,7 +946,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertEqual(res["esp"]["clipping_eventos"], 3)
         self.assertFalse(res["esp"]["clipping_reconstruccion_lossy"])
 
-    def test_20b_gibbs_positivo_10_eventos_8_cortos(self):
+    def test_20b_gibbs_positive_10_events_8_short(self):
         """The Gibbs rule needs a pattern: 10 events and 8 short ones.
 
         Nine events or only seven short ones in ten must not be enough, on the
@@ -1002,7 +1002,7 @@ class TestForenseRiguroso(unittest.TestCase):
             self.assertEqual(res["esp"]["clipping_eventos"], eventos)
             self.assertIs(res["esp"]["clipping_reconstruccion_lossy"], False)
 
-    def test_21_islas_mdct_sfb21_sin_lowpass(self):
+    def test_21_islands_mdct_sfb21_without_lowpass(self):
         """A codec that disables its low-pass zeroes sfb21 only in some frames.
 
         The top scalefactor band (16-20.5 kHz) switches on and off frame by
@@ -1192,7 +1192,7 @@ class TestForenseRiguroso(unittest.TestCase):
         self.assertLess(res["esp"]["muesca_excitador_db"], 15.0)
         self.assertIs(res["esp"]["sospecha_excitador_armonico"], False)
 
-    def test_21c_acustico_bajo_centroide_sin_romper_regla_cd(self):
+    def test_21c_acoustic_low_centroid_without_break_rule_cd(self):
         """A solo acoustic mix ends its band early and is not an upscale.
 
         The centroid sits around 1400 Hz (a rule with a 1200 Hz threshold would

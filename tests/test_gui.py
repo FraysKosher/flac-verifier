@@ -127,13 +127,13 @@ class ProcesoFalso:
 class TestComando(unittest.TestCase):
     """The subprocess command is what keeps the GUI from blocking."""
 
-    def test_lleva_u_para_no_almacenar_en_buffer(self):
+    def test_carries_u_for_no_store_buffer(self):
         comando = gui.build_command("C:/Music/Album")
         self.assertEqual(comando[0], sys.executable)
         self.assertEqual(comando[1], "-u")          # without this there is no real time
         self.assertTrue(comando[2].endswith("motor_flac.py"))
 
-    def test_opciones_por_defecto(self):
+    def test_options_by_default(self):
         comando = gui.build_command("C:/Album")
         self.assertIn("--mode", comando)
         self.assertEqual(comando[comando.index("--mode") + 1], "center")
@@ -141,95 +141,95 @@ class TestComando(unittest.TestCase):
         self.assertNotIn("--workers", comando)      # 0 = the engine chooses
         self.assertNotIn("--no-cache", comando)
 
-    def test_modo_segundos_añade_el_valor(self):
+    def test_mode_seconds_adds_value(self):
         comando = gui.build_command("C:/Album", mode="seconds", seconds=20)
         self.assertEqual(comando[comando.index("--seconds") + 1], "20")
 
-    def test_workers_y_cache(self):
+    def test_workers_cache(self):
         comando = gui.build_command("C:/Album", workers=4, without_cache=True)
         self.assertEqual(comando[comando.index("--workers") + 1], "4")
         self.assertIn("--no-cache", comando)
 
-    def test_sin_pdf_no_se_pide_informe(self):
+    def test_without_pdf_no_requests_report(self):
         self.assertNotIn("--pdf", gui.build_command("C:/Album", pdf=False))
 
 
 class TestParseo(unittest.TestCase):
 
-    def test_evento_correcto(self):
+    def test_event_correct(self):
         evento = gui.parse_event('{"tipo": "resultado", "archivo": "a.flac"}')
         self.assertEqual(evento, {"tipo": "resultado", "archivo": "a.flac"})
 
-    def test_linea_vacia_devuelve_none(self):
+    def test_line_empty_returns_none(self):
         self.assertIsNone(gui.parse_event(""))
         self.assertIsNone(gui.parse_event("   \n"))
 
-    def test_linea_ilegible_no_lanza(self):
+    def test_line_unreadable_no_raises(self):
         evento = gui.parse_event("this is not json")
         self.assertEqual(evento["tipo"], "__ilegible__")
         self.assertIn("this is not json", evento["mensaje"])
 
-    def test_json_que_no_es_objeto(self):
+    def test_json_no_is_object(self):
         self.assertEqual(gui.parse_event("[1, 2, 3]")["tipo"], "__ilegible__")
         self.assertEqual(gui.parse_event('"hello"')["tipo"], "__ilegible__")
 
-    def test_evento_sin_tipo(self):
+    def test_event_without_kind(self):
         self.assertEqual(gui.parse_event('{"total": 3}')["tipo"], "__desconocido__")
 
-    def test_los_acentos_llegan_bien(self):
+    def test_accents_arrive_well(self):
         evento = gui.parse_event(json.dumps({"tipo": "aviso", "mensaje": "naïve"}))
         self.assertEqual(evento["mensaje"], "naïve")
 
 
 class TestFormato(unittest.TestCase):
 
-    def test_resultado_correcto(self):
+    def test_result_correct(self):
         texto = gui.format_result({"archivo": "01 - Luminol.flac",
                                          "veredicto": "GENUINE LOSSLESS",
                                          "score": 1.0, "problemas": []})
         self.assertEqual(texto, "[OK] 01 - Luminol.flac: GENUINE LOSSLESS · "
                                 "score 100 % · 0 issues")
 
-    def test_resultado_con_un_solo_problema_no_pluraliza(self):
+    def test_result_with_only_problem_no_pluralizes(self):
         texto = gui.format_result({"archivo": "a.flac", "veredicto": "SUSPICIOUS",
                                          "score": 0.5, "problemas": ["one"]})
         self.assertIn("[SUSPICIOUS]", texto)
         self.assertTrue(texto.endswith("1 issue"), texto)
         self.assertNotIn("1 issues", texto)
 
-    def test_resultado_desde_cache(self):
+    def test_result_from_cache(self):
         texto = gui.format_result({"archivo": "a.flac", "veredicto": "SUSPICIOUS",
                                          "desde_cache": True})
         self.assertIn("cache", texto)
 
-    def test_resultado_con_error(self):
+    def test_result_with_error(self):
         texto = gui.format_result({"archivo": "a.flac", "error": "invalid signature"})
         self.assertEqual(texto, "[ERROR] a.flac: invalid signature")
 
-    def test_resumen_verde_solo_con_genuinos(self):
+    def test_summary_green_only_with_genuine(self):
         color, texto = gui.format_summary(
             [{"tipo": "resultado", "veredicto": "GENUINE LOSSLESS"}] * 3)
         self.assertEqual(color, "verde")
         self.assertIn("3 genuine", texto)
 
-    def test_resumen_amarillo_con_probables(self):
+    def test_summary_yellow_with_probable(self):
         color, _ = gui.format_summary([
             {"tipo": "resultado", "veredicto": "GENUINE LOSSLESS"},
             {"tipo": "resultado", "veredicto": "PROBABLY LOSSLESS"}])
         self.assertEqual(color, "amarillo")
 
-    def test_resumen_naranja_con_dudosos(self):
+    def test_summary_orange_with_doubtful(self):
         color, _ = gui.format_summary([
             {"tipo": "resultado", "veredicto": "SUSPICIOUS"}])
         self.assertEqual(color, "naranja")
 
-    def test_resumen_rojo_con_upscale_o_error(self):
+    def test_summary_red_with_upscale_o_error(self):
         color, _ = gui.format_summary([{"tipo": "resultado", "veredicto": "PROBABLE UPSCALE"}])
         self.assertEqual(color, "rojo")
         color, _ = gui.format_summary([{"tipo": "resultado", "error": "x"}])
         self.assertEqual(color, "rojo")
 
-    def test_resumen_ignora_eventos_que_no_son_resultado(self):
+    def test_summary_ignores_events_no_are_result(self):
         color, texto = gui.format_summary([{"tipo": "inicio", "total": 5}])
         self.assertEqual(color, "gris")
         self.assertEqual(texto, "No results")
@@ -237,17 +237,17 @@ class TestFormato(unittest.TestCase):
 
 class TestArrastrarYSoltar(unittest.TestCase):
 
-    def test_rutas_con_espacios_entre_llaves(self):
+    def test_paths_with_spaces_between_braces(self):
         self.assertEqual(gui.dnd_paths("{C:/my music/Album 1} D:/other/path"),
                          ["C:/my music/Album 1", "D:/other/path"])
 
-    def test_ruta_simple(self):
+    def test_path_simple(self):
         self.assertEqual(gui.dnd_paths("C:/Album"), ["C:/Album"])
 
-    def test_vacio(self):
+    def test_empty(self):
         self.assertEqual(gui.dnd_paths(""), [])
 
-    def test_sin_tkinterdnd2_la_clase_base_no_lo_mezcla(self):
+    def test_without_tkinterdnd2_category_base_no_mix(self):
         """Without the library, the window simply inherits from ctk.CTk and does not fail."""
         if DND_REAL:
             self.skipTest("tkinterdnd2 is installed")
@@ -256,7 +256,7 @@ class TestArrastrarYSoltar(unittest.TestCase):
         # the real requirement: nothing may break because it is missing
         self.assertTrue(issubclass(gui.FlacVerifierWindow, ctk.CTk))
 
-    def test_con_tkinterdnd2_simulado_se_mezcla_el_envoltorio(self):
+    def test_with_tkinterdnd2_mocked_mix_wrapper(self):
         """The optional path has to work without the library installed."""
         envoltorio = type("DnDWrapper", (), {})
         raiz_dnd = type("TkinterDnD", (), {"DnDWrapper": envoltorio,
@@ -278,14 +278,14 @@ class TestArrastrarYSoltar(unittest.TestCase):
 
 class TestAbrirArchivo(unittest.TestCase):
 
-    def test_windows_usa_startfile(self):
+    def test_windows_uses_startfile(self):
         falso_os = mock.MagicMock()
         falso_os.name = "nt"
         with mock.patch.object(gui, "os", falso_os):
             self.assertTrue(gui.open_file("C:/a.pdf"))
         falso_os.startfile.assert_called_once_with("C:/a.pdf")
 
-    def test_unix_usa_el_visor_del_sistema(self):
+    def test_unix_uses_viewer_system(self):
         falso_os = mock.MagicMock()
         falso_os.name = "posix"
         falso_sys = mock.MagicMock()
@@ -296,7 +296,7 @@ class TestAbrirArchivo(unittest.TestCase):
             self.assertTrue(gui.open_file("/tmp/a.pdf"))
         popen.assert_called_once_with(["xdg-open", "/tmp/a.pdf"])
 
-    def test_mac_usa_open(self):
+    def test_mac_uses_open(self):
         falso_os = mock.MagicMock()
         falso_os.name = "posix"
         falso_sys = mock.MagicMock()
@@ -307,7 +307,7 @@ class TestAbrirArchivo(unittest.TestCase):
             self.assertTrue(gui.open_file("/tmp/a.pdf"))
         popen.assert_called_once_with(["open", "/tmp/a.pdf"])
 
-    def test_un_fallo_no_lanza(self):
+    def test_failure_no_raises(self):
         falso_os = mock.MagicMock()
         falso_os.name = "nt"
         falso_os.startfile.side_effect = OSError("no viewer")
@@ -325,7 +325,7 @@ class TestGestorProceso(unittest.TestCase):
             return proceso
         return gui.ProcessManager(queue.Queue(), lanzador=lanzador), llamadas
 
-    def test_arranca_con_las_opciones_criticas_de_windows(self):
+    def test_starts_with_options_critical_windows(self):
         proceso = ProcesoFalso(['{"tipo": "inicio", "total": 1}'])
         llamadas = []
         gestor, _ = self._gestor(proceso, llamadas)
@@ -343,7 +343,7 @@ class TestGestorProceso(unittest.TestCase):
             self.assertEqual(opciones["creationflags"],
                              getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
-    def test_los_eventos_llegan_a_la_cola_y_termina_con_fin(self):
+    def test_events_arrive_queue_finishes_with_end(self):
         proceso = ProcesoFalso(['{"tipo": "inicio", "total": 1}',
                                 '{"tipo": "resultado", "archivo": "a.flac", "veredicto": "SUSPICIOUS"}',
                                 '{"tipo": "fin"}'])
@@ -358,7 +358,7 @@ class TestGestorProceso(unittest.TestCase):
         self.assertEqual(recibidos[-1][0], "fin")
         self.assertEqual(recibidos[-1][1]["codigo"], 0)
 
-    def test_stderr_va_a_la_cola_como_aviso(self):
+    def test_stderr_goes_queue_as_warning(self):
         proceso = ProcesoFalso(['{"tipo": "fin"}'], error=["[clipping] something odd"])
         gestor, _ = self._gestor(proceso)
         gestor.start("C:/Album")
@@ -368,7 +368,7 @@ class TestGestorProceso(unittest.TestCase):
             canales.append(gestor.message_queue.get_nowait()[0])
         self.assertIn("stderr", canales)
 
-    def test_no_deja_arrancar_dos_veces(self):
+    def test_no_leaves_start_two_times(self):
         # The stream is held open: the second call has to be refused because the
         # first analysis is still running, not because the reader raced ahead.
         proceso = ProcesoFalso(['{"tipo": "fin"}'], bloquear=True)
@@ -381,7 +381,7 @@ class TestGestorProceso(unittest.TestCase):
             proceso.liberar()
             gestor.wait(duration=5)
 
-    def test_cancelar_termina_el_proceso(self):
+    def test_cancel_finishes_process(self):
         proceso = ProcesoFalso(['{"tipo": "inicio", "total": 9}'], bloquear=True)
         gestor, _ = self._gestor(proceso)
         try:
@@ -395,7 +395,7 @@ class TestGestorProceso(unittest.TestCase):
             proceso.liberar()
             gestor.wait(duration=5)
 
-    def test_si_terminate_falla_se_usa_kill(self):
+    def test_if_terminate_fails_uses_kill(self):
         # The stream is held open so the fake process is still alive when the test
         # cancels it. With a stream that reaches EOF immediately, the reader thread
         # can reap the process first, and `terminar_proceso()` would (correctly) see
@@ -412,7 +412,7 @@ class TestGestorProceso(unittest.TestCase):
             proceso.liberar()
             gestor.wait(duration=5)
 
-    def test_terminar_proceso_mata_el_arbol_en_windows(self):
+    def test_finish_process_kills_tree_windows(self):
         """The engine spreads work across child processes: they all have to be killed."""
         proceso = ProcesoFalso([])
         with mock.patch.object(gui.subprocess, "run") as correr, \
@@ -424,7 +424,7 @@ class TestGestorProceso(unittest.TestCase):
         self.assertEqual(argumentos[3], "/PID")
         self.assertEqual(argumentos[4], str(proceso.pid))
 
-    def test_terminar_un_proceso_ya_muerto_no_hace_nada(self):
+    def test_finish_process_already_dead_no_does_nothing(self):
         proceso = ProcesoFalso([])
         proceso.returncode = 0
         with mock.patch.object(gui.subprocess, "run") as correr:
@@ -432,10 +432,10 @@ class TestGestorProceso(unittest.TestCase):
         self.assertFalse(correr.called)
         self.assertEqual(proceso.terminado, 0)
 
-    def test_terminar_none_no_lanza(self):
+    def test_finish_none_no_raises(self):
         gui.finish_process(None)
 
-    def test_hilo_activo_distingue_el_lector_en_marcha(self):
+    def test_thread_active_distinguishes_reader_running(self):
         """`hilo_activo` is what the window uses so as not to lose the final `__fin__`.
 
         It has to be True while the reader thread is working and False once that
@@ -471,7 +471,7 @@ class TestProcesoReal(unittest.TestCase):
         import shutil
         shutil.rmtree(self.carpeta, ignore_errors=True)
 
-    def test_los_eventos_llegan_antes_de_que_el_proceso_termine(self):
+    def test_events_arrive_before_process_finishes(self):
         gestor = gui.ProcessManager(queue.Queue(), engine=self.motor)
         inicio = time.perf_counter()
         gestor.start("C:/Album", pdf=False)
@@ -487,7 +487,7 @@ class TestProcesoReal(unittest.TestCase):
         self.assertIn("resultado", tipos)
         self.assertEqual(tipos[-1], "__fin__")
 
-    def test_cancelar_un_proceso_real_lo_mata_y_no_queda_vivo(self):
+    def test_cancel_process_real_kills_no_remains_alive(self):
         lento = os.path.join(self.carpeta, "motor_lento.py")
         with open(lento, "w", encoding="utf-8") as f:
             f.write("import time\nprint('{\"tipo\": \"inicio\", \"total\": 1}', flush=True)\n"
@@ -526,20 +526,20 @@ class TestVentana(unittest.TestCase):
         self.addCleanup(lambda: [p.stop() for p in self.parches])
         self.addCleanup(self.ventana.destroy)
 
-    def test_arranca_en_espera_con_los_botones_correctos(self):
+    def test_starts_wait_with_buttons_correct(self):
         self.assertEqual(self.ventana.btn_analyze.cget("state"), "normal")
         self.assertEqual(self.ventana.btn_cancel.cget("state"), "disabled")
         self.assertEqual(self.ventana.btn_open_pdf.cget("state"), "disabled")
         self.assertEqual(self.ventana.barra.get(), 0)
 
-    def test_los_controles_por_defecto(self):
+    def test_controls_by_default(self):
         self.assertEqual(self.ventana.var_mode.get(), "center")
         self.assertTrue(self.ventana.var_pdf.get())
         self.assertTrue(self.ventana.var_parallel.get())
         self.assertFalse(self.ventana.var_without_cache.get())
         self.assertEqual(self.ventana._workers(), 0)        # automatic
 
-    def test_el_slider_de_segundos_refleja_su_valor(self):
+    def test_slider_seconds_reflects_value(self):
         """The control is no longer disabled: it appears and disappears from the
         layout. What is checked here is that it still works when it is shown."""
         self.ventana.var_mode.set("seconds")
@@ -549,7 +549,7 @@ class TestVentana(unittest.TestCase):
         self.assertGreaterEqual(self.ventana.seconds_slider.get(), 5)
         self.assertLessEqual(self.ventana.seconds_slider.get(), 120)
 
-    def test_apagar_el_paralelo_fuerza_un_proceso(self):
+    def test_turn_off_parallel_forces_process(self):
         self.ventana.option_workers.set("8")
         self.assertEqual(self.ventana._workers(), 8)
         self.ventana.var_parallel.set(False)
@@ -557,7 +557,7 @@ class TestVentana(unittest.TestCase):
         self.assertEqual(self.ventana._workers(), 1)
         self.assertEqual(self.ventana.option_workers.cget("state"), "disabled")
 
-    def test_los_botones_siguen_el_ciclo_de_vida(self):
+    def test_buttons_follow_cycle_life(self):
         self.ventana.manager.process = ProcesoFalso(['{"tipo": "fin"}'])   # in progress
         self.ventana._update_state()
         self.assertEqual(self.ventana.btn_analyze.cget("state"), "disabled")
@@ -570,7 +570,7 @@ class TestVentana(unittest.TestCase):
         self.assertEqual(self.ventana.btn_cancel.cget("state"), "disabled")
         self.assertEqual(self.ventana.input.cget("state"), "normal")
 
-    def test_procesar_eventos_actualiza_progreso_log_y_tarjeta(self):
+    def test_process_events_updates_progress_log_card(self):
         self.ventana._process("stdout", {"tipo": "inicio", "total": 2, "workers": 2})
         self.assertEqual(self.ventana.total, 2)
         self.ventana._process("stdout", {"tipo": "resultado", "indice": 1, "total": 2,
@@ -592,7 +592,7 @@ class TestVentana(unittest.TestCase):
         self.assertIn("GENUINE LOSSLESS", registro)
         self.assertIn("PROBABLE UPSCALE", registro)
 
-    def test_el_evento_informe_habilita_el_boton_del_pdf(self):
+    def test_event_report_enables_button_pdf(self):
         with tempfile.TemporaryDirectory() as carpeta:
             ruta = os.path.join(carpeta, gui.REPORT_NAME)
             with open(ruta, "wb") as f:
@@ -605,7 +605,7 @@ class TestVentana(unittest.TestCase):
             self.ventana._update_state()
             self.assertEqual(self.ventana.btn_open_pdf.cget("state"), "disabled")
 
-    def test_un_aviso_y_un_error_van_al_log_sin_cerrar_nada(self):
+    def test_warning_error_go_log_without_close_nothing(self):
         self.ventana._process("stdout", {"tipo": "aviso", "mensaje": "no report"})
         self.ventana._process("stdout", {"tipo": "error", "mensaje": "invalid path"})
         self.ventana._process("stdout", {"tipo": "__ilegible__", "mensaje": "junk"})
@@ -615,27 +615,27 @@ class TestVentana(unittest.TestCase):
             self.assertIn(esperado, registro)
         self.assertTrue(self.ventana.winfo_exists())        # still standing
 
-    def test_cancelar_sin_analisis_no_hace_nada(self):
+    def test_cancel_without_analysis_no_does_nothing(self):
         self.ventana._cancel()                            # must not raise
         self.assertEqual(self.ventana.btn_analyze.cget("state"), "normal")
 
-    def test_analizar_sin_ruta_avisa_y_no_arranca(self):
+    def test_analyze_without_path_warns_no_starts(self):
         self.ventana.var_path.set("")
         self.ventana._analyze()
         self.assertFalse(self.ventana.manager.active)
         self.assertIn("Path missing", self.ventana.log.get("1.0", "end"))
 
-    def test_analizar_con_ruta_inexistente_no_arranca(self):
+    def test_analyze_with_path_nonexistent_no_starts(self):
         self.ventana.var_path.set("C:/no/such/path")
         self.ventana._analyze()
         self.assertFalse(self.ventana.manager.active)
 
-    def test_al_soltar_una_ruta_se_rellena_el_campo(self):
+    def test_drop_path_fills_field(self):
         evento = types.SimpleNamespace(data="{C:/Music/My Album}")
         self.ventana._drop(evento)
         self.assertEqual(self.ventana.var_path.get(), "C:/Music/My Album")
 
-    def test_flujo_completo_sin_mainloop(self):
+    def test_stream_full_without_mainloop(self):
         """Starts the real engine: progress, log, card and PDF."""
         album = self.fx.subcarpeta("gui_flujo", ("ok16", "corte_16k"))
         self.ventana.var_path.set(album)
@@ -679,20 +679,20 @@ class TestVentana(unittest.TestCase):
 class TestIntegracionConElCLI(unittest.TestCase):
     """`verificar_flac.py --gui` has to open the GUI, not the menu."""
 
-    def test_el_flag_gui_llama_a_la_interfaz(self):
+    def test_flag_gui_calls_ui(self):
         import verificar_flac
         with mock.patch.object(gui, "main", return_value=0) as principal:
             codigo = verificar_flac.main(["--gui", "C:/Music/Album"])
         self.assertEqual(codigo, 0)
         principal.assert_called_once_with("C:/Music/Album")
 
-    def test_el_flag_corto_tambien(self):
+    def test_flag_short_also(self):
         import verificar_flac
         with mock.patch.object(gui, "main", return_value=0) as principal:
             verificar_flac.main(["-g"])
         principal.assert_called_once_with(None)
 
-    def test_si_falta_customtkinter_se_avisa_sin_romper(self):
+    def test_if_missing_customtkinter_warns_without_break(self):
         import verificar_flac
         with mock.patch.dict(sys.modules, {"gui": None}):
             codigo = verificar_flac.main(["--gui"])
@@ -713,12 +713,12 @@ class TestLogo(unittest.TestCase):
     }
     ALTURAS_SPLASH = (28, 44, 60, 36, 52)     # from splashscreen.html
 
-    def test_los_assets_existen(self):
+    def test_assets_exist(self):
         for nombre, ruta in self.RUTAS.items():
             with self.subTest(asset=nombre):
                 self.assertTrue(os.path.exists(ruta), f"missing {ruta}")
 
-    def test_el_png_es_cuadrado_y_tiene_alfa(self):
+    def test_png_is_square_has_alpha(self):
         from PIL import Image
         with Image.open(self.RUTAS["cuadrado"]) as imagen:
             self.assertEqual(imagen.size, (1024, 1024))
@@ -728,7 +728,7 @@ class TestLogo(unittest.TestCase):
         with Image.open(self.RUTAS["pequeno"]) as imagen:
             self.assertEqual(imagen.size, (128, 128))
 
-    def test_el_icono_es_multirresolucion(self):
+    def test_icon_is_multiresolution(self):
         from PIL import Image
         with Image.open(self.RUTAS["icono"]) as icono:
             tamanos = sorted(icono.info["sizes"])
@@ -768,7 +768,7 @@ class TestLogo(unittest.TestCase):
                 self.assertAlmostEqual(medida / max(alturas), esperada / referencia,
                                        delta=0.02)
 
-    def test_el_check_es_teal_y_esta_abajo_a_la_derecha(self):
+    def test_check_is_teal_below_right(self):
         from PIL import Image
         teal = (0x4F, 0x98, 0xA3, 255)
         with Image.open(self.RUTAS["cuadrado"]) as imagen:
@@ -780,7 +780,7 @@ class TestLogo(unittest.TestCase):
         self.assertGreater(min(x for x, _ in pixeles), ancho * 0.5)
         self.assertGreater(min(y for _, y in pixeles), alto * 0.5)
 
-    def test_el_svg_lleva_el_mismo_diseno(self):
+    def test_svg_carries_same_design(self):
         svg = open(self.RUTAS["svg"], encoding="utf-8").read()
         self.assertEqual(svg.count("<rect"), 1 + len(self.ALTURAS_SPLASH))  # background + bars
         self.assertEqual(svg.count("<polyline"), 1)
@@ -788,7 +788,7 @@ class TestLogo(unittest.TestCase):
             with self.subTest(color=color):
                 self.assertIn(color, svg)
 
-    def test_el_readme_usa_un_logo_que_existe(self):
+    def test_readme_uses_logo_exists(self):
         import re
         readme = open(os.path.join(gui.DIRECTORY, "README.md"), encoding="utf-8").read()
         referencias = re.findall(r"Logo/[\w.\-]+", readme)
@@ -804,7 +804,7 @@ class TestLogo(unittest.TestCase):
             with self.subTest(asset=nombre):
                 self.assertIn(nombre, readme)
 
-    def test_sin_assets_la_ventana_funciona_y_avisa(self):
+    def test_without_assets_window_works_warns(self):
         """If someone deletes the Logo folder, the application must not break."""
         if not VISUAL:
             self.skipTest("customtkinter and a display are required")
@@ -848,31 +848,31 @@ class TestControlDeSegundos(unittest.TestCase):
                 for nombre in ("check_pdf", "parallel_switch", "check_cache",
                                "btn_analyze", "btn_cancel")}
 
-    def test_en_centro_no_se_muestra(self):
+    def test_center_no_sample(self):
         self._poner_modo("center")
         self.assertEqual(self.ventana.seconds_row.grid_info(), {},
                          "the seconds control still takes up space")
         self.assertFalse(self.ventana.seconds_row.winfo_manager())
 
-    def test_en_completo_tampoco(self):
+    def test_full_neither(self):
         self._poner_modo("full")
         self.assertEqual(self.ventana.seconds_row.grid_info(), {})
 
-    def test_en_segundos_si_se_muestra(self):
+    def test_seconds_if_sample(self):
         self._poner_modo("seconds")
         info = self.ventana.seconds_row.grid_info()
         self.assertTrue(info, "the seconds control does not appear")
         self.assertEqual(int(info["row"]), 6)
         self.assertEqual(self.ventana.seconds_slider.cget("state"), "normal")
 
-    def test_el_widget_sigue_existiendo_cuando_esta_oculto(self):
+    def test_widget_still_existing_when_hidden(self):
         self._poner_modo("center")
         self.assertTrue(self.ventana.label_seconds.winfo_exists())
         self.assertTrue(self.ventana.seconds_slider.winfo_exists())
         self.ventana._change_seconds(45)
         self.assertIn("45", self.ventana.label_seconds.cget("text"))
 
-    def test_al_mostrarlo_los_controles_de_abajo_bajan(self):
+    def test_show_it_controls_below_go_down(self):
         self._poner_modo("center")
         sin_segundos = self._posiciones()
         self._poner_modo("seconds")
@@ -882,7 +882,7 @@ class TestControlDeSegundos(unittest.TestCase):
                 self.assertLess(y, con_segundos[nombre],
                                 f"{nombre} did not move down when the seconds control appeared")
 
-    def test_al_ocultarlo_los_controles_vuelven_a_su_sitio(self):
+    def test_hide_it_controls_return_place(self):
         """Round trip without drift: no phantom gaps and no displacement."""
         self._poner_modo("center")
         referencia = self._posiciones()
@@ -890,7 +890,7 @@ class TestControlDeSegundos(unittest.TestCase):
         self._poner_modo("full")
         self.assertEqual(self._posiciones(), referencia)
 
-    def test_oculto_y_mostrado_varias_veces_no_acumula_hueco(self):
+    def test_hidden_shown_several_times_no_accumulates_gap(self):
         self._poner_modo("center")
         referencia = self._posiciones()
         for _ in range(3):

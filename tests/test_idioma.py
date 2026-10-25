@@ -243,13 +243,13 @@ class TestIdioma(unittest.TestCase):
                         f"{palabra!r} in {texto.strip()[:60]!r}")
         self.assertEqual(problemas, [], f"{descripcion} in " + "; ".join(problemas[:6]))
 
-    def test_no_hay_caracteres_espanoles(self):
+    def test_no_there_is_characters_spanish(self):
         self._revisar(PROPIOS, "Spanish characters")
 
-    def test_no_hay_palabras_espanolas(self):
+    def test_no_there_is_words_spanish(self):
         self._revisar(PALABRAS, "Spanish words")
 
-    def test_los_veredictos_estan_en_ingles_y_coinciden(self):
+    def test_verdicts_are_english_match(self):
         """The traffic light depends on engine, GUI and PDF using the SAME strings."""
         import gui
         import informe_pdf
@@ -268,7 +268,7 @@ class TestIdioma(unittest.TestCase):
             with self.subTest(antiguo=antiguo):
                 self.assertNotIn(antiguo, visibles)
 
-    def test_las_banderas_estan_en_ingles(self):
+    def test_flags_are_english(self):
         import motor_flac
         fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
         for bandera in ("--path", "--mode", "--seconds", "--png", "--pdf",
@@ -281,7 +281,7 @@ class TestIdioma(unittest.TestCase):
         # The engine's command-line entry point stays importable and callable.
         self.assertTrue(callable(motor_flac.main_cli))
 
-    def test_el_informe_y_la_carpeta_cambiaron_de_nombre(self):
+    def test_report_folder_changed_name(self):
         import gui
         import informe_pdf
         self.assertEqual(gui.REPORT_NAME, "flac_verifier_report.pdf")

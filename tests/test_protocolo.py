@@ -26,7 +26,7 @@ class TestProtocolo(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_lote_con_archivos_rotos_emite_inicio_resultados_y_fin(self):
+    def test_batch_with_files_broken_emits_start_results_end(self):
         p, eventos, crudas = fx.resultados(self.fx.dir)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(eventos[0]["tipo"], "inicio")
@@ -38,7 +38,7 @@ class TestProtocolo(unittest.TestCase):
         self.assertEqual([r["indice"] for r in resultados],
                          list(range(1, len(resultados) + 1)))
 
-    def test_todas_las_lineas_son_json_estricto(self):
+    def test_all_lines_are_json_strict(self):
         """JavaScript's JSON.parse rejects the literals NaN/Infinity."""
         _, _, crudas = fx.resultados(self.fx.dir)
         for linea in crudas:
@@ -47,7 +47,7 @@ class TestProtocolo(unittest.TestCase):
                 self.assertNotIn("NaN", linea)
                 self.assertNotIn("Infinity", linea)
 
-    def test_archivo_32k_estereo_no_produce_nan(self):
+    def test_file_32k_stereo_no_produces_nan(self):
         """Nyquist 16 kHz -> empty high-band masks (the origin of the NaN)."""
         res = motor.analyze_file_data(self.fx["estereo32k"], "center", None, False)
         esp = res["esp"]
@@ -68,7 +68,7 @@ class TestProtocolo(unittest.TestCase):
         self.assertEqual(json.loads(linea)["lista"], [None, None])
         self.assertEqual(json.loads(linea)["ok"], 1.5)
 
-    def test_resultado_por_archivo_trae_su_veredicto_o_su_error(self):
+    def test_result_by_file_brings_verdict_o_error(self):
         _, eventos, _ = fx.resultados(self.fx.dir)
         for evento in eventos:
             if evento["tipo"] != "resultado":

@@ -25,25 +25,25 @@ class TestArchivosRotos(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_verificar_metadatos_no_lanza(self):
+    def test_verify_metadata_no_raises(self):
         for nombre in self.fx.NOMBRES_ROTOS:      # includes 'truncado'
             with self.subTest(archivo=nombre):
                 meta = motor.verify_metadata(self.fx[nombre])   # must not raise
                 self.assertIsInstance(meta, dict)
                 self.assertIn("valido", meta)
 
-    def test_metadatos_ilegibles_se_marcan_como_invalidos(self):
+    def test_metadata_unreadable_mark_as_invalid(self):
         for nombre in ("basura_magic", "texto", "cero_bytes"):
             with self.subTest(archivo=nombre):
                 self.assertFalse(motor.verify_metadata(self.fx[nombre])["valido"])
 
-    def test_error_inesperado_trae_diagnostico(self):
+    def test_error_unexpected_brings_diagnostic(self):
         """With garbage after the 'fLaC' header, mutagen raised and killed the process."""
         meta = motor.verify_metadata(self.fx["basura_magic"])
         self.assertFalse(meta["valido"])
         self.assertIn("error", meta)
 
-    def test_metadatos_legibles_no_significan_archivo_integro(self):
+    def test_metadata_readable_no_mean_file_intact(self):
         """mutagen reads STREAMINFO from the header even when half the file is
         missing: 'valid metadata' is NOT an integrity check. The corruption is
         detected later, when decoding or verifying the MD5."""
@@ -53,19 +53,19 @@ class TestArchivosRotos(unittest.TestCase):
         self.assertIn("error", res)
         self.assertNotIn("veredicto", res)
 
-    def test_verificar_metadatos_con_ruta_inexistente(self):
+    def test_verify_metadata_with_path_nonexistent(self):
         meta = motor.verify_metadata(os.path.join(self.fx.dir, "no_existe.flac"))
         self.assertFalse(meta["valido"])
         self.assertIn("error", meta)
 
-    def test_verificar_firma_no_lanza(self):
+    def test_verify_signature_no_raises(self):
         self.assertTrue(motor.verify_signature(self.fx["ok16"]))
         self.assertFalse(motor.verify_signature(os.path.join(self.fx.dir, "no_existe.flac")))
         for nombre in self.fx.NOMBRES_ROTOS:
             with self.subTest(archivo=nombre):
                 motor.verify_signature(self.fx[nombre])          # must not raise
 
-    def test_analizar_archivo_roto_devuelve_error_sin_veredicto(self):
+    def test_analyze_file_broken_returns_error_without_verdict(self):
         for nombre in self.fx.NOMBRES_ROTOS:
             with self.subTest(archivo=nombre):
                 res = motor.analyze_file_data(self.fx[nombre], "center", None, False)
@@ -73,13 +73,13 @@ class TestArchivosRotos(unittest.TestCase):
                 self.assertNotIn("veredicto", res)
                 self.assertNotIn("score", res)
 
-    def test_leer_audio_no_lanza(self):
+    def test_read_audio_no_raises(self):
         for nombre in self.fx.NOMBRES_ROTOS:
             with self.subTest(archivo=nombre):
                 data, sr = motor.read_audio(self.fx[nombre])
                 self.assertIsNone(data)
 
-    def test_archivos_validos_siguen_analizandose(self):
+    def test_files_valid_follow_being_analyzed(self):
         """The hardening must not break the happy path."""
         res = motor.analyze_file_data(self.fx["ok16"], "center", None, False)
         self.assertNotIn("error", res)

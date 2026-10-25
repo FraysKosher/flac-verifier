@@ -27,7 +27,7 @@ class TestMD5(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_coincide_en_8_16_y_24_bits(self):
+    def test_matches_8_16_24_bits(self):
         for nombre in ("ok8", "ok16", "ok24"):
             with self.subTest(archivo=nombre):
                 res = motor.analyze_file_data(self.fx[nombre], "center", None, False)
@@ -35,7 +35,7 @@ class TestMD5(unittest.TestCase):
                 self.assertEqual(res["md5"]["estado"], "match")
                 self.assertEqual(res["md5"]["calculado"], res["md5"]["almacenado"])
 
-    def test_md5_falseado_es_error_duro(self):
+    def test_md5_faked_is_error_hard(self):
         res = motor.analyze_file_data(self.fx["md5_obsoleto"], "center", None, False)
         self.assertEqual(res["md5"]["estado"], "mismatch")
         self.assertIn("error", res)
@@ -46,7 +46,7 @@ class TestMD5(unittest.TestCase):
         self.assertNotIn("esp", res)
         self.assertNotEqual(res["md5"]["calculado"], res["md5"]["almacenado"])
 
-    def test_md5_ausente_no_es_error(self):
+    def test_md5_absent_no_is_error(self):
         res = motor.analyze_file_data(self.fx["md5_ausente"], "center", None, False)
         self.assertEqual(res["md5"]["estado"], "absent")
         self.assertNotIn("error", res)
@@ -63,7 +63,7 @@ class TestMD5(unittest.TestCase):
         self.assertEqual(con_md5["veredicto"], sin_md5["veredicto"])
         self.assertEqual(con_md5["problemas"], sin_md5["problemas"])
 
-    def test_md5_pcm_coincide_con_mutagen(self):
+    def test_md5_pcm_matches_with_mutagen(self):
         """The recomputed hash is the same as the one mutagen reports from STREAMINFO."""
         from mutagen.flac import FLAC
         for nombre in ("ok16", "ok24"):
@@ -73,7 +73,7 @@ class TestMD5(unittest.TestCase):
                 calculado = motor._md5_pcm(data, 16 if nombre == "ok16" else 24)
                 self.assertEqual(int(calculado, 16), almacenado)
 
-    def test_profundidad_no_verificable_devuelve_none(self):
+    def test_depth_no_verifiable_returns_none(self):
         """An odd bit depth must not falsely accuse the file of corruption."""
         self.assertIsNone(motor._md5_pcm([[0.0]], 20))
         self.assertIsNone(motor._md5_pcm([[0.0]], 12))

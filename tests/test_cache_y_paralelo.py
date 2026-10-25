@@ -60,7 +60,7 @@ class TestCache(unittest.TestCase):
         shutil.copy(self.fx[origen], destino)
         return destino
 
-    def test_la_segunda_pasada_reaprovecha_y_da_lo_mismo(self):
+    def test_second_pass_reuses_gives_same(self):
         ruta = self.copia("reuso")
         primera = motor.analyze_file_data(ruta, "center", None, False)
         self.assertFalse(primera.get("desde_cache"))
@@ -68,7 +68,7 @@ class TestCache(unittest.TestCase):
         self.assertTrue(segunda.get("desde_cache"))
         self.assertEqual(comparable(primera), comparable(segunda))
 
-    def test_la_entrada_de_cache_es_json_con_su_huella(self):
+    def test_input_cache_is_json_with_fingerprint(self):
         ruta = self.copia("formato")
         motor.analyze_file_data(ruta, "center", None, False)
         ruta_cache = motor._cache_path(ruta, "center", None)
@@ -81,7 +81,7 @@ class TestCache(unittest.TestCase):
         self.assertEqual(entrada["identidad"]["tamano"], os.path.getsize(ruta))
         self.assertIn("resultado", entrada)
 
-    def test_se_invalida_si_cambia_la_fecha_del_archivo(self):
+    def test_invalidates_if_changes_date_file(self):
         ruta = self.copia("fecha")
         motor.analyze_file_data(ruta, "center", None, False)
         info = os.stat(ruta)
@@ -89,7 +89,7 @@ class TestCache(unittest.TestCase):
         otra = motor.analyze_file_data(ruta, "center", None, False)
         self.assertFalse(otra.get("desde_cache"), "the cache was not invalidated by a different date")
 
-    def test_se_invalida_si_cambia_el_md5_aunque_coincidan_tamano_y_fecha(self):
+    def test_invalidates_if_changes_md5_although_match_size_date(self):
         """The hard case: same size and same date, different content."""
         ruta = self.copia("md5")
         primera = motor.analyze_file_data(ruta, "center", None, False)
@@ -105,7 +105,7 @@ class TestCache(unittest.TestCase):
         self.assertFalse(segunda.get("desde_cache"), "the cache did not look at the MD5")
         self.assertEqual(segunda["md5"]["estado"], "absent")
 
-    def test_se_invalida_si_cambia_la_version_del_motor(self):
+    def test_invalidates_if_changes_version_engine(self):
         ruta = self.copia("version")
         motor.analyze_file_data(ruta, "center", None, False)
         original = motor.VERSION_MOTOR
@@ -116,7 +116,7 @@ class TestCache(unittest.TestCase):
             motor.VERSION_MOTOR = original
         self.assertFalse(otra.get("desde_cache"))
 
-    def test_se_invalida_si_cambia_el_modo(self):
+    def test_invalidates_if_changes_mode(self):
         ruta = self.copia("modo")
         motor.analyze_file_data(ruta, "center", None, False)
         otra = motor.analyze_file_data(ruta, "full", None, False)
@@ -125,7 +125,7 @@ class TestCache(unittest.TestCase):
         self.assertTrue(motor.analyze_file_data(ruta, "center", None, False)
                         .get("desde_cache"))
 
-    def test_sin_cache_no_escribe_ni_reaprovecha(self):
+    def test_without_cache_no_writes_nor_reuses(self):
         ruta = self.copia("sin_cache")
         primera = motor.analyze_file_data(ruta, "center", None, False, use_cache=False)
         self.assertNotIn("desde_cache", primera)
@@ -134,7 +134,7 @@ class TestCache(unittest.TestCase):
         self.assertNotIn("desde_cache", segunda)
         self.assertFalse(os.path.exists(motor._cache_path(ruta, "center", None)))
 
-    def test_el_espectrograma_cacheado_se_reaprovecha(self):
+    def test_spectrogram_cached_reuses(self):
         ruta = self.copia("png")
         primera = motor.analyze_file_data(ruta, "center", None, True)
         ruta_png = primera["esp"]["espectrograma"]
@@ -147,7 +147,7 @@ class TestCache(unittest.TestCase):
         self.assertEqual(os.stat(ruta_png).st_mtime_ns, sello,
                          "the spectrogram was drawn again instead of being reused")
 
-    def test_si_falta_el_png_la_cache_no_vale_para_el_informe(self):
+    def test_if_missing_png_cache_no_works_for_report(self):
         ruta = self.copia("png_borrado")
         primera = motor.analyze_file_data(ruta, "center", None, True)
         os.remove(primera["esp"]["espectrograma"])
@@ -155,7 +155,7 @@ class TestCache(unittest.TestCase):
         self.assertFalse(segunda.get("desde_cache"), "it reused a cache entry with no PNG")
         self.assertTrue(os.path.exists(segunda["esp"]["espectrograma"]))
 
-    def test_sin_png_no_se_reporta_una_ruta_generada_antes(self):
+    def test_without_png_no_reports_path_generated_before(self):
         ruta = self.copia("sin_png")
         con_png = motor.analyze_file_data(ruta, "center", None, True)
         self.assertIsNotNone(con_png["esp"]["espectrograma"])
@@ -183,7 +183,7 @@ class TestParalelizacion(unittest.TestCase):
         return [json.loads(l) for l in salida.splitlines()
                 if l.strip() and json.loads(l)["tipo"] == "resultado"]
 
-    def test_el_paralelo_da_exactamente_lo_mismo_que_el_secuencial(self):
+    def test_parallel_gives_exactly_same_sequential(self):
         serie = self._resultados(self._motor("--workers", "1").stdout)
         paralelo = self._resultados(self._motor("--workers", "4").stdout)
         self.assertEqual(len(serie), 4)
@@ -192,13 +192,13 @@ class TestParalelizacion(unittest.TestCase):
             with self.subTest(archivo=uno["archivo"]):
                 self.assertEqual(comparable(uno), comparable(otro))
 
-    def test_se_conserva_el_orden_de_los_archivos(self):
+    def test_preserves_order_files(self):
         esperados = sorted(f for f in os.listdir(self.carpeta) if f.endswith(".flac"))
         resultados = self._resultados(self._motor("--workers", "4").stdout)
         self.assertEqual([r["archivo"] for r in resultados], esperados)
         self.assertEqual([r["indice"] for r in resultados], [1, 2, 3, 4])
 
-    def test_el_evento_inicio_informa_de_los_procesos(self):
+    def test_event_start_informs_processes(self):
         eventos = [json.loads(l) for l in self._motor("--workers", "4").stdout.splitlines()
                    if l.strip()]
         inicio = eventos[0]
@@ -209,7 +209,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertFalse(inicio["cache"])          # --no-cache was requested
         self.assertEqual(eventos[-1]["tipo"], "fin")
 
-    def test_el_pdf_sale_igual_con_paralelo(self):
+    def test_pdf_exits_equal_with_parallel(self):
         sonda = self.fx.subcarpeta("paralelo_pdf", ("ok16", "ok24", "corte_16k"))
         p = fx.correr_motor(sonda, extra=("--pdf", "--workers", "3"))
         eventos = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
@@ -221,7 +221,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertGreater(os.path.getsize(informe[0]["ruta"]), 20 * 1024)
         self.assertEqual(informe[0]["desde_cache"], 0)      # first pass
 
-    def test_un_archivo_roto_en_el_lote_no_tumba_el_paralelo(self):
+    def test_file_broken_batch_no_knocks_down_parallel(self):
         sonda = self.fx.subcarpeta("paralelo_roto", ("ok16", "ok24", "basura_magic"))
         p = fx.correr_motor(sonda, extra=("--workers", "3", "--no-cache"))
         resultados = self._resultados(p.stdout)
@@ -234,7 +234,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertEqual(len(con_veredicto), 2)
         self.assertEqual(eventos_final(p.stdout)["tipo"], "fin")
 
-    def test_un_entorno_sin_procesos_degrada_a_secuencial(self):
+    def test_environment_without_processes_degrades_sequential(self):
         original = motor._probe_processes
         motor._probe_processes = lambda: False
         try:
@@ -250,14 +250,14 @@ class TestParalelizacion(unittest.TestCase):
             motor._probe_processes = original
 
     @unittest.skipUnless(PROCESOS, "this environment does not allow creating processes")
-    def test_con_procesos_disponibles_se_usa_el_pool(self):
+    def test_with_processes_available_uses_pool(self):
         archivos = [os.path.join(self.carpeta, f)
                     for f in sorted(os.listdir(self.carpeta))]
         _, workers = motor.analyze_files(archivos, "center", None, False,
                                              workers=4, use_cache=False)
         self.assertEqual(workers, 4)
 
-    def test_la_cache_evita_arrancar_procesos(self):
+    def test_cache_avoids_start_processes(self):
         """With everything cached there is no work to spread: the pool is not needed."""
         sonda = self.fx.subcarpeta("cache_paralelo", ("ok16", "ok24", "corte_16k"))
         archivos = [os.path.join(sonda, f) for f in sorted(os.listdir(sonda))]
@@ -281,7 +281,7 @@ class TestStreamingProgresivo(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_los_resultados_llegan_antes_de_terminar_el_lote(self):
+    def test_results_arrive_before_finish_batch(self):
         """The generator must stream non-candidate tracks, not buffer them all."""
         archivos = [os.path.join(self.carpeta, nombre)
                     for nombre in sorted(os.listdir(self.carpeta))
@@ -343,7 +343,7 @@ class TestCacheYOrdenConCoherencia(unittest.TestCase):
                 shutil.copy(self.fx["ok16"], destino)
         return carpeta
 
-    def test_la_cache_individual_no_hereda_la_coherencia_del_lote(self):
+    def test_cache_individual_no_inherits_coherence_batch(self):
         carpeta = self._album("cache_coherencia", 9, 0)
         archivos = [os.path.join(carpeta, nombre)
                     for nombre in sorted(os.listdir(carpeta))]
@@ -358,7 +358,7 @@ class TestCacheYOrdenConCoherencia(unittest.TestCase):
         self.assertFalse(sola.get("coherencia_album"))
         self.assertIn(sola["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 
-    def test_el_pdf_recupera_el_orden_original_tras_retencion(self):
+    def test_pdf_restores_order_original_after_retention(self):
         carpeta = self._album("orden_coherencia", 5, 1)
         archivos = [os.path.join(carpeta, nombre)
                     for nombre in sorted(os.listdir(carpeta))]
@@ -388,7 +388,7 @@ class TestRenderizador(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_el_espectrograma_se_pinta_con_pillow(self):
+    def test_spectrogram_paints_with_pillow(self):
         """The PNG comes from the 256-colour NumPy LUT and Image.fromarray:
         no figure object, no Agg canvas, no matplotlib import."""
         fuente = open(fx.MOTOR, encoding="utf-8").read()
@@ -398,7 +398,7 @@ class TestRenderizador(unittest.TestCase):
         self.assertNotIn("import matplotlib", fuente)
         self.assertNotIn("ax.imshow(", fuente)
 
-    def test_huella_render_cambia_con_los_parametros(self):
+    def test_fingerprint_render_changes_with_params(self):
         original_frames = motor.MAX_FRAMES_PNG
         original_ancho = motor.WIDTH_PNG
         base = motor.render_fingerprint()
@@ -414,7 +414,7 @@ class TestRenderizador(unittest.TestCase):
             motor.WIDTH_PNG = original_ancho
 
     @unittest.skipUnless(motor.PIL_OK, "Pillow not installed")
-    def test_el_png_sigue_saliendo_con_un_tamano_razonable(self):
+    def test_png_still_exiting_with_size_reasonable(self):
         ruta = self.fx["ok16"]
         resultado = motor.analyze_file_data(ruta, "center", None, True,
                                                  use_cache=False)
@@ -424,7 +424,7 @@ class TestRenderizador(unittest.TestCase):
         with open(ruta_png, "rb") as f:
             self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
 
-    def test_un_fallo_al_pintar_se_informa(self):
+    def test_failure_paint_informs(self):
         """The reason for the failure reaches the result (before, it was lost silently)."""
         original = motor.Image
         try:

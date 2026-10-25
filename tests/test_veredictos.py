@@ -47,7 +47,7 @@ class TestVeredicto(unittest.TestCase):
         return res
 
     # ── Block 2: silence guard ──────────────────────────────────────────────
-    def test_el_silencio_digital_no_recibe_veredicto(self):
+    def test_silence_digital_no_receives_verdict(self):
         res = motor.analyze_file_data(self.fx["silence"], "center", None, False)
         self.assertIn("error", res)
         self.assertIn("silence", res["error"].lower())
@@ -55,7 +55,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn("score", res)
 
     # ── Block 5: CD master with a 20 kHz LPF ────────────────────────────────
-    def test_master_de_cd_con_lpf_no_es_acusado_de_transcodificacion(self):
+    def test_master_cd_with_lpf_no_is_accused_transcoding(self):
         res = self.analizar("master_cd_20k")
         esp = res["esp"]
         # The step is detected as a fact...
@@ -71,7 +71,7 @@ class TestVeredicto(unittest.TestCase):
             self.assertNotIn(acusacion, texto, f"unwarranted accusation: {acusacion}")
         self.assertNotIn(res["veredicto"], ("PROBABLE UPSCALE",))
 
-    def test_corte_muy_por_debajo_del_nyquist_si_se_acusa(self):
+    def test_cutoff_very_by_below_nyquist_if_accuses(self):
         res = self.analizar("corte_16k")
         esp = res["esp"]
         self.assertLess(esp["distancia_nyquist"], 0.88)
@@ -80,7 +80,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertTrue(any("artificial cut-off" in p for p in res["problemas"]))
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
 
-    def test_la_frecuencia_del_corte_usa_redondeo_real(self):
+    def test_frequency_cutoff_uses_rounding_real(self):
         """It used to be printed with integer division: 19 821 Hz -> '19.0 kHz'."""
         res = self.analizar("corte_16k")
         fc = res["esp"]["frecuencia_corte"]
@@ -88,7 +88,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertTrue(any(esperado in p for p in res["problemas"]),
                         f"no problem mentions {esperado}")
 
-    def test_un_corte_lejano_bloquea_el_veredicto_maximo(self):
+    def test_cutoff_distant_blocks_verdict_max(self):
         """With all the rest of the evidence perfect, a confirmed defect cannot
         coexist with 'GENUINE LOSSLESS'."""
         esp = dict(ESP_PERFECTO, clase_corte="far_cutoff", corte_detectado=True,
@@ -98,7 +98,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn(veredicto, VEREDICTOS_BUENOS)
         self.assertTrue(any("artificial cut-off" in p for p in problemas))
 
-    def test_un_techo_cerca_del_nyquist_no_regala_puntos(self):
+    def test_ceiling_near_nyquist_no_gives_away_points(self):
         """The ceiling at 44.1 kHz no longer scores: it is identical in a master and
         in a 320 kbps file.
 
@@ -145,7 +145,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn(v_vac, VEREDICTOS_BUENOS)
         self.assertTrue(any("LSBs are empty" in p for p in problemas))
 
-    def test_la_resolucion_efectiva_detecta_la_rejilla_de_16_bits(self):
+    def test_resolution_effective_detects_grid_16_bits(self):
         res = self.analizar("upscale16a24")
         bdi = res["bdi"]
         self.assertEqual(bdi["lsbs"], "empty")
@@ -155,7 +155,7 @@ class TestVeredicto(unittest.TestCase):
         self.assertNotIn("genuine_24", bdi)
         self.assertNotIn("genuine", bdi["conclusion"].lower())
 
-    def test_el_bit_depth_no_etiqueta_como_genuino_un_transcodigo(self):
+    def test_bit_depth_no_label_as_genuine_transcode(self):
         """A lossy file in 24 bits fills the LSB: the test cannot confirm anything."""
         activos = {"aplica": True, "lsbs": "active", "resolucion_efectiva_bits": 24,
                    "fraccion_16bit_grid": 9.8, "conclusion": "..."}
@@ -194,7 +194,7 @@ class TestHiRes(unittest.TestCase):
                    **extra)
         return motor.calculate_score(meta, esp, SIN_BITDEPTH)
 
-    def test_un_master_hires_con_rolloff_a_30_khz_no_se_penaliza(self):
+    def test_master_hires_with_rolloff_30_khz_no_penalizes(self):
         """Real case: Steven Wilson, 'The Raven that Refused to Sing' (96/24)."""
         res = self.analizar("hires96_rolloff30k")
         self.assertGreaterEqual(res["esp"]["techo_hz"], motor.LIMIT_CD_HZ)
@@ -203,11 +203,11 @@ class TestHiRes(unittest.TestCase):
         self.assertNotIn("not backed by", texto)
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
-    def test_un_hires_genuino_de_banda_completa_es_genuino(self):
+    def test_hires_genuine_band_full_is_genuine(self):
         res = self.analizar("hires96")
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
-    def test_un_techo_de_25_khz_en_hires_no_se_penaliza(self):
+    def test_ceiling_25_khz_hires_no_penalizes(self):
         """The specific case in the report: 25 kHz with a 48 kHz Nyquist."""
         meta = {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2,
                 "duracion": 100.0, "md5": 1}
@@ -218,7 +218,7 @@ class TestHiRes(unittest.TestCase):
         self.assertIn(veredicto, VEREDICTOS_BUENOS)
         self.assertGreater(score, 0.80)
 
-    def test_el_limite_es_el_del_cd_y_no_una_proporcion_del_nyquist(self):
+    def test_limit_is_cd_no_proportion_nyquist(self):
         """Just above the CD limit there is no penalty; just below it, there is.
         With the previous rule (70 % of 48 kHz = 33.6 kHz) both cases were
         penalised."""
@@ -229,13 +229,13 @@ class TestHiRes(unittest.TestCase):
         self.assertFalse([p for p in encima if "not backed by" in p])
         self.assertTrue([p for p in debajo if "not backed by" in p])
 
-    def test_un_upscale_de_cd_a_96_khz_sigue_detectandose(self):
+    def test_upscale_cd_96_khz_still_being_detected(self):
         res = self.analizar("upscale96")
         self.assertLess(res["esp"]["techo_hz"], motor.LIMIT_CD_HZ)
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
         self.assertTrue(any("not backed by" in p for p in res["problemas"]))
 
-    def test_la_regla_de_cd_no_cambia(self):
+    def test_rule_cd_no_changes(self):
         """Below 48 kHz the measurement is still in proportion to Nyquist."""
         meta = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2,
                 "duracion": 100.0, "md5": 1}
@@ -246,7 +246,7 @@ class TestHiRes(unittest.TestCase):
         _, _, bajo = self._cuenta(meta, 14000)
         self.assertTrue([p for p in bajo if "destroyed" in p])
 
-    def test_un_hires_sin_contenido_alto_sigue_penalizado(self):
+    def test_hires_without_content_high_still_penalized(self):
         """The fix does not open the door to a blatant upscale."""
         res = self.analizar("upscale96")
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
@@ -265,19 +265,19 @@ class TestMP3Real(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_mp3_320_a_24_bits_no_es_probablemente_lossless(self):
+    def test_mp3_320_24_bits_no_is_probably_lossless(self):
         res = motor.analyze_file_data(self.ruta, "center", None, False)
         self.assertNotIn("error", res, res.get("error"))
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
         self.assertLess(res["score"], 0.60)
 
-    def test_la_caida_viene_de_la_resolucion_declarada_sin_respaldo(self):
+    def test_fall_comes_resolution_declared_without_backup(self):
         res = motor.analyze_file_data(self.ruta, "center", None, False)
         self.assertEqual(res["meta"]["bits_per_sample"], 24)
         self.assertTrue(any("not backed by the content" in p
                             for p in res["problemas"]))
 
-    def test_mp3_128_tampoco_pasa(self):
+    def test_mp3_128_neither_passes(self):
         ruta = fx.transcodificar_mp3_a_flac(self.fx.dir, self.fx["ok16"], 128)
         res = motor.analyze_file_data(ruta, "center", None, False)
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)

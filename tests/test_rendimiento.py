@@ -52,19 +52,19 @@ class TestStreamingIgualQueArray(unittest.TestCase):
             with self.subTest(clave=clave):
                 self.assertEqual(res["esp"][clave], esp[clave])
 
-    def test_estereo_16_bits(self):
+    def test_stereo_16_bits(self):
         self._comparar("ok16")
 
-    def test_estereo_24_bits(self):
+    def test_stereo_24_bits(self):
         self._comparar("ok24")
 
-    def test_mono_no_reporta_separacion_estereo(self):
+    def test_mono_no_reports_separation_stereo(self):
         """In mono there is no L-R separation: None in both paths."""
         self._comparar("ok16_mono")
         res = motor.analyze_file_data(self.fx["ok16_mono"], "center", None, False)
         self.assertIsNone(res["esp"]["separacion_stereo"])
 
-    def test_modo_completo(self):
+    def test_mode_full(self):
         self._comparar("ok16", modo="full")
 
 
@@ -78,7 +78,7 @@ class TestLectorPorBloques(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.cerrar()
 
-    def test_no_lee_mas_de_un_bloque_y_reconstruye_el_archivo(self):
+    def test_no_reads_more_block_rebuilds_file(self):
         ruta = self.fx["ok24"]
         bloques = list(motor._read_blocks(ruta))
         self.assertGreater(len(bloques), 0)
@@ -87,7 +87,7 @@ class TestLectorPorBloques(unittest.TestCase):
         data, _ = motor.read_audio(ruta)
         self.assertTrue(np.array_equal(np.concatenate(bloques), data))
 
-    def test_el_md5_incremental_coincide_con_el_de_un_solo_array(self):
+    def test_md5_incremental_matches_with_only_array(self):
         """The block hash must give the same result as hashing the whole array."""
         ruta = self.fx["ok24"]
         data, _ = motor.read_audio(ruta)
@@ -120,7 +120,7 @@ class TestVectorizacion(unittest.TestCase):
             runs += 1
         return {"runs_clip": runs, "hay_clipping": runs > 0}
 
-    def test_rachas_en_los_bordes_y_de_longitud_2_y_3(self):
+    def test_streaks_edges_length_2_3(self):
         x = np.zeros((50, 2))
         x[0:3, 0]   = 1.0        # run of 3 at the start -> counts
         x[10:12, 1] = -1.0       # run of 2 -> does not count
@@ -130,7 +130,7 @@ class TestVectorizacion(unittest.TestCase):
         self.assertEqual(motor.detect_clipping(x), self._clipping_ingenuo(x))
         self.assertEqual(motor.detect_clipping(x)["runs_clip"], 3)
 
-    def test_equivalencia_con_datos_aleatorios_y_clipping_real(self):
+    def test_equivalence_with_data_random_clipping_real(self):
         rng = np.random.default_rng(5)
         casos = [rng.random((100000, 2)) * 2 - 1]
         con_clip = rng.random((50000, 2)) * 0.5
@@ -142,7 +142,7 @@ class TestVectorizacion(unittest.TestCase):
             with self.subTest(shape=data.shape):
                 self.assertEqual(motor.detect_clipping(data), self._clipping_ingenuo(data))
 
-    def test_una_racha_partida_entre_bloques_cuenta_una_sola_vez(self):
+    def test_streak_split_between_blocks_counts_alone_time(self):
         data = np.zeros((10, 1))
         data[3:9] = 1.0                          # a single run of 6
         for corte in range(1, 10):
@@ -157,7 +157,7 @@ class TestVectorizacion(unittest.TestCase):
                     runs += 1
                 self.assertEqual(runs, 1)
 
-    def test_una_racha_repartida_en_tres_bloques(self):
+    def test_streak_split_three_blocks(self):
         data = np.ones((9, 1))                   # run of 9
         cuenta, runs = 0, 0
         for trozo in (data[:3], data[3:6], data[6:]):
@@ -167,7 +167,7 @@ class TestVectorizacion(unittest.TestCase):
             runs += 1
         self.assertEqual(runs, 1)
 
-    def test_el_acumulador_cuenta_igual_que_la_via_array(self):
+    def test_accumulator_counts_equal_via_array(self):
         """It includes the run that ends exactly with the file (it went uncounted before)."""
         rng = np.random.default_rng(11)
         casos = []
@@ -191,7 +191,7 @@ class TestVectorizacion(unittest.TestCase):
                 self.assertEqual(acumulador.result()["clip"],
                                  motor.detect_clipping(data))
 
-    def test_dr_por_bloques_igual_que_la_via_array(self):
+    def test_dr_by_blocks_equal_via_array(self):
         """The DR accumulated over irregular blocks must be identical."""
         sr = 8000
         rng = np.random.default_rng(9)
@@ -213,7 +213,7 @@ class TestVectorizacion(unittest.TestCase):
         self.assertEqual(offset, len(x))
         self.assertEqual(acumulador.result()["dr"], esperado)
 
-    def test_dr_de_un_archivo_corto_sigue_siendo_none(self):
+    def test_dr_file_short_still_being_none(self):
         """Less than 6 seconds = less than two 3 s blocks."""
         self.assertIsNone(motor.calculate_dr(np.zeros((8000 * 5, 2)), 8000))
 

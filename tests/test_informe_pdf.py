@@ -111,7 +111,7 @@ class TestInformePDF(unittest.TestCase):
         cls.fx.cerrar()
 
     # ── generation and location ─────────────────────────────────────────────
-    def test_genera_el_informe_en_la_carpeta_del_album(self):
+    def test_generates_report_folder_album(self):
         informe = pdf.generate(self.album, analizar_album(self.album))
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertEqual(os.path.dirname(informe["ruta"]), os.path.abspath(self.album))
@@ -120,7 +120,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertTrue(datos.startswith(b"%PDF"))
         self.assertGreater(len(datos), 20 * 1024, "the PDF is suspiciously small")
 
-    def test_un_solo_archivo_guarda_el_pdf_junto_a_el(self):
+    def test_only_file_saves_pdf_next_to(self):
         ruta = self.fx["ok16"]
         esperado = os.path.join(os.path.dirname(os.path.abspath(ruta)), pdf.REPORT_NAME)
         self.assertEqual(pdf.report_path(ruta), esperado)
@@ -132,14 +132,14 @@ class TestInformePDF(unittest.TestCase):
         os.remove(esperado)
 
     # ── document structure ──────────────────────────────────────────────────
-    def test_una_pagina_por_cancion_mas_portada_y_resumen(self):
+    def test_page_by_song_more_cover_summary(self):
         resultados = analizar_album(self.album)
         informe = pdf.generate(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertEqual(informe["paginas"], len(resultados) + 2)
         self.assertEqual(paginas_del_pdf(informe["ruta"]), len(resultados) + 2)
 
-    def test_el_texto_contiene_portada_canciones_y_resumen(self):
+    def test_text_contains_cover_songs_summary(self):
         resultados = analizar_album(self.album)
         informe = pdf.generate(self.album, resultados)
         texto = texto_del_pdf(informe["ruta"])
@@ -155,7 +155,7 @@ class TestInformePDF(unittest.TestCase):
         for veredicto in veredictos:
             self.assertIn(pdf.STYLE_VERDICT[veredicto][0], texto)
 
-    def test_las_canciones_con_error_aparecen_marcadas(self):
+    def test_songs_with_error_appear_marked(self):
         resultados = analizar_album(self.album)
         self.assertTrue([r for r in resultados if r.get("error")],
                         "the corrupt fixture should fail")
@@ -164,7 +164,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertIn(pdf.STYLE_ERROR[0], texto)
         self.assertIn("Could not analyze", texto)
 
-    def test_las_tablas_tecnicas_incluyen_los_datos_clave(self):
+    def test_tables_technical_include_data_key(self):
         informe = pdf.generate(self.album, analizar_album(self.album))
         texto = texto_del_pdf(informe["ruta"])
         for etiqueta in ("Format", "Duration", "Size", "MD5 integrity", "Clipping",
@@ -176,7 +176,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertIn("Detected issues", texto)
 
     # ── spectrograms ────────────────────────────────────────────────────────
-    def test_el_informe_embebe_los_espectrogramas(self):
+    def test_report_embeds_spectrograms(self):
         resultados = analizar_album(self.album, guardar_png=True)
         con_imagen = [r for r in resultados if (r.get("esp") or {}).get("espectrograma")]
         self.assertTrue(con_imagen)
@@ -188,7 +188,7 @@ class TestInformePDF(unittest.TestCase):
         sin_png = sum(1 for r in resultados if not (r.get("esp") or {}).get("espectrograma"))
         self.assertEqual(texto.count("no image"), sin_png)
 
-    def test_caracteres_especiales_xml_en_ruta_y_nombres_no_rompen_pdf(self):
+    def test_characters_special_xml_path_names_no_break_pdf(self):
         """Dynamic text is XML-escaped before ReportLab parses it."""
         album = "AC & DC - <Live> [Deluxe]"
         resultado = {
@@ -209,7 +209,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertGreater(os.path.getsize(destino), 4 * 1024)
 
     @unittest.skipUnless(_fitz_disponible(), "PyMuPDF not installed")
-    def test_generar_directo_ordena_por_indice_original(self):
+    def test_generate_direct_sorts_by_index_original(self):
         """The direct API restores track order before writing the pages."""
         import fitz
 
@@ -256,7 +256,7 @@ class TestInformePDF(unittest.TestCase):
                         f"the PDF ({peso_pdf/1024:.0f} KB) does not take advantage of the "
                         f"recompression of the PNGs ({peso_png/1024:.0f} KB)")
 
-    def test_sin_espectrogramas_el_informe_se_genera_igual(self):
+    def test_without_spectrograms_report_generates_equal(self):
         """Without PNGs (for example without matplotlib) the PDF still comes out, with the notice."""
         resultados = analizar_album(self.album, guardar_png=False)
         informe = pdf.generate(self.album, resultados)
@@ -266,7 +266,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertIn("Spectrogram", texto)
         self.assertIn("(no image:", texto)
 
-    def test_imagen_borrada_despues_del_analisis_no_rompe_el_informe(self):
+    def test_image_deleted_after_analysis_no_breaks_report(self):
         resultados = analizar_album(self.album, guardar_png=True)
         borrados = 0
         for resultado in resultados:
@@ -292,7 +292,7 @@ class TestInformePDF(unittest.TestCase):
             for i in range(cuantos)]
         return copia
 
-    def test_una_ficha_con_muchos_problemas_no_desborda_la_pagina(self):
+    def test_card_with_many_problems_no_overflows_page(self):
         """Before, 12 issues pushed the spectrogram onto the next page
         (the record went from 1 page to 2). The image shrinks so that it fits."""
         limpio = self.fx.subcarpeta("maqueta_larga", ("ok16",))
@@ -303,14 +303,14 @@ class TestInformePDF(unittest.TestCase):
         self.assertEqual(informe["paginas"], 3)
         self.assertEqual(paginas_del_pdf(destino), 3)
 
-    def test_la_ficha_normal_sigue_usando_la_imagen_a_tamano_completo(self):
+    def test_card_normal_still_using_image_size_full(self):
         resultados = analizar_album(self.album, guardar_png=True)
         informe = pdf.generate(self.album, resultados)
         self.assertEqual(informe["paginas"], len(resultados) + 2)
         self.assertTrue(os.path.exists(informe["ruta"]))
 
     @unittest.skipUnless(_fitz_disponible(), "PyMuPDF not installed")
-    def test_el_titulo_y_la_imagen_nunca_se_separan_de_pagina(self):
+    def test_title_image_never_separate_page(self):
         """The symptom that was fixed: a loose image at the top of the next page,
         far from its title."""
         import fitz
@@ -340,7 +340,7 @@ class TestInformePDF(unittest.TestCase):
                 os.remove(destino)
 
     # ── error handling: it never aborts ─────────────────────────────────────
-    def test_sin_reportlab_avisa_sin_generar_nada(self):
+    def test_without_reportlab_warns_without_generate_nothing(self):
         limpio = self.fx.subcarpeta("album_sin_reportlab", ("ok16",))
         original = pdf.REPORTLAB_OK
         pdf.REPORTLAB_OK = False
@@ -353,7 +353,7 @@ class TestInformePDF(unittest.TestCase):
         finally:
             pdf.REPORTLAB_OK = original
 
-    def test_destino_imposible_avisa_sin_lanzar(self):
+    def test_destination_impossible_warns_without_raise(self):
         resultados = analizar_album(self.album, guardar_png=False)
         destino = os.path.join(self.fx["ok16"], pdf.REPORT_NAME)   # a file
         informe = pdf.generate(self.album, resultados, destination=destino)
@@ -361,12 +361,12 @@ class TestInformePDF(unittest.TestCase):
         self.assertIsNone(informe["ruta"])
         self.assertTrue(informe["error"])
 
-    def test_sin_resultados_avisa(self):
+    def test_without_results_warns(self):
         informe = pdf.generate(self.album, [])
         self.assertFalse(informe["ok"])
         self.assertIn("there are no results", informe["error"].lower())
 
-    def test_un_fallo_del_generador_no_aborta_el_analisis(self):
+    def test_failure_generator_no_aborts_analysis(self):
         """The engine turns any issue in the report into a notice."""
         sonda = self.fx.subcarpeta("album_roto", ("ok16",))
         # the report destination is a DIRECTORY: writing into it is bound to fail
@@ -381,7 +381,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertIn("Summary: 1", p.stdout.replace("SUMMARY:", "Summary:"))
 
     # ── integration with the CLIs ───────────────────────────────────────────
-    def test_el_motor_emite_el_evento_informe_antes_de_fin(self):
+    def test_engine_emits_event_report_before_end(self):
         sonda = self.fx.subcarpeta("album_cli", ("ok16", "corte_16k"))
         p = fx.correr_motor(sonda, extra=("--pdf",))
         eventos = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
@@ -399,14 +399,14 @@ class TestInformePDF(unittest.TestCase):
             if not resultado.get("error"):
                 self.assertIsNotNone(resultado["esp"].get("espectrograma"))
 
-    def test_sin_pdf_no_se_emite_el_evento_informe(self):
+    def test_without_pdf_no_emits_event_report(self):
         sonda = self.fx.subcarpeta("album_sin_pdf", ("ok16",))
         p = fx.correr_motor(sonda)
         tipos = [json.loads(l)["tipo"] for l in p.stdout.splitlines() if l.strip()]
         self.assertNotIn("informe", tipos)
         self.assertFalse(os.path.exists(os.path.join(sonda, pdf.REPORT_NAME)))
 
-    def test_el_cli_interactivo_tambien_genera_el_informe(self):
+    def test_cli_interactive_also_generates_report(self):
         sonda = self.fx.subcarpeta("album_interactivo", ("ok16", "ok24"))
         entorno = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
         p = subprocess.run([sys.executable, fx.CLI], input=f"2\nn\ny\n{sonda}\nn\n",
@@ -416,7 +416,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertIn("PDF report:", p.stdout)
         self.assertTrue(os.path.exists(os.path.join(sonda, pdf.REPORT_NAME)))
 
-    def test_el_pdf_y_el_png_son_combinables(self):
+    def test_pdf_png_are_combinable(self):
         sonda = self.fx.subcarpeta("album_combinado", ("ok16",))
         p = fx.correr_motor(sonda, extra=("--png", "--pdf"))
         tipos = [json.loads(l)["tipo"] for l in p.stdout.splitlines() if l.strip()]
