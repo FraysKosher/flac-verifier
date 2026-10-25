@@ -170,7 +170,7 @@ def verify() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build FLAC_Verifier.exe")
-    parser.add_argument("--no-clean", dest="sin_limpiar", action="store_true",
+    parser.add_argument("--no-clean", dest="without_clean", action="store_true",
                         help="do not remove build/ or dist/ before building")
     args = parser.parse_args()
 
@@ -184,7 +184,7 @@ def main() -> int:
     ensure_pyinstaller()
 
     step_size(2, "Removing leftovers from previous builds")
-    if args.sin_limpiar:
+    if args.without_clean:
         print("  (skipped by --no-clean)")
     else:
         clean()

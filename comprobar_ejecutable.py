@@ -533,11 +533,11 @@ class Comprobador:
 def main() -> int:
     _utf8()
     parser = argparse.ArgumentParser(description="Check the built .exe")
-    parser.add_argument("--folder", dest="carpeta", default=DIST,
+    parser.add_argument("--folder", dest="folder", default=DIST,
                         help="folder with the .exe files (default dist/FLAC_Verifier)")
     parser.add_argument("--album", default=ALBUM_TEST,
                         help="album used for the analysis tests")
-    parser.add_argument("--quick", dest="rapido", action="store_true",
+    parser.add_argument("--quick", dest="quick", action="store_true",
                         help="only steps 1-3 (no PDF, no window)")
     args = parser.parse_args()
 
@@ -554,14 +554,14 @@ def main() -> int:
         if os.path.isdir(args.album):
             comprobador.step_2_series(args.album)
             comprobador.step_3_parallel(args.album)
-            if not args.rapido:
+            if not args.quick:
                 comprobador.step_4_pdf(args.album)
                 comprobador.step_5_flag_internal(args.album)
                 comprobador.step_7_same_verdicts(args.album)
         else:
             comprobador.anotar("test album", False,
                                f"not found: {args.album} — pass --album")
-        if not args.rapido:
+        if not args.quick:
             comprobador.step_6_window()
     finally:
         comprobador.close()
