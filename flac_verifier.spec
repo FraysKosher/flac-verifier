@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller specification for FLAC VERIFIER 2.2.0 (Windows 10/11 x64).
+"""PyInstaller specification for FLAC VERIFIER 2.3.0 (Windows 10/11 x64).
 
 The build uses FOLDER mode (`--onedir`): this is the recommended choice for
 applications with NumPy/SciPy/Pillow because it starts instantly and does not

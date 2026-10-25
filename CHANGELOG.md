@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-10-24
+
+### Added
+
+- Phase 8 forensic detectors: algebraic 24-bit lattice and 24-bit master
+  safeguard (`AcumuladorForenseBits` with unique-level bitmaps and the global
+  lattice p10), universal DSD/Scarlet Book/DSD128 profiles, codec `sfb21`
+  islands, harmonic-exciter detection, acoustic centroid and low-HF attenuation,
+  plus album coherence for the 8D acoustic exemption.
+- A fail-closed 24-bit acoustic exemption: only an **active** LSB lattice
+  qualifies; `partial`, `indeterminate` and missing LSBs no longer receive it,
+  so a 24-bit upscale cannot buy the exemption.
+- A signed harmonic-exciter step (an ascending step cannot fire the notch
+  detector) and the 0.25 lower bound for `sfb21` islands.
+
+### Changed
+
+- `VERSION_MOTOR` is now `"9.8"`, which invalidates every earlier cache; the
+  cache schema is `"2.3.0"`.
+- Rule 5 is restored for 24-bit low-ceiling tracks after the acoustic
+  exemption, so the 8D exemption cannot bypass the 24-bit format check.
+- `PROBABLY LOSSLESS` tracks that the 8D acoustic exemption has already
+  justified can now receive the album-coherence note in a homogeneous album
+  (the individual cache entry still does not carry it).
+- The test suite grew to **266 tests**; the benchmark reports **20/20**
+  (sensitivity and specificity 100 %, Wilson 95 % CI 83.9–100 %), and the
+  packaged executable passes **11/11** checks in Gate 5.
+
 ## [2.2.0] - 2026-10-22
 
 ### Added

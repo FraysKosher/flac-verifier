@@ -7,7 +7,8 @@ What it does, in order:
   1. Checks the Python version and that PyInstaller is available (it installs it
      if missing).
   2. Removes build/ and dist/ so that leftovers from previous builds do not mix in.
-  3. Builds with flac_verifier.spec (folder mode, two executables).
+  3. Builds with flac_verifier.spec (folder mode, two executables) and, on
+     Windows, normalises the mandatory integrity label of the result.
   4. Verifies the result: that the .exe files exist, their size, and that they
      respond to `--version` (without opening any window).
 
@@ -99,6 +100,35 @@ def limpiar() -> None:
         print("  warning: Logo/icono_app.ico is missing; building with the default icon")
 
 
+def normalizar_integridad_windows(carpeta: str) -> None:
+    """Sets the Medium mandatory integrity label on everything under `carpeta`.
+
+    A virtual environment or a workspace that was created from a low-integrity
+    context carries an inheritable `Low` label, and PyInstaller copies that label
+    into every file it writes. The packaged executables would then run Low and
+    could not write into a normal (Medium) folder, so the PDF step would fail
+    with PermissionError for reasons that have nothing to do with the code. The
+    label is normalised after building, which is the only moment when the folder
+    exists and the inherited label has already been copied.
+    """
+    if os.name != "nt" or not os.path.isdir(carpeta):
+        return
+    comando = ["icacls", carpeta, "/setintegritylevel", "(OI)(CI)M", "/T", "/Q"]
+    try:
+        resultado = subprocess.run(
+            comando, capture_output=True, text=True, timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"  note: could not normalise the integrity label "
+              f"({type(exc).__name__}: {exc})")
+        return
+    if resultado.returncode != 0:
+        print(f"  note: icacls returned {resultado.returncode} while normalising "
+              f"the integrity label; check the folder by hand")
+        return
+    print(f"  ✓ {os.path.basename(carpeta)}/ now carries the Medium integrity label")
+
+
 def compilar() -> float:
     if not os.path.exists(SPEC):
         raise SystemExit(f"Cannot find {os.path.basename(SPEC)}")
@@ -109,6 +139,7 @@ def compilar() -> float:
     resultado = subprocess.run(comando, cwd=AQUI)
     if resultado.returncode != 0:
         raise SystemExit("The build failed. Check the PyInstaller message above.")
+    normalizar_integridad_windows(CARPETA)
     return time.perf_counter() - inicio
 
 

@@ -10,7 +10,11 @@ Every step launches the .exe with the output REDIRECTED TO A FILE, never to a
 pipe: the child processes of the parallel analysis inherit the descriptors, and with
 a pipe the reader waits forever for an end of stream that never arrives. In addition,
 every step has its own time limit, so a hang is detected and reported instead of
-sitting there.
+sitting there. Before anything is launched, the folder that holds the executables
+is raised to the Medium mandatory integrity label: a build produced inside a
+low-integrity workspace inherits that `Low` label, and a Low process cannot write
+into a Medium folder (the Windows no-write-up rule). That mismatch, and not a
+reportlab bug, is what made the PDF step report PermissionError.
 
 What is checked, in order:
   1. Both executables exist and state their version.
@@ -34,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,6 +53,103 @@ ALBUM_PRUEBA = os.path.join(os.path.dirname(os.path.dirname(AQUI)),
                             "_audit_flac", "_demo_album")
 SIN_VENTANA = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 LIMITE = 300
+
+TOKEN_INTEGRITY_LEVEL = 25        # TokenIntegrityLevel, from winnt.h
+INTEGRIDAD_MEDIA = 0x2000         # SECURITY_MANDATORY_MEDIUM_RID
+
+
+def _integridad_proceso_windows() -> int | None:
+    """RID of the mandatory integrity level of THIS process token (0x1000 Low…).
+
+    Windows does not let a Low process write into a folder labelled Medium
+    (no-write-up). Knowing the caller's level is the difference between reporting
+    "the PDF step failed" and reporting why, so it is read straight from the token
+    with ctypes: no extra dependency and no external command.
+
+    Returns None when the query cannot be made (not Windows, no permission).
+    """
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.windll.advapi32
+    kernel32 = ctypes.windll.kernel32
+
+    # The prototypes are mandatory: without them the pseudo-handle returned by
+    # GetCurrentProcess() is truncated to 32 bits on a 64-bit interpreter and
+    # OpenProcessToken fails with a meaningless error.
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                          ctypes.POINTER(wintypes.HANDLE)]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                             ctypes.c_void_p, wintypes.DWORD,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+    advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+    advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_MANDATORY_LABEL(ctypes.Structure):
+        _fields_ = [("Label", SID_AND_ATTRIBUTES)]
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,
+                                     ctypes.byref(token)):
+        return None
+    try:
+        tamano = wintypes.DWORD(0)
+        advapi32.GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, None, 0,
+                                     ctypes.byref(tamano))
+        if not tamano.value:
+            return None
+        buffer = ctypes.create_string_buffer(tamano.value)
+        if not advapi32.GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, buffer,
+                                            tamano.value, ctypes.byref(tamano)):
+            return None
+        etiqueta = ctypes.cast(buffer,
+                               ctypes.POINTER(TOKEN_MANDATORY_LABEL)).contents
+        subautoridades = advapi32.GetSidSubAuthorityCount(etiqueta.Label.Sid).contents.value
+        if not subautoridades:
+            return None
+        # The integrity level is the LAST sub-authority of the label SID.
+        return advapi32.GetSidSubAuthority(etiqueta.Label.Sid,
+                                           subautoridades - 1).contents.value
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _normalizar_integridad_carpeta(carpeta: str) -> None:
+    """Raises the label of `carpeta` to Medium before the executables inside run.
+
+    It is the repair for a build made inside a Low workspace: the .exe files
+    inherit the Low label and then cannot write the PDF into any normal folder.
+    Only attempted when the caller is already Medium or above, because a Low
+    process cannot hand out a label it does not hold.
+    """
+    if os.name != "nt" or not os.path.isdir(carpeta):
+        return
+    integridad = _integridad_proceso_windows()
+    if integridad is None or integridad < INTEGRIDAD_MEDIA:
+        return
+    try:
+        resultado = subprocess.run(["icacls", carpeta, "/setintegritylevel",
+                                    "(OI)(CI)M", "/T", "/Q"],
+                                   capture_output=True, text=True, timeout=120,
+                                   creationflags=SIN_VENTANA)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"  note: could not normalise the integrity label "
+              f"({type(exc).__name__}: {exc})")
+        return
+    if resultado.returncode != 0:
+        print(f"  note: icacls returned {resultado.returncode} while normalising "
+              f"the integrity label of {carpeta}")
 
 
 def _titulos_ventanas_visibles(pid: int) -> list[str]:
@@ -193,6 +295,15 @@ class Comprobador:
         texto = " ".join(texto.split())
         return texto[:limite] + ("…" if len(texto) > limite else "")
 
+    def cerrar(self) -> None:
+        """Removes the scratch folder; without this every run leaves a flac_exe_*.
+
+        The per-step output files live in that folder and are only useful while
+        the run lasts, so the checker owns their lifetime instead of trusting the
+        caller to clean up after a failure halfway through.
+        """
+        shutil.rmtree(self.temporal, ignore_errors=True)
+
     # ── steps ───────────────────────────────────────────────────────────────
     def paso_1_ejecutables(self) -> None:
         print("\n[1] Both executables exist and respond")
@@ -271,8 +382,13 @@ class Comprobador:
         informe = next((e for e in eventos if e.get("tipo") == "informe"), None)
         avisos = [e for e in eventos if e.get("tipo") == "aviso"]
         if informe is None:
-            self.anotar("PDF report", False,
-                        self.abreviar(avisos[0].get("mensaje", "") if avisos else texto))
+            detalle = self.abreviar(avisos[0].get("mensaje", "") if avisos else texto)
+            integridad = _integridad_proceso_windows()
+            if integridad is not None and integridad < INTEGRIDAD_MEDIA:
+                detalle += (f" [caller token has Low Mandatory Integrity "
+                            f"0x{integridad:x}; run: icacls <venv> "
+                            f"/setintegritylevel (OI)(CI)M /T]")
+            self.anotar("PDF report", False, detalle)
             return
         ruta_pdf = informe.get("ruta", "")
         existe = os.path.exists(ruta_pdf)
@@ -432,19 +548,23 @@ def main() -> int:
     print(f"  test album: {args.album}")
 
     comprobador = Comprobador(args.carpeta)
-    comprobador.paso_1_ejecutables()
-    if os.path.isdir(args.album):
-        comprobador.paso_2_serie(args.album)
-        comprobador.paso_3_paralelo(args.album)
+    try:
+        _normalizar_integridad_carpeta(args.carpeta)
+        comprobador.paso_1_ejecutables()
+        if os.path.isdir(args.album):
+            comprobador.paso_2_serie(args.album)
+            comprobador.paso_3_paralelo(args.album)
+            if not args.rapido:
+                comprobador.paso_4_pdf(args.album)
+                comprobador.paso_5_bandera_interna(args.album)
+                comprobador.paso_7_mismos_veredictos(args.album)
+        else:
+            comprobador.anotar("test album", False,
+                               f"not found: {args.album} — pass --album")
         if not args.rapido:
-            comprobador.paso_4_pdf(args.album)
-            comprobador.paso_5_bandera_interna(args.album)
-            comprobador.paso_7_mismos_veredictos(args.album)
-    else:
-        comprobador.anotar("test album", False,
-                           f"not found: {args.album} — pass --album")
-    if not args.rapido:
-        comprobador.paso_6_ventana()
+            comprobador.paso_6_ventana()
+    finally:
+        comprobador.cerrar()
     return comprobador.resumen()
 
 

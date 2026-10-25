@@ -41,7 +41,7 @@ for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
     os.environ.setdefault(_variable_blas, "1")
 del _variable_blas
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 NOMBRE_MOTOR_EXE = "flac_motor.exe"
 
 AYUDA = """FLAC VERIFIER — FLAC authenticity verifier
