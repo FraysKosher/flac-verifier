@@ -89,8 +89,7 @@ INTERNAL_STYLE_NAMES = {
 }
 
 # argparse destinations that stay as they are: internal identifiers, not prose.
-ARGPARSE_DESTS = {"espectrograma", "espectrogramas", "carpeta", "segundos",
-                 "output"}
+ARGPARSE_DESTS = {"espectrograma", "espectrogramas", "output"}
 
 # Union kept for the checks below; the split above documents why each name is
 # allowed, and the behaviour is identical to the old single set.
@@ -252,13 +251,13 @@ class TestIdioma(unittest.TestCase):
                         f"{palabra!r} in {texto.strip()[:60]!r}")
         self.assertEqual(problemas, [], f"{descripcion} in " + "; ".join(problemas[:6]))
 
-    def test_no_there_is_characters_spanish(self):
+    def test_no_spanish_characters(self):
         self._revisar(PROPIOS, "Spanish characters")
 
-    def test_no_there_is_words_spanish(self):
+    def test_no_spanish_words(self):
         self._revisar(PALABRAS, "Spanish words")
 
-    def test_verdicts_are_english_match(self):
+    def test_verdicts_are_english_and_match(self):
         """The traffic light depends on engine, GUI and PDF using the SAME strings."""
         import gui
         import informe_pdf
@@ -290,7 +289,7 @@ class TestIdioma(unittest.TestCase):
         # The engine's command-line entry point stays importable and callable.
         self.assertTrue(callable(motor_flac.main_cli))
 
-    def test_report_folder_changed_name(self):
+    def test_report_and_folder_names_changed(self):
         import gui
         import informe_pdf
         self.assertEqual(gui.REPORT_NAME, "flac_verifier_report.pdf")

@@ -3,7 +3,7 @@
 OPTIONAL dependency: `reportlab`. If it is not installed, the analysis still
 works and this module only reports that it cannot generate the report. Neither
 the engine nor the CLI import reportlab: they use it only through `disponible()`
-and `generar()`, and `generar()` NEVER raises: it returns a dict with
+and `generate()`, and `generate()` NEVER raises: it returns a dict with
 `ok`/`error` so that a failure while writing the PDF does not abort the analysis.
 
 Report structure:
@@ -314,7 +314,7 @@ def _height_of(flowables):
 
 
 def _adjust_image(image, disponible):
-    """Shrinks the image (down to ALTO_IMG_MIN_MM) so that it fits in what is left.
+    """Shrinks the image (down to HEIGHT_IMG_MIN_MM) so that it fits in what is left.
 
     Without this, a song page with many issues pushed the spectrogram onto the
     next page and left it loose at the top, separated from its heading."""

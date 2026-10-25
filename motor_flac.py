@@ -78,9 +78,9 @@ VERSION_MOTOR = "9.8"
 #      Album coherence now also covers the Phase 8D acoustic exemption: a
 #      low-centroid acoustic track that already reached PROBABLY LOSSLESS on its
 #      own (smooth decay + clean bits, no lossy signature) is still held back by
-#      `analizar_archivos` and, inside a directory that is >= 80% GENUINE LOSSLESS,
-#      `aplicar_coherencia_album` marks it with `coherencia_album = True` and
-#      NOTA_COHERENCIA_ALBUM. The elevation lives only in the batch result: the
+#      `analyze_files` and, inside a directory that is >= 80% GENUINE LOSSLESS,
+#      `apply_album_coherence` marks it with `coherencia_album = True` and
+#      ALBUM_COHERENCE_NOTE. The elevation lives only in the batch result: the
 #      individual on-disk cache keeps the track's own verdict.
 # 9.7: cache invalidation for the final Phase 7 detectors.
 # 9.6: Phase 5 forensic suite and validation benchmark (mirror threshold and
@@ -311,7 +311,7 @@ class _BlockAnalysis:
         self.path  = path
         self.save_png = bool(save_png) and PIL_OK and bool(path)
 
-        # MD5 (the same PCM as verificar_md5, hashed incrementally). It is only
+        # MD5 (the same PCM as verify_md5, hashed incrementally). It is only
         # hashed if there is something to compare with: with no recorded MD5 or
         # with an unverifiable bit depth, the result is "absent"/"unverifiable"
         # and hashing would be an extra pass over the whole file for nothing.
@@ -404,7 +404,7 @@ class _BlockAnalysis:
         self._dr_slope = mono
 
     def _sample_bits(self, block, offset):
-        # Bits <= 16 never reach the LSB test (analizar_bit_depth returns
+        # Bits <= 16 never reach the LSB test (analyze_bit_depth returns
         # {"aplica": False}), so nothing is buffered for CD-depth tracks: this
         # saves holding up to 1<<20 float64 frames (~16 MB) per file.
         if self.bits <= 16 or self._samples_n >= MAX_SAMPLES_BITS:
@@ -613,7 +613,7 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
             result["indice_original"] = index
             batch.append(result)
             # Everything that cannot be rescued by album context is streamed
-            # immediately. Only tracks that `_merece_coherencia_album` could
+            # immediately. Only tracks that `_deserves_album_coherence` could
             # elevate are held back until the whole batch is known: a low
             # ceiling is suspicious (SUSPICIOUS/PROBABLE UPSCALE) or already
             # excused on its own by the acoustic exemption (PROBABLY LOSSLESS).
@@ -639,7 +639,7 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
 
 def analyze_file_data(path, mode="center", seconds=None, save_png=False,
                            use_cache=True):
-    """Analyses one file and returns a dict. With `usar_cache`, if the file has not
+    """Analyses one file and returns a dict. With `use_cache`, if the file has not
     changed since the last analysis the stored result is reused."""
     result = {"archivo": os.path.basename(path), "ruta": path}
 
@@ -713,7 +713,7 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
 # Usage: python motor_flac.py --path "C:/Music/album" --mode center --png --pdf
 # Protocol: one JSON line per event
 #   { tipo: "inicio"|"resultado"|"informe"|"aviso"|"fin"|"error" }
-# (_sanear and _json_linea live above, next to the cache, which also uses them.)
+# (_sanear and _json_line live above, next to the cache, which also uses them.)
 
 def generate_pdf_report(analyzed_path, results, mode=None):
     """Generates the PDF report and is unable to abort anything.

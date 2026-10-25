@@ -120,7 +120,7 @@ def _time_axis(tiempos):
 def _draw_colorbar(lienzo, dibujo, x0, y0, width, height, db_min, db_max, source):
     """Vertical LUT gradient from db_min (bottom) to db_max (top), with ticks."""
     indices = np.linspace(255, 0, int(height), dtype=np.uint8).reshape(-1, 1)
-    gradient = _LUT_SPECTROGRAM[indices]              # (alto, 1, 3)
+    gradient = _LUT_SPECTROGRAM[indices]              # (height, 1, 3)
     barra = Image.fromarray(gradient, mode="RGB").resize((width, int(height)))
     lienzo.paste(barra, (x0, y0))
     dibujo.rectangle([x0, y0, x0 + width, y0 + height], outline=(120, 120, 135), width=1)
@@ -175,7 +175,7 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
     height = max(80, height_total - margin_top - margin_bottom)
     x_end, y_end = margin_left + width, margin_top + height
 
-    # `_guardar_espectrograma` passes (bins, frames): axis 0 is frequency and
+    # `_save_spectrogram` passes (bins, frames): axis 0 is frequency and
     # axis 1 is time. Transpose only if a caller passed the old (frames, bins)
     # layout (recognisable because `times` then matches axis 0).
     if (times is not None and len(times) == matriz.shape[0]
@@ -262,7 +262,7 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
     lienzo.convert("RGB").save(output_png_path, format="PNG", compress_level=3)
 
 def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, frequency_cutoff):
-    """Draws the spectrogram. Returns (ruta_png, error): it never raises, and the
+    """Draws the spectrogram. Returns (png_path, error): it never raises, and the
     reason for the failure is kept so that it can be reported."""
     try:
         if not PIL_OK:
@@ -333,7 +333,7 @@ def _diagnosticar_autenticidad_hires(freqs_hz, spectrum_mid_db, sample_rate,
     A DSD/SACD transfer (88.2/176.4 kHz) adds a rising noise-shaping ramp in
     24-40 kHz.
 
-    `espectro_mid_db` is calibrated to dBFS per bin (see _espectro_dbfs)."""
+    `spectrum_mid_db` is calibrated to dBFS per bin (see _espectro_dbfs)."""
     output = {
         "muro_brickwall_nyquist":  False,
         "espejo_aliasing_detectado": False,
@@ -638,9 +638,9 @@ def _spectral_metrics(freqs, pot_l, pot_r, samplerate, is_stereo=None, power=Non
     time-averaged power spectrum (one entry per bin). It does not depend on how
     it was obtained.
 
-    es_stereo is passed explicitly: in mono, pot_l and pot_r can be distinct
+    is_stereo is passed explicitly: in mono, pot_l and pot_r can be distinct
     arrays holding the same values, so identity is not a usable hint.
-    potencia is the total power spectrum; the Mid/Side decomposition provides it
+    power is the total power spectrum; the Mid/Side decomposition provides it
     directly (|M|^2 + |S|^2 = (|L|^2 + |R|^2) / 2)."""
     if is_stereo is None:
         is_stereo = pot_l is not pot_r
@@ -811,7 +811,7 @@ def _spectral_metrics(freqs, pot_l, pot_r, samplerate, is_stereo=None, power=Non
                                      if math.isfinite(centroid_hz) else 0.0),
         "decaimiento_acustico_suave": smooth_acoustic_decay,
         # Psychoacoustic metrics: the streaming path overwrites them with
-        # _psico.resultado(). Direct callers get the neutral default so every key
+        # _psycho.resultado(). Direct callers get the neutral default so every key
         # exists without an STFT-driven accumulator.
         "iqr_corte_hz":             0.0,
         "ratio_huecos_mdct":        0.0,
@@ -829,11 +829,11 @@ def _spectral_metrics(freqs, pot_l, pot_r, samplerate, is_stereo=None, power=Non
 
 def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=None):
     """Spectral analysis over an already loaded array (direct API and oracle of
-    the tests). The production path uses _AnalisisPorBloques, which does not load
+    the tests). The production path uses _BlockAnalysis, which does not load
     the track. Both paths share the selector and the float32 STFT, so they must
     give exactly the same metrics.
 
-    `modo` and `segundos` are kept in the signature for API/cache compatibility;
+    `mode` and `seconds` are kept in the signature for API/cache compatibility;
     the selector already covers the whole file, so they do not narrow the window."""
     try:
         is_stereo = data.shape[1] >= 2
@@ -850,8 +850,8 @@ def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=
 ACTIVE_RMS_THRESHOLD_DB = -65.0      # below this a block is silence for the selector
 
 def _needed_active_blocks(samplerate):
-    """K blocks, chosen so that the selected audio is at least SEGUNDOS_ESPECTRO
-    long. With FRAMES_POR_BLOQUE fixed, K grows with the sample rate."""
+    """K blocks, chosen so that the selected audio is at least SPECTRO_SECONDS
+    long. With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
     return max(1, int(math.ceil(SPECTRO_SECONDS * float(samplerate) / FRAMES_BY_BLOCK)))
 
 def _puntuacion_actividad(block, last_sample=None):

@@ -785,8 +785,8 @@ is 0.9979 and the mean difference 2.2/255. The 17 PNG files weigh 17.3 MB
 
 Tunable parameters in `motor_flac.py`: `FRAMES_BY_BLOCK` (reading),
 `SPECTRO_SECONDS` (STFT pieces), `MAX_SAMPLES_BITS` (sample for the low-bit
-test), `MAX_FRAMES_PNG`, `DPI_ESPECTROGRAMA`, `MAX_WORKERS` and
-`MIN_ARCHIVOS_PARALELO`.
+test), `MAX_FRAMES_PNG`, `WIDTH_PNG`/`HEIGHT_PNG`, `MAX_WORKERS` and
+`MIN_FILES_PARALLEL`.
 
 ---
 

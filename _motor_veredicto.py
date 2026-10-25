@@ -340,7 +340,7 @@ def calculate_score(meta, esp, bdi):
                      f"({comb_detail}): a 16-bit source scaled into 24 bits", 0.40)
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
-    # resultado["md5"] (verificar_md5), and an MD5 that does not match is a hard error.
+    # resultado["md5"] (verify_md5), and an MD5 that does not match is a hard error.
 
     if max_v == 0:
         return 0.0, "indeterminate", problems
@@ -395,7 +395,7 @@ def _deserves_album_coherence(result):
 def apply_album_coherence(results):
     """Vector 6: rescue 1-2 acoustic/low-HF tracks of a consistent album.
 
-    A candidate is any track accepted by `_merece_coherencia_album` (only the
+    A candidate is any track accepted by `_deserves_album_coherence` (only the
     spectral ceiling is against it), whatever its current label: SUSPICIOUS or
     PROBABLE UPSCALE, and also PROBABLY LOSSLESS when it was already excused on
     its own by the Phase 8D acoustic exemption (`decaimiento_acustico_suave`
@@ -403,7 +403,7 @@ def apply_album_coherence(results):
     directory are GENUINE LOSSLESS with the same sample rate and bit depth, the
     album context is stronger evidence than the isolated spectrum, so those
     candidates get the album validation (`coherencia_album = True` and
-    NOTA_COHERENCIA_ALBUM) and are at least PROBABLY LOSSLESS. That mark exists
+    ALBUM_COHERENCE_NOTE) and are at least PROBABLY LOSSLESS. That mark exists
     only in this batch: it is never written into the per-file cache, so
     analysing the track alone does not inherit it. Returns how many tracks were
     raised or validated. Modifies the list in place."""

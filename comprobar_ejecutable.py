@@ -126,7 +126,7 @@ def _integrity_process_windows() -> int | None:
 
 
 def _normalize_integrity_folder(folder: str) -> None:
-    """Raises the label of `carpeta` to Medium before the executables inside run.
+    """Raises the label of `folder` to Medium before the executables inside run.
 
     It is the repair for a build made inside a Low workspace: the .exe files
     inherit the Low label and then cannot write the PDF into any normal folder.
@@ -405,7 +405,7 @@ class Comprobador:
         print("\n[5] The command the packaged GUI builds, and the --motor-cli flag")
 
         # (a) What the GUI really runs when it is packaged. This process is made
-        # to pretend that it is the .exe so that `ruta_motor()` decides with the
+        # to pretend that it is the .exe so that `engine_path()` decides with the
         # real rules, instead of copying the command by hand here (copying it is
         # exactly what let the bug of the missing --motor-cli through).
         try:
@@ -436,7 +436,7 @@ class Comprobador:
                         f"{len(results)} result(s), exit code {code}")
 
         # (b) The internal flag on the windowed .exe: it is the fallback of a
-        # single executable. It works because `_asegurar_flujos()` rebuilds
+        # single executable. It works because `_ensure_streams()` rebuilds
         # stdout, which in a windowed .exe arrives as None.
         code, text = self.launch([self.gui, "--motor-cli", "--path", album,
                                      "--mode", "center", "--workers", "1",

@@ -101,7 +101,7 @@ def clean() -> None:
 
 
 def normalize_integrity_windows(folder: str) -> None:
-    """Sets the Medium mandatory integrity label on everything under `carpeta`.
+    """Sets the Medium mandatory integrity label on everything under `folder`.
 
     A virtual environment or a workspace that was created from a low-integrity
     context carries an inheritable `Low` label, and PyInstaller copies that label

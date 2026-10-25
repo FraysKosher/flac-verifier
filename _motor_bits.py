@@ -250,7 +250,7 @@ def _classify_clipping_nature(samples_int, max_val_integer,
                                     nyquist=None):
     """Vector 6 from native integer samples (array/direct API path).
 
-    `max_val_entero` is the positive full-scale integer (32767 for 16 bits,
+    `max_val_integer` is the positive full-scale integer (32767 for 16 bits,
     8388607 for 24 bits). Spectral arguments are optional: without them only the
     run statistics are produced, because both classifications need the spectrum."""
     try:
@@ -532,8 +532,8 @@ class ForensicBitsAccumulator:
         }
 
 def _analyze_forensic_bits(data, meta):
-    """Array-path counterpart of AcumuladorForenseBits (used by the oracle and
-    by direct API callers). It walks the same FRAMES_POR_BLOQUE blocks."""
+    """Array-path counterpart of ForensicBitsAccumulator (used by the oracle and
+    by direct API callers). It walks the same FRAMES_BY_BLOCK blocks."""
     bits = meta.get("bits_per_sample")
     if bits != 24:
         return {"aplica": False}

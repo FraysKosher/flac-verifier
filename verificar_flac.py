@@ -41,7 +41,7 @@ EXIT_CMDS = {"exit", "q", "quit", "0"}
 AFIRMATIVOS = ("y", "yes")
 
 # Canonical engine verdicts -> presentation.
-# They are compared by EXACT EQUALITY against motor_flac.calcular_score, so there
+# They are compared by EXACT EQUALITY against motor_flac.calculate_score, so there
 # are no substring comparisons any more and no two sets of strings that could
 # diverge.
 VERDICTS = {

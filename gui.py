@@ -11,7 +11,7 @@ Architecture (designed so that the interface never freezes on Windows):
       using the same interpreter that runs the GUI.
     - A daemon THREAD reads stdout line by line (the engine's NDJSON protocol)
       and puts the events into a `queue.Queue`.
-    - The window drains that queue in bounded batches (`LOTE_DRENADO` events per
+    - The window drains that queue in bounded batches (`BATCH_DRAINED` events per
       tick, rescheduled with a short interval while there is a backlog): no widget
       is touched from the reader thread, and a huge batch cannot freeze the window.
 
@@ -348,7 +348,7 @@ class ProcessManager:
     def active_thread(self) -> bool:
         """Is the reader thread still alive?
 
-        The reader queues `__fin__` only AFTER the process is reaped, so `activo`
+        The reader queues `__fin__` only AFTER the process is reaped, so `active`
         can be False while the final event has not reached the queue yet. The
         window must keep draining until the thread ends, or the last summary is
         lost."""
