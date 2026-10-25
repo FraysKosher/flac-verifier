@@ -173,6 +173,13 @@ python motor_flac.py --path "C:/Music/album" --pdf --no-cache   # clean analysis
 spectrograms on its own even if `--png` is not passed, because the report embeds
 them.
 
+The GUI always passes the internal `--motor-cli` flag (`FLAC_Verifier.exe
+--motor-cli …`, or `python main.py --motor-cli …` in source mode), so the call
+does not depend on the executable name; `flac_motor.exe` accepts the same engine
+options without that flag. `--motor-cli` is not an option of `motor_flac.py`; it
+is the dispatcher flag that rebuilds the output streams in the windowed
+executable.
+
 ---
 
 ## Distribution: a single `.exe` for Windows with no Python
@@ -186,13 +193,14 @@ python -m pip install pyinstaller      # once
 python build.py                        # cleans, builds and verifies (~1 min)
 ```
 
-`build.py` does three things and fails with a clear message if something does not
+`build.py` does four things and fails with a clear message if something does not
 add up: it checks the interpreter and PyInstaller, deletes `build/` and `dist/`,
-builds the `.spec`, and **verifies the result** by launching the compiled
+builds the `.spec`, **normalises the Windows mandatory integrity label** of the
+result (see MIC below) and **verifies the result** by launching the compiled
 executables (version, a real analysis and the presence of the engine). With
 `--no-clean` it reuses what has already been built.
 
-`build/` is the PyInstaller scaffolding (about 43 MB): you can delete it whenever
+`build/` is the PyInstaller scaffolding (about 43 MiB): you can delete it whenever
 you like, `build.py` recreates it on the next build.
 
 ### What is left in `dist/FLAC_Verifier/`
@@ -205,14 +213,14 @@ dist/FLAC_Verifier/
 ```
 
 The whole folder is copied or compressed into a ZIP: **the `.exe` alone does not
-work**, it needs its `_internal/` next to it. That is about 157 MB on disk
-(67 MB in a ZIP in the 2.3.0 release), because it includes NumPy, SciPy and the
-Python interpreter; the current spec no longer bundles matplotlib, so it is
-smaller. The first launch takes a few seconds (that is normal: there is
+work**, it needs its `_internal/` next to it. That is about **157 MiB (164 MB)**
+on disk and **67 MiB (70 MB)** in `FLAC_Verifier_2.3.0-win64.zip`, because it
+includes NumPy, SciPy and the Python interpreter; the current spec no longer
+bundles matplotlib, so it is smaller. The first launch takes a few seconds (that is normal: there is
 nothing to unpack in `%TEMP%`, which is exactly the reason for using folder mode
 instead of a single `.exe`).
 
-Where those 157 MB come from: `scipy` with its DLLs (≈63 MB), the OpenBLAS
+Where those 157 MiB come from: `scipy` with its DLLs (≈63 MiB), the OpenBLAS
 libraries that numpy and scipy each ship (≈39 MB together), `PIL` (≈6 MB, used for
 the spectrograms and the PDF images), `reportlab` (≈4 MB) and the Python
 interpreter with Tcl/Tk and `libsndfile`.
@@ -311,6 +319,21 @@ surprises people the most and what usually makes somebody delete a legitimate
 application. If the project is going to be distributed seriously, the real
 solution is **signing the executable** with a (paid) code signing certificate and
 submitting it to Microsoft for analysis.
+
+### Windows mandatory integrity label (MIC)
+
+A Windows process carries a *mandatory integrity level* (Low, Medium, High) and
+the kernel enforces **no-write-up**: a Low process cannot write into a Medium
+folder. If the repository or the virtual environment was created inside a
+Low-inherited workspace, every `.exe` built there inherits the Low label, and
+the packaged PDF step fails with `PermissionError` on the album folder even
+though the same `.exe` works when launched from a normal console.
+
+Since 2.3.0, `build.py` normalises the label of `dist/FLAC_Verifier` to Medium
+after building, and `comprobar_ejecutable.py` does the same on the folder it is
+about to test. The check also reports the caller's token integrity if the PDF
+step fails, so a Low-inherited environment is diagnosed instead of blamed on
+`reportlab`. The release ZIP is built from the Medium-labelled folder.
 
 ### How to check that the executable came out right
 
@@ -415,15 +438,26 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
   "dr": 13.1,
   "bdi": { "aplica": true, "lsbs": "active",
            "resolucion_efectiva_bits": 24, "fraccion_16bit_grid": 9.8,
+           "forense_bits": { "es_padded_16_en_24": false, "trailing_zeros_lsb": 0,
+                             "lsb8_entropia_bits": 7.2, "lsb8_cajones_ocupados": 250,
+                             "paso_reticula_mediano": 1.0,
+                             "es_24bit_escalado_en_peine": false },
            "conclusion": "…" },
   "esp": { "error": null, "techo_hz": 20004, "techo_rel_nyquist": 0.9072,
            "clase_corte": "near_nyquist_cutoff", "corte_detectado": true,
            "frecuencia_corte": 19821, "distancia_nyquist": 0.8989,
            "corte_artificial": false, "ratio": 0.42439, "ratio_aplica": true,
            "var_alta_db": 683.6, "separacion_stereo": 0.438, "nyquist": 22050,
+           "perfil_dsd": null, "gradiente_borde_db_khz": 12.4,
+           "centroide_hz": 1420.0, "decaimiento_acustico_suave": false,
+           "brecha_p90_p10_agudos_db": 0.0, "ratio_apagado_sfb21": 0.0,
+           "islas_mdct_sfb21": false, "corr_env_excitador": 0.0,
+           "muesca_excitador_db": 0.0, "sospecha_excitador_armonico": false,
            "espectrograma": null },
   "score": 0.7, "veredicto": "PROBABLY LOSSLESS",
-  "problemas": ["…"]
+  "problemas": ["…"],
+  "evidencias_forenses": ["Spectral ceiling 20.0 kHz (91% of Nyquist)",
+                          "STREAMINFO MD5 verified (match)"]
 }
 ```
 
@@ -440,7 +474,7 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `bdi.lsbs` | `empty` · `partial` · `active` · `indeterminate` |
 | `bdi.resolucion_efectiva_bits` | Bits actually used (16 inside a 24-bit container → `16`) |
 | `bdi.fraccion_16bit_grid` | % of samples aligned with the 16-bit grid |
-| `bdi.forense_bits` | Vector 4 object (24-bit only): `es_padded_16_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `es_24bit_escalado_en_peine` |
+| `bdi.forense_bits` | Native-integer audit (24-bit only): `es_padded_16_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `muestras_pasaje_bajo`, `paso_reticula_mediano`, `es_24bit_escalado_en_peine`, `es_flujo_dop`, `dop_pares_inspeccionados`, `dop_ratio` |
 | `esp.techo_hz` | Highest frequency with energy above −60 dB |
 | `esp.techo_rel_nyquist` | That ceiling as a fraction of Nyquist |
 | `esp.clase_corte` | `no_cutoff` · `near_nyquist_cutoff` (≥ 88 % of Nyquist) · `far_cutoff` (< 88 %) |
@@ -462,6 +496,16 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `esp.salto_ultrasonico_db` | Level step between 18–20.8 kHz and 23.5–36 kHz |
 | `esp.correlacion_espejo_22k` | Detrended Pearson r of the mirrored bands |
 | `esp.es_transferencia_dsd` | `true` for a DSD/SACD noise-shaping ramp in 24–40 kHz |
+| `esp.perfil_dsd` | DSD profile: `direct_24_40k`, `scarlet_30k`, `dsd128_40_80k`, or `null` (no DSD ramp) |
+| `esp.gradiente_borde_db_khz` | Steepest slope of the transition band around the ceiling, in dB/kHz |
+| `esp.centroide_hz` | Spectral centroid: a low-centroid acoustic mix sits below 1800 Hz |
+| `esp.decaimiento_acustico_suave` | `true` for a low-centroid, no-cutoff, ≥ 11 kHz ceiling with a gentle (< 20 dB/kHz) edge: the acoustic exemption candidate |
+| `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
+| `esp.ratio_apagado_sfb21` | Fraction of high-energy frames whose sfb21 band is switched off |
+| `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
+| `esp.corr_env_excitador` | Correlation between the 8–14 kHz envelope and the high band |
+| `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
+| `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / SBR signature |
 | `esp.sospecha_corte_opus_20k` | `true` for a 20.00 kHz cliff (> 45 dB between 19.85 and 20.15 kHz) with a flat 18–19.7 kHz band |
 | `esp.caida_opus_20k_db` | Depth of that cliff in dB |
 | `esp.clipping_eventos` / `clipping_longitud_media` | Saturation runs and their mean length |
@@ -480,7 +524,10 @@ carries **`coherencia_album: true`** and the note
 
 `veredicto` is one of: `GENUINE LOSSLESS`, `PROBABLY LOSSLESS`, `SUSPICIOUS`,
 `PROBABLE UPSCALE`, `indeterminate`. `problemas` is the list of reasons, in plain
-language; each line explains why score was subtracted.
+language; each line explains why score was subtracted. `evidencias_forenses` is
+an additive list of short technical evidence lines (spectral ceiling, MD5 match,
+DSD/sfb21/exciter signatures, 24-bit lattice…), so a consumer can explain the
+verdict without re-deriving the detectors.
 
 ### `resultado` — rejected file
 
@@ -513,9 +560,11 @@ of everything measured: only what really distinguishes scores points.
 | High/mid ratio | 2 | > 0.05 (1 if > 0.01) |
 | High-band variance | 1 | > 3 dB² |
 | Stereo separation | 1 | > 0.1 (not applicable in mono) |
+| Analogue/DSD morphology | 3 | `rolloff_analogico_genuino` or `es_transferencia_dsd`: the declared band is backed by a smooth roll-off / DSD ramp |
+| Acoustic exemption | 1.5 | `decaimiento_acustico_suave` + active LSB lattice + no lossy signature: a low-centroid acoustic ceiling is explained, not destroyed |
 
-**Confirmed defects** (they subtract and, except the last one, they block the
-maximum verdict):
+**Confirmed defects** (they subtract; the blocking ones limit the maximum
+verdict — see the note after the table):
 
 | Defect | Subtracts | Condition |
 |---|---|---|
@@ -524,7 +573,17 @@ maximum verdict):
 | Hi-res with no high content | 0.40 | ≥ 88.2 kHz and ceiling < 18 kHz |
 | Empty LSBs | 0.40 | > 97 % of samples on the 16-bit grid |
 | Partially inactive LSBs | 0.15 | 80–97 % (does not block) |
-| Declared resolution with no support | 0.25 | Claims > 16 bits at CD rate with no content above the CD band |
+| Declared resolution with no support | 0.25 | Claims > 16 bits at CD rate with no content above the CD band (blocks) |
+| Joint-stereo collapse | 0.30 | Side channel drops at HF (`sospecha_joint_stereo`) |
+| Cut-off jitter | 0.20 | IQR > 550 Hz (frame-adaptive codec; does not block) |
+| MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
+| sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
+| Harmonic exciter / SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
+| Opus 20 kHz cliff | 0.20 | 20.00 kHz cliff with other codec evidence (does not block) |
+| Gibbs clipping | 0.25 | 1–2 sample clipping events with a band limit < 20.5 kHz (does not block) |
+| 16-in-24 padding | 0.40 | Every sample has trailing zero bits (blocks) |
+| 24-bit quantisation comb | 0.40 | Global lattice step in the 8 LSBs (blocks) |
+| Brickwall / aliasing | 0.40 | Hi-Res cliff at 22.05/24 kHz or mirrored 23–29 kHz (blocks) |
 
 ### Why hi-res is not measured in proportion to Nyquist
 
@@ -544,6 +603,9 @@ since by definition it cannot have anything above 22.05 kHz.
 ≥ 0.40 `SUSPICIOUS` · the rest `PROBABLE UPSCALE`. If there is any blocking
 defect, the verdict is limited to `SUSPICIOUS` (score ≥ 0.50) or `PROBABLE
 UPSCALE`: a file with a transcoding signature **cannot** come out as genuine.
+The blocking defects are the 0.40 ones plus `islas_mdct_sfb21` (0.25), the
+harmonic exciter (0.30) and the declared-resolution penalty (0.25); the jitter,
+MDCT-hole, Opus and Gibbs penalties do not block on their own.
 
 ### What no longer scores (and why)
 
@@ -552,9 +614,11 @@ UPSCALE`: a file with a transcoding signature **cannot** come out as genuine.
   91 % of Nyquist, ratio 0.42, variance ~700 dB² **in both**). No ceiling
   threshold can separate them, so a cut-off glued to Nyquist is reported as
   **inconclusive** instead of accusing a legitimate master.
-- **Active LSBs.** They only prove that the container uses its depth, not where
-  the audio comes from: a lossy transcode stored at 24 bits also fills the LSBs.
-  The test can only disprove, never confirm.
+- **Active LSBs on their own.** They prove that the container uses its depth,
+  not where the audio comes from: a lossy transcode stored at 24 bits also fills
+  the LSBs. The 8D.1 rule is fail-closed, though: only an active lattice can
+  earn the acoustic exemption or the 24-bit transition-band excuse, so `empty`,
+  `partial`, `indeterminate` and missing LSBs block it instead of passing.
 - **The presence of the MD5.** It is a separate fact. That the field exists says
   nothing; that it **matches** does, and if it does not match the file is corrupt
   and receives no verdict.
@@ -600,18 +664,26 @@ Behaviour details:
 
 They are physical limits, not bugs. They are measured and documented on purpose.
 
-1. **A 320 kbps MP3 stored at 16 bits is not detected.** Its cut-off (~20.3 kHz)
-   is indistinguishable from the anti-alias filter of a CD master. The 320 kbps
-   case that is detected is the one in a 24-bit container, because of the
-   incoherence between the declared resolution and the content. Detecting the
-   16-bit one would require a trained classifier (auCDtect style), outside the
-   scope of this tool.
-2. **A CD master with a filter at 20 kHz comes out as `PROBABLY LOSSLESS`**, not
-   as GENUINE: a cut-off glued to Nyquist costs its whole block instead of
-   accusing. That is deliberate.
-3. **A genuine 24-bit file at 44.1/48 kHz whose band ends below 95 % of Nyquist**
-   receives the "declared resolution with no support" penalty and is blocked. It
-   is the price of the rule that detects case 1.
+1. **A 320 kbps MP3 stored at 16 bits is not detected when it has no
+   joint-stereo collapse.** Its cut-off (~20.3 kHz) is indistinguishable from
+   the anti-alias filter of a CD master. The 320 kbps case that *is* detected is
+   the joint-stereo one (the benchmark's MP3 320 case) via the Mid/Side vector,
+   and the 24-bit repackaged one via the declared-resolution rule. Detecting the
+   plain 16-bit 320 would require a trained classifier (auCDtect style), outside
+   the scope of this tool.
+2. **A CD master with a filter well below Nyquist (below 70 %) comes out as
+   `PROBABLY LOSSLESS` or `SUSPICIOUS`**, not as GENUINE: the high band is
+   reduced, not destroyed. Between 70 % and 88 % the high-band block still
+   gives 1.5 points, so a clean master can be `GENUINE`; a near-Nyquist filter
+   is inconclusive. A low-centroid acoustic master can get the 8D exemption
+   below 70 % when the LSB lattice is active and there is no codec signature.
+3. **A 24-bit file at 44.1/48 kHz whose band ends below 88 % of Nyquist** is
+   blocked by the declared-resolution rule, unless the LSB lattice is active,
+   the track is an acoustic/low-centroid master (`decaimiento_acustico_suave`)
+   and no lossy signature is present: then the 8D.1 fail-closed exemption can
+   rescue it. Between 88 % and 95 % the Vector 5 rule excuses it only with a
+   clean lattice and no codec/brickwall signature. That is the price of
+   detecting case 1, and 8D.1 is deliberately conservative.
 4. **The step detector requires a drop of more than 25 dB over ~500 Hz.** A
    gradual band loss is detected by the ceiling and ratio blocks, not by the
    cut-off detector.
@@ -632,9 +704,11 @@ They are physical limits, not bugs. They are measured and documented on purpose.
 
 ---
 
-## Performance
+## Performance (2.1.0/2.2.0 baselines)
 
-The analysis makes **a single streaming pass** with bounded memory. Measured with
+The analysis makes **a single streaming pass** with bounded memory. The tables
+below are the 2.1.0/2.2.0 baselines; the 2.3.0 Phase 8 detectors add a bounded
+per-block cost (the full 2.3.0 numbers have not been re-measured). Measured with
 `--mode full` (whole track) over 10 minutes of audio:
 
 | Fixture | Path | Time | Python peak | Working set peak |
@@ -737,7 +811,8 @@ entry, so alternating `center` and `full` does not recompute.
 
 It is disabled with `--no-cache`. When any analysis calculation changes,
 `VERSION_MOTOR` in `motor_flac.py` must be raised: that invalidates all the old
-caches. It currently reads `VERSION_MOTOR = "9.8"`.
+caches. It currently reads `VERSION_MOTOR = "9.8"` and
+`VERSION_ESQUEMA_CACHE = "2.3.0"`.
 
 ---
 
@@ -749,8 +824,9 @@ python -m unittest discover -s tests         # summary
 python tests\test_md5.py                     # a single module
 ```
 
-266 tests, ~40 s, **with no extra dependencies** (unittest from the standard
-library). The FLAC fixtures are generated by themselves in a temporary directory.
+266 tests, ~70 s in the reference `.venv` (the exact time depends on the
+machine), **with no extra dependencies** (unittest from the standard library).
+The FLAC fixtures are generated by themselves in a temporary directory.
 The window tests need a display; to skip them (CI without a desktop):
 `FLAC_VERIFIER_SIN_GUI=1 python -m unittest discover -s tests`.
 
@@ -771,6 +847,7 @@ is not on the `PATH`).
 | `test_md5.py` | MD5 verified at 8/16/24 bits; `mismatch` is a hard error; the MD5 does not score |
 | `test_veredictos.py` | Silence guard; CD master with no accusation; real MP3 (128/320 kbps) does not pass; bit depth only penalises; hi-res with a 30 kHz roll-off is not penalised, and the CD-to-96-kHz upscale is penalised |
 | `test_rendimiento.py` | The streaming path gives the same as the array path (oracle); vectorisation identical to the naive loop; runs that cross blocks and that end with the file |
+| `test_forense_riguroso.py` | The Phase 8 detectors: 24-bit lattice, DSD/Scarlet/DSD128 profiles, sfb21 islands, harmonic exciter, acoustic centroid, 8D.1 fail-closed and album coherence |
 | `test_cache_y_paralelo.py` | The cache reuses and gives the same, and is invalidated by date, size, MD5, mode or engine version; the parallel path matches the sequential one and preserves order; with no processes it degrades to serial; the PNG is drawn with `imshow` |
 | `test_informe_pdf.py` | The PDF is generated where it should be, has one page per song plus cover and summary, contains the expected text (its content is really read back), embeds the spectrograms, works without them, no record overflows its page and no PDF failure aborts the analysis |
 | `test_gui.py` | Subprocess command with `-u` and `CREATE_NO_WINDOW`; NDJSON event parsing (including unreadable lines); formatting of results and of the colour summary; process life cycle and cancellation (including the `kill` fallback and the tree with `taskkill`, and the reader-thread liveness `hilo_activo` the window uses so as not to lose the final event); real-time events with a real subprocess; and the hidden window with its full flow |
