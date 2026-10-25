@@ -179,13 +179,13 @@ def _streaks(en, previous_count=0):
         return ([previous_count] if previous_count else []), 0
     flags   = en.astype(np.int8)
     edges  = np.diff(np.concatenate(([0], flags, [0])))
-    inicios = np.flatnonzero(edges == 1)
-    largos  = (np.flatnonzero(edges == -1) - inicios).tolist()
-    if inicios[0] == 0 and previous_count:
-        largos[0] += previous_count          # continues the run of the previous block
+    starts = np.flatnonzero(edges == 1)
+    lengths  = (np.flatnonzero(edges == -1) - starts).tolist()
+    if starts[0] == 0 and previous_count:
+        lengths[0] += previous_count          # continues the run of the previous block
     if flags[-1]:
-        return largos[:-1], largos[-1]      # the last one is still open
-    return largos, 0
+        return lengths[:-1], lengths[-1]      # the last one is still open
+    return lengths, 0
 
 def detect_clipping(data):
     """Real clipping = 3+ CONSECUTIVE samples at the top (>= 0.9999). A clipping
@@ -201,15 +201,15 @@ def detect_clipping(data):
         print(f"[clipping] {e}")
         return None
 
-def _classify_streaks(longitudes, ceiling_hz=None, frequency_cutoff=None, nyquist=None):
+def _classify_streaks(run_lengths, ceiling_hz=None, frequency_cutoff=None, nyquist=None):
     """Vector 6 classification from the lengths of the saturation runs.
 
     * Lossy reconstruction (Gibbs overshoot): most events are 1-2 isolated
       samples and the spectral cut-off sits below 20.5 kHz.
     * Mastering limiter: runs of 4+ consecutive samples on average while the
       spectrum still reaches Nyquist. It is an observation, never a defect."""
-    largos = [int(l) for l in longitudes if int(l) > 0]
-    events = len(largos)
+    lengths = [int(l) for l in run_lengths if int(l) > 0]
+    events = len(lengths)
     if not events:
         return {
             "clipping_eventos": 0,
@@ -219,9 +219,9 @@ def _classify_streaks(longitudes, ceiling_hz=None, frequency_cutoff=None, nyquis
             "clipping_reconstruccion_lossy": False,
             "clipping_mastering_limitador": False,
         }
-    short = sum(1 for long in largos if long <= 2)
+    short = sum(1 for long in lengths if long <= 2)
     fraction = short / float(events)
-    mean = sum(largos) / float(events)
+    mean = sum(lengths) / float(events)
     cutoff_effective = (frequency_cutoff if frequency_cutoff is not None
                       else ceiling_hz)
     # Lossy reconstruction needs a pattern, not a few isolated events: a vinyl
@@ -240,7 +240,7 @@ def _classify_streaks(longitudes, ceiling_hz=None, frequency_cutoff=None, nyquis
         "clipping_eventos":            events,
         "clipping_fraccion_cortos":    round(fraction, 4),
         "clipping_longitud_media":     round(mean, 2),
-        "clipping_racha_maxima":       max(largos),
+        "clipping_racha_maxima":       max(lengths),
         "clipping_reconstruccion_lossy": lossy,
         "clipping_mastering_limitador":  master,
     }

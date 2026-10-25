@@ -97,7 +97,7 @@ def analizar_album(carpeta, guardar_png=True):
             if nombre.lower().endswith(".flac")]
 
 
-@unittest.skipUnless(pdf.disponible(), "reportlab not installed")
+@unittest.skipUnless(pdf.available(), "reportlab not installed")
 class TestInformePDF(unittest.TestCase):
 
     @classmethod

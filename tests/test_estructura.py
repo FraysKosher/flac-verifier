@@ -86,7 +86,7 @@ class TestCapaFina(unittest.TestCase):
                   "        del sys.modules[m]\n"
                   "sys.modules['reportlab'] = None\n"
                   "import motor_flac, informe_pdf\n"
-                  "print('motor OK', informe_pdf.disponible())\n"
+                  "print('motor OK', informe_pdf.available())\n"
                   "print(informe_pdf.generate('.', [{'archivo': 'x'}])['error'])\n")
         # The child prints a message with an accent: without this, a redirected
         # stdout on Windows uses cp1252 and the test itself would die with

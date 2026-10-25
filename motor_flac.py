@@ -51,8 +51,8 @@ from _motor_espectral import (
     WIDTH_PNG, HEIGHT_PNG, PNG_SPECTROGRAM_FPS, SPECTRO_SECONDS,
     MAX_FRAMES_PNG, ACTIVE_RMS_THRESHOLD_DB, _LUT_SPECTROGRAM, _mean_safe, _power_db,
     _spectrum_dbfs, _white_noise_gain, _stft_complejo,
-    _power_from_fft, _needed_active_blocks, _puntuacion_actividad,
-    _analyze_mid_side_asymmetry, _diagnosticar_autenticidad_hires,
+    _power_from_fft, _needed_active_blocks, _activity_score,
+    _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
     _save_spectrogram as _spectrogram_save,
@@ -63,7 +63,7 @@ from _motor_veredicto import (
 )
 from _motor_cache import (
     PNG_FOLDER_NAME, _png_folder, _cache_path, _identity, _analysis_key,
-    _replace_with_retries, _sanear,
+    _replace_with_retries, _sanitize,
     read_cache as _cache_read, write_cache as _cache_write,
 )
 
@@ -322,7 +322,7 @@ class _BlockAnalysis:
         # clipping + global peak
         self._clip_runs   = 0
         self._clip_opened = 0
-        self._clip_longitudes = []      # Vector 6: all run lengths, including 1-2
+        self._clip_lengths = []      # Vector 6: all run lengths, including 1-2
         self._peak        = 0.0
 
         # dynamic range (3 s blocks, carrying the incomplete block over)
@@ -375,7 +375,7 @@ class _BlockAnalysis:
             if peak > self._peak:
                 self._peak = peak
         streaks, self._clip_opened = _streaks(amp >= 0.9999, self._clip_opened)
-        self._clip_longitudes.extend(streaks)
+        self._clip_lengths.extend(streaks)
         self._clip_runs += sum(1 for long in streaks if long >= 3)
 
     def _dynamic_range(self, block):
@@ -417,7 +417,7 @@ class _BlockAnalysis:
     # ── result ───────────────────────────────────────────────────────────────
     def result(self):
         if self._clip_opened:
-            self._clip_longitudes.append(self._clip_opened)   # run open at EOF
+            self._clip_lengths.append(self._clip_opened)   # run open at EOF
         if self._clip_opened >= 3:
             self._clip_runs += 1                # run that ends exactly with the file
         output = {
@@ -451,7 +451,7 @@ class _BlockAnalysis:
         if not esp.get("error"):
             # Vector 6: the nature of the clipping needs the spectrum (cut-off
             # below 20.5 kHz or content up to Nyquist).
-            esp.update(_classify_streaks(self._clip_longitudes,
+            esp.update(_classify_streaks(self._clip_lengths,
                                           esp.get("techo_hz"),
                                           esp.get("frecuencia_corte"),
                                           self.sr // 2))
@@ -479,7 +479,7 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
 def _json_line(obj):
     """Serialises one line of the protocol, guaranteeing valid JSON."""
     try:
-        return json.dumps(_sanear(obj), default=str, allow_nan=False)
+        return json.dumps(_sanitize(obj), default=str, allow_nan=False)
     except (TypeError, ValueError) as e:
         return json.dumps({"tipo": "error",
                            "mensaje": f"result is not serialisable: {type(e).__name__}: {e}"})
@@ -713,7 +713,7 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
 # Usage: python motor_flac.py --path "C:/Music/album" --mode center --png --pdf
 # Protocol: one JSON line per event
 #   { tipo: "inicio"|"resultado"|"informe"|"aviso"|"fin"|"error" }
-# (_sanear and _json_line live above, next to the cache, which also uses them.)
+# (_sanitize and _json_line live above, next to the cache, which also uses them.)
 
 def generate_pdf_report(analyzed_path, results, mode=None):
     """Generates the PDF report and is unable to abort anything.

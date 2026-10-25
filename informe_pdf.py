@@ -2,7 +2,7 @@
 
 OPTIONAL dependency: `reportlab`. If it is not installed, the analysis still
 works and this module only reports that it cannot generate the report. Neither
-the engine nor the CLI import reportlab: they use it only through `disponible()`
+the engine nor the CLI import reportlab: they use it only through `available()`
 and `generate()`, and `generate()` NEVER raises: it returns a dict with
 `ok`/`error` so that a failure while writing the PDF does not abort the analysis.
 
@@ -72,7 +72,7 @@ LSBS_TEXT = {
 }
 
 
-def disponible():
+def available():
     """Can the report be generated in this environment?"""
     return REPORTLAB_OK
 
@@ -313,15 +313,15 @@ def _height_of(flowables):
     return total
 
 
-def _adjust_image(image, disponible):
+def _adjust_image(image, available):
     """Shrinks the image (down to HEIGHT_IMG_MIN_MM) so that it fits in what is left.
 
     Without this, a song page with many issues pushed the spectrogram onto the
     next page and left it loose at the top, separated from its heading."""
     if image is None:
         return None
-    deseado = min(image.drawHeight, HEIGHT_IMG_MAX_MM * mm)
-    height = max(HEIGHT_IMG_MIN_MM * mm, min(deseado, disponible))
+    wanted = min(image.drawHeight, HEIGHT_IMG_MAX_MM * mm)
+    height = max(HEIGHT_IMG_MIN_MM * mm, min(wanted, available))
     if height >= image.drawHeight - 0.5:
         return image
     proportion = height / float(image.drawHeight)

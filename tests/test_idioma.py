@@ -70,7 +70,10 @@ PALABRAS = re.compile(
     r"seleccionad[oa]|elegid[oa]|iniciad[oa]|detenid[oa]|guardad[oa]|escrit[oa]|"
     r"le[ií]d[oa]|abiert[oa]|cerrad[oa]|mostrad[oa]|calculad[oa]|medid[oa]|"
     r"detectad[oa]|analizad[oa]|procesad[oa]|cread[oa]|borrad[oa]|a[nñ]adid[oa]|"
-    r"cambiad[oa]|actualizad[oa]|marcad[oa]|activad[oa]|desactivad[oa])\b",
+    r"cambiad[oa]|actualizad[oa]|marcad[oa]|activad[oa]|desactivad[oa]|"
+    r"sanear|sanead[oa]|puntuaci[oó]n|puntuar|diagnosticar|diagn[oó]stico|"
+    r"autenticidad|desead[oa]|potencia|elegid[oa]s?|intentos?|largos|largas|"
+    r"inicios?|longitud|longitudes)\b",
     re.IGNORECASE)
 # Words spelled the same in English: no signal of the language.
 FALSOS_POSITIVOS = {"album", "compatible", "control", "pie", "solo", "dos", "pro"}
@@ -81,6 +84,9 @@ JSON_KEYS = {
     "modo", "cache", "pico", "tamano", "cancion", "error", "ok", "paginas",
     "salida",
 }
+
+# Values of the `tipo` field: protocol vocabulary, not Spanish prose.
+PROTOCOL_VALUES = {"inicio", "resultado", "informe", "aviso", "fin", "error"}
 
 # reportlab style names used by the PDF: internal identifiers, not prose.
 INTERNAL_STYLE_NAMES = {
@@ -93,8 +99,28 @@ ARGPARSE_DESTS = {"espectrograma", "espectrogramas", "output"}
 
 # Union kept for the checks below; the split above documents why each name is
 # allowed, and the behaviour is identical to the old single set.
-PERMITIDOS = JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS
+PERMITIDOS = JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS | PROTOCOL_VALUES
 RUTA_O_ARCHIVO = re.compile(r"[\w/\\-]*\.(ico|png|svg|py|txt|pdf|zip|exe|flac|json)")
+
+
+def _external_import_names():
+    """Names imported from third-party modules: not ours, never renamed."""
+    propias = {os.path.splitext(nombre)[0] for nombre in MODULOS}
+    externas = set()
+    for nombre in archivos_con_prosa():
+        ruta = os.path.join(RAIZ, nombre)
+        arbol = ast.parse(open(ruta, "rb").read().decode("utf-8"))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Import):
+                for alias in nodo.names:
+                    if alias.name.split(".")[0] not in propias:
+                        externas.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(nodo, ast.ImportFrom):
+                raiz = (nodo.module or "").split(".")[0]
+                if raiz and raiz not in propias:
+                    for alias in nodo.names:
+                        externas.add(alias.asname or alias.name)
+    return externas
 
 
 def archivos_con_prosa():
@@ -297,6 +323,50 @@ class TestIdioma(unittest.TestCase):
         fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
         self.assertIn('"_spectrograms"', fuente)
         self.assertNotIn('"_espectrogramas"', fuente)
+
+    def test_no_spanish_identifiers(self):
+        """AST guard: Python identifiers in the shipped modules are English.
+
+        JSON protocol keys and values, reportlab style names, argparse
+        destinations, dunders, module file names and third-party imports are
+        excluded. The
+        test files are covered by the 1c pass, so this runs on MODULOS only.
+        """
+        permitidos = (JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS
+                      | PROTOCOL_VALUES)
+        externos = _external_import_names()
+        modulos = {os.path.splitext(nombre)[0] for nombre in MODULOS}
+        problemas = []
+        for nombre in MODULOS:
+            ruta = os.path.join(RAIZ, nombre)
+            fuente = open(ruta, "rb").read().decode("utf-8")
+            for nodo in ast.walk(ast.parse(fuente)):
+                if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.ClassDef)):
+                    candidato = nodo.name
+                elif isinstance(nodo, ast.Name):
+                    candidato = nodo.id
+                elif isinstance(nodo, ast.arg):
+                    candidato = nodo.arg
+                elif isinstance(nodo, ast.Attribute):
+                    candidato = nodo.attr
+                else:
+                    continue
+                if not candidato or candidato in permitidos or candidato in externos:
+                    continue
+                if candidato in modulos:
+                    continue
+                if candidato.startswith("__") and candidato.endswith("__"):
+                    continue
+                for trozo in re.split(r"_+|(?<=[a-z])(?=[A-Z])", candidato):
+                    bajo = trozo.lower()
+                    if not bajo or bajo in FALSOS_POSITIVOS or bajo in permitidos:
+                        continue
+                    if PALABRAS.fullmatch(bajo):
+                        problemas.append(f"{nombre}:{nodo.lineno}: {candidato!r}")
+                        break
+        self.assertEqual(problemas, [],
+                         "Spanish identifiers in " + "; ".join(problemas[:12]))
 
 
 if __name__ == "__main__":

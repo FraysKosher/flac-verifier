@@ -11,15 +11,15 @@ import time
 
 from _motor_bits import _normalize_path_fs
 
-def _sanear(obj):
+def _sanitize(obj):
     """Replaces any non-finite float with None before serialising.
     NaN/Infinity are not valid JSON: JavaScript's JSON.parse rejects them."""
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
     if isinstance(obj, dict):
-        return {k: _sanear(v) for k, v in obj.items()}
+        return {k: _sanitize(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_sanear(v) for v in obj]
+        return [_sanitize(v) for v in obj]
     return obj
 
 PNG_FOLDER_NAME = "_spectrograms"
@@ -83,17 +83,17 @@ def read_cache(path, meta, mode, seconds, requiere_png, version, schema,
     copia["esp"].pop("espectrograma_error", None)
     return copia
 
-def _replace_with_retries(origen, destination, intentos=3, wait_time=0.015):
+def _replace_with_retries(source, destination, attempts=3, wait_time=0.015):
     """os.replace with a short retry: on Windows, another worker or the antivirus
     indexer can hold the destination open for a few milliseconds and os.replace
     then raises PermissionError. The retry does not hide the failure: after the
     last attempt the exception is raised and the caller decides."""
-    for intento in range(intentos):
+    for attempt in range(attempts):
         try:
-            os.replace(origen, destination)
+            os.replace(source, destination)
             return
         except PermissionError:
-            if intento == intentos - 1:
+            if attempt == attempts - 1:
                 raise
             time.sleep(wait_time)
 
@@ -112,7 +112,7 @@ def write_cache(path, meta, mode, seconds, result, version, schema,
         destination = _normalize_path_fs(_cache_path(path, mode, seconds))
         temporal = destination + ".tmp"
         with open(temporal, "w", encoding="utf-8") as f:
-            json.dump(_sanear(input), f, ensure_ascii=False)
+            json.dump(_sanitize(input), f, ensure_ascii=False)
         _replace_with_retries(temporal, destination)  # atomic, with a short retry
     except Exception:
         pass

@@ -507,9 +507,9 @@ if CTK_OK:
             self.input = ctk.CTkEntry(panel, textvariable=self.var_path,
                                         placeholder_text="C:/Music/Album")
             self.input.grid(row=2, column=0, padx=16, sticky="ew")
-            self.btn_examinar = ctk.CTkButton(panel, text="📂  Browse folder…",
+            self.btn_browse = ctk.CTkButton(panel, text="📂  Browse folder…",
                                               height=36, command=self._choose_folder)
-            self.btn_examinar.grid(row=3, column=0, padx=16, pady=(6, 14), sticky="ew")
+            self.btn_browse.grid(row=3, column=0, padx=16, pady=(6, 14), sticky="ew")
 
             ctk.CTkLabel(panel, text="Spectral mode",
                          font=ctk.CTkFont(size=12, weight="bold")).grid(
@@ -677,14 +677,14 @@ if CTK_OK:
         def _workers(self) -> int:
             if not self.var_parallel.get():
                 return 1                              # sequential
-            elegido = self.option_workers.get()
-            return int(elegido) if elegido.isdigit() else 0   # 0 = automatic
+            chosen = self.option_workers.get()
+            return int(chosen) if chosen.isdigit() else 0   # 0 = automatic
 
         def _update_state(self) -> None:
             active = self.manager.active
             self.btn_analyze.configure(state="disabled" if active else "normal")
             self.btn_cancel.configure(state="normal" if active else "disabled")
-            for widget in (self.input, self.btn_examinar, self.option_mode,
+            for widget in (self.input, self.btn_browse, self.option_mode,
                            self.check_pdf, self.parallel_switch, self.check_cache,
                            self.seconds_slider):
                 widget.configure(state="disabled" if active else "normal")

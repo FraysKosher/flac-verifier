@@ -199,14 +199,14 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
 
     nyquist_khz = (float(sample_rate) / 2.0) / 1000.0
 
-    def y_de(freq_hz):
+    def y_for(freq_hz):
         frac = 1.0 - (float(freq_hz) / (nyquist_khz * 1000.0)
                       if nyquist_khz else 0.0)
         return margin_top + int(round(frac * height))
 
     # Y axis: 0, 2.5, 5.0 ... kHz
     for value in np.arange(0.0, nyquist_khz + 1e-9, 2.5):
-        y = y_de(value * 1000.0)
+        y = y_for(value * 1000.0)
         dibujo.line([(margin_left - 7, y), (margin_left, y)], fill=axis_color, width=1)
         dibujo.text((margin_left - 12, y), f"{value:.1f}",
                     fill=text_color, font=tick_font, anchor="rm")
@@ -232,16 +232,16 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
     # Reference lines
     entradas = []
     if nyquist_khz > 24.0:
-        _line_dashed(dibujo, margin_left, x_end, y_de(22050.0),
+        _line_dashed(dibujo, margin_left, x_end, y_for(22050.0),
                            (0, 220, 255), jump=8, gap=6)
         entradas.append(((0, 220, 255), True, "22.05 kHz (CD Nyquist)"))
     if ceiling_hz:
-        _line_dashed(dibujo, margin_left, x_end, y_de(float(ceiling_hz)),
+        _line_dashed(dibujo, margin_left, x_end, y_for(float(ceiling_hz)),
                            (0, 220, 255), width=2, jump=10, gap=6)
         entradas.append(((0, 220, 255), True,
                          f"Ceiling: {float(ceiling_hz)/1000:.1f} kHz"))
     if frequency_cutoff:
-        _line_dashed(dibujo, margin_left, x_end, y_de(float(frequency_cutoff)),
+        _line_dashed(dibujo, margin_left, x_end, y_for(float(frequency_cutoff)),
                            (235, 70, 70), width=2, jump=10, gap=6)
         entradas.append(((235, 70, 70), True,
                          f"Cut-off: {float(frequency_cutoff)/1000:.1f} kHz"))
@@ -318,7 +318,7 @@ def _spectrum_dbfs(power, gain_noise=1.0):
     return 10.0 * np.log10(np.maximum(np.asarray(power, dtype=np.float64),
                                       1e-28) / gain)
 
-def _diagnosticar_autenticidad_hires(freqs_hz, spectrum_mid_db, sample_rate,
+def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
                                      cutoff_hz=None):
     """Vector 3: morphology of a Hi-Res spectrum (>= 88.2 kHz).
 
@@ -333,7 +333,7 @@ def _diagnosticar_autenticidad_hires(freqs_hz, spectrum_mid_db, sample_rate,
     A DSD/SACD transfer (88.2/176.4 kHz) adds a rising noise-shaping ramp in
     24-40 kHz.
 
-    `spectrum_mid_db` is calibrated to dBFS per bin (see _espectro_dbfs)."""
+    `spectrum_mid_db` is calibrated to dBFS per bin (see _spectrum_dbfs)."""
     output = {
         "muro_brickwall_nyquist":  False,
         "espejo_aliasing_detectado": False,
@@ -632,20 +632,20 @@ def _gradient_edge_db_khz(freqs_hz, pot_db, ceiling_hz, nyquist):
         return 0.0
     return round(max(0.0, gradient), 2)
 
-def _spectral_metrics(freqs, pot_l, pot_r, samplerate, is_stereo=None, power=None,
-                          pot_mid=None, pot_side=None, gain_noise=1.0):
+def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power=None,
+                          power_mid=None, power_side=None, gain_noise=1.0):
     """Core of the spectral analysis: everything is derived from the
     time-averaged power spectrum (one entry per bin). It does not depend on how
     it was obtained.
 
-    is_stereo is passed explicitly: in mono, pot_l and pot_r can be distinct
+    is_stereo is passed explicitly: in mono, power_l and power_r can be distinct
     arrays holding the same values, so identity is not a usable hint.
     power is the total power spectrum; the Mid/Side decomposition provides it
     directly (|M|^2 + |S|^2 = (|L|^2 + |R|^2) / 2)."""
     if is_stereo is None:
-        is_stereo = pot_l is not pot_r
+        is_stereo = power_l is not power_r
     if power is None:
-        power = (pot_l + pot_r) / 2
+        power = (power_l + power_r) / 2
     pot_db    = 10.0 * np.log10(np.maximum(power, 1e-28))
     # The reference level is usually the global peak, but a huge sub-bass line
     # (an 808 or a kick) would drag every other band below the -60 dB activity
@@ -721,31 +721,31 @@ def _spectral_metrics(freqs, pot_l, pot_r, samplerate, is_stereo=None, power=Non
 
     sep = None
     if is_stereo and ratio_applies:
-        gives  = _mean_safe(np.abs(pot_l[mask_a] - pot_r[mask_a]))
-        dm  = _mean_safe(np.abs(pot_l[mask_m] - pot_r[mask_m]))
+        gives  = _mean_safe(np.abs(power_l[mask_a] - power_r[mask_a]))
+        dm  = _mean_safe(np.abs(power_l[mask_m] - power_r[mask_m]))
         sep = float(gives / (dm + 1e-30))
 
     # Vector 1: Mid/Side asymmetry. Without the decomposition (direct API use)
     # the detector is not applicable: never guess it from L/R, which would flag
     # an ordinary stereo difference as joint-stereo collapse.
-    if pot_mid is None or pot_side is None:
+    if power_mid is None or power_side is None:
         asymmetry = _analyze_mid_side_asymmetry(
-            _spectrum_dbfs(pot_l, gain_noise), _spectrum_dbfs(pot_r, gain_noise),
+            _spectrum_dbfs(power_l, gain_noise), _spectrum_dbfs(power_r, gain_noise),
             freqs, samplerate, is_mono_real=True)
     else:
-        mid_db = _spectrum_dbfs(pot_mid, gain_noise)
-        side_db = _spectrum_dbfs(pot_side, gain_noise)
+        mid_db = _spectrum_dbfs(power_mid, gain_noise)
+        side_db = _spectrum_dbfs(power_side, gain_noise)
         asymmetry = _analyze_mid_side_asymmetry(
             mid_db, side_db, freqs, samplerate, is_mono_real=not is_stereo)
 
     # Vector 3: Hi-Res morphology, measured on the Mid spectrum calibrated to
     # dBFS per bin so the absolute thermal-floor thresholds are meaningful.
-    if pot_mid is None or pot_side is None:
-        spectrum_mid_db = _spectrum_dbfs(pot_mid if pot_mid is not None else pot_l,
+    if power_mid is None or power_side is None:
+        spectrum_mid_db = _spectrum_dbfs(power_mid if power_mid is not None else power_l,
                                          gain_noise)
     else:
         spectrum_mid_db = mid_db
-    hires = _diagnosticar_autenticidad_hires(freqs, spectrum_mid_db, samplerate,
+    hires = _diagnose_hires_authenticity(freqs, spectrum_mid_db, samplerate,
                                              cutoff_hz=cutoff_hz)
 
     # A DSD transfer closes its musical band at the SACD passband (20 kHz) while
@@ -854,7 +854,7 @@ def _needed_active_blocks(samplerate):
     long. With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
     return max(1, int(math.ceil(SPECTRO_SECONDS * float(samplerate) / FRAMES_BY_BLOCK)))
 
-def _puntuacion_actividad(block, last_sample=None):
+def _activity_score(block, last_sample=None):
     """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
     cheap high-frequency/transient indicator: it is large on cymbals and attacks
     and almost zero on a sustained bass line. The last sample of the previous
@@ -1168,7 +1168,7 @@ class _SpectralAccumulator:
         if self._error or block.shape[0] == 0:
             return
         try:
-            rms_db, e_diff = _puntuacion_actividad(block, self._last)
+            rms_db, e_diff = _activity_score(block, self._last)
             if block.ndim > 1:
                 self._last = float(np.mean(block[-1]))
                 if self.is_stereo is None:
@@ -1197,15 +1197,15 @@ class _SpectralAccumulator:
     def result(self):
         if self._error:
             return {"error": self._error}
-        elegidos = self._seleccion or ([self._backup] if self._backup else [])
-        if not elegidos:
+        chosen = self._seleccion or ([self._backup] if self._backup else [])
+        if not chosen:
             return {"error": "could not analyze the spectrum"}
-        elegidos = sorted(elegidos, key=lambda input: input[2])   # chronological
+        chosen = sorted(chosen, key=lambda input: input[2])   # chronological
 
-        largos = [len(input[4]) for input in elegidos]
-        total_samples = sum(largos)
+        lengths = [len(input[4]) for input in chosen]
+        total_samples = sum(lengths)
         nperseg = max(256, min(4096, total_samples // 8))
-        nperseg = min(nperseg, max(largos))
+        nperseg = min(nperseg, max(lengths))
         nperseg = max(32, nperseg)
         hop = max(1, nperseg // 8)      # 87.5 % overlap: enough time detail for the PNG
 
@@ -1213,7 +1213,7 @@ class _SpectralAccumulator:
         escala = np.float32(1.0 / float(window.sum()))
         gain_noise = _white_noise_gain(nperseg, window)
         frames_estimados = sum((n - nperseg) // hop + 1
-                               for n in largos if n >= nperseg)
+                               for n in lengths if n >= nperseg)
         if frames_estimados <= 0:
             return {"error": "could not analyze the spectrum"}
         step_png = max(1, frames_estimados // MAX_FRAMES_PNG)
@@ -1232,62 +1232,62 @@ class _SpectralAccumulator:
         frames_global = 0
         png_pot, png_times, png_n = [], [], 0
 
-        for _, _, _, start, audio in elegidos:
+        for _, _, _, start, audio in chosen:
             if len(audio) < nperseg:
                 continue                  # a very short trailing block
             zl = _stft_complejo(audio[:, 0], nperseg, hop, window, escala)
-            pot_l = _power_from_fft(zl)
+            power_l = _power_from_fft(zl)
             if self.is_stereo:
                 zr = _stft_complejo(audio[:, 1], nperseg, hop, window, escala)
-                pot_r = _power_from_fft(zr)
+                power_r = _power_from_fft(zr)
                 medium = np.float32(0.5)
                 zm = (zl + zr) * medium
                 zs = (zl - zr) * medium
-                pot_mid = _power_from_fft(zm)
-                pot_side = _power_from_fft(zs)
-                pot_total = pot_mid + pot_side
+                power_mid = _power_from_fft(zm)
+                power_side = _power_from_fft(zs)
+                power_total = power_mid + power_side
                 del zr, zm, zs
             else:
-                pot_r = pot_l
-                pot_total = pot_l
+                power_r = power_l
+                power_total = power_l
             del zl
 
-            sum_l = (pot_l.sum(axis=0, dtype=np.float32) if sum_l is None
-                      else sum_l + pot_l.sum(axis=0, dtype=np.float32))
+            sum_l = (power_l.sum(axis=0, dtype=np.float32) if sum_l is None
+                      else sum_l + power_l.sum(axis=0, dtype=np.float32))
             if self.is_stereo:
-                sum_r = (pot_r.sum(axis=0, dtype=np.float32) if sum_r is None
-                          else sum_r + pot_r.sum(axis=0, dtype=np.float32))
-                sum_total = (pot_total.sum(axis=0, dtype=np.float32)
+                sum_r = (power_r.sum(axis=0, dtype=np.float32) if sum_r is None
+                          else sum_r + power_r.sum(axis=0, dtype=np.float32))
+                sum_total = (power_total.sum(axis=0, dtype=np.float32)
                               if sum_total is None
-                              else sum_total + pot_total.sum(axis=0, dtype=np.float32))
-                sum_mid = (pot_mid.sum(axis=0, dtype=np.float32) if sum_mid is None
-                            else sum_mid + pot_mid.sum(axis=0, dtype=np.float32))
-                sum_side = (pot_side.sum(axis=0, dtype=np.float32)
+                              else sum_total + power_total.sum(axis=0, dtype=np.float32))
+                sum_mid = (power_mid.sum(axis=0, dtype=np.float32) if sum_mid is None
+                            else sum_mid + power_mid.sum(axis=0, dtype=np.float32))
+                sum_side = (power_side.sum(axis=0, dtype=np.float32)
                              if sum_side is None
-                             else sum_side + pot_side.sum(axis=0, dtype=np.float32))
+                             else sum_side + power_side.sum(axis=0, dtype=np.float32))
             else:
                 sum_r = sum_l
                 sum_total = sum_l
 
-            self._psycho.add(pot_total, freqs, window)
+            self._psycho.add(power_total, freqs, window)
 
-            n_frames = pot_total.shape[0]
+            n_frames = power_total.shape[0]
             if self.save_png:
                 restantes = MAX_FRAMES_PNG - png_n
                 if restantes > 0:
                     i0 = (-frames_global) % step_png
                     idx = np.arange(i0, n_frames, step_png)[:restantes]
                     if idx.size:
-                        # pot_total is (frames, bins): keep the time rows here and
+                        # power_total is (frames, bins): keep the time rows here and
                         # transpose once, so the PNG gets (bins, frames).
-                        png_pot.append(pot_total[idx])
+                        png_pot.append(power_total[idx])
                         png_times.append((start + idx * hop) / float(self.sr))
                         png_n += idx.size
             frames_global += n_frames
             frames += n_frames
-            del pot_l, pot_r, pot_total
+            del power_l, power_r, power_total
             if self.is_stereo:
-                del pot_mid, pot_side
+                del power_mid, power_side
 
         if frames == 0 or sum_l is None:
             return {"error": "could not analyze the spectrum"}
@@ -1300,7 +1300,7 @@ class _SpectralAccumulator:
         esp = _spectral_metrics(freqs, mean_l, mean_r, self.sr,
                                     is_stereo=self.is_stereo,
                                     power=mean_total,
-                                    pot_mid=mean_mid, pot_side=mean_side,
+                                    power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
         esp.update(self._psycho.result())
         if self.save_png and png_pot:
