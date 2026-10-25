@@ -9,7 +9,7 @@ import math
 import os
 import time
 
-from _motor_bits import _normalizar_ruta_fs
+from _motor_bits import _normalize_path_fs
 
 def _sanear(obj):
     """Replaces any non-finite float with None before serialising.
@@ -22,97 +22,97 @@ def _sanear(obj):
         return [_sanear(v) for v in obj]
     return obj
 
-NOMBRE_CARPETA_PNG = "_spectrograms"
+PNG_FOLDER_NAME = "_spectrograms"
 
-def _carpeta_png(ruta_audio):
-    return os.path.join(os.path.dirname(os.path.abspath(ruta_audio)), NOMBRE_CARPETA_PNG)
+def _png_folder(audio_path):
+    return os.path.join(os.path.dirname(os.path.abspath(audio_path)), PNG_FOLDER_NAME)
 
-def _ruta_cache(ruta_audio, modo, segundos):
+def _cache_path(audio_path, mode, seconds):
     """One entry per file AND per mode: analysing in 'center' does not erase the
     cache of the analysis in 'full', so the two can be alternated without
     recomputing."""
-    clave = f"{modo}{segundos if segundos else ''}"
-    return os.path.join(_carpeta_png(ruta_audio), "_cache",
-                        f"{os.path.basename(ruta_audio)}.{clave}.json")
+    key = f"{mode}{seconds if seconds else ''}"
+    return os.path.join(_png_folder(audio_path), "_cache",
+                        f"{os.path.basename(audio_path)}.{key}.json")
 
-def _identidad(ruta, meta):
+def _identity(path, meta):
     """Cheap and robust fingerprint of the file: size, date and STREAMINFO MD5."""
     try:
-        info = os.stat(_normalizar_ruta_fs(ruta))
+        info = os.stat(_normalize_path_fs(path))
         return {"tamano": info.st_size, "mtime_ns": info.st_mtime_ns,
                 "md5": meta.get("md5") if isinstance(meta.get("md5"), int) else None}
     except OSError:
         return None
 
-def _clave_analisis(modo, segundos, version, esquema):
-    return {"motor": version, "esquema": esquema,
-            "modo": modo, "seconds": segundos}
+def _analysis_key(mode, seconds, version, schema):
+    return {"motor": version, "esquema": schema,
+            "modo": mode, "seconds": seconds}
 
-def leer_cache(ruta, meta, modo, segundos, requiere_png, version, esquema,
+def read_cache(path, meta, mode, seconds, requiere_png, version, schema,
                render):
     """Returns the cached result, or None if it cannot be reused."""
     try:
-        with open(_normalizar_ruta_fs(_ruta_cache(ruta, modo, segundos)),
+        with open(_normalize_path_fs(_cache_path(path, mode, seconds)),
                   encoding="utf-8") as f:
-            entrada = json.load(f)
+            input = json.load(f)
     except (OSError, ValueError):
         return None                    # no cache, or an unreadable entry
 
-    if entrada.get("identidad") != _identidad(ruta, meta):
+    if input.get("identidad") != _identity(path, meta):
         return None
-    if entrada.get("clave") != _clave_analisis(modo, segundos, version, esquema):
+    if input.get("clave") != _analysis_key(mode, seconds, version, schema):
         return None
-    resultado = entrada.get("resultado")
-    if not isinstance(resultado, dict):
+    result = input.get("resultado")
+    if not isinstance(result, dict):
         return None
 
     if requiere_png:
         # The PNG must exist and match the current parameters.
-        ruta_png = (resultado.get("esp") or {}).get("espectrograma")
-        if entrada.get("render") != render or not ruta_png:
+        png_path = (result.get("esp") or {}).get("espectrograma")
+        if input.get("render") != render or not png_path:
             return None
-        if not os.path.exists(ruta_png) or os.path.getsize(ruta_png) == 0:
+        if not os.path.exists(png_path) or os.path.getsize(png_path) == 0:
             return None
-        return resultado
+        return result
 
     # No PNG was requested: the caller must not see a path that this run has not
     # generated (the cache entry does keep it for next time).
-    copia = dict(resultado)
-    copia["esp"] = dict(resultado.get("esp") or {})
+    copia = dict(result)
+    copia["esp"] = dict(result.get("esp") or {})
     copia["esp"]["espectrograma"] = None
     copia["esp"].pop("espectrograma_error", None)
     return copia
 
-def _reemplazar_con_reintentos(origen, destino, intentos=3, espera=0.015):
+def _replace_with_retries(origen, destination, intentos=3, wait_time=0.015):
     """os.replace with a short retry: on Windows, another worker or the antivirus
     indexer can hold the destination open for a few milliseconds and os.replace
     then raises PermissionError. The retry does not hide the failure: after the
     last attempt the exception is raised and the caller decides."""
     for intento in range(intentos):
         try:
-            os.replace(origen, destino)
+            os.replace(origen, destination)
             return
         except PermissionError:
             if intento == intentos - 1:
                 raise
-            time.sleep(espera)
+            time.sleep(wait_time)
 
-def escribir_cache(ruta, meta, modo, segundos, resultado, version, esquema,
+def write_cache(path, meta, mode, seconds, result, version, schema,
                    render):
     """Stores the result. A failure while writing cannot affect the analysis."""
     try:
-        carpeta = _normalizar_ruta_fs(os.path.join(_carpeta_png(ruta), "_cache"))
-        os.makedirs(carpeta, exist_ok=True)
-        entrada = {
-            "identidad": _identidad(ruta, meta),
-            "clave":     _clave_analisis(modo, segundos, version, esquema),
+        folder = _normalize_path_fs(os.path.join(_png_folder(path), "_cache"))
+        os.makedirs(folder, exist_ok=True)
+        input = {
+            "identidad": _identity(path, meta),
+            "clave":     _analysis_key(mode, seconds, version, schema),
             "render":    render,
-            "resultado": resultado,
+            "resultado": result,
         }
-        destino = _normalizar_ruta_fs(_ruta_cache(ruta, modo, segundos))
-        temporal = destino + ".tmp"
+        destination = _normalize_path_fs(_cache_path(path, mode, seconds))
+        temporal = destination + ".tmp"
         with open(temporal, "w", encoding="utf-8") as f:
-            json.dump(_sanear(entrada), f, ensure_ascii=False)
-        _reemplazar_con_reintentos(temporal, destino)  # atomic, with a short retry
+            json.dump(_sanear(input), f, ensure_ascii=False)
+        _replace_with_retries(temporal, destination)  # atomic, with a short retry
     except Exception:
         pass

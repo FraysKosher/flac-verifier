@@ -42,13 +42,13 @@ class TestVeredicto(unittest.TestCase):
         cls.fx.cerrar()
 
     def analizar(self, nombre):
-        res = motor.analizar_archivo_datos(self.fx[nombre], "center", None, False)
+        res = motor.analyze_file_data(self.fx[nombre], "center", None, False)
         self.assertNotIn("error", res, res.get("error"))
         return res
 
     # ── Block 2: silence guard ──────────────────────────────────────────────
     def test_el_silencio_digital_no_recibe_veredicto(self):
-        res = motor.analizar_archivo_datos(self.fx["silence"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["silence"], "center", None, False)
         self.assertIn("error", res)
         self.assertIn("silence", res["error"].lower())
         self.assertNotIn("veredicto", res)
@@ -94,7 +94,7 @@ class TestVeredicto(unittest.TestCase):
         esp = dict(ESP_PERFECTO, clase_corte="far_cutoff", corte_detectado=True,
                    frecuencia_corte=16000, distancia_nyquist=0.73,
                    corte_artificial=True)
-        score, veredicto, problemas = motor.calcular_score(META_CD, esp, SIN_BITDEPTH)
+        score, veredicto, problemas = motor.calculate_score(META_CD, esp, SIN_BITDEPTH)
         self.assertNotIn(veredicto, VEREDICTOS_BUENOS)
         self.assertTrue(any("artificial cut-off" in p for p in problemas))
 
@@ -112,8 +112,8 @@ class TestVeredicto(unittest.TestCase):
         sin_corte = dict(cerca, clase_corte="no_cutoff", corte_detectado=False,
                          frecuencia_corte=None, distancia_nyquist=None)
 
-        s_cerca, v_cerca, probs_cerca = motor.calcular_score(META_CD, cerca, SIN_BITDEPTH)
-        s_sin, v_sin, _               = motor.calcular_score(META_CD, sin_corte, SIN_BITDEPTH)
+        s_cerca, v_cerca, probs_cerca = motor.calculate_score(META_CD, cerca, SIN_BITDEPTH)
+        s_sin, v_sin, _               = motor.calculate_score(META_CD, sin_corte, SIN_BITDEPTH)
 
         # the ambiguous one cannot reach the maximum verdict...
         self.assertEqual(v_sin, "GENUINE LOSSLESS")
@@ -131,16 +131,16 @@ class TestVeredicto(unittest.TestCase):
         """'active' bdi must score EXACTLY the same as bdi not applicable."""
         activos = {"aplica": True, "lsbs": "active", "resolucion_efectiva_bits": 24,
                    "fraccion_16bit_grid": 9.8, "conclusion": "..."}
-        s_sin, v_sin, _ = motor.calcular_score(META_CD, ESP_PERFECTO, SIN_BITDEPTH)
-        s_act, v_act, _ = motor.calcular_score(META_CD, ESP_PERFECTO, activos)
+        s_sin, v_sin, _ = motor.calculate_score(META_CD, ESP_PERFECTO, SIN_BITDEPTH)
+        s_act, v_act, _ = motor.calculate_score(META_CD, ESP_PERFECTO, activos)
         self.assertEqual(s_sin, s_act)
         self.assertEqual(v_sin, v_act)
 
     def test_lsb_vacios_penalizan_y_bloquean(self):
         vacios = {"aplica": True, "lsbs": "empty", "resolucion_efectiva_bits": 16,
                   "fraccion_16bit_grid": 100.0, "conclusion": "..."}
-        s_act, _, _ = motor.calcular_score(META_CD, ESP_PERFECTO, SIN_BITDEPTH)
-        s_vac, v_vac, problemas = motor.calcular_score(META_CD, ESP_PERFECTO, vacios)
+        s_act, _, _ = motor.calculate_score(META_CD, ESP_PERFECTO, SIN_BITDEPTH)
+        s_vac, v_vac, problemas = motor.calculate_score(META_CD, ESP_PERFECTO, vacios)
         self.assertLess(s_vac, s_act)
         self.assertNotIn(v_vac, VEREDICTOS_BUENOS)
         self.assertTrue(any("LSBs are empty" in p for p in problemas))
@@ -159,7 +159,7 @@ class TestVeredicto(unittest.TestCase):
         """A lossy file in 24 bits fills the LSB: the test cannot confirm anything."""
         activos = {"aplica": True, "lsbs": "active", "resolucion_efectiva_bits": 24,
                    "fraccion_16bit_grid": 9.8, "conclusion": "..."}
-        res = motor.analizar_archivo_datos(self.fx["ok24"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["ok24"], "center", None, False)
         self.assertNotEqual(res["bdi"].get("lsbs"), "empty")
         self.assertNotIn("genuine", res["bdi"]["conclusion"].lower())
 
@@ -182,8 +182,8 @@ class TestHiRes(unittest.TestCase):
         cls.fx.cerrar()
 
     def analizar(self, nombre):
-        res = motor.analizar_archivo_datos(self.fx[nombre], "center", None, False,
-                                           usar_cache=False)
+        res = motor.analyze_file_data(self.fx[nombre], "center", None, False,
+                                           use_cache=False)
         self.assertNotIn("error", res, res.get("error"))
         return res
 
@@ -192,12 +192,12 @@ class TestHiRes(unittest.TestCase):
         nyquist = meta["sample_rate"] // 2
         esp = dict(ESP_PERFECTO, techo_hz=techo, techo_rel_nyquist=techo / nyquist,
                    **extra)
-        return motor.calcular_score(meta, esp, SIN_BITDEPTH)
+        return motor.calculate_score(meta, esp, SIN_BITDEPTH)
 
     def test_un_master_hires_con_rolloff_a_30_khz_no_se_penaliza(self):
         """Real case: Steven Wilson, 'The Raven that Refused to Sing' (96/24)."""
         res = self.analizar("hires96_rolloff30k")
-        self.assertGreaterEqual(res["esp"]["techo_hz"], motor.LIMITE_CD_HZ)
+        self.assertGreaterEqual(res["esp"]["techo_hz"], motor.LIMIT_CD_HZ)
         texto = " ".join(res["problemas"]).lower()
         self.assertNotIn("destroyed", texto)
         self.assertNotIn("not backed by", texto)
@@ -224,14 +224,14 @@ class TestHiRes(unittest.TestCase):
         penalised."""
         meta = {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2,
                 "duracion": 100.0, "md5": 1}
-        _, _, encima = self._cuenta(meta, motor.LIMITE_CD_HZ)
-        _, _, debajo = self._cuenta(meta, motor.LIMITE_CD_HZ - 1)
+        _, _, encima = self._cuenta(meta, motor.LIMIT_CD_HZ)
+        _, _, debajo = self._cuenta(meta, motor.LIMIT_CD_HZ - 1)
         self.assertFalse([p for p in encima if "not backed by" in p])
         self.assertTrue([p for p in debajo if "not backed by" in p])
 
     def test_un_upscale_de_cd_a_96_khz_sigue_detectandose(self):
         res = self.analizar("upscale96")
-        self.assertLess(res["esp"]["techo_hz"], motor.LIMITE_CD_HZ)
+        self.assertLess(res["esp"]["techo_hz"], motor.LIMIT_CD_HZ)
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
         self.assertTrue(any("not backed by" in p for p in res["problemas"]))
 
@@ -266,20 +266,20 @@ class TestMP3Real(unittest.TestCase):
         cls.fx.cerrar()
 
     def test_mp3_320_a_24_bits_no_es_probablemente_lossless(self):
-        res = motor.analizar_archivo_datos(self.ruta, "center", None, False)
+        res = motor.analyze_file_data(self.ruta, "center", None, False)
         self.assertNotIn("error", res, res.get("error"))
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
         self.assertLess(res["score"], 0.60)
 
     def test_la_caida_viene_de_la_resolucion_declarada_sin_respaldo(self):
-        res = motor.analizar_archivo_datos(self.ruta, "center", None, False)
+        res = motor.analyze_file_data(self.ruta, "center", None, False)
         self.assertEqual(res["meta"]["bits_per_sample"], 24)
         self.assertTrue(any("not backed by the content" in p
                             for p in res["problemas"]))
 
     def test_mp3_128_tampoco_pasa(self):
         ruta = fx.transcodificar_mp3_a_flac(self.fx.dir, self.fx["ok16"], 128)
-        res = motor.analizar_archivo_datos(ruta, "center", None, False)
+        res = motor.analyze_file_data(ruta, "center", None, False)
         self.assertNotIn(res["veredicto"], VEREDICTOS_BUENOS)
         self.assertLessEqual(res["esp"]["distancia_nyquist"], 0.88)
 

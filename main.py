@@ -15,7 +15,7 @@ executables are generated, sharing the folder:
 `flac_motor.exe` does not open windows: what it receives are engine options, so
 `flac_motor.exe --path ALBUM --pdf` works as is. The GUI, in addition, always
 passes it the `--motor-cli` flag so that the call does not depend on the name of
-the binary (see `gui.ruta_motor`).
+the binary (see `gui.engine_path`).
 
 About `multiprocessing.freeze_support()`: it has to be the first thing that runs,
 before even looking at the arguments. On Windows, `multiprocessing` starts each
@@ -42,9 +42,9 @@ for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
 del _variable_blas
 
 VERSION = "2.3.0"
-NOMBRE_MOTOR_EXE = "flac_motor.exe"
+ENGINE_EXE_NAME = "flac_motor.exe"
 
-AYUDA = """FLAC VERIFIER — FLAC authenticity verifier
+HELP = """FLAC VERIFIER — FLAC authenticity verifier
 
 Usage:
   FLAC_Verifier.exe                        Open the graphical interface
@@ -68,7 +68,7 @@ Engine options (--motor-cli and flac_motor.exe):
 """
 
 
-def es_motor_exe() -> bool:
+def is_engine_exe() -> bool:
     """Is `flac_motor.exe` (the engine executable) starting us?
 
     The engine lives in its own binary so that it can have a console: a windowed
@@ -78,51 +78,51 @@ def es_motor_exe() -> bool:
     """
     if not getattr(sys, "frozen", False):
         return False
-    return os.path.basename(sys.executable).lower() == NOMBRE_MOTOR_EXE
+    return os.path.basename(sys.executable).lower() == ENGINE_EXE_NAME
 
 
-def principal(argumentos: list[str] | None = None) -> int:
+def main(arguments: list[str] | None = None) -> int:
     """Routes the arguments towards the GUI, the engine or the interactive CLI."""
-    argumentos = list(sys.argv[1:] if argumentos is None else argumentos)
+    arguments = list(sys.argv[1:] if arguments is None else arguments)
 
-    if argumentos and argumentos[0] in ("--version", "-V"):
+    if arguments and arguments[0] in ("--version", "-V"):
         print(f"FLAC VERIFIER {VERSION}")
         return 0
-    if argumentos and argumentos[0] in ("--help", "-h", "/?"):
-        print(AYUDA)
+    if arguments and arguments[0] in ("--help", "-h", "/?"):
+        print(HELP)
         return 0
 
     # Internal flag: the GUI asks the same executable for the engine, in console mode.
-    if argumentos and argumentos[0] == "--motor-cli":
+    if arguments and arguments[0] == "--motor-cli":
         import motor_flac
-        return motor_flac.cli_principal(argumentos[1:])
+        return motor_flac.main_cli(arguments[1:])
 
-    if argumentos and argumentos[0] == "--cli":
+    if arguments and arguments[0] == "--cli":
         import verificar_flac
-        return verificar_flac.main(argumentos[1:])
+        return verificar_flac.main(arguments[1:])
 
     # `flac_motor.exe` is the engine: unless the window is asked for on purpose,
     # what it receives are its options. With no arguments, the help (and not an error).
-    if es_motor_exe() and not (argumentos and argumentos[0] in ("--gui", "-g")):
-        if not argumentos:
-            print(AYUDA)
+    if is_engine_exe() and not (arguments and arguments[0] in ("--gui", "-g")):
+        if not arguments:
+            print(HELP)
             return 0
         import motor_flac
-        return motor_flac.cli_principal(argumentos)
+        return motor_flac.main_cli(arguments)
 
     # By default, the graphical interface (with an optional path)
-    ruta = None
-    if argumentos and argumentos[0] in ("--gui", "-g"):
-        argumentos = argumentos[1:]
-    if argumentos and not argumentos[0].startswith("-"):
-        ruta = argumentos[0]
+    path = None
+    if arguments and arguments[0] in ("--gui", "-g"):
+        arguments = arguments[1:]
+    if arguments and not arguments[0].startswith("-"):
+        path = arguments[0]
     try:
         from gui import main as main_grafico
     except Exception as e:                       # without customtkinter, without Tk…
         print(f"Could not load the graphical interface: {type(e).__name__}: {e}")
         print("You can use the CLI instead:  FLAC_Verifier.exe --cli")
         return 1
-    return main_grafico(ruta)
+    return main_grafico(path)
 
 
 if __name__ == "__main__":
@@ -130,4 +130,4 @@ if __name__ == "__main__":
     # See the explanation in the header: if it is moved from here, the parallel
     # analysis of the packaged executable starts one instance per worker.
     multiprocessing.freeze_support()
-    raise SystemExit(principal())
+    raise SystemExit(main())

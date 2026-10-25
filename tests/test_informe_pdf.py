@@ -91,7 +91,7 @@ def _fitz_disponible():
 
 
 def analizar_album(carpeta, guardar_png=True):
-    return [motor.analizar_archivo_datos(os.path.join(carpeta, nombre), "center", None,
+    return [motor.analyze_file_data(os.path.join(carpeta, nombre), "center", None,
                                          guardar_png)
             for nombre in sorted(os.listdir(carpeta))
             if nombre.lower().endswith(".flac")]
@@ -112,20 +112,20 @@ class TestInformePDF(unittest.TestCase):
 
     # ── generation and location ─────────────────────────────────────────────
     def test_genera_el_informe_en_la_carpeta_del_album(self):
-        informe = pdf.generar(self.album, analizar_album(self.album))
+        informe = pdf.generate(self.album, analizar_album(self.album))
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertEqual(os.path.dirname(informe["ruta"]), os.path.abspath(self.album))
-        self.assertEqual(os.path.basename(informe["ruta"]), pdf.NOMBRE_INFORME)
+        self.assertEqual(os.path.basename(informe["ruta"]), pdf.REPORT_NAME)
         datos = open(informe["ruta"], "rb").read()
         self.assertTrue(datos.startswith(b"%PDF"))
         self.assertGreater(len(datos), 20 * 1024, "the PDF is suspiciously small")
 
     def test_un_solo_archivo_guarda_el_pdf_junto_a_el(self):
         ruta = self.fx["ok16"]
-        esperado = os.path.join(os.path.dirname(os.path.abspath(ruta)), pdf.NOMBRE_INFORME)
-        self.assertEqual(pdf.ruta_informe(ruta), esperado)
-        resultado = motor.analizar_archivo_datos(ruta, "center", None, False)
-        informe = pdf.generar(ruta, [resultado])
+        esperado = os.path.join(os.path.dirname(os.path.abspath(ruta)), pdf.REPORT_NAME)
+        self.assertEqual(pdf.report_path(ruta), esperado)
+        resultado = motor.analyze_file_data(ruta, "center", None, False)
+        informe = pdf.generate(ruta, [resultado])
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertEqual(informe["ruta"], esperado)
         self.assertTrue(os.path.exists(esperado))
@@ -134,14 +134,14 @@ class TestInformePDF(unittest.TestCase):
     # ── document structure ──────────────────────────────────────────────────
     def test_una_pagina_por_cancion_mas_portada_y_resumen(self):
         resultados = analizar_album(self.album)
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertEqual(informe["paginas"], len(resultados) + 2)
         self.assertEqual(paginas_del_pdf(informe["ruta"]), len(resultados) + 2)
 
     def test_el_texto_contiene_portada_canciones_y_resumen(self):
         resultados = analizar_album(self.album)
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         texto = texto_del_pdf(informe["ruta"])
         self.assertIn("FLAC verification report", texto)     # cover page, with an accent
         self.assertIn("Executive summary", texto)
@@ -153,19 +153,19 @@ class TestInformePDF(unittest.TestCase):
         veredictos = {r.get("veredicto") for r in resultados if r.get("veredicto")}
         self.assertTrue(veredictos)
         for veredicto in veredictos:
-            self.assertIn(pdf.ESTILO_VEREDICTO[veredicto][0], texto)
+            self.assertIn(pdf.STYLE_VERDICT[veredicto][0], texto)
 
     def test_las_canciones_con_error_aparecen_marcadas(self):
         resultados = analizar_album(self.album)
         self.assertTrue([r for r in resultados if r.get("error")],
                         "the corrupt fixture should fail")
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         texto = texto_del_pdf(informe["ruta"])
-        self.assertIn(pdf.ESTILO_ERROR[0], texto)
+        self.assertIn(pdf.STYLE_ERROR[0], texto)
         self.assertIn("Could not analyze", texto)
 
     def test_las_tablas_tecnicas_incluyen_los_datos_clave(self):
-        informe = pdf.generar(self.album, analizar_album(self.album))
+        informe = pdf.generate(self.album, analizar_album(self.album))
         texto = texto_del_pdf(informe["ruta"])
         for etiqueta in ("Format", "Duration", "Size", "MD5 integrity", "Clipping",
                          "Dynamic range", "LSB utilization", "Spectral ceiling",
@@ -180,7 +180,7 @@ class TestInformePDF(unittest.TestCase):
         resultados = analizar_album(self.album, guardar_png=True)
         con_imagen = [r for r in resultados if (r.get("esp") or {}).get("espectrograma")]
         self.assertTrue(con_imagen)
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         texto = texto_del_pdf(informe["ruta"])
         self.assertIn("Spectrogram", texto)
@@ -203,7 +203,7 @@ class TestInformePDF(unittest.TestCase):
             "esp": {}, "bdi": {}, "md5": {}, "clip": {},
         }
         destino = os.path.join(self.fx.dir, "special_chars.pdf")
-        informe = pdf.generar(album, [resultado], destino=destino)
+        informe = pdf.generate(album, [resultado], destination=destino)
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertTrue(os.path.exists(destino))
         self.assertGreater(os.path.getsize(destino), 4 * 1024)
@@ -226,7 +226,7 @@ class TestInformePDF(unittest.TestCase):
             desordenados.append(ficha)
 
         destino = os.path.join(self.fx.dir, "orden_directo.pdf")
-        informe = pdf.generar(self.album, desordenados, destino=destino)
+        informe = pdf.generate(self.album, desordenados, destination=destino)
         self.assertTrue(informe["ok"], informe.get("error"))
         documento = fitz.open(destino)
         try:
@@ -249,7 +249,7 @@ class TestInformePDF(unittest.TestCase):
                       if (r.get("esp") or {}).get("espectrograma")]
         self.assertTrue(originales)
         peso_png = sum(os.path.getsize(r) for r in originales if os.path.exists(r))
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         peso_pdf = os.path.getsize(informe["ruta"])
         self.assertLess(peso_pdf, peso_png * 0.6,
@@ -259,7 +259,7 @@ class TestInformePDF(unittest.TestCase):
     def test_sin_espectrogramas_el_informe_se_genera_igual(self):
         """Without PNGs (for example without matplotlib) the PDF still comes out, with the notice."""
         resultados = analizar_album(self.album, guardar_png=False)
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertGreater(os.path.getsize(informe["ruta"]), 8 * 1024)
         texto = texto_del_pdf(informe["ruta"])
@@ -275,7 +275,7 @@ class TestInformePDF(unittest.TestCase):
                 os.remove(ruta)
                 borrados += 1
         self.assertGreater(borrados, 0)
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         self.assertIn("is no longer available", texto_del_pdf(informe["ruta"]))
 
@@ -297,7 +297,7 @@ class TestInformePDF(unittest.TestCase):
         (the record went from 1 page to 2). The image shrinks so that it fits."""
         limpio = self.fx.subcarpeta("maqueta_larga", ("ok16",))
         destino = os.path.join(limpio, "informe_largo.pdf")
-        informe = pdf.generar(limpio, [self._resultado_con_problemas(12)], destino=destino)
+        informe = pdf.generate(limpio, [self._resultado_con_problemas(12)], destination=destino)
         self.assertTrue(informe["ok"], informe.get("error"))
         # cover + 1 song + summary: if the record overflowed it would be 4
         self.assertEqual(informe["paginas"], 3)
@@ -305,7 +305,7 @@ class TestInformePDF(unittest.TestCase):
 
     def test_la_ficha_normal_sigue_usando_la_imagen_a_tamano_completo(self):
         resultados = analizar_album(self.album, guardar_png=True)
-        informe = pdf.generar(self.album, resultados)
+        informe = pdf.generate(self.album, resultados)
         self.assertEqual(informe["paginas"], len(resultados) + 2)
         self.assertTrue(os.path.exists(informe["ruta"]))
 
@@ -318,8 +318,8 @@ class TestInformePDF(unittest.TestCase):
         for cuantos in (2, 6, 12, 20):
             with self.subTest(problemas=cuantos):
                 destino = os.path.join(limpio, f"informe_{cuantos}.pdf")
-                informe = pdf.generar(limpio, [self._resultado_con_problemas(cuantos)],
-                                      destino=destino)
+                informe = pdf.generate(limpio, [self._resultado_con_problemas(cuantos)],
+                                      destination=destino)
                 self.assertTrue(informe["ok"], informe.get("error"))
                 documento = fitz.open(destino)
                 try:
@@ -345,24 +345,24 @@ class TestInformePDF(unittest.TestCase):
         original = pdf.REPORTLAB_OK
         pdf.REPORTLAB_OK = False
         try:
-            informe = pdf.generar(limpio, [{"archivo": "x.flac"}])
+            informe = pdf.generate(limpio, [{"archivo": "x.flac"}])
             self.assertFalse(informe["ok"])
             self.assertIn("reportlab", informe["error"])
             self.assertIsNone(informe["ruta"])
-            self.assertFalse(os.path.exists(pdf.ruta_informe(limpio)))
+            self.assertFalse(os.path.exists(pdf.report_path(limpio)))
         finally:
             pdf.REPORTLAB_OK = original
 
     def test_destino_imposible_avisa_sin_lanzar(self):
         resultados = analizar_album(self.album, guardar_png=False)
-        destino = os.path.join(self.fx["ok16"], pdf.NOMBRE_INFORME)   # a file
-        informe = pdf.generar(self.album, resultados, destino=destino)
+        destino = os.path.join(self.fx["ok16"], pdf.REPORT_NAME)   # a file
+        informe = pdf.generate(self.album, resultados, destination=destino)
         self.assertFalse(informe["ok"])
         self.assertIsNone(informe["ruta"])
         self.assertTrue(informe["error"])
 
     def test_sin_resultados_avisa(self):
-        informe = pdf.generar(self.album, [])
+        informe = pdf.generate(self.album, [])
         self.assertFalse(informe["ok"])
         self.assertIn("there are no results", informe["error"].lower())
 
@@ -370,7 +370,7 @@ class TestInformePDF(unittest.TestCase):
         """The engine turns any issue in the report into a notice."""
         sonda = self.fx.subcarpeta("album_roto", ("ok16",))
         # the report destination is a DIRECTORY: writing into it is bound to fail
-        os.makedirs(os.path.join(sonda, pdf.NOMBRE_INFORME), exist_ok=True)
+        os.makedirs(os.path.join(sonda, pdf.REPORT_NAME), exist_ok=True)
         entorno = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
         p = subprocess.run([sys.executable, fx.CLI], input=f"2\nn\ny\n{sonda}\nn\n",
                            cwd=fx.RAIZ, capture_output=True, text=True,
@@ -404,7 +404,7 @@ class TestInformePDF(unittest.TestCase):
         p = fx.correr_motor(sonda)
         tipos = [json.loads(l)["tipo"] for l in p.stdout.splitlines() if l.strip()]
         self.assertNotIn("informe", tipos)
-        self.assertFalse(os.path.exists(os.path.join(sonda, pdf.NOMBRE_INFORME)))
+        self.assertFalse(os.path.exists(os.path.join(sonda, pdf.REPORT_NAME)))
 
     def test_el_cli_interactivo_tambien_genera_el_informe(self):
         sonda = self.fx.subcarpeta("album_interactivo", ("ok16", "ok24"))
@@ -414,7 +414,7 @@ class TestInformePDF(unittest.TestCase):
                            encoding="utf-8", timeout=900, env=entorno)
         self.assertEqual(p.returncode, 0, p.stderr[-1500:])
         self.assertIn("PDF report:", p.stdout)
-        self.assertTrue(os.path.exists(os.path.join(sonda, pdf.NOMBRE_INFORME)))
+        self.assertTrue(os.path.exists(os.path.join(sonda, pdf.REPORT_NAME)))
 
     def test_el_pdf_y_el_png_son_combinables(self):
         sonda = self.fx.subcarpeta("album_combinado", ("ok16",))
@@ -423,7 +423,7 @@ class TestInformePDF(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("informe", tipos)
         self.assertTrue(os.path.isdir(os.path.join(sonda, "_spectrograms")))
-        self.assertTrue(os.path.exists(os.path.join(sonda, pdf.NOMBRE_INFORME)))
+        self.assertTrue(os.path.exists(os.path.join(sonda, pdf.REPORT_NAME)))
 
 
 if __name__ == "__main__":

@@ -31,40 +31,40 @@ try:
 except ImportError:                     # the analysis keeps working without this
     REPORTLAB_OK = False
 
-NOMBRE_INFORME = "flac_verifier_report.pdf"
-MAX_PX_ESPECTROGRAMA = 1800            # PNG files are recompressed so as not to bloat the PDF
+REPORT_NAME = "flac_verifier_report.pdf"
+MAX_PX_SPECTROGRAM = 1800            # PNG files are recompressed so as not to bloat the PDF
 
 # Frame geometry, in millimetres (they are multiplied by `mm` inside the
 # functions: `mm` comes from reportlab and cannot be used at module import time).
-ANCHO_MARCO_MM = 170                   # A4 minus the side margins (20+20)
-ALTO_MARCO_MM  = 259                   # A4 minus the top and bottom margins (18+20)
-ALTO_IMG_MAX_MM = 62                   # desired height of the spectrogram
-ALTO_IMG_MIN_MM = 34                   # below this it is no longer shrunk
+WIDTH_FRAME_MM = 170                   # A4 minus the side margins (20+20)
+HEIGHT_FRAME_MM  = 259                   # A4 minus the top and bottom margins (18+20)
+HEIGHT_IMG_MAX_MM = 62                   # desired height of the spectrogram
+HEIGHT_IMG_MIN_MM = 34                   # below this it is no longer shrunk
 
 # Canonical verdict -> (label, text colour, background colour).
 # Green / yellow / orange / red, with dark text on a light background so that it
 # reads well in print.
-ESTILO_VEREDICTO = {
+STYLE_VERDICT = {
     "GENUINE LOSSLESS":       ("GENUINE LOSSLESS",        "#14632C", "#E3F4E7"),
     "PROBABLY LOSSLESS": ("PROBABLY LOSSLESS",  "#8A6D00", "#FBF3D5"),
     "SUSPICIOUS":                 ("SUSPICIOUS",                  "#A85B00", "#FDE8D5"),
     "PROBABLE UPSCALE":       ("PROBABLE UPSCALE",        "#A11616", "#FBE0E0"),
     "indeterminate":          ("INDETERMINATE",           "#444444", "#EDEDED"),
 }
-ESTILO_ERROR = ("NO VERDICT (ERROR)", "#A11616", "#FBE0E0")
+STYLE_ERROR = ("NO VERDICT (ERROR)", "#A11616", "#FBE0E0")
 
-TEXTO_CLASE_CORTE = {
+CUTOFF_CLASS_TEXT = {
     "no_cutoff":            "no cut-off detected",
     "near_nyquist_cutoff":  "inconclusive (consistent with a mastering filter)",
     "far_cutoff":         "lossy codec signature",
 }
-TEXTO_MD5 = {
+MD5_TEXT = {
     "match":      "verified (match)",
     "mismatch":   "MISMATCH — file corrupt",
     "absent":       "no MD5 recorded",
     "unverifiable": "not verifiable at this bit depth",
 }
-TEXTO_LSBS = {
+LSBS_TEXT = {
     "active":       "active",
     "partial":     "partially inactive",
     "empty":        "empty (bit-depth upscale)",
@@ -77,36 +77,36 @@ def disponible():
     return REPORTLAB_OK
 
 
-def ruta_informe(ruta_analizada):
+def report_path(analyzed_path):
     """The report goes into the album folder; if that is a file, next to it."""
-    absoluta = os.path.abspath(ruta_analizada)
-    base = absoluta if os.path.isdir(absoluta) else os.path.dirname(absoluta)
-    return os.path.join(base, NOMBRE_INFORME)
+    absolute = os.path.abspath(analyzed_path)
+    base = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
+    return os.path.join(base, REPORT_NAME)
 
 
 # ─── FORMAT HELPERS ──────────────────────────────────────────────────────────
 
-def _estilo_veredicto(res):
+def _style_verdict(res):
     if res.get("error"):
-        return ESTILO_ERROR
-    return ESTILO_VEREDICTO.get(res.get("veredicto"), ESTILO_VEREDICTO["indeterminate"])
+        return STYLE_ERROR
+    return STYLE_VERDICT.get(res.get("veredicto"), STYLE_VERDICT["indeterminate"])
 
 
-def _num(valor, unidad="", decimales=1, si_none="—"):
-    if valor is None:
-        return si_none
-    if isinstance(valor, float):
-        texto = f"{valor:,.{decimales}f}".replace(",", " ")
+def _num(value, unidad="", decimales=1, if_none="—"):
+    if value is None:
+        return if_none
+    if isinstance(value, float):
+        text = f"{value:,.{decimales}f}".replace(",", " ")
     else:
-        texto = f"{valor:,}".replace(",", " ")
-    return f"{texto}{unidad}"
+        text = f"{value:,}".replace(",", " ")
+    return f"{text}{unidad}"
 
 
-def _pct(valor):
-    return "—" if valor is None else f"{valor * 100:.0f} %"
+def _pct(value):
+    return "—" if value is None else f"{value * 100:.0f} %"
 
 
-def _formato_meta(meta):
+def _format_meta(meta):
     if not meta:
         return "—"
     return (f"{_num(meta.get('sample_rate'), ' Hz', 0)} · "
@@ -114,16 +114,16 @@ def _formato_meta(meta):
             f"{meta.get('canales', '?')} channel(s)")
 
 
-def _resumen(resultados):
+def _summary(results):
     """Counts verdicts and errors. Returns (rows, totals)."""
-    conteo = {clave: 0 for clave in ESTILO_VEREDICTO}
-    errores = 0
-    for res in resultados:
+    conteo = {key: 0 for key in STYLE_VERDICT}
+    errors = 0
+    for res in results:
         if res.get("error") or "veredicto" not in res:
-            errores += 1
+            errors += 1
         else:
             conteo[res["veredicto"]] = conteo.get(res["veredicto"], 0) + 1
-    return conteo, errores
+    return conteo, errors
 
 
 # ─── DOCUMENT CONSTRUCTION ───────────────────────────────────────────────────
@@ -156,18 +156,18 @@ def _estilos():
     }
 
 
-def _tabla(datos, anchos, estilos, estilo_celdas=None, repetir_filas=0):
-    tabla = Table(datos, colWidths=anchos, hAlign="LEFT", repeatRows=repetir_filas)
+def _table(payload, anchos, estilos, style_cells=None, repeat_rows=0):
+    table = Table(payload, colWidths=anchos, hAlign="LEFT", repeatRows=repeat_rows)
     comandos = [("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
-    tabla.setStyle(TableStyle(comandos + list(estilo_celdas or [])))
-    return tabla
+    table.setStyle(TableStyle(comandos + list(style_cells or [])))
+    return table
 
 
-def _tabla_tecnica(res, est):
+def _technical_table(res, est):
     """Technical data table: two label/value pairs per row."""
     meta = res.get("meta") or {}
     esp  = res.get("esp") or {}
@@ -175,90 +175,90 @@ def _tabla_tecnica(res, est):
     md5  = res.get("md5") or {}
     clip = res.get("clip") or {}
 
-    def valor(clave, texto):
-        return [Paragraph(clave, est["etiqueta"]),
-                Paragraph(html.escape(str(texto)), est["celda"])]
+    def value(key, text):
+        return [Paragraph(key, est["etiqueta"]),
+                Paragraph(html.escape(str(text)), est["celda"])]
 
     duracion = meta.get("duracion")
     partes = [
-        valor("Format", _formato_meta(meta)),
-        valor("Duration", _num(duracion, " s", 1) if duracion is not None else "—"),
+        value("Format", _format_meta(meta)),
+        value("Duration", _num(duracion, " s", 1) if duracion is not None else "—"),
     ]
 
-    tamano = None
-    ruta = res.get("ruta")
-    if ruta and os.path.exists(ruta):
+    size = None
+    path = res.get("ruta")
+    if path and os.path.exists(path):
         try:
-            tamano = f"{os.path.getsize(ruta) / 2 ** 20:.1f} MB"
+            size = f"{os.path.getsize(path) / 2 ** 20:.1f} MB"
         except OSError:
-            tamano = None
-    partes.append(valor("Size", tamano or "—"))
+            size = None
+    partes.append(value("Size", size or "—"))
 
-    partes.append(valor("MD5 integrity", TEXTO_MD5.get(md5.get("estado"), "—")))
-    partes.append(valor("Clipping", (f"{clip.get('runs_clip', 0)} clipping run(s) at full scale"
+    partes.append(value("MD5 integrity", MD5_TEXT.get(md5.get("estado"), "—")))
+    partes.append(value("Clipping", (f"{clip.get('runs_clip', 0)} clipping run(s) at full scale"
                                      if clip.get("hay_clipping") else "no clipping")
                         if clip else "—"))
-    partes.append(valor("Dynamic range", _num(res.get("dr"), " dB (estimated)", 1)))
+    partes.append(value("Dynamic range", _num(res.get("dr"), " dB (estimated)", 1)))
 
     if bdi.get("aplica"):
-        texto_bits = (f"{TEXTO_LSBS.get(bdi.get('lsbs'), '—')}"
+        text_bits = (f"{LSBS_TEXT.get(bdi.get('lsbs'), '—')}"
                       f" · effective resolution "
                       f"{bdi.get('resolucion_efectiva_bits', '?')} of "
                       f"{meta.get('bits_per_sample', '?')} bits")
     else:
-        texto_bits = "not applicable (≤ 16 bits)"
-    partes.append(valor("LSB utilization", texto_bits))
+        text_bits = "not applicable (≤ 16 bits)"
+    partes.append(value("LSB utilization", text_bits))
 
     if esp.get("error"):
-        partes.append(valor("Spectrum", f"not analyzed ({esp['error']})"))
+        partes.append(value("Spectrum", f"not analyzed ({esp['error']})"))
     else:
         nyq = esp.get("nyquist") or 0
-        partes.append(valor("Spectral ceiling",
+        partes.append(value("Spectral ceiling",
                             f"{_num(esp.get('techo_hz'), ' Hz', 0)}"
                             f" ({_pct(esp.get('techo_rel_nyquist'))} of Nyquist)"))
         if esp.get("corte_detectado"):
-            clase = TEXTO_CLASE_CORTE.get(esp.get("clase_corte"), esp.get("clase_corte"))
-            texto_corte = (f"{_num(esp.get('frecuencia_corte'), ' Hz', 0)}"
-                           f" ({_pct(esp.get('distancia_nyquist'))} of Nyquist) · {clase}")
+            category = CUTOFF_CLASS_TEXT.get(esp.get("clase_corte"), esp.get("clase_corte"))
+            text_cutoff = (f"{_num(esp.get('frecuencia_corte'), ' Hz', 0)}"
+                           f" ({_pct(esp.get('distancia_nyquist'))} of Nyquist) · {category}")
         else:
-            texto_corte = "no cut-off detected"
-        partes.append(valor("Spectral cut-off", texto_corte))
-        partes.append(valor("High/mid ratio",
+            text_cutoff = "no cut-off detected"
+        partes.append(value("Spectral cut-off", text_cutoff))
+        partes.append(value("High/mid ratio",
                             _num(esp.get("ratio"), "", 5)
                             if esp.get("ratio_aplica") else "not applicable"))
-        partes.append(valor("High-band variance", _num(esp.get("var_alta_db"), " dB²", 1)))
-        partes.append(valor("L-R separation", _num(esp.get("separacion_stereo"), "", 4)))
-        partes.append(valor("Nyquist", _num(nyq, " Hz", 0)))
+        partes.append(value("High-band variance", _num(esp.get("var_alta_db"), " dB²", 1)))
+        partes.append(value("L-R separation", _num(esp.get("separacion_stereo"), "", 4)))
+        partes.append(value("Nyquist", _num(nyq, " Hz", 0)))
 
     # 4-column grid: label, value, label, value. The width of the labels
     # (34 mm) keeps them from wrapping onto two lines on A4.
-    filas = []
+    rows = []
     for i in range(0, len(partes), 2):
-        izquierda = partes[i]
-        derecha = partes[i + 1] if i + 1 < len(partes) else ["", ""]
-        filas.append(izquierda + derecha)
+        left = partes[i]
+        right = partes[i + 1] if i + 1 < len(partes) else ["", ""]
+        rows.append(left + right)
     anchos = [34 * mm, 50 * mm, 34 * mm, 50 * mm]
-    return _tabla(filas, anchos, est,
+    return _table(rows, anchos, est,
                   [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FAFAFA")),
                    ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#FAFAFA"))])
 
 
-def _insignia(res, est):
-    etiqueta, color_texto, color_fondo = _estilo_veredicto(res)
+def _badge(res, est):
+    label, text_color, background_color = _style_verdict(res)
     if res.get("error"):
-        texto = etiqueta
+        text = label
     else:
-        texto = f"{etiqueta} &nbsp;·&nbsp; score {_pct(res.get('score'))}"
-    celda = Paragraph(f'<font color="{color_texto}"><b>{texto}</b></font>', est["insignia"])
-    return _tabla([[celda]], [172 * mm], est,
-                  [("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(color_fondo)),
-                   ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor(color_texto)),
+        text = f"{label} &nbsp;·&nbsp; score {_pct(res.get('score'))}"
+    cell = Paragraph(f'<font color="{text_color}"><b>{text}</b></font>', est["insignia"])
+    return _table([[cell]], [172 * mm], est,
+                  [("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(background_color)),
+                   ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor(text_color)),
                    ("TOPPADDING", (0, 0), (-1, -1), 4),
                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4)])
 
 
-def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
+def _spectrogram_image(res, temporal, width_max=None, height_max=None):
     """Returns (flowable, warning). The warning explains why there is no image.
 
     The PNG files weigh several hundred KB each; for the PDF they are rescaled and
@@ -269,181 +269,181 @@ def _imagen_espectrograma(res, temporal, ancho_max=None, alto_max=None):
     The sizes are computed INSIDE the function on purpose: `mm` comes from
     reportlab, and a default value in the signature would be evaluated when the
     module is imported, breaking the import when reportlab is not installed."""
-    ancho_max = ancho_max or 170 * mm
-    alto_max  = alto_max or 62 * mm
-    ruta = (res.get("esp") or {}).get("espectrograma")
-    if not ruta:
+    width_max = width_max or 170 * mm
+    height_max  = height_max or 62 * mm
+    path = (res.get("esp") or {}).get("espectrograma")
+    if not path:
         return None, "spectrogram not generated (Pillow not available)"
-    if not os.path.exists(ruta):
+    if not os.path.exists(path):
         return None, "the spectrogram file is no longer available"
 
-    fuente = ruta
+    source = path
     try:
         from PIL import Image as ImagenPIL
-        with ImagenPIL.open(ruta) as imagen:
-            px_ancho, px_alto = imagen.size
-            copia = imagen.convert("RGB")
-            copia.thumbnail((MAX_PX_ESPECTROGRAMA, MAX_PX_ESPECTROGRAMA))
-            fuente = os.path.join(temporal, os.path.basename(ruta) + ".jpg")
-            copia.save(fuente, format="JPEG", quality=88, optimize=True)
+        with ImagenPIL.open(path) as image:
+            px_width, px_height = image.size
+            copia = image.convert("RGB")
+            copia.thumbnail((MAX_PX_SPECTROGRAM, MAX_PX_SPECTROGRAM))
+            source = os.path.join(temporal, os.path.basename(path) + ".jpg")
+            copia.save(source, format="JPEG", quality=88, optimize=True)
     except Exception:
-        fuente = ruta                              # without Pillow: original PNG
+        source = path                              # without Pillow: original PNG
         try:
-            px_ancho, px_alto = ImageReader(ruta).getSize()
+            px_width, px_height = ImageReader(path).getSize()
         except Exception as e:
             return None, f"could not embed the spectrogram ({type(e).__name__})"
 
-    altura = ancho_max * px_alto / float(px_ancho)
-    ancho = ancho_max
-    if altura > alto_max:                          # scaled down keeping the aspect ratio
-        altura = alto_max
-        ancho = altura * px_ancho / float(px_alto)
-    return Image(fuente, width=ancho, height=altura), None
+    altura = width_max * px_height / float(px_width)
+    width = width_max
+    if altura > height_max:                          # scaled down keeping the aspect ratio
+        altura = height_max
+        width = altura * px_width / float(px_height)
+    return Image(source, width=width, height=altura), None
 
 
-def _alto_de(flowables):
+def _height_of(flowables):
     """Actual height those flowables will occupy inside the report frame."""
     total = 0.0
     for flowable in flowables:
         try:
-            _, alto = flowable.wrap(ANCHO_MARCO_MM * mm, ALTO_MARCO_MM * mm)
+            _, height = flowable.wrap(WIDTH_FRAME_MM * mm, HEIGHT_FRAME_MM * mm)
         except Exception:
-            alto = 0.0
-        total += alto + flowable.getSpaceBefore() + flowable.getSpaceAfter()
+            height = 0.0
+        total += height + flowable.getSpaceBefore() + flowable.getSpaceAfter()
     return total
 
 
-def _ajustar_imagen(imagen, disponible):
+def _adjust_image(image, disponible):
     """Shrinks the image (down to ALTO_IMG_MIN_MM) so that it fits in what is left.
 
     Without this, a song page with many issues pushed the spectrogram onto the
     next page and left it loose at the top, separated from its heading."""
-    if imagen is None:
+    if image is None:
         return None
-    deseado = min(imagen.drawHeight, ALTO_IMG_MAX_MM * mm)
-    alto = max(ALTO_IMG_MIN_MM * mm, min(deseado, disponible))
-    if alto >= imagen.drawHeight - 0.5:
-        return imagen
-    proporcion = alto / float(imagen.drawHeight)
-    return Image(imagen.filename, width=imagen.drawWidth * proporcion, height=alto)
+    deseado = min(image.drawHeight, HEIGHT_IMG_MAX_MM * mm)
+    height = max(HEIGHT_IMG_MIN_MM * mm, min(deseado, disponible))
+    if height >= image.drawHeight - 0.5:
+        return image
+    proportion = height / float(image.drawHeight)
+    return Image(image.filename, width=image.drawWidth * proportion, height=height)
 
 
-def _ficha_cancion(indice, total, res, est, temporal):
+def _song_card(index, total, res, est, temporal):
     """Page for one song."""
-    elemento = [Paragraph(
-        f"{indice} of {total} &nbsp;·&nbsp; "
+    element = [Paragraph(
+        f"{index} of {total} &nbsp;·&nbsp; "
         f"{html.escape(str(res.get('archivo', '?')))}",
         est["cancion"]),
-                _insignia(res, est),
+                _badge(res, est),
                 Spacer(1, 3 * mm)]
 
     if res.get("error"):
-        elemento.append(Paragraph(
+        element.append(Paragraph(
             f"<b>Could not analyze:</b> {html.escape(str(res['error']))}",
             est["normal"]))
-        elemento.append(Spacer(1, 3 * mm))
+        element.append(Spacer(1, 3 * mm))
 
-    elemento.append(_tabla_tecnica(res, est))
-    elemento.append(Spacer(1, 4 * mm))
+    element.append(_technical_table(res, est))
+    element.append(Spacer(1, 4 * mm))
 
-    problemas = res.get("problemas") or []
-    elemento.append(Paragraph("Detected issues", est["seccion"]))
-    if problemas:
-        for problema in problemas:
-            elemento.append(Paragraph(
-                f"• {html.escape(str(problema))}", est["problema"]))
+    problems = res.get("problemas") or []
+    element.append(Paragraph("Detected issues", est["seccion"]))
+    if problems:
+        for problem in problems:
+            element.append(Paragraph(
+                f"• {html.escape(str(problem))}", est["problema"]))
     else:
-        elemento.append(Paragraph("No issues detected.", est["normal"]))
+        element.append(Paragraph("No issues detected.", est["normal"]))
 
-    evidencias = res.get("evidencias_forenses") or []
+    evidence = res.get("evidencias_forenses") or []
     # With a very long issue list the page budget is already at its limit: the
     # issues themselves are the evidence then, so the duplicate block is skipped.
-    if evidencias and len(problemas) < 8:
-        elemento.append(Spacer(1, 3 * mm))
-        elemento.append(Paragraph("Forensic evidence", est["seccion"]))
-        for evidencia in evidencias:
-            elemento.append(Paragraph(
-                f"• {html.escape(str(evidencia))}", est["problema"]))
-    elemento.append(Spacer(1, 4 * mm))
+    if evidence and len(problems) < 8:
+        element.append(Spacer(1, 3 * mm))
+        element.append(Paragraph("Forensic evidence", est["seccion"]))
+        for evidence_item in evidence:
+            element.append(Paragraph(
+                f"• {html.escape(str(evidence_item))}", est["problema"]))
+    element.append(Spacer(1, 4 * mm))
 
     # The image is measured and adjusted so that the heading and the spectrogram
     # always stay together on the same page. KeepTogether is the safety net for
     # the extreme case (an issue list that leaves no room even for the minimum).
-    titulo_espectro = Paragraph("Spectrogram", est["seccion"])
-    imagen, aviso = _imagen_espectrograma(res, temporal)
-    imagen = _ajustar_imagen(imagen,
-                             ALTO_MARCO_MM * mm - _alto_de(elemento + [titulo_espectro])
+    spectrum_title = Paragraph("Spectrogram", est["seccion"])
+    image, warning = _spectrogram_image(res, temporal)
+    image = _adjust_image(image,
+                             HEIGHT_FRAME_MM * mm - _height_of(element + [spectrum_title])
                              - 2 * mm)
-    if imagen is not None:
-        elemento.append(KeepTogether([titulo_espectro, imagen]))
+    if image is not None:
+        element.append(KeepTogether([spectrum_title, image]))
     else:
-        elemento.append(titulo_espectro)
-        elemento.append(Paragraph(
-            f"(no image: {html.escape(str(aviso))})", est["normal"]))
-    return elemento
+        element.append(spectrum_title)
+        element.append(Paragraph(
+            f"(no image: {html.escape(str(warning))})", est["normal"]))
+    return element
 
 
-def _portada(ruta_album, resultados, modo, est):
-    conteo, errores = _resumen(resultados)
-    total = len(resultados)
-    filas = [[Paragraph("<b>Verdict</b>", est["celda"]),
+def _cover(album_path, results, mode, est):
+    conteo, errors = _summary(results)
+    total = len(results)
+    rows = [[Paragraph("<b>Verdict</b>", est["celda"]),
               Paragraph("<b>Files</b>", est["celda"]),
               Paragraph("<b>Percentage</b>", est["celda"])]]
     comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
                 ("ALIGN", (1, 0), (-1, -1), "CENTER")]
 
-    def fila(etiqueta, color_texto, cuenta):
-        return [Paragraph(f'<font color="{color_texto}"><b>{etiqueta}</b></font>', est["celda"]),
-                Paragraph(f'<font color="{color_texto}"><b>{cuenta}</b></font>', est["celda"]),
-                Paragraph(f'<font color="{color_texto}">'
-                          f'{(cuenta * 100 / total) if total else 0:.0f} %</font>', est["celda"])]
+    def row(label, text_color, count):
+        return [Paragraph(f'<font color="{text_color}"><b>{label}</b></font>', est["celda"]),
+                Paragraph(f'<font color="{text_color}"><b>{count}</b></font>', est["celda"]),
+                Paragraph(f'<font color="{text_color}">'
+                          f'{(count * 100 / total) if total else 0:.0f} %</font>', est["celda"])]
 
-    for clave, (etiqueta, color_texto, color_fondo) in ESTILO_VEREDICTO.items():
-        if conteo.get(clave):
-            filas.append(fila(etiqueta, color_texto, conteo[clave]))
-            comandos.append(("BACKGROUND", (0, len(filas) - 1), (-1, len(filas) - 1),
-                             colors.HexColor(color_fondo)))
-    if errores:
-        etiqueta, color_texto, color_fondo = ESTILO_ERROR
-        filas.append(fila(etiqueta, color_texto, errores))
-        comandos.append(("BACKGROUND", (0, len(filas) - 1), (-1, len(filas) - 1),
-                         colors.HexColor(color_fondo)))
-    filas.append([Paragraph("<b>TOTAL</b>", est["celda"]),
+    for key, (label, text_color, background_color) in STYLE_VERDICT.items():
+        if conteo.get(key):
+            rows.append(row(label, text_color, conteo[key]))
+            comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
+                             colors.HexColor(background_color)))
+    if errors:
+        label, text_color, background_color = STYLE_ERROR
+        rows.append(row(label, text_color, errors))
+        comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
+                         colors.HexColor(background_color)))
+    rows.append([Paragraph("<b>TOTAL</b>", est["celda"]),
                   Paragraph(f"<b>{total}</b>", est["celda"]),
                   Paragraph("<b>100 %</b>", est["celda"])])
-    comandos.append(("BACKGROUND", (0, len(filas) - 1), (-1, len(filas) - 1),
+    comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
                      colors.HexColor("#F0F0F0")))
 
-    elemento = [
+    element = [
         Paragraph("FLAC verification report", est["titulo"]),
         Paragraph("Fake lossless detection: lossy transcodes and "
                   "bit-depth upgrades.", est["subtitulo"]),
         Spacer(1, 6 * mm),
-        Paragraph(f"<b>Album analyzed:</b> {html.escape(str(ruta_album))}",
+        Paragraph(f"<b>Album analyzed:</b> {html.escape(str(album_path))}",
                   est["normal"]),
         Paragraph(f"<b>Analysis date:</b> "
                   f"{time.strftime('%Y-%m-%d %H:%M:%S')}", est["normal"]),
         Paragraph(f"<b>Files analyzed:</b> {total}", est["normal"]),
     ]
-    if modo:
-        elemento.append(Paragraph(
-            f"<b>Spectral analysis mode:</b> {html.escape(str(modo))}",
+    if mode:
+        element.append(Paragraph(
+            f"<b>Spectral analysis mode:</b> {html.escape(str(mode))}",
             est["normal"]))
-    elemento += [Spacer(1, 6 * mm),
+    element += [Spacer(1, 6 * mm),
                  Paragraph("Executive summary", est["seccion"]),
-                 _tabla(filas, [72 * mm, 30 * mm, 30 * mm], est, comandos),
+                 _table(rows, [72 * mm, 30 * mm, 30 * mm], est, comandos),
                  Spacer(1, 4 * mm),
                  Paragraph("The verdict rests on four verifiable facts: "
                            "STREAMINFO MD5 integrity, actual LSB utilization, spectral "
                            "analysis with distance to Nyquist, and coherence between the declared "
                            "format and the content. A file with a confirmed defect "
                            "never receives the top verdict.", est["subtitulo"])]
-    return elemento
+    return element
 
 
-def _tabla_final(resultados, est):
-    filas = [[Paragraph("<b>#</b>", est["celda"]),
+def _final_table(results, est):
+    rows = [[Paragraph("<b>#</b>", est["celda"]),
               Paragraph("<b>File</b>", est["celda"]),
               Paragraph("<b>Verdict</b>", est["celda"]),
               Paragraph("<b>Score</b>", est["celda"]),
@@ -452,23 +452,23 @@ def _tabla_final(resultados, est):
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
                 ("ALIGN", (0, 0), (0, -1), "CENTER"),
                 ("ALIGN", (3, 0), (4, -1), "CENTER")]
-    for i, res in enumerate(resultados, start=1):
-        etiqueta, color_texto, color_fondo = _estilo_veredicto(res)
-        filas.append([Paragraph(str(i), est["celda"]),
+    for i, res in enumerate(results, start=1):
+        label, text_color, background_color = _style_verdict(res)
+        rows.append([Paragraph(str(i), est["celda"]),
                       Paragraph(html.escape(str(res.get("archivo", "?"))),
                                 est["celda"]),
-                      Paragraph(f'<font color="{color_texto}"><b>{etiqueta}</b></font>',
+                      Paragraph(f'<font color="{text_color}"><b>{label}</b></font>',
                                 est["celda"]),
                       Paragraph(_pct(res.get("score")), est["celda"]),
                       Paragraph("—" if res.get("error") else str(len(res.get("problemas") or [])),
                                 est["celda"])])
-        comandos.append(("BACKGROUND", (2, len(filas) - 1), (2, len(filas) - 1),
-                         colors.HexColor(color_fondo)))
-    return _tabla(filas, [10 * mm, 62 * mm, 52 * mm, 20 * mm, 22 * mm], est, comandos,
-                  repetir_filas=1)
+        comandos.append(("BACKGROUND", (2, len(rows) - 1), (2, len(rows) - 1),
+                         colors.HexColor(background_color)))
+    return _table(rows, [10 * mm, 62 * mm, 52 * mm, 20 * mm, 22 * mm], est, comandos,
+                  repeat_rows=1)
 
 
-def _pie_de_pagina(canvas, doc, album, contador):
+def _page_footer(canvas, doc, album, contador):
     """Footer with the album name and the page number."""
     contador["paginas"] = max(contador["paginas"], canvas.getPageNumber())
     canvas.saveState()
@@ -484,7 +484,7 @@ def _pie_de_pagina(canvas, doc, album, contador):
 
 # ─── PUBLIC API ──────────────────────────────────────────────────────────────
 
-class _FlujoPerezoso(MutableSequence):
+class _LazyStream(MutableSequence):
     """Generator-backed sequence for reportlab's document builder.
 
     `BaseDocTemplate.build()` requires a *sequence*: it reads `flowables[0]`,
@@ -495,15 +495,15 @@ class _FlujoPerezoso(MutableSequence):
     left (the count is used only for progress reporting, which the report does not
     use)."""
 
-    def __init__(self, generador):
-        self._generador = generador
+    def __init__(self, generator):
+        self._generator = generator
         self._buffer = []
         self._agotado = False
 
     def _rellenar(self, cuantos):
         while not self._agotado and len(self._buffer) < cuantos:
             try:
-                self._buffer.append(next(self._generador))
+                self._buffer.append(next(self._generator))
             except StopIteration:
                 self._agotado = True
 
@@ -511,46 +511,46 @@ class _FlujoPerezoso(MutableSequence):
         self._rellenar(1)                    # just enough to know if there is one
         return len(self._buffer)
 
-    def __getitem__(self, indice):
-        if isinstance(indice, slice):
-            if indice.stop is not None:
-                self._rellenar(indice.stop)
-            return self._buffer[indice]
-        self._rellenar(indice + 1)
-        return self._buffer[indice]
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            if index.stop is not None:
+                self._rellenar(index.stop)
+            return self._buffer[index]
+        self._rellenar(index + 1)
+        return self._buffer[index]
 
-    def __setitem__(self, indice, valor):
-        if isinstance(indice, slice):
-            self._buffer[indice] = list(valor)
+    def __setitem__(self, index, value):
+        if isinstance(index, slice):
+            self._buffer[index] = list(value)
         else:
-            self._rellenar(indice + 1)
-            self._buffer[indice] = valor
+            self._rellenar(index + 1)
+            self._buffer[index] = value
 
-    def __delitem__(self, indice):
-        if isinstance(indice, slice):
-            if indice.stop is not None:
-                self._rellenar(indice.stop)
-            del self._buffer[indice]
+    def __delitem__(self, index):
+        if isinstance(index, slice):
+            if index.stop is not None:
+                self._rellenar(index.stop)
+            del self._buffer[index]
         else:
-            self._rellenar(indice + 1)
-            del self._buffer[indice]
+            self._rellenar(index + 1)
+            del self._buffer[index]
 
-    def insert(self, posicion, valor):
-        self._buffer.insert(posicion, valor)
+    def insert(self, position, value):
+        self._buffer.insert(position, value)
 
 
-def _elementos(ruta_analizada, resultados, modo, est, temporal):
+def _elements(analyzed_path, results, mode, est, temporal):
     """Yields the report flowables lazily: cover, one page per song, final table."""
-    yield from _portada(ruta_analizada, resultados, modo, est)
-    for i, res in enumerate(resultados, start=1):
+    yield from _cover(analyzed_path, results, mode, est)
+    for i, res in enumerate(results, start=1):
         yield PageBreak()
-        yield from _ficha_cancion(i, len(resultados), res, est, temporal)
+        yield from _song_card(i, len(results), res, est, temporal)
     yield PageBreak()
     yield Paragraph("Overall summary", est["seccion"])
-    yield _tabla_final(resultados, est)
+    yield _final_table(results, est)
 
 
-def generar(ruta_analizada, resultados, destino=None, modo=None):
+def generate(analyzed_path, results, destination=None, mode=None):
     """Writes the PDF report. NEVER raises.
 
     Returns {"ok": bool, "ruta": str|None, "error": str|None, "paginas": int}.
@@ -558,38 +558,38 @@ def generar(ruta_analizada, resultados, destino=None, modo=None):
     if not REPORTLAB_OK:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": "reportlab is not installed (pip install reportlab)"}
-    if not resultados:
+    if not results:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": "there are no results to include in the report"}
     # The direct API must honour the original track order even when the caller
     # passes a streamed/suspicious-last list. Missing indices keep input order.
-    resultados = [r for _, r in sorted(
-        enumerate(resultados),
+    results = [r for _, r in sorted(
+        enumerate(results),
         key=lambda par: par[1].get("indice_original", par[0]))]
 
-    destino = destino or ruta_informe(ruta_analizada)
+    destination = destination or report_path(analyzed_path)
     est = _estilos()
     contador = {"paginas": 0}
     temporal = None
     try:
         # The recompressed images live here and are deleted when the build ends.
         temporal = tempfile.mkdtemp(prefix="flac_verifier_report_")
-        documento = SimpleDocTemplate(
-            destino, pagesize=A4,
+        document = SimpleDocTemplate(
+            destination, pagesize=A4,
             leftMargin=20 * mm, rightMargin=20 * mm,
             topMargin=18 * mm, bottomMargin=20 * mm,
             title="FLAC verification report",
             author="FLAC VERIFIER",
-            subject=f"Verification of {len(resultados)} file(s)")
+            subject=f"Verification of {len(results)} file(s)")
 
-        pie = lambda lienzo, doc: _pie_de_pagina(lienzo, doc, os.path.basename(
-            os.path.dirname(destino) or destino), contador)
+        footer = lambda lienzo, doc: _page_footer(lienzo, doc, os.path.basename(
+            os.path.dirname(destination) or destination), contador)
 
-        documento.build(
-            _FlujoPerezoso(_elementos(ruta_analizada, resultados, modo, est, temporal)),
-            onFirstPage=pie, onLaterPages=pie)
-        paginas = contador["paginas"]
-        return {"ok": True, "ruta": destino, "error": None, "paginas": paginas}
+        document.build(
+            _LazyStream(_elements(analyzed_path, results, mode, est, temporal)),
+            onFirstPage=footer, onLaterPages=footer)
+        pages = contador["paginas"]
+        return {"ok": True, "ruta": destination, "error": None, "paginas": pages}
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": f"{type(e).__name__}: {e}"}

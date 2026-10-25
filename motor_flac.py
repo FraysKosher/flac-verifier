@@ -41,30 +41,30 @@ import _motor_veredicto
 from _motor_espectral import Image
 
 from _motor_bits import (
-    FRAMES_POR_BLOQUE, MAX_MUESTRAS_BITS, _ANCHO_POR_BITS, _DTYPE_POR_ANCHO,
-    _normalizar_ruta_fs, _pcm_bytes, _md5_pcm, _comparar_md5, verificar_md5,
-    analizar_bit_depth, _rachas, detectar_clipping, _clasificar_rachas,
-    _clasificar_naturaleza_clipping, _dr_desde_rms, calcular_dr,
-    AcumuladorForenseBits, _analizar_forense_bits,
+    FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
+    _normalize_path_fs, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
+    analyze_bit_depth, _streaks, detect_clipping, _classify_streaks,
+    _classify_clipping_nature, _dr_from_rms, calculate_dr,
+    ForensicBitsAccumulator, _analyze_forensic_bits,
 )
 from _motor_espectral import (
-    ANCHO_PNG, ALTO_PNG, FPS_ESPECTROGRAMA_PNG, SEGUNDOS_ESPECTRO,
-    MAX_FRAMES_PNG, UMBRAL_RMS_ACTIVO_DB, _LUT_ESPECTROGRAMA, _media_segura, _potencia_db,
-    _espectro_dbfs, _ganancia_ruido_blanco, _stft_complejo,
-    _potencia_desde_fft, _bloques_activos_necesarios, _puntuacion_actividad,
-    _analizar_asimetria_mid_side, _diagnosticar_autenticidad_hires,
-    _metricas_espectrales, analizar_espectro, renderizar_espectrograma_rapido,
-    AcumuladorPsicoacusticoSTFT, _AcumuladorEspectral,
-    _guardar_espectrograma as _esp_guardar_espectrograma,
+    WIDTH_PNG, HEIGHT_PNG, PNG_SPECTROGRAM_FPS, SPECTRO_SECONDS,
+    MAX_FRAMES_PNG, ACTIVE_RMS_THRESHOLD_DB, _LUT_SPECTROGRAM, _mean_safe, _power_db,
+    _spectrum_dbfs, _white_noise_gain, _stft_complejo,
+    _power_from_fft, _needed_active_blocks, _puntuacion_actividad,
+    _analyze_mid_side_asymmetry, _diagnosticar_autenticidad_hires,
+    _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
+    PsychoacousticSTFTAccumulator, _SpectralAccumulator,
+    _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
-    LIMITE_CD_HZ, NOTA_COHERENCIA_ALBUM, calcular_score,
-    _merece_coherencia_album, aplicar_coherencia_album, evidencias_forenses,
+    LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, calculate_score,
+    _deserves_album_coherence, apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (
-    NOMBRE_CARPETA_PNG, _carpeta_png, _ruta_cache, _identidad, _clave_analisis,
-    _reemplazar_con_reintentos, _sanear,
-    leer_cache as _cache_leer, escribir_cache as _cache_escribir,
+    PNG_FOLDER_NAME, _png_folder, _cache_path, _identity, _analysis_key,
+    _replace_with_retries, _sanear,
+    read_cache as _cache_read, write_cache as _cache_write,
 )
 
 # ─── BASIC CHECKS ─────────────────────────────────────────────────────────────
@@ -104,25 +104,25 @@ VERSION_ESQUEMA_CACHE = "2.3.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 
-def huella_render():
+def render_fingerprint():
     """Parameters that define the PNG. If any of them changes, the spectrogram
     cache is no longer valid (the analysis itself can still be reused)."""
-    return (f"v{VERSION_MOTOR}-f{MAX_FRAMES_PNG}-p{SEGUNDOS_ESPECTRO}-"
-            f"{ANCHO_PNG}x{ALTO_PNG}-pil-lut")
+    return (f"v{VERSION_MOTOR}-f{MAX_FRAMES_PNG}-p{SPECTRO_SECONDS}-"
+            f"{WIDTH_PNG}x{HEIGHT_PNG}-pil-lut")
 
-def forzar_utf8_salida():
+def force_utf8_output():
     """Forces UTF-8 on stdout/stderr.
 
     On Windows, when the output is redirected to a file or a pipe, Python uses the
     local encoding (cp1252) and any character it cannot represent (the '═' frames,
     emoji) raises UnicodeEncodeError and kills the process."""
-    for flujo in (sys.stdout, sys.stderr):
+    for stream in (sys.stdout, sys.stderr):
         try:
-            flujo.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError, OSError):
             pass          # stream without reconfigure (e.g. replaced in tests)
 
-def _asegurar_flujos():
+def _ensure_streams():
     """Keeps stdout/stderr usable inside a packaged executable.
 
     A windowed .exe (--noconsole) has no console: PyInstaller leaves
@@ -130,64 +130,64 @@ def _asegurar_flujos():
     would be lost with no visible error. If the process does have a valid
     descriptor (because the GUI launched it with a pipe), it is reopened; if not,
     it is sent to a black hole so that printing is never a problem."""
-    for nombre in ("stdout", "stderr"):
-        if getattr(sys, nombre, None) is not None:
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is not None:
             continue
-        flujo = None
+        stream = None
         try:
-            descriptor = 1 if nombre == "stdout" else 2
-            flujo = open(descriptor, "w", encoding="utf-8", errors="replace",
+            descriptor = 1 if name == "stdout" else 2
+            stream = open(descriptor, "w", encoding="utf-8", errors="replace",
                          buffering=1, closefd=False)
-            flujo.write("")
+            stream.write("")
         except Exception:
             try:
-                flujo = open(os.devnull, "w", encoding="utf-8")
+                stream = open(os.devnull, "w", encoding="utf-8")
             except Exception:
-                flujo = None
-        if flujo is not None:
-            setattr(sys, nombre, flujo)
+                stream = None
+        if stream is not None:
+            setattr(sys, name, stream)
 
 
 
 # Verdict labels are defined in _motor_veredicto.py; the facade repeats the
 # literals so the source-level invariants (test_idioma) keep watching them.
-VEREDICTOS_MOTOR = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
+ENGINE_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
                     "PROBABLE UPSCALE", "indeterminate")
 
-NOMBRE_CARPETA_PNG = _motor_cache.NOMBRE_CARPETA_PNG  # "_spectrograms"
+PNG_FOLDER_NAME = _motor_cache.PNG_FOLDER_NAME  # "_spectrograms"
 
-def _rgb_a_imagen(rgb):
+def _rgb_to_image(rgb):
     """Pillow raster conversion (Image.fromarray) used by the LUT renderer."""
     return Image.fromarray(rgb, mode="RGB")
 
-def _guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio,
-                          techo_hz, frecuencia_corte):
+def _save_spectrogram(freqs, times, mix, samplerate, audio_path,
+                          ceiling_hz, frequency_cutoff):
     """Facade seam: the tests inject renderer failures through `motor.Image`."""
     if Image is None:
         return None, "Image renderer is not available"
-    return _esp_guardar_espectrograma(freqs, times, mezcla, samplerate, ruta_audio,
-                                      techo_hz, frecuencia_corte)
+    return _spectrogram_save(freqs, times, mix, samplerate, audio_path,
+                                      ceiling_hz, frequency_cutoff)
 
-def leer_cache(ruta, meta, modo, segundos, requiere_png):
+def read_cache(path, meta, mode, seconds, requiere_png):
     """Facade wrapper: the mutable VERSION_MOTOR/render fingerprint are passed
     explicitly, so changing `motor_flac.VERSION_MOTOR` still invalidates them."""
-    return _cache_leer(ruta, meta, modo, segundos, requiere_png,
-                       VERSION_MOTOR, VERSION_ESQUEMA_CACHE, huella_render())
+    return _cache_read(path, meta, mode, seconds, requiere_png,
+                       VERSION_MOTOR, VERSION_ESQUEMA_CACHE, render_fingerprint())
 
-def escribir_cache(ruta, meta, modo, segundos, resultado):
-    return _cache_escribir(ruta, meta, modo, segundos, resultado,
-                           VERSION_MOTOR, VERSION_ESQUEMA_CACHE, huella_render())
+def write_cache(path, meta, mode, seconds, result):
+    return _cache_write(path, meta, mode, seconds, result,
+                           VERSION_MOTOR, VERSION_ESQUEMA_CACHE, render_fingerprint())
 
-def verificar_firma(ruta):
+def verify_signature(path):
     try:
-        with open(_normalizar_ruta_fs(ruta), "rb") as f:
+        with open(_normalize_path_fs(path), "rb") as f:
             return f.read(4) == b"fLaC"
     except (FileNotFoundError, PermissionError):
         return False
 
-def verificar_metadatos(ruta):
+def verify_metadata(path):
     try:
-        audio = FLAC(_normalizar_ruta_fs(ruta))
+        audio = FLAC(_normalize_path_fs(path))
         info  = audio.info
         return {
             "valido":           True,
@@ -204,9 +204,9 @@ def verificar_metadatos(ruta):
         # corrupt files. They used to escape and abort the whole batch.
         return {"valido": False, "error": f"{type(e).__name__}: {e}"}
 
-def leer_audio(ruta):
+def read_audio(path):
     try:
-        data, sr = sf.read(_normalizar_ruta_fs(ruta), dtype="float64", always_2d=True)
+        data, sr = sf.read(_normalize_path_fs(path), dtype="float64", always_2d=True)
         return data, sr
     except Exception:
         return None, None
@@ -272,14 +272,14 @@ def leer_audio(ruta):
 # float64 and the whole STFT was built: a 10-minute 24/96 asked for ~2.8 GB.
 
 
-def _leer_bloques(ruta, frames_por_bloque=FRAMES_POR_BLOQUE):
+def _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
     """Generator of blocks: it never loads the whole track into memory."""
-    with sf.SoundFile(_normalizar_ruta_fs(ruta)) as f:
+    with sf.SoundFile(_normalize_path_fs(path)) as f:
         while True:
-            bloque = f.read(frames_por_bloque, dtype="float64", always_2d=True)
-            if bloque.shape[0] == 0:
+            block = f.read(frames_by_block, dtype="float64", always_2d=True)
+            if block.shape[0] == 0:
                 return
-            yield bloque
+            yield block
 
 # ─── ENERGY-GUIDED SPECTRAL SELECTOR ────────────────────────────────────────
 # The spectrum used to be measured on the first/central 45 s, which is exactly
@@ -299,184 +299,184 @@ def _leer_bloques(ruta, frames_por_bloque=FRAMES_POR_BLOQUE):
 
 
 
-class _AnalisisPorBloques:
+class _BlockAnalysis:
     """Accumulates in a single pass the analyses that need the whole file."""
 
-    def __init__(self, meta, sr, total_frames, modo, segundos,
-                 guardar_png=False, ruta=None):
+    def __init__(self, meta, sr, total_frames, mode, seconds,
+                 save_png=False, path=None):
         self.meta  = meta
         self.sr    = int(sr)
         self.bits  = meta["bits_per_sample"]
         self.total = int(total_frames) if total_frames and total_frames > 0 else (1 << 62)
-        self.ruta  = ruta
-        self.guardar_png = bool(guardar_png) and PIL_OK and bool(ruta)
+        self.path  = path
+        self.save_png = bool(save_png) and PIL_OK and bool(path)
 
         # MD5 (the same PCM as verificar_md5, hashed incrementally). It is only
         # hashed if there is something to compare with: with no recorded MD5 or
         # with an unverifiable bit depth, the result is "absent"/"unverifiable"
         # and hashing would be an extra pass over the whole file for nothing.
-        self._ancho_md5 = _ANCHO_POR_BITS.get(self.bits)
+        self._md5_width = _WIDTH_BY_BITS.get(self.bits)
         self._md5 = (hashlib.md5()
-                     if self._ancho_md5 and meta.get("md5") else None)
+                     if self._md5_width and meta.get("md5") else None)
 
         # clipping + global peak
         self._clip_runs   = 0
-        self._clip_abierta = 0
+        self._clip_opened = 0
         self._clip_longitudes = []      # Vector 6: all run lengths, including 1-2
-        self._pico        = 0.0
+        self._peak        = 0.0
 
         # dynamic range (3 s blocks, carrying the incomplete block over)
-        self._dr_bloque   = self.sr * 3
+        self._dr_block   = self.sr * 3
         self._dr_sumsq    = []
-        self._dr_pendiente = np.zeros(0)
-        self._dr_pico     = 0.0
+        self._dr_slope = np.zeros(0)
+        self._dr_peak     = 0.0
 
         # LSB: sample spread over the whole file
-        self._muestras    = []
-        self._muestras_n  = 0
-        self._paso_muestreo = (max(1, int(round(self.total / MAX_MUESTRAS_BITS)))
+        self._samples    = []
+        self._samples_n  = 0
+        self._sampling_step = (max(1, int(round(self.total / MAX_SAMPLES_BITS)))
                                if self.total < (1 << 62) else 1)
         # Vector 4: native-integer audit over the WHOLE file (24-bit only).
-        self._forense_bits = (AcumuladorForenseBits(self.bits, sample_rate=self.sr)
+        self._forensic_bits = (ForensicBitsAccumulator(self.bits, sample_rate=self.sr)
                               if self.bits == 24 else None)
 
         # spectrum: the whole file is scored, the K most active blocks are kept
-        self._espectro_acc = _AcumuladorEspectral(
+        self._spectrum_acc = _SpectralAccumulator(
             self.sr, meta.get("canales", 0) >= 2 if meta.get("canales") else None,
-            guardar_png=self.guardar_png, ruta=ruta,
-            renderer=_guardar_espectrograma)
+            save_png=self.save_png, path=path,
+            renderer=_save_spectrogram)
 
-    def anadir(self, bloque, offset):
-        self._integridad_y_clipping(bloque)
-        self._rango_dinamico(bloque)
-        self._muestra_bits(bloque, offset)
-        if self._forense_bits is not None:
-            self._forense_bits.anadir(bloque)
-        self._espectro_acc.anadir(bloque, offset)
+    def add(self, block, offset):
+        self._integrity_and_clipping(block)
+        self._dynamic_range(block)
+        self._sample_bits(block, offset)
+        if self._forensic_bits is not None:
+            self._forensic_bits.add(block)
+        self._spectrum_acc.add(block, offset)
 
     # ── per block ────────────────────────────────────────────────────────────
-    def _integridad_y_clipping(self, bloque):
+    def _integrity_and_clipping(self, block):
         if self._md5 is not None:
-            self._md5.update(_pcm_bytes(bloque, self.bits, self._ancho_md5))
-        if bloque.ndim > 1:
-            n_ch = bloque.shape[1]
+            self._md5.update(_pcm_bytes(block, self.bits, self._md5_width))
+        if block.ndim > 1:
+            n_ch = block.shape[1]
             if n_ch == 2:
                 # Operating on the two channel columns avoids the stride overhead
                 # of np.max(..., axis=1) on a tiny axis.
-                amp = np.maximum(np.abs(bloque[:, 0]), np.abs(bloque[:, 1]))
+                amp = np.maximum(np.abs(block[:, 0]), np.abs(block[:, 1]))
             elif n_ch == 1:
-                amp = np.abs(bloque[:, 0])
+                amp = np.abs(block[:, 0])
             else:
-                amp = np.max(np.abs(bloque), axis=1)
+                amp = np.max(np.abs(block), axis=1)
         else:
-            amp = np.abs(bloque)
+            amp = np.abs(block)
         if amp.size:
-            pico = float(np.max(amp))
-            if pico > self._pico:
-                self._pico = pico
-        rachas, self._clip_abierta = _rachas(amp >= 0.9999, self._clip_abierta)
-        self._clip_longitudes.extend(rachas)
-        self._clip_runs += sum(1 for largo in rachas if largo >= 3)
+            peak = float(np.max(amp))
+            if peak > self._peak:
+                self._peak = peak
+        streaks, self._clip_opened = _streaks(amp >= 0.9999, self._clip_opened)
+        self._clip_longitudes.extend(streaks)
+        self._clip_runs += sum(1 for long in streaks if long >= 3)
 
-    def _rango_dinamico(self, bloque):
-        if bloque.ndim > 1:
-            n_ch = bloque.shape[1]
+    def _dynamic_range(self, block):
+        if block.ndim > 1:
+            n_ch = block.shape[1]
             if n_ch == 2:
-                mono = (bloque[:, 0] + bloque[:, 1]) * 0.5
+                mono = (block[:, 0] + block[:, 1]) * 0.5
             elif n_ch == 1:
-                mono = bloque[:, 0]
+                mono = block[:, 0]
             else:
-                mono = bloque.mean(axis=1)
+                mono = block.mean(axis=1)
         else:
-            mono = bloque
+            mono = block
         if mono.size:
             # max(|mono|) without materialising a full np.abs(mono) temporary.
-            pico = max(float(np.max(mono)), -float(np.min(mono)))
-            if pico > self._dr_pico:
-                self._dr_pico = pico
-        if self._dr_pendiente.size:
-            mono = np.concatenate((self._dr_pendiente, mono))
-        n = mono.size // self._dr_bloque
+            peak = max(float(np.max(mono)), -float(np.min(mono)))
+            if peak > self._dr_peak:
+                self._dr_peak = peak
+        if self._dr_slope.size:
+            mono = np.concatenate((self._dr_slope, mono))
+        n = mono.size // self._dr_block
         if n:
-            completo = mono[: n * self._dr_bloque].reshape(n, self._dr_bloque)
-            self._dr_sumsq.extend(np.einsum("ij,ij->i", completo, completo).tolist())
-            mono = mono[n * self._dr_bloque :]
-        self._dr_pendiente = mono
+            full = mono[: n * self._dr_block].reshape(n, self._dr_block)
+            self._dr_sumsq.extend(np.einsum("ij,ij->i", full, full).tolist())
+            mono = mono[n * self._dr_block :]
+        self._dr_slope = mono
 
-    def _muestra_bits(self, bloque, offset):
+    def _sample_bits(self, block, offset):
         # Bits <= 16 never reach the LSB test (analizar_bit_depth returns
         # {"aplica": False}), so nothing is buffered for CD-depth tracks: this
         # saves holding up to 1<<20 float64 frames (~16 MB) per file.
-        if self.bits <= 16 or self._muestras_n >= MAX_MUESTRAS_BITS:
+        if self.bits <= 16 or self._samples_n >= MAX_SAMPLES_BITS:
             return
-        if (offset // FRAMES_POR_BLOQUE) % self._paso_muestreo:
+        if (offset // FRAMES_BY_BLOCK) % self._sampling_step:
             return
-        self._muestras.append(bloque)
-        self._muestras_n += bloque.shape[0]
+        self._samples.append(block)
+        self._samples_n += block.shape[0]
 
     # ── result ───────────────────────────────────────────────────────────────
-    def resultado(self):
-        if self._clip_abierta:
-            self._clip_longitudes.append(self._clip_abierta)   # run open at EOF
-        if self._clip_abierta >= 3:
+    def result(self):
+        if self._clip_opened:
+            self._clip_longitudes.append(self._clip_opened)   # run open at EOF
+        if self._clip_opened >= 3:
             self._clip_runs += 1                # run that ends exactly with the file
-        salida = {
-            "pico": self._pico,
-            "md5":  _comparar_md5(self._md5.hexdigest() if self._md5 else None, self.meta),
+        output = {
+            "pico": self._peak,
+            "md5":  _compare_md5(self._md5.hexdigest() if self._md5 else None, self.meta),
             "clip": {"runs_clip": self._clip_runs, "hay_clipping": self._clip_runs > 0},
         }
-        if self._dr_bloque and self._dr_sumsq:
-            rms = np.sqrt(np.asarray(self._dr_sumsq, dtype=np.float64) / self._dr_bloque)
-            salida["dr"] = _dr_desde_rms(rms, self._dr_pico, len(self._dr_sumsq))
+        if self._dr_block and self._dr_sumsq:
+            rms = np.sqrt(np.asarray(self._dr_sumsq, dtype=np.float64) / self._dr_block)
+            output["dr"] = _dr_from_rms(rms, self._dr_peak, len(self._dr_sumsq))
         else:
-            salida["dr"] = None
+            output["dr"] = None
 
-        if self._muestras:
-            muestra = np.concatenate(self._muestras)
+        if self._samples:
+            sample = np.concatenate(self._samples)
         else:
-            muestra = np.zeros((0, 1))
-        bdi = analizar_bit_depth(muestra, self.meta, incluir_forense=False)
-        if self._forense_bits is not None:
-            bdi["forense_bits"] = self._forense_bits.resultado()
+            sample = np.zeros((0, 1))
+        bdi = analyze_bit_depth(sample, self.meta, include_forensic=False)
+        if self._forensic_bits is not None:
+            bdi["forense_bits"] = self._forensic_bits.result()
         elif bdi.get("aplica"):
             # Deeper than 16 bits but not 24: Vector 4 does not apply. The key
             # matches the array path so both give identical results.
             bdi["forense_bits"] = {"aplica": False}
-        salida["bdi"] = bdi
-        salida["esp"] = self._resultado_espectral()
-        return salida
+        output["bdi"] = bdi
+        output["esp"] = self._spectral_result()
+        return output
 
-    def _resultado_espectral(self):
-        esp = self._espectro_acc.resultado()
+    def _spectral_result(self):
+        esp = self._spectrum_acc.result()
         if not esp.get("error"):
             # Vector 6: the nature of the clipping needs the spectrum (cut-off
             # below 20.5 kHz or content up to Nyquist).
-            esp.update(_clasificar_rachas(self._clip_longitudes,
+            esp.update(_classify_streaks(self._clip_longitudes,
                                           esp.get("techo_hz"),
                                           esp.get("frecuencia_corte"),
                                           self.sr // 2))
         return esp
 
-def _analizar_en_streaming(ruta, meta, modo, segundos, guardar_png):
+def _analyze_streaming(path, meta, mode, seconds, save_png):
     """A single read of the file, with memory bounded per block."""
-    with sf.SoundFile(_normalizar_ruta_fs(ruta)) as f:
+    with sf.SoundFile(_normalize_path_fs(path)) as f:
         sr    = f.samplerate
         total = f.frames
-        acumulador = _AnalisisPorBloques(meta, sr, total, modo, segundos,
-                                         guardar_png, ruta)
+        accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
+                                         save_png, path)
         offset = 0
         while True:
-            bloque = f.read(FRAMES_POR_BLOQUE, dtype="float64", always_2d=True)
-            if bloque.shape[0] == 0:
+            block = f.read(FRAMES_BY_BLOCK, dtype="float64", always_2d=True)
+            if block.shape[0] == 0:
                 break
-            acumulador.anadir(bloque, offset)
-            offset += bloque.shape[0]
+            accumulator.add(block, offset)
+            offset += block.shape[0]
     if total and offset != total:
         raise ValueError(f"decoded {offset} of the {total} declared samples")
-    return acumulador.resultado()
+    return accumulator.result()
 
 
-def _json_linea(obj):
+def _json_line(obj):
     """Serialises one line of the protocol, guaranteeing valid JSON."""
     try:
         return json.dumps(_sanear(obj), default=str, allow_nan=False)
@@ -512,21 +512,21 @@ def _json_linea(obj):
 # motor_flac on its own and keeps the Agg backend, sharing no state with the
 # others.
 
-MIN_ARCHIVOS_PARALELO = 3              # below this, the start-up cost does not pay off
+MIN_FILES_PARALLEL = 3              # below this, the start-up cost does not pay off
 MAX_WORKERS = 8                        # default ceiling (memory: ~0.3 GB/process)
 
-def workers_por_defecto(n_archivos):
+def default_workers(n_files):
     nucleos = os.cpu_count() or 1
-    return max(1, min(nucleos, MAX_WORKERS, n_archivos))
+    return max(1, min(nucleos, MAX_WORKERS, n_files))
 
-def _trabajo_analisis(tarea):
+def _work_analysis(tarea):
     """Work for one file in a child process (it must be at module level)."""
-    ruta, modo, segundos, guardar_png, usar_cache = tarea
-    return analizar_archivo_datos(ruta, modo, segundos, guardar_png, usar_cache)
+    path, mode, seconds, save_png, use_cache = tarea
+    return analyze_file_data(path, mode, seconds, save_png, use_cache)
 
-_SONDA_PROCESOS_CACHE = None
+_PROBE_PROCESSES_CACHE = None
 
-def _sonda_procesos():
+def _probe_processes():
     """Can processes be created in this environment?
 
     Some environments do not allow it (sandboxes that block Windows named pipes).
@@ -535,22 +535,22 @@ def _sonda_procesos():
     interpreter (numpy, scipy, soundfile, Pillow), which is wasteful to repeat
     on every batch.
     """
-    global _SONDA_PROCESOS_CACHE
-    if _SONDA_PROCESOS_CACHE is None:
+    global _PROBE_PROCESSES_CACHE
+    if _PROBE_PROCESSES_CACHE is None:
         try:
             from concurrent.futures import ProcessPoolExecutor
             with ProcessPoolExecutor(max_workers=1) as ejecutor:
-                _SONDA_PROCESOS_CACHE = (
+                _PROBE_PROCESSES_CACHE = (
                     ejecutor.submit(int, 1).result(timeout=120) == 1)
         except Exception:
-            _SONDA_PROCESOS_CACHE = False
-    return _SONDA_PROCESOS_CACHE
+            _PROBE_PROCESSES_CACHE = False
+    return _PROBE_PROCESSES_CACHE
 
 
 
 
-def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
-                      usar_cache=True):
+def analyze_files(files, mode, seconds, save_png, workers=None,
+                      use_cache=True):
     """Yields the results in order. Returns (generator, workers_efectivos).
 
     First, whatever is already computed is resolved from the cache (reading a JSON
@@ -559,155 +559,155 @@ def analizar_archivos(archivos, modo, segundos, guardar_png, workers=None,
     batch continues."""
     # 1) What can be reused without analysing anything
     plan = []
-    for indice, ruta in enumerate(archivos):
-        cacheado = None
-        if usar_cache:
-            meta = verificar_metadatos(ruta)
+    for index, path in enumerate(files):
+        cached = None
+        if use_cache:
+            meta = verify_metadata(path)
             if meta.get("valido"):
-                cacheado = leer_cache(ruta, meta, modo, segundos,
-                                      requiere_png=guardar_png)
-                if cacheado is not None:
-                    cacheado["desde_cache"] = True
-        plan.append((indice, ruta, cacheado))
+                cached = read_cache(path, meta, mode, seconds,
+                                      requiere_png=save_png)
+                if cached is not None:
+                    cached["desde_cache"] = True
+        plan.append((index, path, cached))
 
-    pendientes = [ruta for _, ruta, cacheado in plan if cacheado is None]
-    workers = workers if workers and workers > 0 else workers_por_defecto(len(archivos))
-    en_paralelo = (workers > 1 and len(pendientes) >= MIN_ARCHIVOS_PARALELO
-                   and _sonda_procesos())
-    if en_paralelo:
+    pendientes = [path for _, path, cached in plan if cached is None]
+    workers = workers if workers and workers > 0 else default_workers(len(files))
+    parallel = (workers > 1 and len(pendientes) >= MIN_FILES_PARALLEL
+                   and _probe_processes())
+    if parallel:
         workers_efectivos = min(workers, len(pendientes))
     else:
         workers_efectivos = 1
 
-    def calcular_pendientes():
+    def calculate_pending():
         """Analyses in series or in parallel the files that were not in the cache."""
-        tareas = [(ruta, modo, segundos, guardar_png, usar_cache) for ruta in pendientes]
-        if not en_paralelo:
+        tareas = [(path, mode, seconds, save_png, use_cache) for path in pendientes]
+        if not parallel:
             for tarea in tareas:
-                yield _trabajo_analisis(tarea)
+                yield _work_analysis(tarea)
             return
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=workers_efectivos) as ejecutor:
-            futuros = [ejecutor.submit(_trabajo_analisis, tarea) for tarea in tareas]
-            for ruta, futuro in zip(pendientes, futuros):
+            futuros = [ejecutor.submit(_work_analysis, tarea) for tarea in tareas]
+            for path, futuro in zip(pendientes, futuros):
                 try:
                     yield futuro.result()
                 except Exception as e:
                     # A crashed process (memory, hang) cannot bring the batch down.
-                    yield {"archivo": os.path.basename(ruta), "ruta": ruta,
+                    yield {"archivo": os.path.basename(path), "ruta": path,
                            "error": f"the analysis process failed "
                                     f"({type(e).__name__}: {e})"}
 
-    def en_orden():
-        calculados = calcular_pendientes() if pendientes else None
-        lote = []
+    def in_order():
+        calculados = calculate_pending() if pendientes else None
+        batch = []
         retenidas = []
-        for indice, ruta, cacheado in plan:
-            if cacheado is not None:
-                resultado = cacheado
+        for index, path, cached in plan:
+            if cached is not None:
+                result = cached
             else:
-                resultado = next(calculados, None) if calculados is not None else None
-                if resultado is None:
-                    resultado = {"archivo": os.path.basename(ruta), "ruta": ruta,
+                result = next(calculados, None) if calculados is not None else None
+                if result is None:
+                    result = {"archivo": os.path.basename(path), "ruta": path,
                                  "error": "could not get the analysis result"}
-            resultado["indice_original"] = indice
-            lote.append(resultado)
+            result["indice_original"] = index
+            batch.append(result)
             # Everything that cannot be rescued by album context is streamed
             # immediately. Only tracks that `_merece_coherencia_album` could
             # elevate are held back until the whole batch is known: a low
             # ceiling is suspicious (SUSPICIOUS/PROBABLE UPSCALE) or already
             # excused on its own by the acoustic exemption (PROBABLY LOSSLESS).
-            candidata = (resultado.get("veredicto") in
+            candidate = (result.get("veredicto") in
                          ("SUSPICIOUS", "PROBABLE UPSCALE", "PROBABLY LOSSLESS")
-                         and _merece_coherencia_album(resultado))
-            if candidata:
-                retenidas.append((ruta, resultado))
+                         and _deserves_album_coherence(result))
+            if candidate:
+                retenidas.append((path, result))
             else:
-                yield resultado
+                yield result
 
         # Album-level consistency needs the whole directory before deciding.
-        aplicar_coherencia_album(lote)
-        for _ruta, resultado in retenidas:
+        apply_album_coherence(batch)
+        for _path, result in retenidas:
             # The rescue belongs to this batch context only: the individual
             # on-disk cache keeps the suspicious verdict, so analysing the file
             # alone later does not inherit an album-level elevation.
-            yield resultado
+            yield result
 
-    return en_orden(), workers_efectivos
+    return in_order(), workers_efectivos
 
 # ─── ANALYSIS OF ONE FILE (returns a dict, does not print) ───────────────────
 
-def analizar_archivo_datos(ruta, modo="center", segundos=None, guardar_png=False,
-                           usar_cache=True):
+def analyze_file_data(path, mode="center", seconds=None, save_png=False,
+                           use_cache=True):
     """Analyses one file and returns a dict. With `usar_cache`, if the file has not
     changed since the last analysis the stored result is reused."""
-    resultado = {"archivo": os.path.basename(ruta), "ruta": ruta}
+    result = {"archivo": os.path.basename(path), "ruta": path}
 
     # Hardening: any unexpected failure in one file is reported as an error of
     # THAT file. Previously an exception escaped, killed the process and the
     # consumer was left without the {"tipo":"fin"} line.
     try:
-        if not verificar_firma(ruta):
-            resultado["error"] = "Not a valid FLAC signature"
-            return resultado
+        if not verify_signature(path):
+            result["error"] = "Not a valid FLAC signature"
+            return result
 
-        meta = verificar_metadatos(ruta)
+        meta = verify_metadata(path)
         if not meta["valido"]:
-            detalle = meta.get("error")
-            resultado["error"] = ("Could not read FLAC metadata"
-                                  + (f" ({detalle})" if detalle else ""))
-            return resultado
-        resultado["meta"] = meta
+            detail = meta.get("error")
+            result["error"] = ("Could not read FLAC metadata"
+                                  + (f" ({detail})" if detail else ""))
+            return result
+        result["meta"] = meta
 
         # Cache: an already verified album is not decoded or drawn again.
-        if usar_cache:
-            cacheado = leer_cache(ruta, meta, modo, segundos, requiere_png=guardar_png)
-            if cacheado is not None:
-                cacheado["desde_cache"] = True
-                return cacheado
+        if use_cache:
+            cached = read_cache(path, meta, mode, seconds, requiere_png=save_png)
+            if cached is not None:
+                cached["desde_cache"] = True
+                return cached
 
         # A single pass, memory bounded per block (Block 6). A decoding failure
         # here is a truncated or corrupt file.
         try:
-            datos = _analizar_en_streaming(ruta, meta, modo, segundos, guardar_png)
+            payload = _analyze_streaming(path, meta, mode, seconds, save_png)
         except Exception as e:
-            resultado["error"] = f"Could not decode the audio ({type(e).__name__}: {e})"
-            return resultado
+            result["error"] = f"Could not decode the audio ({type(e).__name__}: {e})"
+            return result
 
         # Silence guard (Block 2): with no signal there is nothing to analyse, and
         # any verdict would be invented. Previously a silent file came out as
         # "PROBABLY LOSSLESS" because its ceiling was measured as the whole Nyquist.
-        if datos["pico"] < 1.0 / float(1 << max(0, meta["bits_per_sample"] - 1)):
-            resultado["md5"] = datos["md5"]
-            resultado["error"] = ("digital silence: the file contains no analyzable signal "
+        if payload["pico"] < 1.0 / float(1 << max(0, meta["bits_per_sample"] - 1)):
+            result["md5"] = payload["md5"]
+            result["error"] = ("digital silence: the file contains no analyzable signal "
                                   "(no verdict is issued)")
-            return resultado
+            return result
 
         # Integrity: if the MD5 does not match, the file is corrupt or its audio
         # was altered, so it gets neither verdict nor score.
-        resultado["md5"] = datos["md5"]
-        if resultado["md5"]["estado"] == "mismatch":
-            resultado["error"] = ("STREAMINFO MD5 does not match the decoded "
+        result["md5"] = payload["md5"]
+        if result["md5"]["estado"] == "mismatch":
+            result["error"] = ("STREAMINFO MD5 does not match the decoded "
                                   "audio — file corrupt or modified")
-            return resultado
+            return result
 
-        resultado["clip"] = datos["clip"]
-        resultado["dr"]   = datos["dr"]
-        resultado["bdi"]  = datos["bdi"]
-        resultado["esp"]  = datos["esp"]
+        result["clip"] = payload["clip"]
+        result["dr"]   = payload["dr"]
+        result["bdi"]  = payload["bdi"]
+        result["esp"]  = payload["esp"]
 
-        score, veredicto, problemas = calcular_score(meta, resultado["esp"], resultado["bdi"])
-        resultado["score"]     = round(score, 4)
-        resultado["veredicto"] = veredicto
-        resultado["problemas"] = problemas
-        resultado["evidencias_forenses"] = evidencias_forenses(resultado)
-        if usar_cache:
-            resultado["desde_cache"] = False
-            escribir_cache(ruta, meta, modo, segundos, resultado)
-        return resultado
+        score, verdict, problems = calculate_score(meta, result["esp"], result["bdi"])
+        result["score"]     = round(score, 4)
+        result["veredicto"] = verdict
+        result["problemas"] = problems
+        result["evidencias_forenses"] = forensic_evidence(result)
+        if use_cache:
+            result["desde_cache"] = False
+            write_cache(path, meta, mode, seconds, result)
+        return result
     except Exception as e:
-        resultado["error"] = f"Unexpected failure in the analysis: {type(e).__name__}: {e}"
-        return resultado
+        result["error"] = f"Unexpected failure in the analysis: {type(e).__name__}: {e}"
+        return result
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 # Usage: python motor_flac.py --path "C:/Music/album" --mode center --png --pdf
@@ -715,19 +715,19 @@ def analizar_archivo_datos(ruta, modo="center", segundos=None, guardar_png=False
 #   { tipo: "inicio"|"resultado"|"informe"|"aviso"|"fin"|"error" }
 # (_sanear and _json_linea live above, next to the cache, which also uses them.)
 
-def generar_informe_pdf(ruta_analizada, resultados, modo=None):
+def generate_pdf_report(analyzed_path, results, mode=None):
     """Generates the PDF report and is unable to abort anything.
 
-    It returns the same dict as informe_pdf.generar(), and if the module is not
+    It returns the same dict as informe_pdf.generate(), and if the module is not
     available (reportlab missing) it reports that instead of failing."""
     try:
         import informe_pdf
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": f"could not load the report generator ({type(e).__name__}: {e})"}
-    return informe_pdf.generar(ruta_analizada, resultados, modo=modo)
+    return informe_pdf.generate(analyzed_path, results, mode=mode)
 
-def cli_principal(argv: "list[str] | None" = None) -> int:
+def main_cli(argv: "list[str] | None" = None) -> int:
     """Engine CLI. Returns the exit code (0 = OK).
 
     It is a function and not code inside the `__main__` block so that the frozen
@@ -735,17 +735,17 @@ def cli_principal(argv: "list[str] | None" = None) -> int:
     it with `--motor-cli`."""
     import argparse
 
-    forzar_utf8_salida()
-    _asegurar_flujos()          # in a windowed .exe stdout may not exist
+    force_utf8_output()
+    _ensure_streams()          # in a windowed .exe stdout may not exist
 
     parser = argparse.ArgumentParser(description="FLAC analysis engine")
     # `dest` keeps the internal names (the code inside is not translated):
     # what changes is the interface, which is in English.
-    parser.add_argument("--path",  dest="ruta", required=True, help="Folder or .flac file")
-    parser.add_argument("--mode",  dest="modo", default="center",
+    parser.add_argument("--path",  dest="path", required=True, help="Folder or .flac file")
+    parser.add_argument("--mode",  dest="mode", default="center",
                         choices=["seconds", "center", "full"],
                         help="Spectral window: center (default), full or seconds")
-    parser.add_argument("--seconds", dest="seg", type=int, default=15,
+    parser.add_argument("--seconds", dest="seconds", type=int, default=15,
                         help="Seconds when mode=seconds")
     parser.add_argument("--png",   action="store_true", help="Save PNG spectrograms")
     parser.add_argument("--pdf",   action="store_true",
@@ -754,66 +754,66 @@ def cli_principal(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--workers", type=int, default=0,
                         help=f"Parallel processes. 0 = automatic "
                              f"(up to {MAX_WORKERS}), 1 = sequential")
-    parser.add_argument("--no-cache", dest="sin_cache", action="store_true",
+    parser.add_argument("--no-cache", dest="without_cache", action="store_true",
                         help="Ignore and do not write the results cache")
     args = parser.parse_args(argv)
 
-    ruta     = args.ruta.strip().strip('"')
-    segundos = args.seg if args.modo == "seconds" else None
+    path     = args.path.strip().strip('"')
+    seconds = args.seconds if args.mode == "seconds" else None
     # The report needs the spectrograms, so --pdf generates them even when --png
     # was not requested: the user does not have to remember to combine flags.
-    guardar_png = args.png or args.pdf
-    usar_cache  = not args.sin_cache
+    save_png = args.png or args.pdf
+    use_cache  = not args.without_cache
 
-    if os.path.isfile(ruta) and ruta.lower().endswith(".flac"):
-        archivos = [ruta]
-    elif os.path.isdir(ruta):
-        archivos = [
-            os.path.join(ruta, f)
-            for f in sorted(os.listdir(ruta))
+    if os.path.isfile(path) and path.lower().endswith(".flac"):
+        files = [path]
+    elif os.path.isdir(path):
+        files = [
+            os.path.join(path, f)
+            for f in sorted(os.listdir(path))
             if f.lower().endswith(".flac")
         ]
     else:
-        print(_json_linea({"tipo": "error", "mensaje": "Invalid path"}), flush=True)
+        print(_json_line({"tipo": "error", "mensaje": "Invalid path"}), flush=True)
         return 1
 
-    total = len(archivos)
+    total = len(files)
     if total == 0:
-        print(_json_linea({"tipo": "error", "mensaje": "No .flac files found"}), flush=True)
+        print(_json_line({"tipo": "error", "mensaje": "No .flac files found"}), flush=True)
         return 1
 
-    analisis, workers = analizar_archivos(archivos, args.modo, segundos, guardar_png,
-                                          workers=args.workers, usar_cache=usar_cache)
+    analysis, workers = analyze_files(files, args.mode, seconds, save_png,
+                                          workers=args.workers, use_cache=use_cache)
 
     # Line 1: how many files, with the processes and the cache that will be used
-    print(_json_linea({"tipo": "inicio", "total": total, "workers": workers,
-                       "paralelo": workers > 1, "cache": usar_cache}), flush=True)
+    print(_json_line({"tipo": "inicio", "total": total, "workers": workers,
+                       "paralelo": workers > 1, "cache": use_cache}), flush=True)
 
-    resultados = []
-    desde_cache = 0
-    for i, resultado in enumerate(analisis):
-        resultado["tipo"]   = "resultado"
-        resultado["indice"] = i + 1
-        resultado["total"]  = total
-        resultados.append(resultado)
-        desde_cache += 1 if resultado.get("desde_cache") else 0
-        print(_json_linea(resultado), flush=True)
+    results = []
+    from_cache = 0
+    for i, result in enumerate(analysis):
+        result["tipo"]   = "resultado"
+        result["indice"] = i + 1
+        result["total"]  = total
+        results.append(result)
+        from_cache += 1 if result.get("desde_cache") else 0
+        print(_json_line(result), flush=True)
 
     # Album report: the failure is reported, it never aborts the batch.
     if args.pdf:
-        informe = generar_informe_pdf(ruta, resultados, modo=args.modo)
-        if informe["ok"]:
-            print(_json_linea({"tipo": "informe", "ruta": informe["ruta"],
-                               "paginas": informe["paginas"], "total": total,
-                               "desde_cache": desde_cache}), flush=True)
+        report = generate_pdf_report(path, results, mode=args.mode)
+        if report["ok"]:
+            print(_json_line({"tipo": "informe", "ruta": report["ruta"],
+                               "paginas": report["paginas"], "total": total,
+                               "desde_cache": from_cache}), flush=True)
         else:
-            print(_json_linea({"tipo": "aviso",
+            print(_json_line({"tipo": "aviso",
                                "mensaje": "could not generate the PDF report: "
-                                          + str(informe["error"])}), flush=True)
+                                          + str(report["error"])}), flush=True)
 
     # Last line: end signal
-    print(_json_linea({"tipo": "fin"}), flush=True)
+    print(_json_line({"tipo": "fin"}), flush=True)
     return 0
 
 if __name__ == "__main__":
-    raise SystemExit(cli_principal())
+    raise SystemExit(main_cli())

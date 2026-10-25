@@ -35,18 +35,18 @@ class TestStreamingIgualQueArray(unittest.TestCase):
 
     def _comparar(self, nombre, modo="center"):
         ruta = self.fx[nombre]
-        res = motor.analizar_archivo_datos(ruta, modo, None, False)
+        res = motor.analyze_file_data(ruta, modo, None, False)
         self.assertNotIn("error", res, res.get("error"))
 
-        data, sr = motor.leer_audio(ruta)
-        meta = motor.verificar_metadatos(ruta)
+        data, sr = motor.read_audio(ruta)
+        meta = motor.verify_metadata(ruta)
 
-        self.assertEqual(res["clip"], motor.detectar_clipping(data), "clipping")
-        self.assertEqual(res["dr"], motor.calcular_dr(data, sr), "dynamic range")
-        self.assertEqual(res["bdi"], motor.analizar_bit_depth(data, meta), "low bits")
-        self.assertEqual(res["md5"], motor.verificar_md5(data, meta), "MD5")
+        self.assertEqual(res["clip"], motor.detect_clipping(data), "clipping")
+        self.assertEqual(res["dr"], motor.calculate_dr(data, sr), "dynamic range")
+        self.assertEqual(res["bdi"], motor.analyze_bit_depth(data, meta), "low bits")
+        self.assertEqual(res["md5"], motor.verify_md5(data, meta), "MD5")
 
-        esp = motor.analizar_espectro(data, sr, modo, None, False, None)
+        esp = motor.analyze_spectrum(data, sr, modo, None, False, None)
         self.assertIsNone(esp.get("error"), esp.get("error"))
         for clave in CLAVES_ESPECTRALES:
             with self.subTest(clave=clave):
@@ -61,7 +61,7 @@ class TestStreamingIgualQueArray(unittest.TestCase):
     def test_mono_no_reporta_separacion_estereo(self):
         """In mono there is no L-R separation: None in both paths."""
         self._comparar("ok16_mono")
-        res = motor.analizar_archivo_datos(self.fx["ok16_mono"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["ok16_mono"], "center", None, False)
         self.assertIsNone(res["esp"]["separacion_stereo"])
 
     def test_modo_completo(self):
@@ -80,20 +80,20 @@ class TestLectorPorBloques(unittest.TestCase):
 
     def test_no_lee_mas_de_un_bloque_y_reconstruye_el_archivo(self):
         ruta = self.fx["ok24"]
-        bloques = list(motor._leer_bloques(ruta))
+        bloques = list(motor._read_blocks(ruta))
         self.assertGreater(len(bloques), 0)
         for bloque in bloques:
-            self.assertLessEqual(bloque.shape[0], motor.FRAMES_POR_BLOQUE)
-        data, _ = motor.leer_audio(ruta)
+            self.assertLessEqual(bloque.shape[0], motor.FRAMES_BY_BLOCK)
+        data, _ = motor.read_audio(ruta)
         self.assertTrue(np.array_equal(np.concatenate(bloques), data))
 
     def test_el_md5_incremental_coincide_con_el_de_un_solo_array(self):
         """The block hash must give the same result as hashing the whole array."""
         ruta = self.fx["ok24"]
-        data, _ = motor.leer_audio(ruta)
-        meta = motor.verificar_metadatos(ruta)
-        streaming = motor._analizar_en_streaming(ruta, meta, "full", None, False)
-        self.assertEqual(streaming["md5"], motor.verificar_md5(data, meta))
+        data, _ = motor.read_audio(ruta)
+        meta = motor.verify_metadata(ruta)
+        streaming = motor._analyze_streaming(ruta, meta, "full", None, False)
+        self.assertEqual(streaming["md5"], motor.verify_md5(data, meta))
         self.assertEqual(streaming["md5"]["estado"], "match")
         self.assertEqual(streaming["md5"]["calculado"],
                          motor._md5_pcm(data, meta["bits_per_sample"]))
@@ -127,8 +127,8 @@ class TestVectorizacion(unittest.TestCase):
         x[20:24, 0] = 1.0        # run of 4 -> counts
         x[47:50, 1] = 1.0        # run of 3 right at the end -> counts
         # the whole file: both agree and the result is the expected one
-        self.assertEqual(motor.detectar_clipping(x), self._clipping_ingenuo(x))
-        self.assertEqual(motor.detectar_clipping(x)["runs_clip"], 3)
+        self.assertEqual(motor.detect_clipping(x), self._clipping_ingenuo(x))
+        self.assertEqual(motor.detect_clipping(x)["runs_clip"], 3)
 
     def test_equivalencia_con_datos_aleatorios_y_clipping_real(self):
         rng = np.random.default_rng(5)
@@ -140,7 +140,7 @@ class TestVectorizacion(unittest.TestCase):
         casos.append(con_clip)
         for data in casos:
             with self.subTest(shape=data.shape):
-                self.assertEqual(motor.detectar_clipping(data), self._clipping_ingenuo(data))
+                self.assertEqual(motor.detect_clipping(data), self._clipping_ingenuo(data))
 
     def test_una_racha_partida_entre_bloques_cuenta_una_sola_vez(self):
         data = np.zeros((10, 1))
@@ -151,7 +151,7 @@ class TestVectorizacion(unittest.TestCase):
                 for trozo in (data[:corte], data[corte:]):
                     if not len(trozo):
                         continue
-                    rachas, cuenta = motor._rachas(trozo[:, 0] >= 0.9999, cuenta)
+                    rachas, cuenta = motor._streaks(trozo[:, 0] >= 0.9999, cuenta)
                     runs += sum(1 for largo in rachas if largo >= 3)
                 if cuenta >= 3:
                     runs += 1
@@ -161,7 +161,7 @@ class TestVectorizacion(unittest.TestCase):
         data = np.ones((9, 1))                   # run of 9
         cuenta, runs = 0, 0
         for trozo in (data[:3], data[3:6], data[6:]):
-            rachas, cuenta = motor._rachas(trozo[:, 0] >= 0.9999, cuenta)
+            rachas, cuenta = motor._streaks(trozo[:, 0] >= 0.9999, cuenta)
             runs += sum(1 for largo in rachas if largo >= 3)
         if cuenta >= 3:
             runs += 1
@@ -185,11 +185,11 @@ class TestVectorizacion(unittest.TestCase):
                 sr = 8000
                 meta = {"sample_rate": sr, "bits_per_sample": 16,
                         "canales": data.shape[1], "duracion": 1.0, "md5": None}
-                acumulador = motor._AnalisisPorBloques(meta, sr, len(data), "full", None)
+                acumulador = motor._BlockAnalysis(meta, sr, len(data), "full", None)
                 for inicio in range(0, len(data), 7777):     # irregular blocks
-                    acumulador.anadir(data[inicio : inicio + 7777], inicio)
-                self.assertEqual(acumulador.resultado()["clip"],
-                                 motor.detectar_clipping(data))
+                    acumulador.add(data[inicio : inicio + 7777], inicio)
+                self.assertEqual(acumulador.result()["clip"],
+                                 motor.detect_clipping(data))
 
     def test_dr_por_bloques_igual_que_la_via_array(self):
         """The DR accumulated over irregular blocks must be identical."""
@@ -197,25 +197,25 @@ class TestVectorizacion(unittest.TestCase):
         rng = np.random.default_rng(9)
         x = rng.standard_normal((sr * 20, 2)) * 0.2
         x[sr * 6 : sr * 9] *= 5.0                # one clearly louder block
-        esperado = motor.calcular_dr(x, sr)
+        esperado = motor.calculate_dr(x, sr)
         self.assertIsNotNone(esperado)
 
         meta = {"sample_rate": sr, "bits_per_sample": 16, "canales": 2,
                 "duracion": 20.0, "md5": 1}
-        acumulador = motor._AnalisisPorBloques(meta, sr, len(x), "full", None)
+        acumulador = motor._BlockAnalysis(meta, sr, len(x), "full", None)
         offset = 0
         for corte in (37, 1, 100003, 4096, 99991, 10 ** 9):
             trozo = x[offset : offset + corte]
             if not len(trozo):
                 continue
-            acumulador.anadir(trozo, offset)
+            acumulador.add(trozo, offset)
             offset += len(trozo)
         self.assertEqual(offset, len(x))
-        self.assertEqual(acumulador.resultado()["dr"], esperado)
+        self.assertEqual(acumulador.result()["dr"], esperado)
 
     def test_dr_de_un_archivo_corto_sigue_siendo_none(self):
         """Less than 6 seconds = less than two 3 s blocks."""
-        self.assertIsNone(motor.calcular_dr(np.zeros((8000 * 5, 2)), 8000))
+        self.assertIsNone(motor.calculate_dr(np.zeros((8000 * 5, 2)), 8000))
 
 
 if __name__ == "__main__":

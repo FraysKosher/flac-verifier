@@ -48,31 +48,31 @@ class TestPuntoDeEntrada(unittest.TestCase):
         self.assertRegex(fuente, r"(?m)^import multiprocessing$")
 
     def test_version_y_ayuda(self):
-        self.assertEqual(main.principal(["--version"]), 0)
-        self.assertEqual(main.principal(["-V"]), 0)
+        self.assertEqual(main.main(["--version"]), 0)
+        self.assertEqual(main.main(["-V"]), 0)
         # Careful: if `--help` stopped being recognised, this call would fall
         # into the GUI branch and the test would hang with a window open
         # (this already happened with the old flag).
-        self.assertEqual(main.principal(["--help"]), 0)
-        self.assertEqual(main.principal(["-h"]), 0)
+        self.assertEqual(main.main(["--help"]), 0)
+        self.assertEqual(main.main(["-h"]), 0)
 
     def test_la_bandera_del_motor_va_al_motor(self):
         import motor_flac
-        with mock.patch.object(motor_flac, "cli_principal", return_value=0) as motor:
-            codigo = main.principal(["--motor-cli", "--path", "C:/Album", "--pdf"])
+        with mock.patch.object(motor_flac, "main_cli", return_value=0) as motor:
+            codigo = main.main(["--motor-cli", "--path", "C:/Album", "--pdf"])
         self.assertEqual(codigo, 0)
         motor.assert_called_once_with(["--path", "C:/Album", "--pdf"])
 
     def test_la_bandera_cli_va_al_cli_interactivo(self):
         import verificar_flac
         with mock.patch.object(verificar_flac, "main", return_value=0) as cli:
-            codigo = main.principal(["--cli"])
+            codigo = main.main(["--cli"])
         self.assertEqual(codigo, 0)
         cli.assert_called_once_with([])
 
     def test_por_defecto_abre_la_interfaz(self):
         with mock.patch.object(gui, "main", return_value=0) as interfaz:
-            self.assertEqual(main.principal([]), 0)
+            self.assertEqual(main.main([]), 0)
         interfaz.assert_called_once_with(None)
 
     def test_la_interfaz_acepta_la_ruta_inicial(self):
@@ -81,12 +81,12 @@ class TestPuntoDeEntrada(unittest.TestCase):
                                      (["D:/Music"], "D:/Music")):
             with self.subTest(argumentos=argumentos):
                 with mock.patch.object(gui, "main", return_value=0) as interfaz:
-                    main.principal(argumentos)
+                    main.main(argumentos)
                 interfaz.assert_called_once_with(esperada)
 
     def test_si_falla_la_interfaz_avisa_sin_trazas(self):
         with mock.patch.dict(sys.modules, {"gui": None}):
-            self.assertEqual(main.principal([]), 1)
+            self.assertEqual(main.main([]), 1)
 
 
 class TestEjecutableDelMotor(unittest.TestCase):
@@ -101,53 +101,53 @@ class TestEjecutableDelMotor(unittest.TestCase):
         return mock.patch.multiple(
             sys, create=True, frozen=True,
             executable=os.path.join(RAIZ, "dist", "FLAC_Verifier",
-                                    main.NOMBRE_MOTOR_EXE))
+                                    main.ENGINE_EXE_NAME))
 
     def test_las_opciones_del_motor_van_al_motor_sin_banderas(self):
         import motor_flac
         with self._como_motor_exe(), \
-             mock.patch.object(motor_flac, "cli_principal", return_value=0) as motor:
-            codigo = main.principal(["--path", "C:/Album", "--mode", "center"])
+             mock.patch.object(motor_flac, "main_cli", return_value=0) as motor:
+            codigo = main.main(["--path", "C:/Album", "--mode", "center"])
         self.assertEqual(codigo, 0)
         motor.assert_called_once_with(["--path", "C:/Album", "--mode", "center"])
 
     def test_sin_argumentos_muestra_la_ayuda_y_no_abre_ventana(self):
         with self._como_motor_exe(), mock.patch.object(gui, "main") as interfaz:
-            self.assertEqual(main.principal([]), 0)
+            self.assertEqual(main.main([]), 0)
         interfaz.assert_not_called()
 
     def test_la_version_sigue_funcionando(self):
         with self._como_motor_exe():
-            self.assertEqual(main.principal(["--version"]), 0)
+            self.assertEqual(main.main(["--version"]), 0)
 
     def test_puede_abrir_la_ventana_si_se_pide(self):
         with self._como_motor_exe(), \
              mock.patch.object(gui, "main", return_value=0) as interfaz:
-            self.assertEqual(main.principal(["--gui", "D:/Music"]), 0)
+            self.assertEqual(main.main(["--gui", "D:/Music"]), 0)
         interfaz.assert_called_once_with("D:/Music")
 
     def test_desde_el_codigo_fuente_no_cambia_nada(self):
         """Without freezing there is no `flac_motor.exe`: `main.py` still opens the GUI."""
         import motor_flac
-        with mock.patch.object(motor_flac, "cli_principal") as motor, \
+        with mock.patch.object(motor_flac, "main_cli") as motor, \
              mock.patch.object(gui, "main", return_value=0) as interfaz:
-            self.assertEqual(main.principal(["--path", "C:/Album"]), 0)
+            self.assertEqual(main.main(["--path", "C:/Album"]), 0)
         motor.assert_not_called()
         interfaz.assert_called_once_with(None)
 
     def test_el_nombre_del_motor_coincide_con_el_del_spec(self):
         spec = open(SPEC, encoding="utf-8").read()
-        self.assertIn(f'NOMBRE_MOTOR = "{main.NOMBRE_MOTOR_EXE[:-4]}"', spec)
-        self.assertEqual(gui.NOMBRE_MOTOR_EXE, main.NOMBRE_MOTOR_EXE)
-        self.assertEqual(main.NOMBRE_MOTOR_EXE, "flac_motor.exe")
+        self.assertIn(f'NOMBRE_MOTOR = "{main.ENGINE_EXE_NAME[:-4]}"', spec)
+        self.assertEqual(gui.ENGINE_EXE_NAME, main.ENGINE_EXE_NAME)
+        self.assertEqual(main.ENGINE_EXE_NAME, "flac_motor.exe")
 
 
 class TestMotorEmpaquetado(unittest.TestCase):
     """How the engine command is built depending on how everything is run."""
 
     def test_en_modo_fuente_usa_el_interprete_con_u(self):
-        with mock.patch.object(gui, "empaquetado", return_value=False):
-            comando = gui.construir_comando("C:/Album")
+        with mock.patch.object(gui, "packaging", return_value=False):
+            comando = gui.build_command("C:/Album")
         self.assertEqual(comando[0], sys.executable)
         self.assertEqual(comando[1], "-u")                 # real time
         self.assertTrue(comando[2].endswith("motor_flac.py"))
@@ -158,10 +158,10 @@ class TestMotorEmpaquetado(unittest.TestCase):
         carpeta = os.path.join(RAIZ, "dist", "FLAC_Verifier")
         falso_gui = os.path.join(carpeta, "FLAC_Verifier.exe")
         falso_motor = os.path.join(carpeta, "flac_motor.exe")
-        with mock.patch.object(gui, "empaquetado", return_value=True), \
+        with mock.patch.object(gui, "packaging", return_value=True), \
              mock.patch.object(gui.sys, "executable", falso_gui), \
              mock.patch.object(gui.os.path, "exists", lambda ruta: ruta == falso_motor):
-            comando = gui.construir_comando("C:/Album")
+            comando = gui.build_command("C:/Album")
         self.assertEqual(comando[0], falso_motor)
         self.assertNotIn("-u", comando)                    # the .exe is already unbuffered
         # When packaged, the internal flag ALWAYS goes in: that way the call does
@@ -173,11 +173,11 @@ class TestMotorEmpaquetado(unittest.TestCase):
     def test_el_motor_se_busca_junto_a_la_gui(self):
         """If the engine is not next to it, no path is invented: the same .exe is used."""
         carpeta = os.path.join(RAIZ, "dist", "FLAC_Verifier")
-        with mock.patch.object(gui, "empaquetado", return_value=True), \
+        with mock.patch.object(gui, "packaging", return_value=True), \
              mock.patch.object(gui.sys, "executable",
                                os.path.join(carpeta, "FLAC_Verifier.exe")), \
              mock.patch.object(gui.os.path, "exists", return_value=False):
-            self.assertEqual(gui.ruta_motor(),
+            self.assertEqual(gui.engine_path(),
                              [os.path.join(carpeta, "FLAC_Verifier.exe"), "--motor-cli"])
 
     def test_ningun_comando_empaquetado_depende_del_nombre_del_binario(self):
@@ -189,41 +189,41 @@ class TestMotorEmpaquetado(unittest.TestCase):
         """
         carpeta = os.path.join(RAIZ, "dist", "FLAC_Verifier")
         casos = (
-            ("with the engine next to it", lambda ruta: ruta.endswith(gui.NOMBRE_MOTOR_EXE)),
+            ("with the engine next to it", lambda ruta: ruta.endswith(gui.ENGINE_EXE_NAME)),
             ("without the engine next to it", lambda ruta: False),
         )
         for nombre, existe in casos:
             with self.subTest(caso=nombre):
-                with mock.patch.object(gui, "empaquetado", return_value=True), \
+                with mock.patch.object(gui, "packaging", return_value=True), \
                      mock.patch.object(gui.sys, "executable",
                                        os.path.join(carpeta, "FLAC_Verifier.exe")), \
                      mock.patch.object(gui.os.path, "exists", existe):
-                    comando = gui.construir_comando("C:/Album")
+                    comando = gui.build_command("C:/Album")
                 self.assertIn("--motor-cli", comando)
 
     def test_empaquetado_sin_el_ejecutable_usa_la_bandera_interna(self):
         """This is the single .exe case: the engine lives in the same binary."""
-        with mock.patch.object(gui, "empaquetado", return_value=True), \
+        with mock.patch.object(gui, "packaging", return_value=True), \
              mock.patch.object(gui.sys, "executable",
                                os.path.join(RAIZ, "dist", "FLAC_Verifier.exe")), \
              mock.patch.object(gui.os.path, "exists", return_value=False):
-            comando = gui.construir_comando("C:/Album")
+            comando = gui.build_command("C:/Album")
         self.assertEqual(comando[0], os.path.join(RAIZ, "dist", "FLAC_Verifier.exe"))
         self.assertEqual(comando[1], "--motor-cli")
         self.assertNotIn("-u", comando)
 
     def test_las_opciones_siguen_igual_en_ambos_modos(self):
-        with mock.patch.object(gui, "empaquetado", return_value=True), \
-             mock.patch.object(gui, "ruta_motor", return_value=["C:/dist/flac_motor.exe"]):
-            comando = gui.construir_comando("C:/Album", modo="seconds", segundos=30,
-                                            pdf=True, workers=4, sin_cache=True)
+        with mock.patch.object(gui, "packaging", return_value=True), \
+             mock.patch.object(gui, "engine_path", return_value=["C:/dist/flac_motor.exe"]):
+            comando = gui.build_command("C:/Album", mode="seconds", seconds=30,
+                                            pdf=True, workers=4, without_cache=True)
         self.assertEqual(comando, ["C:/dist/flac_motor.exe", "--path", "C:/Album",
                                    "--mode", "seconds", "--seconds", "30", "--pdf",
                                    "--workers", "4", "--no-cache"])
 
     def test_el_motor_expone_una_funcion_para_el_ejecutable(self):
         import motor_flac
-        self.assertTrue(callable(motor_flac.cli_principal))
+        self.assertTrue(callable(motor_flac.main_cli))
 
     def test_el_motor_asegura_los_flujos_cuando_no_hay_consola(self):
         """A windowed .exe leaves stdout=None and print() would write nothing."""
@@ -231,7 +231,7 @@ class TestMotorEmpaquetado(unittest.TestCase):
         original = sys.stdout
         try:
             sys.stdout = None
-            motor_flac._asegurar_flujos()
+            motor_flac._ensure_streams()
             self.assertIsNotNone(sys.stdout)
             print("this must be printable")
         finally:
@@ -328,7 +328,7 @@ class TestEspecificacion(unittest.TestCase):
     def test_el_constructor_anuncia_la_version_del_programa(self):
         """The build banner takes the version from `main.py`, not from its own copy."""
         fuente = open(os.path.join(RAIZ, "build.py"), encoding="utf-8").read()
-        self.assertIn("version_del_proyecto()", fuente)
+        self.assertIn("project_version()", fuente)
         self.assertNotRegex(fuente, r"BUILDING FLAC VERIFIER \d")
 
     def test_el_constructor_existe_y_es_python_valido(self):
@@ -369,7 +369,7 @@ class TestComparacionConLaFuente(unittest.TestCase):
             self._linea(archivo="02.flac", veredicto="SUSPICIOUS"),
             '{"tipo": "fin"}',
         ])
-        fichas = self.ce.Comprobador.fichas(texto)
+        fichas = self.ce.Comprobador.cards(texto)
         self.assertEqual(sorted(fichas), ["01.flac", "02.flac"])
         self.assertEqual(fichas["02.flac"]["veredicto"], "SUSPICIOUS")
 
@@ -377,7 +377,7 @@ class TestComparacionConLaFuente(unittest.TestCase):
         texto = self._linea(archivo="01.flac", veredicto="GENUINE LOSSLESS",
                             ruta="C:/other/path.flac", espectrograma="C:/x.png",
                             desde_cache=True, md5="abc123")
-        ficha = self.ce.Comprobador.fichas(texto)["01.flac"]
+        ficha = self.ce.Comprobador.cards(texto)["01.flac"]
         for volatil in ("ruta", "espectrograma", "desde_cache"):
             self.assertNotIn(volatil, ficha, f"{volatil} must not be compared")
         # …but the analysis itself does: that is what has to match.
@@ -387,13 +387,13 @@ class TestComparacionConLaFuente(unittest.TestCase):
     def test_las_lineas_ilegibles_no_tumban_la_comparacion(self):
         texto = "\n".join(["{this is not json", "", "   ",
                            self._linea(archivo="01.flac", veredicto="SUSPICIOUS")])
-        self.assertEqual(list(self.ce.Comprobador.fichas(texto)), ["01.flac"])
+        self.assertEqual(list(self.ce.Comprobador.cards(texto)), ["01.flac"])
 
     def test_un_archivo_corrupto_cuenta_igual_en_los_dos_lados(self):
         """The error of an unreadable FLAC also has to match."""
         texto = json.dumps({"tipo": "resultado", "archivo": "06_corrupto.flac",
                             "error": "Could not read FLAC metadata"}, ensure_ascii=False)
-        ficha = self.ce.Comprobador.fichas(texto)["06_corrupto.flac"]
+        ficha = self.ce.Comprobador.cards(texto)["06_corrupto.flac"]
         self.assertIn("error", ficha)
         self.assertNotIn("veredicto", ficha)
 
@@ -409,7 +409,7 @@ class TestRenderizadorSinMatplotlib(unittest.TestCase):
     def test_el_motor_usa_pillow_y_la_lut(self):
         fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
         self.assertIn("from PIL import Image", fuente)
-        self.assertIn("_LUT_ESPECTROGRAMA", fuente)
+        self.assertIn("_LUT_SPECTROGRAM", fuente)
         self.assertIn("Image.fromarray(", fuente)
 
     def test_el_spec_excluye_matplotlib(self):

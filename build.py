@@ -28,13 +28,13 @@ AQUI = os.path.dirname(os.path.abspath(__file__))
 SPEC = os.path.join(AQUI, "flac_verifier.spec")
 DIST = os.path.join(AQUI, "dist")
 BUILD = os.path.join(AQUI, "build")
-CARPETA = os.path.join(DIST, "FLAC_Verifier")
-EXE_GUI = os.path.join(CARPETA, "FLAC_Verifier.exe")
-EXE_MOTOR = os.path.join(CARPETA, "flac_motor.exe")
-PYTHON_MINIMO = (3, 8)
+FOLDER = os.path.join(DIST, "FLAC_Verifier")
+EXE_GUI = os.path.join(FOLDER, "FLAC_Verifier.exe")
+EXE_ENGINE = os.path.join(FOLDER, "flac_motor.exe")
+MINIMUM_PYTHON = (3, 8)
 
 
-def version_del_proyecto() -> str:
+def project_version() -> str:
     """The version the build announces, read from the single place that defines it.
 
     It used to be a literal in the banner, which is how the tag, the release and
@@ -52,55 +52,55 @@ def _utf8() -> None:
     Line flushing is also enabled: with the output through a pipe Python holds it
     back in blocks and the build would not be seen advancing until the end.
     """
-    for nombre in ("stdout", "stderr"):
-        flujo = getattr(sys, nombre, None)
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
         try:
-            flujo.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         except (AttributeError, ValueError, OSError):
             pass
 
 
-def paso(numero: int, texto: str) -> None:
-    print(f"\n[{numero}] {texto}")
+def step_size(number: int, text: str) -> None:
+    print(f"\n[{number}] {text}")
     print("-" * 72)
 
 
-def comprobar_python() -> None:
-    if sys.version_info < PYTHON_MINIMO:
-        raise SystemExit(f"Python {PYTHON_MINIMO[0]}.{PYTHON_MINIMO[1]} "
+def check_python() -> None:
+    if sys.version_info < MINIMUM_PYTHON:
+        raise SystemExit(f"Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} "
                          f"or newer is required (you have {sys.version.split()[0]}).")
     print(f"  Python {sys.version.split()[0]} in {sys.executable}")
 
 
-def asegurar_pyinstaller() -> None:
+def ensure_pyinstaller() -> None:
     try:
         import PyInstaller
         print(f"  PyInstaller {PyInstaller.__version__} is already installed")
         return
     except ImportError:
         print("  PyInstaller is not installed; installing it…")
-    resultado = subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"],
+    result = subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"],
                                text=True)
-    if resultado.returncode != 0:
+    if result.returncode != 0:
         raise SystemExit("Could not install PyInstaller. Install it manually:\n"
                          "    pip install pyinstaller")
     print("  PyInstaller installed")
 
 
-def limpiar() -> None:
-    for carpeta in (BUILD, DIST):
-        if os.path.isdir(carpeta):
-            shutil.rmtree(carpeta, ignore_errors=True)
-            print(f"  removed {os.path.basename(carpeta)}/")
+def clean() -> None:
+    for folder in (BUILD, DIST):
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+            print(f"  removed {os.path.basename(folder)}/")
     for resto in ("__pycache__",):
-        ruta = os.path.join(AQUI, resto)
-        if os.path.isdir(ruta):
-            shutil.rmtree(ruta, ignore_errors=True)
+        path = os.path.join(AQUI, resto)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
     if not os.path.exists(os.path.join(AQUI, "Logo", "icono_app.ico")):
         print("  warning: Logo/icono_app.ico is missing; building with the default icon")
 
 
-def normalizar_integridad_windows(carpeta: str) -> None:
+def normalize_integrity_windows(folder: str) -> None:
     """Sets the Medium mandatory integrity label on everything under `carpeta`.
 
     A virtual environment or a workspace that was created from a low-integrity
@@ -111,60 +111,60 @@ def normalizar_integridad_windows(carpeta: str) -> None:
     label is normalised after building, which is the only moment when the folder
     exists and the inherited label has already been copied.
     """
-    if os.name != "nt" or not os.path.isdir(carpeta):
+    if os.name != "nt" or not os.path.isdir(folder):
         return
-    comando = ["icacls", carpeta, "/setintegritylevel", "(OI)(CI)M", "/T", "/Q"]
+    command = ["icacls", folder, "/setintegritylevel", "(OI)(CI)M", "/T", "/Q"]
     try:
-        resultado = subprocess.run(
-            comando, capture_output=True, text=True, timeout=120,
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=120,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"  note: could not normalise the integrity label "
               f"({type(exc).__name__}: {exc})")
         return
-    if resultado.returncode != 0:
-        print(f"  note: icacls returned {resultado.returncode} while normalising "
+    if result.returncode != 0:
+        print(f"  note: icacls returned {result.returncode} while normalising "
               f"the integrity label; check the folder by hand")
         return
-    print(f"  ✓ {os.path.basename(carpeta)}/ now carries the Medium integrity label")
+    print(f"  ✓ {os.path.basename(folder)}/ now carries the Medium integrity label")
 
 
 def compilar() -> float:
     if not os.path.exists(SPEC):
         raise SystemExit(f"Cannot find {os.path.basename(SPEC)}")
-    comando = [sys.executable, "-m", "PyInstaller", SPEC, "--noconfirm", "--clean",
+    command = [sys.executable, "-m", "PyInstaller", SPEC, "--noconfirm", "--clean",
                "--distpath", DIST, "--workpath", BUILD]
-    print("  " + " ".join(comando[2:]))
-    inicio = time.perf_counter()
-    resultado = subprocess.run(comando, cwd=AQUI)
-    if resultado.returncode != 0:
+    print("  " + " ".join(command[2:]))
+    start = time.perf_counter()
+    result = subprocess.run(command, cwd=AQUI)
+    if result.returncode != 0:
         raise SystemExit("The build failed. Check the PyInstaller message above.")
-    normalizar_integridad_windows(CARPETA)
-    return time.perf_counter() - inicio
+    normalize_integrity_windows(FOLDER)
+    return time.perf_counter() - start
 
 
-def verificar() -> None:
-    for etiqueta, ruta in (("graphical interface", EXE_GUI), ("engine", EXE_MOTOR)):
-        if not os.path.exists(ruta):
-            raise SystemExit(f"  ✗ missing {os.path.basename(ruta)}")
-        print(f"  ✓ {os.path.basename(ruta):20s} {os.path.getsize(ruta) / 1e6:6.1f} MB "
-              f"({etiqueta})")
+def verify() -> None:
+    for label, path in (("graphical interface", EXE_GUI), ("engine", EXE_ENGINE)):
+        if not os.path.exists(path):
+            raise SystemExit(f"  ✗ missing {os.path.basename(path)}")
+        print(f"  ✓ {os.path.basename(path):20s} {os.path.getsize(path) / 1e6:6.1f} MB "
+              f"({label})")
 
     # That they respond without opening any window. The engine writes the version
     # to stdout; the windowed one has no console, so there the exit code is enough
     # (that it does not blow up).
-    for ruta in (EXE_GUI, EXE_MOTOR):
-        proceso = subprocess.run([ruta, "--version"], capture_output=True, text=True,
+    for path in (EXE_GUI, EXE_ENGINE):
+        process = subprocess.run([path, "--version"], capture_output=True, text=True,
                                  timeout=180,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        salida = (proceso.stdout or proceso.stderr or "").strip().splitlines()
-        marca = "✓" if proceso.returncode == 0 else "✗"
-        print(f"  {marca} {os.path.basename(ruta)} --version -> "
-              f"exit code {proceso.returncode}, {salida[0] if salida else '(sin salida)'}")
+        output = (process.stdout or process.stderr or "").strip().splitlines()
+        brand = "✓" if process.returncode == 0 else "✗"
+        print(f"  {brand} {os.path.basename(path)} --version -> "
+              f"exit code {process.returncode}, {output[0] if output else '(sin salida)'}")
 
-    total = sum(os.path.getsize(os.path.join(raiz, nombre))
-                for raiz, _, ficheros in os.walk(CARPETA)
-                for nombre in ficheros)
+    total = sum(os.path.getsize(os.path.join(root, name))
+                for root, _, files in os.walk(FOLDER)
+                for name in files)
     print(f"  total size of dist/FLAC_Verifier: {total / 1e6:.0f} MB")
 
 
@@ -176,30 +176,30 @@ def main() -> int:
 
     _utf8()
     print("=" * 72)
-    print("BUILDING FLAC VERIFIER " + version_del_proyecto())
+    print("BUILDING FLAC VERIFIER " + project_version())
     print("=" * 72)
 
-    paso(1, "Checking the environment")
-    comprobar_python()
-    asegurar_pyinstaller()
+    step_size(1, "Checking the environment")
+    check_python()
+    ensure_pyinstaller()
 
-    paso(2, "Removing leftovers from previous builds")
+    step_size(2, "Removing leftovers from previous builds")
     if args.sin_limpiar:
         print("  (skipped by --no-clean)")
     else:
-        limpiar()
+        clean()
 
-    paso(3, "Building (this can take several minutes)")
-    segundos = compilar()
-    print(f"  finished in {segundos / 60:.1f} minutes")
+    step_size(3, "Building (this can take several minutes)")
+    seconds = compilar()
+    print(f"  finished in {seconds / 60:.1f} minutes")
 
-    paso(4, "Verifying the result")
-    verificar()
+    step_size(4, "Verifying the result")
+    verify()
 
     print("\n" + "=" * 72)
     print("READY")
     print("=" * 72)
-    print(f"  Distributable folder: {CARPETA}")
+    print(f"  Distributable folder: {FOLDER}")
     print(f"  Executable          : {EXE_GUI}")
     print("\n  Copy that whole folder to the target machine (not just the .exe:")
     print("  the DLLs and the data live inside _internal) and run FLAC_Verifier.exe.")

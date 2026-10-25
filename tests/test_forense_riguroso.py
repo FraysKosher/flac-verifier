@@ -118,7 +118,7 @@ class TestForenseRiguroso(unittest.TestCase):
         sf.write(ruta, np.clip(sig_suave + piso_termico, -0.98, 0.98), sr,
                  subtype="PCM_24")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
     def test_02_upscale_brickwall_44_a_96_es_detectado(self):
@@ -128,7 +128,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "upscale_sinc_24_96.flac"
         sf.write(ruta, np.clip(sig_96, -0.98, 0.98), 96000, subtype="PCM_24")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], ("PROBABLE UPSCALE", "SUSPICIOUS"))
 
     def test_03_upscale_aliasing_espejo_sin_filtro_es_detectado(self):
@@ -143,7 +143,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "upscale_linear_mirror_88k.flac"
         sf.write(ruta, np.clip(sig_88, -0.98, 0.98), 88200, subtype="PCM_24")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS")
 
     def test_04_falso_24bit_con_padding_de_16bit(self):
@@ -153,7 +153,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "padded_16_in_24.flac"
         sf.write(ruta, np.clip(sig_q16, -0.99, 0.99), 44100, subtype="PCM_24")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS")
 
     def test_05_transcode_joint_stereo_colapso_side(self):
@@ -172,7 +172,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "fake_mp3_320_joint_stereo.flac"
         sf.write(ruta, np.clip(est_js, -0.98, 0.98), sr, subtype="PCM_16")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
 
     def test_06_intro_larga_suave_no_engana_al_motor(self):
@@ -189,7 +189,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "prog_rock_long_intro.flac"
         sf.write(ruta, np.clip(pista_completa, -0.98, 0.98), sr, subtype="PCM_16")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
     def test_07_pista_silencio_digital_no_produce_nan_ni_crash(self):
@@ -199,7 +199,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "digital_silence.flac"
         sf.write(ruta, ceros, sr, subtype="PCM_16")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self._assert_finito(res, "resultado")
 
     def _assert_finito(self, valor, ruta):
@@ -220,7 +220,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "dsd_transfer_88k.flac"
         sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
 
@@ -232,7 +232,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "opus_fullband_20k.flac"
         sf.write(ruta, np.clip(opus, -0.98, 0.98), sr, subtype="PCM_16")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertTrue(res["esp"]["sospecha_corte_opus_20k"])
         self.assertGreater(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertEqual(res["veredicto"], "SUSPICIOUS")
@@ -258,7 +258,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "strong_bass_static_20k.flac"
         sf.write(ruta, np.clip(y, -0.99, 0.99), sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertIn(res["veredicto"], VEREDICTOS_BUENOS)
@@ -272,7 +272,7 @@ class TestForenseRiguroso(unittest.TestCase):
         ruta = self.base_path / "fake_24bit_gain_comb.flac"
         sf.write(ruta, peine, 44100, subtype="PCM_24")
 
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertTrue(res["bdi"]["forense_bits"]["es_24bit_escalado_en_peine"])
         self.assertIn(res["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 
@@ -296,7 +296,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "lossy_16k_dither_24_96.flac"
         sf.write(ruta, np.clip(y, -0.98, 0.98), sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertFalse(res["esp"]["rolloff_analogico_genuino"])
         self.assertIn(res["veredicto"], VEREDICTOS_MALOS)
@@ -328,7 +328,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "genuine_24bit_few_low_samples.flac"
         sf.write(ruta, y, sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         forense = res["bdi"]["forense_bits"]
 
         self.assertGreater(forense["muestras_pasaje_bajo"], 0)
@@ -351,7 +351,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "voice_without_cymbals.flac"
         sf.write(ruta, np.clip(y, -0.98, 0.98), sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
         self.assertFalse(any("jitter" in p.lower() for p in res["problemas"]))
@@ -385,7 +385,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "fake_24bit_loud_no_quiet_samples.flac"
         sf.write(ruta, _falso(_comprimir(-18.0, -1.0)), sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         forense = res["bdi"]["forense_bits"]
 
         self.assertEqual(forense["muestras_pasaje_bajo"], 0)
@@ -398,7 +398,7 @@ class TestForenseRiguroso(unittest.TestCase):
             etiqueta = f"{abs(int(suelo_db))}db"
             ruta = self.base_path / f"fake_24bit_loud_{etiqueta}_no_quiet_samples.flac"
             sf.write(ruta, _falso(_comprimir(suelo_db, -1.0)), sr, subtype="PCM_24")
-            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
             r = res["bdi"]["forense_bits"]
 
             self.assertEqual(r["muestras_pasaje_bajo"], 0)
@@ -420,7 +420,7 @@ class TestForenseRiguroso(unittest.TestCase):
         genuino = np.clip(_comprimir(-6.0, -1.0) + dither, -0.999, 0.999)
         ruta = self.base_path / "genuine_24bit_loud_dither.flac"
         sf.write(ruta, genuino, sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertFalse(res["bdi"]["forense_bits"]["es_24bit_escalado_en_peine"])
 
     def test_16_master_estudio_24_48_techo_21k_suave_es_genuino_pero_mp3_320_dither_no(self):
@@ -445,7 +445,7 @@ class TestForenseRiguroso(unittest.TestCase):
         dither = (ruido.random(suave.shape) - ruido.random(suave.shape)) * lsb
         ruta_ok = self.base_path / "master_24_48_soft_aa_filter.flac"
         sf.write(ruta_ok, np.clip(suave + dither, -0.99, 0.99), sr, subtype="PCM_24")
-        res_ok = motor_flac.analizar_archivo_datos(str(ruta_ok), usar_cache=False)
+        res_ok = motor_flac.analyze_file_data(str(ruta_ok), use_cache=False)
 
         esp_ok = res_ok["esp"]
         self.assertTrue(0.88 <= esp_ok["techo_rel_nyquist"] < 0.95,
@@ -461,7 +461,7 @@ class TestForenseRiguroso(unittest.TestCase):
         dither = (ruido.random(duro.shape) - ruido.random(duro.shape)) * lsb
         ruta_mal = self.base_path / "upstream_brickwall_20k_redither_24.flac"
         sf.write(ruta_mal, np.clip(duro + dither, -0.99, 0.99), sr, subtype="PCM_24")
-        res_mal = motor_flac.analizar_archivo_datos(str(ruta_mal), usar_cache=False)
+        res_mal = motor_flac.analyze_file_data(str(ruta_mal), use_cache=False)
 
         self.assertNotEqual(res_mal["veredicto"], "GENUINE LOSSLESS")
         self.assertTrue(any("not backed by the content" in p
@@ -482,19 +482,19 @@ class TestForenseRiguroso(unittest.TestCase):
         crudo = np.where(crudo >= (1 << 23), crudo - (1 << 24), crudo)
         bloque = (crudo.astype(np.float64) / float(1 << 23)).reshape(-1, 1)
 
-        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
-        acumulador.anadir(bloque)
-        self.assertTrue(acumulador.resultado()["es_flujo_dop"])
+        acumulador = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
+        acumulador.add(bloque)
+        self.assertTrue(acumulador.result()["es_flujo_dop"])
 
         ordinario = rng.uniform(-0.5, 0.5, size=(n, 1))
-        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
-        acumulador.anadir(ordinario)
-        self.assertFalse(acumulador.resultado()["es_flujo_dop"])
+        acumulador = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
+        acumulador.add(ordinario)
+        self.assertFalse(acumulador.result()["es_flujo_dop"])
 
         # Same bytes at a CD sample rate: not a DoP stream, no DoP flag.
-        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=44100)
-        acumulador.anadir(bloque)
-        self.assertFalse(acumulador.resultado()["es_flujo_dop"])
+        acumulador = motor_flac.ForensicBitsAccumulator(24, sample_rate=44100)
+        acumulador.add(bloque)
+        self.assertFalse(acumulador.result()["es_flujo_dop"])
 
         def _crudo_stereo(desfase_derecha):
             """Two-channel DoP stream, split in two blocks to test the join."""
@@ -512,19 +512,19 @@ class TestForenseRiguroso(unittest.TestCase):
         # Both channels in phase: ravel() would interleave 0x05, 0x05, 0xFA, 0xFA
         # and see no pair at all, so every marker pair must be counted per channel.
         estereo = _crudo_stereo(desfase_derecha=0)
-        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
-        acumulador.anadir(estereo[: n // 2])
-        acumulador.anadir(estereo[n // 2 :])
-        res = acumulador.resultado()
+        acumulador = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
+        acumulador.add(estereo[: n // 2])
+        acumulador.add(estereo[n // 2 :])
+        res = acumulador.result()
         self.assertTrue(res["es_flujo_dop"])
         self.assertGreaterEqual(res["dop_ratio"], 0.90)
 
         # Out of phase: the left channel starts at 0x05 and the right one at 0xFA.
         estereo = _crudo_stereo(desfase_derecha=1)
-        acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
-        acumulador.anadir(estereo[: n // 2])
-        acumulador.anadir(estereo[n // 2 :])
-        res = acumulador.resultado()
+        acumulador = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
+        acumulador.add(estereo[: n // 2])
+        acumulador.add(estereo[n // 2 :])
+        res = acumulador.result()
         self.assertTrue(res["es_flujo_dop"])
         self.assertGreaterEqual(res["dop_ratio"], 0.90)
 
@@ -547,9 +547,9 @@ class TestForenseRiguroso(unittest.TestCase):
         lsb = 2.0 ** -23
 
         def _forense(muestras):
-            acumulador = motor_flac.AcumuladorForenseBits(24, sample_rate=sr)
-            acumulador.anadir(muestras.reshape(-1, 1))
-            return acumulador.resultado()
+            acumulador = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
+            acumulador.add(muestras.reshape(-1, 1))
+            return acumulador.result()
 
         rng = np.random.default_rng(2027)
         for frecuencia in (440.0, 1000.0, 3000.0):
@@ -592,7 +592,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "808_subbass_16bit.flac"
         sf.write(ruta, mezcla, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreaterEqual(res["esp"]["techo_hz"], 20000)
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
@@ -629,8 +629,8 @@ class TestForenseRiguroso(unittest.TestCase):
             return round(float(freqs[idx]))
 
         def _techo_medido(potencia):
-            metricas = motor_flac._metricas_espectrales(
-                freqs, potencia, potencia, sr, es_stereo=False)
+            metricas = motor_flac._spectral_metrics(
+                freqs, potencia, potencia, sr, is_stereo=False)
             return metricas["techo_hz"]
 
         # +3 dB of sub-bass: below the 6 dB takeover margin, no re-anchor.
@@ -667,7 +667,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "dual_mono_digital_16bit.flac"
         sf.write(ruta, np.clip(estereo, -0.98, 0.98), sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertIs(res["esp"]["es_dual_mono"], True)
         self.assertEqual(res["score"], 1.0)
@@ -695,7 +695,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "dual_mono_analogue_16bit.flac"
         sf.write(ruta, np.clip(analogico, -0.98, 0.98), sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         # Far from the 45 dB digital rule, yet the > 24 / > 20 dB spectral rule
         # catches it and no joint-stereo accusation follows.
@@ -709,7 +709,7 @@ class TestForenseRiguroso(unittest.TestCase):
                                    referencia[:, 1] + shimmer])
         ruta = self.base_path / "stereo_control_16bit.flac"
         sf.write(ruta, np.clip(control, -0.98, 0.98), sr, subtype="PCM_16")
-        res_est = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res_est = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertIs(res_est["esp"]["es_dual_mono"], False)
 
     def test_19_dsd_96khz_rampa_directa(self):
@@ -724,7 +724,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "dsd_transfer_96k.flac"
         sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertEqual(res["esp"]["perfil_dsd"], "direct_24_40k")
@@ -736,7 +736,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "dsd_transfer_192k.flac"
         sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertEqual(res["esp"]["perfil_dsd"], "direct_24_40k")
@@ -746,7 +746,7 @@ class TestForenseRiguroso(unittest.TestCase):
         # neither Profile A (24-40 kHz) nor Profile B (30 kHz hump) applies.
         ruta = self.base_path / "dsd128_transfer_192k.flac"
         sf.write(ruta, self._dsd128_192k(), sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertEqual(res["esp"]["perfil_dsd"], "dsd128_40_80k")
@@ -820,7 +820,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "dsd_scarlet_book_30k_24_96.flac"
         sf.write(ruta, mezcla, sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertEqual(res["esp"]["perfil_dsd"], "scarlet_30k")
@@ -832,7 +832,7 @@ class TestForenseRiguroso(unittest.TestCase):
         _, mezcla = self._scarlet_book(sr, duracion)
         ruta = self.base_path / "dsd_scarlet_book_30k_24_192.flac"
         sf.write(ruta, mezcla, sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertTrue(res["esp"]["es_transferencia_dsd"])
         self.assertEqual(res["esp"]["perfil_dsd"], "scarlet_30k")
@@ -884,7 +884,7 @@ class TestForenseRiguroso(unittest.TestCase):
             sig = _crear_pista_referencia(sr, duracion=4.0, seed=120)
             ruta = self.base_path / f"{nombre}.flac"
             sf.write(ruta, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
-            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
             self.assertFalse(res["esp"]["es_transferencia_dsd"])
             self.assertIsNone(res["esp"]["perfil_dsd"])
@@ -914,7 +914,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "lossy_20k_shaped_dither_24_96.flac"
         sf.write(ruta, np.clip(cortado + ruido, -0.999, 0.999), sr, subtype="PCM_24")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertFalse(res["esp"]["es_transferencia_dsd"])
         self.assertIsNone(res["esp"]["perfil_dsd"])
@@ -940,7 +940,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "vinyl_3_clicks_19k.flac"
         sf.write(ruta, y, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertLess(res["esp"]["techo_hz"], 20500)
         self.assertEqual(res["esp"]["clipping_eventos"], 3)
@@ -952,7 +952,7 @@ class TestForenseRiguroso(unittest.TestCase):
         Nine events or only seven short ones in ten must not be enough, on the
         classifier and on a real signal alike.
         """
-        clasificar = motor_flac._clasificar_rachas
+        clasificar = motor_flac._classify_streaks
 
         lossy = clasificar([1] * 8 + [4, 4], None, 20000.0, 22050)
         self.assertIs(lossy["clipping_reconstruccion_lossy"], True)
@@ -990,7 +990,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "gibbs_10_eventos_8_cortos.flac"
         sf.write(ruta, _con_eventos(10, 8), sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         self.assertEqual(res["esp"]["clipping_eventos"], 10)
         self.assertIs(res["esp"]["clipping_reconstruccion_lossy"], True)
 
@@ -998,7 +998,7 @@ class TestForenseRiguroso(unittest.TestCase):
                                         ("10_eventos_7_cortos", 10, 7)):
             ruta = self.base_path / f"gibbs_{nombre}.flac"
             sf.write(ruta, _con_eventos(eventos, cortos), sr, subtype="PCM_16")
-            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
             self.assertEqual(res["esp"]["clipping_eventos"], eventos)
             self.assertIs(res["esp"]["clipping_reconstruccion_lossy"], False)
 
@@ -1042,7 +1042,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "lame_v0_sin_lowpass_16bit.flac"
         sf.write(ruta, y, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreaterEqual(res["esp"]["techo_hz"], 20500)
         self.assertIs(res["esp"]["corte_detectado"], False)
@@ -1063,7 +1063,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "control_sfb21_apagado_bajo_25.flac"
         sf.write(ruta, parcial, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreater(res["esp"]["brecha_p90_p10_agudos_db"], 28.0)
         self.assertGreaterEqual(res["esp"]["ratio_apagado_sfb21"], 0.20)
@@ -1086,7 +1086,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "control_bajo_modulado_agudos_continuos.flac"
         sf.write(ruta, control, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreaterEqual(res["esp"]["techo_hz"], 20500)
         self.assertIs(res["esp"]["islas_mdct_sfb21"], False)
@@ -1134,7 +1134,7 @@ class TestForenseRiguroso(unittest.TestCase):
         y /= np.max(np.abs(y)) * 1.02
         ruta = self.base_path / "excitador_sbr_notch_16bit.flac"
         sf.write(ruta, y, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
         self.assertGreaterEqual(res["esp"]["muesca_excitador_db"], 15.0)
@@ -1152,7 +1152,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "control_notch_superficial_16bit.flac"
         sf.write(ruta, control, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
         self.assertLess(res["esp"]["muesca_excitador_db"], 10.0)
@@ -1186,7 +1186,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "control_escalon_ascendente_16bit.flac"
         sf.write(ruta, subida, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
 
         self.assertGreater(res["esp"]["corr_env_excitador"], 0.92)
         self.assertLess(res["esp"]["muesca_excitador_db"], 15.0)
@@ -1224,7 +1224,7 @@ class TestForenseRiguroso(unittest.TestCase):
 
         ruta = self.base_path / "solo_acustico_centroide_bajo.flac"
         sf.write(ruta, acustico, sr, subtype="PCM_16")
-        res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+        res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
         esp = res["esp"]
 
         self.assertGreater(esp["centroide_hz"], 1250.0)
@@ -1254,14 +1254,14 @@ class TestForenseRiguroso(unittest.TestCase):
                     "separacion_stereo": 1.0,
                     "decaimiento_acustico_suave": acustico_suave}
 
-        medio_con, _, _ = motor_flac.calcular_score(meta, _esp_con_techo(16500, True), bdi)
-        medio_sin, _, _ = motor_flac.calcular_score(meta, _esp_con_techo(16500, False), bdi)
+        medio_con, _, _ = motor_flac.calculate_score(meta, _esp_con_techo(16500, True), bdi)
+        medio_sin, _, _ = motor_flac.calculate_score(meta, _esp_con_techo(16500, False), bdi)
         self.assertEqual(medio_con, medio_sin)
         self.assertLess(medio_con, 0.80)          # 1.5 votes, never 3.0
 
-        bajo_con, _, prob_bajo_con = motor_flac.calcular_score(
+        bajo_con, _, prob_bajo_con = motor_flac.calculate_score(
             meta, _esp_con_techo(13000, True), bdi)
-        bajo_sin, _, prob_bajo_sin = motor_flac.calcular_score(
+        bajo_sin, _, prob_bajo_sin = motor_flac.calculate_score(
             meta, _esp_con_techo(13000, False), bdi)
         self.assertGreater(bajo_con, bajo_sin)
         self.assertIn("solo acoustic/low-centroid", " ".join(prob_bajo_con))
@@ -1277,7 +1277,7 @@ class TestForenseRiguroso(unittest.TestCase):
                          "forense_bits": {"es_padded_16_en_24": False,
                                           "es_24bit_escalado_en_peine": False}}
         esp_13000 = _esp_con_techo(13000, True)
-        _, veredicto, prob = motor_flac.calcular_score(
+        _, veredicto, prob = motor_flac.calculate_score(
             meta_24, esp_13000, bdi_24_limpio)
         self.assertIn("solo acoustic/low-centroid", " ".join(prob))
         self.assertFalse(any("destroyed" in p for p in prob))
@@ -1289,7 +1289,7 @@ class TestForenseRiguroso(unittest.TestCase):
         for estado in ("partial", "indeterminate", None):
             bdi_24 = {"aplica": True, "lsbs": estado, "forense_bits": {}}
 
-            _, _, prob = motor_flac.calcular_score(
+            _, _, prob = motor_flac.calculate_score(
                 meta_24, _esp_con_techo(13000, True), bdi_24)
             self.assertTrue(any("destroyed" in p for p in prob), estado)
             self.assertNotIn("solo acoustic/low-centroid", " ".join(prob), estado)
@@ -1297,7 +1297,7 @@ class TestForenseRiguroso(unittest.TestCase):
             esp_075 = _esp_con_techo(16538, True)
             self.assertGreaterEqual(esp_075["techo_rel_nyquist"], 0.70)
             self.assertLess(esp_075["techo_rel_nyquist"], 0.88)
-            _, veredicto, prob = motor_flac.calcular_score(meta_24, esp_075, bdi_24)
+            _, veredicto, prob = motor_flac.calculate_score(meta_24, esp_075, bdi_24)
             self.assertTrue(any("not backed by the content" in p for p in prob),
                             estado)
             self.assertNotEqual(veredicto, "GENUINE LOSSLESS", estado)
@@ -1316,7 +1316,7 @@ class TestForenseRiguroso(unittest.TestCase):
                  np.round(acustico * 32767.0) / 32767.0)):
             ruta = self.base_path / nombre
             sf.write(ruta, datos, sr, subtype="PCM_24")
-            res = motor_flac.analizar_archivo_datos(str(ruta), usar_cache=False)
+            res = motor_flac.analyze_file_data(str(ruta), use_cache=False)
             self.assertEqual(res["meta"]["bits_per_sample"], 24)
             self.assertIs(res["bdi"]["aplica"], True)
             self.assertLess(res["esp"]["techo_rel_nyquist"], 0.88)

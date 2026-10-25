@@ -20,10 +20,10 @@ import verificar_flac as cli
 
 # Functions that must live ONLY in the engine.
 FUNCIONES_DEL_MOTOR = (
-    "verificar_firma", "verificar_metadatos", "leer_audio", "_md5_pcm",
-    "verificar_md5", "analizar_bit_depth", "analizar_espectro",
-    "_guardar_espectrograma", "detectar_clipping", "calcular_dr",
-    "calcular_score", "analizar_archivo_datos",
+    "verify_signature", "verify_metadata", "read_audio", "_md5_pcm",
+    "verify_md5", "analyze_bit_depth", "analyze_spectrum",
+    "_save_spectrogram", "detect_clipping", "calculate_dr",
+    "calculate_score", "analyze_file_data",
 )
 
 
@@ -50,7 +50,7 @@ class TestCapaFina(unittest.TestCase):
                     f"the logic has been duplicated instead of using motor_flac")
 
     def test_el_cli_importa_el_motor(self):
-        self.assertIs(cli.motor, motor)
+        self.assertIs(cli.engine, motor)
 
     def test_la_dependencia_del_pdf_queda_aislada(self):
         """Neither the engine nor the CLI imports reportlab: only informe_pdf uses
@@ -87,7 +87,7 @@ class TestCapaFina(unittest.TestCase):
                   "sys.modules['reportlab'] = None\n"
                   "import motor_flac, informe_pdf\n"
                   "print('motor OK', informe_pdf.disponible())\n"
-                  "print(informe_pdf.generar('.', [{'archivo': 'x'}])['error'])\n")
+                  "print(informe_pdf.generate('.', [{'archivo': 'x'}])['error'])\n")
         # The child prints a message with an accent: without this, a redirected
         # stdout on Windows uses cp1252 and the test itself would die with
         # UnicodeEncodeError.
@@ -111,17 +111,17 @@ class TestCapaFina(unittest.TestCase):
                  dict(esp_ok, error="simulated failure")]
         for esp in casos:
             with self.subTest(esp=esp.get("error") or esp["techo_hz"]):
-                score, veredicto, problemas = motor.calcular_score(meta, esp, {"aplica": False})
+                score, veredicto, problemas = motor.calculate_score(meta, esp, {"aplica": False})
                 self.assertTrue(0.0 <= score <= 1.0)
-                self.assertIn(veredicto, cli.VEREDICTOS)
+                self.assertIn(veredicto, cli.VERDICTS)
                 self.assertIsInstance(problemas, list)
 
     def test_etiqueta_veredicto_no_depende_de_subcadenas(self):
-        for veredicto in cli.VEREDICTOS:
+        for veredicto in cli.VERDICTS:
             with self.subTest(veredicto=veredicto):
-                self.assertTrue(cli.etiqueta_veredicto(veredicto))
+                self.assertTrue(cli.verdict_label(veredicto))
         # an unknown verdict must not break the presentation
-        self.assertIn("new", cli.etiqueta_veredicto("new"))
+        self.assertIn("new", cli.verdict_label("new"))
 
 
 class TestUTF8(unittest.TestCase):
@@ -183,7 +183,7 @@ class TestEspectrogramaPNG(unittest.TestCase):
 
     @unittest.skipUnless(motor.PIL_OK, "Pillow not installed")
     def test_se_genera_el_png_y_se_reporta_la_ruta(self):
-        res = motor.analizar_archivo_datos(self.fx["ok16"], "center", None, True)
+        res = motor.analyze_file_data(self.fx["ok16"], "center", None, True)
         self.assertNotIn("error", res, res.get("error"))
         ruta = res["esp"]["espectrograma"]
         self.assertIsNotNone(ruta, "the spectrogram was not generated")
@@ -191,7 +191,7 @@ class TestEspectrogramaPNG(unittest.TestCase):
         self.assertGreater(os.path.getsize(ruta), 1000)
 
     def test_sin_png_no_se_reporta_ruta(self):
-        res = motor.analizar_archivo_datos(self.fx["ok16"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["ok16"], "center", None, False)
         self.assertIsNone(res["esp"]["espectrograma"])
 
 

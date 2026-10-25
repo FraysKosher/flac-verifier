@@ -29,7 +29,7 @@ import fixtures as fx
 import motor_flac as motor
 import informe_pdf
 
-PROCESOS = motor._sonda_procesos()
+PROCESOS = motor._probe_processes()
 CAMPOS_VOLATILES = ("desde_cache", "tipo", "indice", "total")
 
 
@@ -62,16 +62,16 @@ class TestCache(unittest.TestCase):
 
     def test_la_segunda_pasada_reaprovecha_y_da_lo_mismo(self):
         ruta = self.copia("reuso")
-        primera = motor.analizar_archivo_datos(ruta, "center", None, False)
+        primera = motor.analyze_file_data(ruta, "center", None, False)
         self.assertFalse(primera.get("desde_cache"))
-        segunda = motor.analizar_archivo_datos(ruta, "center", None, False)
+        segunda = motor.analyze_file_data(ruta, "center", None, False)
         self.assertTrue(segunda.get("desde_cache"))
         self.assertEqual(comparable(primera), comparable(segunda))
 
     def test_la_entrada_de_cache_es_json_con_su_huella(self):
         ruta = self.copia("formato")
-        motor.analizar_archivo_datos(ruta, "center", None, False)
-        ruta_cache = motor._ruta_cache(ruta, "center", None)
+        motor.analyze_file_data(ruta, "center", None, False)
+        ruta_cache = motor._cache_path(ruta, "center", None)
         self.assertTrue(os.path.exists(ruta_cache))
         with open(ruta_cache, encoding="utf-8") as f:
             entrada = json.load(f)
@@ -83,16 +83,16 @@ class TestCache(unittest.TestCase):
 
     def test_se_invalida_si_cambia_la_fecha_del_archivo(self):
         ruta = self.copia("fecha")
-        motor.analizar_archivo_datos(ruta, "center", None, False)
+        motor.analyze_file_data(ruta, "center", None, False)
         info = os.stat(ruta)
         os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
-        otra = motor.analizar_archivo_datos(ruta, "center", None, False)
+        otra = motor.analyze_file_data(ruta, "center", None, False)
         self.assertFalse(otra.get("desde_cache"), "the cache was not invalidated by a different date")
 
     def test_se_invalida_si_cambia_el_md5_aunque_coincidan_tamano_y_fecha(self):
         """The hard case: same size and same date, different content."""
         ruta = self.copia("md5")
-        primera = motor.analizar_archivo_datos(ruta, "center", None, False)
+        primera = motor.analyze_file_data(ruta, "center", None, False)
         self.assertEqual(primera["md5"]["estado"], "match")
         info = os.stat(ruta)
 
@@ -101,47 +101,47 @@ class TestCache(unittest.TestCase):
             f.write(b"\x00" * 16)
         os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns))   # same date
 
-        segunda = motor.analizar_archivo_datos(ruta, "center", None, False)
+        segunda = motor.analyze_file_data(ruta, "center", None, False)
         self.assertFalse(segunda.get("desde_cache"), "the cache did not look at the MD5")
         self.assertEqual(segunda["md5"]["estado"], "absent")
 
     def test_se_invalida_si_cambia_la_version_del_motor(self):
         ruta = self.copia("version")
-        motor.analizar_archivo_datos(ruta, "center", None, False)
+        motor.analyze_file_data(ruta, "center", None, False)
         original = motor.VERSION_MOTOR
         motor.VERSION_MOTOR = original + "-test"
         try:
-            otra = motor.analizar_archivo_datos(ruta, "center", None, False)
+            otra = motor.analyze_file_data(ruta, "center", None, False)
         finally:
             motor.VERSION_MOTOR = original
         self.assertFalse(otra.get("desde_cache"))
 
     def test_se_invalida_si_cambia_el_modo(self):
         ruta = self.copia("modo")
-        motor.analizar_archivo_datos(ruta, "center", None, False)
-        otra = motor.analizar_archivo_datos(ruta, "full", None, False)
+        motor.analyze_file_data(ruta, "center", None, False)
+        otra = motor.analyze_file_data(ruta, "full", None, False)
         self.assertFalse(otra.get("desde_cache"))
         # and repeating the original mode does reuse it
-        self.assertTrue(motor.analizar_archivo_datos(ruta, "center", None, False)
+        self.assertTrue(motor.analyze_file_data(ruta, "center", None, False)
                         .get("desde_cache"))
 
     def test_sin_cache_no_escribe_ni_reaprovecha(self):
         ruta = self.copia("sin_cache")
-        primera = motor.analizar_archivo_datos(ruta, "center", None, False, usar_cache=False)
+        primera = motor.analyze_file_data(ruta, "center", None, False, use_cache=False)
         self.assertNotIn("desde_cache", primera)
-        self.assertFalse(os.path.exists(motor._ruta_cache(ruta, "center", None)))
-        segunda = motor.analizar_archivo_datos(ruta, "center", None, False, usar_cache=False)
+        self.assertFalse(os.path.exists(motor._cache_path(ruta, "center", None)))
+        segunda = motor.analyze_file_data(ruta, "center", None, False, use_cache=False)
         self.assertNotIn("desde_cache", segunda)
-        self.assertFalse(os.path.exists(motor._ruta_cache(ruta, "center", None)))
+        self.assertFalse(os.path.exists(motor._cache_path(ruta, "center", None)))
 
     def test_el_espectrograma_cacheado_se_reaprovecha(self):
         ruta = self.copia("png")
-        primera = motor.analizar_archivo_datos(ruta, "center", None, True)
+        primera = motor.analyze_file_data(ruta, "center", None, True)
         ruta_png = primera["esp"]["espectrograma"]
         self.assertIsNotNone(ruta_png)
         sello = os.stat(ruta_png).st_mtime_ns
 
-        segunda = motor.analizar_archivo_datos(ruta, "center", None, True)
+        segunda = motor.analyze_file_data(ruta, "center", None, True)
         self.assertTrue(segunda.get("desde_cache"))
         self.assertEqual(segunda["esp"]["espectrograma"], ruta_png)
         self.assertEqual(os.stat(ruta_png).st_mtime_ns, sello,
@@ -149,17 +149,17 @@ class TestCache(unittest.TestCase):
 
     def test_si_falta_el_png_la_cache_no_vale_para_el_informe(self):
         ruta = self.copia("png_borrado")
-        primera = motor.analizar_archivo_datos(ruta, "center", None, True)
+        primera = motor.analyze_file_data(ruta, "center", None, True)
         os.remove(primera["esp"]["espectrograma"])
-        segunda = motor.analizar_archivo_datos(ruta, "center", None, True)
+        segunda = motor.analyze_file_data(ruta, "center", None, True)
         self.assertFalse(segunda.get("desde_cache"), "it reused a cache entry with no PNG")
         self.assertTrue(os.path.exists(segunda["esp"]["espectrograma"]))
 
     def test_sin_png_no_se_reporta_una_ruta_generada_antes(self):
         ruta = self.copia("sin_png")
-        con_png = motor.analizar_archivo_datos(ruta, "center", None, True)
+        con_png = motor.analyze_file_data(ruta, "center", None, True)
         self.assertIsNotNone(con_png["esp"]["espectrograma"])
-        sin_png = motor.analizar_archivo_datos(ruta, "center", None, False)
+        sin_png = motor.analyze_file_data(ruta, "center", None, False)
         self.assertIsNone(sin_png["esp"]["espectrograma"])
 
 
@@ -235,26 +235,26 @@ class TestParalelizacion(unittest.TestCase):
         self.assertEqual(eventos_final(p.stdout)["tipo"], "fin")
 
     def test_un_entorno_sin_procesos_degrada_a_secuencial(self):
-        original = motor._sonda_procesos
-        motor._sonda_procesos = lambda: False
+        original = motor._probe_processes
+        motor._probe_processes = lambda: False
         try:
             archivos = [os.path.join(self.carpeta, f)
                         for f in sorted(os.listdir(self.carpeta))]
-            analisis, workers = motor.analizar_archivos(
-                archivos, "center", None, False, workers=8, usar_cache=False)
+            analisis, workers = motor.analyze_files(
+                archivos, "center", None, False, workers=8, use_cache=False)
             self.assertEqual(workers, 1)
             resultados = list(analisis)
             self.assertEqual(len(resultados), 4)
             self.assertTrue(all(r.get("archivo") for r in resultados))
         finally:
-            motor._sonda_procesos = original
+            motor._probe_processes = original
 
     @unittest.skipUnless(PROCESOS, "this environment does not allow creating processes")
     def test_con_procesos_disponibles_se_usa_el_pool(self):
         archivos = [os.path.join(self.carpeta, f)
                     for f in sorted(os.listdir(self.carpeta))]
-        _, workers = motor.analizar_archivos(archivos, "center", None, False,
-                                             workers=4, usar_cache=False)
+        _, workers = motor.analyze_files(archivos, "center", None, False,
+                                             workers=4, use_cache=False)
         self.assertEqual(workers, 4)
 
     def test_la_cache_evita_arrancar_procesos(self):
@@ -262,9 +262,9 @@ class TestParalelizacion(unittest.TestCase):
         sonda = self.fx.subcarpeta("cache_paralelo", ("ok16", "ok24", "corte_16k"))
         archivos = [os.path.join(sonda, f) for f in sorted(os.listdir(sonda))]
         for ruta in archivos:                      # first pass: fills the cache
-            motor.analizar_archivo_datos(ruta, "center", None, False)
-        analisis, workers = motor.analizar_archivos(archivos, "center", None, False,
-                                                   workers=8, usar_cache=True)
+            motor.analyze_file_data(ruta, "center", None, False)
+        analisis, workers = motor.analyze_files(archivos, "center", None, False,
+                                                   workers=8, use_cache=True)
         resultados = list(analisis)
         self.assertEqual(workers, 1, "it should not start processes when everything is cached")
         self.assertTrue(all(r.get("desde_cache") for r in resultados))
@@ -286,15 +286,15 @@ class TestStreamingProgresivo(unittest.TestCase):
         archivos = [os.path.join(self.carpeta, nombre)
                     for nombre in sorted(os.listdir(self.carpeta))
                     if nombre.endswith(".flac")]
-        original = motor.analizar_archivo_datos
+        original = motor.analyze_file_data
 
         def lento(*args, **kwargs):
             time.sleep(0.25)
             return original(*args, **kwargs)
 
-        with mock.patch.object(motor, "analizar_archivo_datos", side_effect=lento):
-            analisis, workers = motor.analizar_archivos(
-                archivos, "center", None, False, workers=1, usar_cache=False)
+        with mock.patch.object(motor, "analyze_file_data", side_effect=lento):
+            analisis, workers = motor.analyze_files(
+                archivos, "center", None, False, workers=1, use_cache=False)
             inicio = time.perf_counter()
             llegadas = []
             resultados = []
@@ -347,14 +347,14 @@ class TestCacheYOrdenConCoherencia(unittest.TestCase):
         carpeta = self._album("cache_coherencia", 9, 0)
         archivos = [os.path.join(carpeta, nombre)
                     for nombre in sorted(os.listdir(carpeta))]
-        lote = list(motor.analizar_archivos(
-            archivos, "center", None, False, workers=1, usar_cache=True)[0])
+        lote = list(motor.analyze_files(
+            archivos, "center", None, False, workers=1, use_cache=True)[0])
         rescatada = next(r for r in lote if r["archivo"].startswith("01_"))
         self.assertTrue(rescatada.get("coherencia_album"))
         self.assertEqual(rescatada["veredicto"], "PROBABLY LOSSLESS")
 
-        sola = motor.analizar_archivo_datos(
-            rescatada["ruta"], "center", None, False, usar_cache=True)
+        sola = motor.analyze_file_data(
+            rescatada["ruta"], "center", None, False, use_cache=True)
         self.assertFalse(sola.get("coherencia_album"))
         self.assertIn(sola["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 
@@ -362,16 +362,16 @@ class TestCacheYOrdenConCoherencia(unittest.TestCase):
         carpeta = self._album("orden_coherencia", 5, 1)
         archivos = [os.path.join(carpeta, nombre)
                     for nombre in sorted(os.listdir(carpeta))]
-        resultados = list(motor.analizar_archivos(
-            archivos, "center", None, False, workers=1, usar_cache=False)[0])
+        resultados = list(motor.analyze_files(
+            archivos, "center", None, False, workers=1, use_cache=False)[0])
         self.assertEqual(len(resultados), 5)
         self.assertEqual([r["indice_original"] for r in resultados],
                          [0, 2, 3, 4, 1])   # the retained one arrives last
         self.assertTrue(resultados[-1].get("coherencia_album"))
 
-        with mock.patch("informe_pdf._elementos",
+        with mock.patch("informe_pdf._elements",
                         side_effect=lambda *a, **k: iter(())) as elementos:
-            informe = motor.generar_informe_pdf(carpeta, resultados)
+            informe = motor.generate_pdf_report(carpeta, resultados)
         self.assertTrue(informe["ok"], informe.get("error"))
         enviados = elementos.call_args[0][1]
         self.assertEqual([r["indice_original"] for r in enviados],
@@ -392,32 +392,32 @@ class TestRenderizador(unittest.TestCase):
         """The PNG comes from the 256-colour NumPy LUT and Image.fromarray:
         no figure object, no Agg canvas, no matplotlib import."""
         fuente = open(fx.MOTOR, encoding="utf-8").read()
-        self.assertIn("_LUT_ESPECTROGRAMA", fuente)
+        self.assertIn("_LUT_SPECTROGRAM", fuente)
         self.assertIn("Image.fromarray(", fuente)
-        self.assertIn("renderizar_espectrograma_rapido", fuente)
+        self.assertIn("render_spectrogram_fast", fuente)
         self.assertNotIn("import matplotlib", fuente)
         self.assertNotIn("ax.imshow(", fuente)
 
     def test_huella_render_cambia_con_los_parametros(self):
         original_frames = motor.MAX_FRAMES_PNG
-        original_ancho = motor.ANCHO_PNG
-        base = motor.huella_render()
+        original_ancho = motor.WIDTH_PNG
+        base = motor.render_fingerprint()
         try:
             motor.MAX_FRAMES_PNG = original_frames + 1
-            self.assertNotEqual(motor.huella_render(), base)
+            self.assertNotEqual(motor.render_fingerprint(), base)
             motor.MAX_FRAMES_PNG = original_frames
-            self.assertEqual(motor.huella_render(), base)
-            motor.ANCHO_PNG = original_ancho + 1
-            self.assertNotEqual(motor.huella_render(), base)
+            self.assertEqual(motor.render_fingerprint(), base)
+            motor.WIDTH_PNG = original_ancho + 1
+            self.assertNotEqual(motor.render_fingerprint(), base)
         finally:
             motor.MAX_FRAMES_PNG = original_frames
-            motor.ANCHO_PNG = original_ancho
+            motor.WIDTH_PNG = original_ancho
 
     @unittest.skipUnless(motor.PIL_OK, "Pillow not installed")
     def test_el_png_sigue_saliendo_con_un_tamano_razonable(self):
         ruta = self.fx["ok16"]
-        resultado = motor.analizar_archivo_datos(ruta, "center", None, True,
-                                                 usar_cache=False)
+        resultado = motor.analyze_file_data(ruta, "center", None, True,
+                                                 use_cache=False)
         ruta_png = resultado["esp"]["espectrograma"]
         self.assertIsNotNone(ruta_png, resultado["esp"].get("espectrograma_error"))
         self.assertGreater(os.path.getsize(ruta_png), 100 * 1024)
@@ -429,8 +429,8 @@ class TestRenderizador(unittest.TestCase):
         original = motor.Image
         try:
             motor.Image = None                  # Image.fromarray() will blow up
-            resultado = motor.analizar_archivo_datos(self.fx["ok16"], "center", None,
-                                                     True, usar_cache=False)
+            resultado = motor.analyze_file_data(self.fx["ok16"], "center", None,
+                                                     True, use_cache=False)
             self.assertIsNone(resultado["esp"]["espectrograma"])
             self.assertIn("espectrograma_error", resultado["esp"])
         finally:

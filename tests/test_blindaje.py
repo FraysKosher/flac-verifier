@@ -28,18 +28,18 @@ class TestArchivosRotos(unittest.TestCase):
     def test_verificar_metadatos_no_lanza(self):
         for nombre in self.fx.NOMBRES_ROTOS:      # includes 'truncado'
             with self.subTest(archivo=nombre):
-                meta = motor.verificar_metadatos(self.fx[nombre])   # must not raise
+                meta = motor.verify_metadata(self.fx[nombre])   # must not raise
                 self.assertIsInstance(meta, dict)
                 self.assertIn("valido", meta)
 
     def test_metadatos_ilegibles_se_marcan_como_invalidos(self):
         for nombre in ("basura_magic", "texto", "cero_bytes"):
             with self.subTest(archivo=nombre):
-                self.assertFalse(motor.verificar_metadatos(self.fx[nombre])["valido"])
+                self.assertFalse(motor.verify_metadata(self.fx[nombre])["valido"])
 
     def test_error_inesperado_trae_diagnostico(self):
         """With garbage after the 'fLaC' header, mutagen raised and killed the process."""
-        meta = motor.verificar_metadatos(self.fx["basura_magic"])
+        meta = motor.verify_metadata(self.fx["basura_magic"])
         self.assertFalse(meta["valido"])
         self.assertIn("error", meta)
 
@@ -47,28 +47,28 @@ class TestArchivosRotos(unittest.TestCase):
         """mutagen reads STREAMINFO from the header even when half the file is
         missing: 'valid metadata' is NOT an integrity check. The corruption is
         detected later, when decoding or verifying the MD5."""
-        meta = motor.verificar_metadatos(self.fx["truncado"])
+        meta = motor.verify_metadata(self.fx["truncado"])
         self.assertTrue(meta["valido"])
-        res = motor.analizar_archivo_datos(self.fx["truncado"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["truncado"], "center", None, False)
         self.assertIn("error", res)
         self.assertNotIn("veredicto", res)
 
     def test_verificar_metadatos_con_ruta_inexistente(self):
-        meta = motor.verificar_metadatos(os.path.join(self.fx.dir, "no_existe.flac"))
+        meta = motor.verify_metadata(os.path.join(self.fx.dir, "no_existe.flac"))
         self.assertFalse(meta["valido"])
         self.assertIn("error", meta)
 
     def test_verificar_firma_no_lanza(self):
-        self.assertTrue(motor.verificar_firma(self.fx["ok16"]))
-        self.assertFalse(motor.verificar_firma(os.path.join(self.fx.dir, "no_existe.flac")))
+        self.assertTrue(motor.verify_signature(self.fx["ok16"]))
+        self.assertFalse(motor.verify_signature(os.path.join(self.fx.dir, "no_existe.flac")))
         for nombre in self.fx.NOMBRES_ROTOS:
             with self.subTest(archivo=nombre):
-                motor.verificar_firma(self.fx[nombre])          # must not raise
+                motor.verify_signature(self.fx[nombre])          # must not raise
 
     def test_analizar_archivo_roto_devuelve_error_sin_veredicto(self):
         for nombre in self.fx.NOMBRES_ROTOS:
             with self.subTest(archivo=nombre):
-                res = motor.analizar_archivo_datos(self.fx[nombre], "center", None, False)
+                res = motor.analyze_file_data(self.fx[nombre], "center", None, False)
                 self.assertIn("error", res)
                 self.assertNotIn("veredicto", res)
                 self.assertNotIn("score", res)
@@ -76,12 +76,12 @@ class TestArchivosRotos(unittest.TestCase):
     def test_leer_audio_no_lanza(self):
         for nombre in self.fx.NOMBRES_ROTOS:
             with self.subTest(archivo=nombre):
-                data, sr = motor.leer_audio(self.fx[nombre])
+                data, sr = motor.read_audio(self.fx[nombre])
                 self.assertIsNone(data)
 
     def test_archivos_validos_siguen_analizandose(self):
         """The hardening must not break the happy path."""
-        res = motor.analizar_archivo_datos(self.fx["ok16"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["ok16"], "center", None, False)
         self.assertNotIn("error", res)
         self.assertIn("veredicto", res)
         self.assertIn("esp", res)

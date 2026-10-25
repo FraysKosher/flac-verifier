@@ -49,7 +49,7 @@ class TestProtocolo(unittest.TestCase):
 
     def test_archivo_32k_estereo_no_produce_nan(self):
         """Nyquist 16 kHz -> empty high-band masks (the origin of the NaN)."""
-        res = motor.analizar_archivo_datos(self.fx["estereo32k"], "center", None, False)
+        res = motor.analyze_file_data(self.fx["estereo32k"], "center", None, False)
         esp = res["esp"]
         self.assertIsNone(esp["separacion_stereo"])       # before: nan
         self.assertEqual(esp["ratio"], 0.0)
@@ -59,7 +59,7 @@ class TestProtocolo(unittest.TestCase):
                     self.assertTrue(math.isfinite(valor), f"{clave} = {valor}")
 
     def test_sanear_convierte_no_finitos_en_null(self):
-        linea = motor._json_linea({"esp": {"ratio": float("nan")},
+        linea = motor._json_line({"esp": {"ratio": float("nan")},
                                    "lista": [float("inf"), float("-inf")],
                                    "ok": 1.5})
         self.assertNotIn("NaN", linea)

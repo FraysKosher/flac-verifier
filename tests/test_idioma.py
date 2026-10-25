@@ -255,8 +255,8 @@ class TestIdioma(unittest.TestCase):
         import informe_pdf
         esperados = {"GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
                      "PROBABLE UPSCALE", "indeterminate"}
-        self.assertEqual(set(gui.ETIQUETA_VEREDICTO), esperados)
-        self.assertEqual(set(informe_pdf.ESTILO_VEREDICTO), esperados)
+        self.assertEqual(set(gui.LABEL_VERDICT), esperados)
+        self.assertEqual(set(informe_pdf.STYLE_VERDICT), esperados)
         # The engine can only emit those labels. Only text literals are inspected,
         # so a comment or a docstring may still quote an old name on purpose.
         visibles = {texto.strip() for _, texto in
@@ -279,13 +279,13 @@ class TestIdioma(unittest.TestCase):
             with self.subTest(bandera=antigua):
                 self.assertNotIn(f'"{antigua}"', fuente)
         # The engine's command-line entry point stays importable and callable.
-        self.assertTrue(callable(motor_flac.cli_principal))
+        self.assertTrue(callable(motor_flac.main_cli))
 
     def test_el_informe_y_la_carpeta_cambiaron_de_nombre(self):
         import gui
         import informe_pdf
-        self.assertEqual(gui.NOMBRE_INFORME, "flac_verifier_report.pdf")
-        self.assertEqual(informe_pdf.NOMBRE_INFORME, "flac_verifier_report.pdf")
+        self.assertEqual(gui.REPORT_NAME, "flac_verifier_report.pdf")
+        self.assertEqual(informe_pdf.REPORT_NAME, "flac_verifier_report.pdf")
         fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
         self.assertIn('"_spectrograms"', fuente)
         self.assertNotIn('"_espectrogramas"', fuente)

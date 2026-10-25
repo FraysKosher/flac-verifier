@@ -214,15 +214,15 @@ def evaluar_coherencia_album(directorio):
     album = crear_album_coherencia(directorio)
     archivos = [os.path.join(album, nombre) for nombre in sorted(os.listdir(album))
                 if nombre.endswith(".flac")]
-    analisis, _ = motor_flac.analizar_archivos(
-        archivos, "center", None, False, workers=1, usar_cache=False)
+    analisis, _ = motor_flac.analyze_files(
+        archivos, "center", None, False, workers=1, use_cache=False)
     resultados = list(analisis)
     acustica = next((r for r in resultados
                      if r.get("archivo") == "acoustic.flac"), None)
     ok = bool(acustica
               and acustica.get("coherencia_album")
               and acustica.get("veredicto") == "PROBABLY LOSSLESS"
-              and motor_flac.NOTA_COHERENCIA_ALBUM in (acustica.get("problemas") or []))
+              and motor_flac.ALBUM_COHERENCE_NOTE in (acustica.get("problemas") or []))
     return ok, resultados
 
 
@@ -244,7 +244,7 @@ def evaluar(directorio):
     casos = crear_dataset(directorio)
     filas = []
     for ruta, autentica, clase in casos:
-        res = motor_flac.analizar_archivo_datos(ruta, usar_cache=False)
+        res = motor_flac.analyze_file_data(ruta, use_cache=False)
         veredicto = res.get("veredicto") or "indeterminate"
         if autentica:
             correcto = veredicto in VEREDICTOS_BUENOS
