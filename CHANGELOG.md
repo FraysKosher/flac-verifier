@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Renamed the Python identifiers (functions, classes, constants, variables,
+  parameters and attributes) from Spanish to English across the production
+  modules and the test methods. The JSON protocol keys (`tipo`, `veredicto`,
+  `archivo`, `coherencia_album`, `esp`, `bdi`, ...), the reportlab style names,
+  `VERSION_MOTOR` (`"9.8"`), `VERSION_ESQUEMA_CACHE` (`"2.3.0"`) and the module
+  file names keep their names. No threshold, score, verdict, cache schema or
+  behaviour changed.
+
 ## [2.3.0] - 2026-10-24
 
 ### Added

@@ -1,4 +1,4 @@
-"""Language: nothing the project ships may contain Spanish.
+"""Language: exported prose is English; only the JSON protocol keeps Spanish keys.
 
 The interface (GUI, CLI, PDF report and the engine's JSON protocol) is in English
 because the project is shared with an international audience. This module is the
@@ -12,12 +12,12 @@ guard for that promise, and it checks three kinds of text:
 
 Two deliberate exceptions:
 
-  · The internal names of the JSON protocol keys and of the reportlab styles
-    (`archivo`, `ruta`, `veredicto`, `problema`, `celda`…) are identifiers, not
-    interface text, and are listed in `PERMITIDOS`.
-  · Identifiers written in Spanish are accepted: the code is not being renamed.
-    Only prose is checked, and a word glued to an underscore or to another word
-    is treated as part of an identifier.
+  · JSON protocol keys (`archivo`, `ruta`, `veredicto`, `problema`, `celda`…) and
+    reportlab style names are public/internal identifiers, not interface text,
+    and are listed in `JSON_KEYS` and `INTERNAL_STYLE_NAMES`. They are the only
+    Spanish names left: Python identifiers are English.
+  · A word glued to an underscore or to another word is part of an identifier
+    and is not checked as prose.
 """
 import ast
 import io
@@ -75,17 +75,26 @@ PALABRAS = re.compile(
 # Words spelled the same in English: no signal of the language.
 FALSOS_POSITIVOS = {"album", "compatible", "control", "pie", "solo", "dos", "pro"}
 
-# Internal identifiers (protocol keys, reportlab style names) and file paths: not
-# interface text.
-PERMITIDOS = {
+# JSON protocol keys: the public contract, never translated.
+JSON_KEYS = {
     "archivo", "ruta", "veredicto", "problemas", "problema", "informe", "aviso",
-    "modo", "cache", "pico", "tamano", "cancion", "etiqueta", "celda", "pie",
-    "seccion", "codigo", "cancelado", "normal", "subtitulo", "titulo", "insignia",
-    "error", "ok", "paginas", "salida", "output",
-    # Protocol keys and argparse destinations that stay as they are: internal
-    # identifiers, not interface text.
-    "espectrograma", "espectrogramas", "carpeta", "segundos",
+    "modo", "cache", "pico", "tamano", "cancion", "error", "ok", "paginas",
+    "salida",
 }
+
+# reportlab style names used by the PDF: internal identifiers, not prose.
+INTERNAL_STYLE_NAMES = {
+    "etiqueta", "celda", "pie", "seccion", "codigo", "cancelado", "normal",
+    "subtitulo", "titulo", "insignia",
+}
+
+# argparse destinations that stay as they are: internal identifiers, not prose.
+ARGPARSE_DESTS = {"espectrograma", "espectrogramas", "carpeta", "segundos",
+                 "output"}
+
+# Union kept for the checks below; the split above documents why each name is
+# allowed, and the behaviour is identical to the old single set.
+PERMITIDOS = JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS
 RUTA_O_ARCHIVO = re.compile(r"[\w/\\-]*\.(ico|png|svg|py|txt|pdf|zip|exe|flac|json)")
 
 
@@ -228,9 +237,9 @@ class TestIdioma(unittest.TestCase):
                         continue
                     # "process(es)" and "(s)" are not Spanish, and a word glued to
                     # an underscore, to another word or to a call parenthesis
-                    # belongs to an identifier: Spanish identifiers are accepted
-                    # (the code keeps its names), Spanish prose is not. That is how
-                    # an English docstring may mention `informe_pdf.generar()`.
+                    # belongs to an identifier: JSON protocol keys and reportlab
+                    # style names are allowed, Spanish prose is not. That is how
+                    # an English docstring may mention `informe_pdf.generate()`.
                     inicio, fin = coincidencia.span()
                     antes = texto[inicio - 1] if inicio else ""
                     despues = texto[fin] if fin < len(texto) else ""

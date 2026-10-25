@@ -16,10 +16,13 @@ is expected of a change before it becomes a pull request.
   engine messages, the values of the JSON protocol, all the documentation
   (`README.md`, this file, `CHANGELOG.md`), and also the comments and docstrings
   inside the code.
-- Internal identifiers — variable and function names, and the JSON protocol keys
-  such as `tipo`, `archivo`, `veredicto` — keep their original names. Renaming
-  them would break every consumer of the protocol, so Spanish identifiers are
-  accepted and are not part of the rule above.
+- Python identifiers — variable and function names, classes, constants,
+  parameters and attributes — are **English**. The only Spanish names left are
+  the JSON protocol keys such as `tipo`, `archivo`, `veredicto`, `coherencia_album`,
+  `esp` and `bdi`, plus the reportlab style names and a few argparse destinations.
+  Those keys are the public contract: renaming them would break every consumer
+  of the protocol, so they keep their original names and are not part of the
+  English rule above.
 - `tests/test_idioma.py` enforces the boundary. It checks three kinds of text: the
   text literals of the application and tool modules (only the static parts of an
   f-string, so an interpolated variable name is not mistaken for prose), every
@@ -168,8 +171,10 @@ compares.
 - Follow the style of the surrounding code; there is no formatter configured.
   Four spaces, `snake_case` for functions and variables, `UPPER_CASE` for
   module-level constants, type hints where they help.
-- **Comments and docstrings:** English, like everything else. Spanish identifiers
-  (variable and function names, protocol keys) are fine; Spanish prose is not.
+- **Comments and docstrings:** English, like everything else. Python
+  identifiers are English too; only the JSON protocol keys, the reportlab style
+  names and a few argparse destinations keep their Spanish names. Spanish prose
+  is not allowed.
   The module header of every file explains *why* the code is the way it is, not
   *what* it does line by line; please keep that habit, because most of the
   non-obvious decisions in this project (the Nyquist-distance rule, the hi-res CD

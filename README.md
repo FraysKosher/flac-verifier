@@ -127,7 +127,7 @@ colour per verdict, and when it finishes a status card with the batch summary
    them back.
 2. A **daemon thread** reads stdout and stderr and puts them in a
    `queue.Queue`; no widget is touched from that thread.
-3. The window drains that queue in **bounded batches** (`LOTE_DRENADO` events per
+3. The window drains that queue in **bounded batches** (`BATCH_DRAINED` events per
    tick, always on the interface thread) and reschedules with a short interval
    while there is a backlog, so a huge batch cannot freeze the window and
    "Cancel" stays responsive. It keeps draining while the process is alive **or**
@@ -356,13 +356,13 @@ limit, so a hang is detected and reported instead of staying there:
 | 2 | `flac_motor.exe --path … --workers 1` | That the engine works frozen, invoked the way a user would (no extra flags) |
 | 3 | The same command with `--workers 8` | That `freeze_support()` is in place and the workers do not reopen the app |
 | 4 | PDF report with spectrograms | That Pillow and reportlab made it into the bundle |
-| 5 | The exact command the GUI builds (it asks `gui.ruta_motor()`) and `FLAC_Verifier.exe --motor-cli` | That the subprocess the window launches is the right one and that the fallback flag exists |
+| 5 | The exact command the GUI builds (it asks `gui.engine_path()`) and `FLAC_Verifier.exe --motor-cli` | That the subprocess the window launches is the right one and that the fallback flag exists |
 | 6 | Opening and closing the window | That the GUI starts without leaving hung processes or windows |
 | 7 | The frozen executable against the source code, on the same album | That packaging did not change the analysis: the records must match field by field (verdict, score, MD5, DR, problems…) |
 
 Step 3 relies on the system allowing processes to be created. If it is run inside
 an environment that blocks them (a sandbox, a security policy or a container
-without permissions), `_sonda_procesos()` in the engine degrades to serial **on
+without permissions), `_probe_processes()` in the engine degrades to serial **on
 purpose** and the check fails: it is not a failure of the executable, it is that
 the parallel path could not be verified there. In a normal Windows console it
 prints `paralelo: true`.
@@ -783,8 +783,8 @@ with the previous one, same frame and same data, the correlation of the plot are
 is 0.9979 and the mean difference 2.2/255. The 17 PNG files weigh 17.3 MB
 (17.7 before) and the PDF 3.15 MB (3.54 before).
 
-Tunable parameters in `motor_flac.py`: `FRAMES_POR_BLOQUE` (reading),
-`SEGUNDOS_ESPECTRO` (STFT pieces), `MAX_MUESTRAS_BITS` (sample for the low-bit
+Tunable parameters in `motor_flac.py`: `FRAMES_BY_BLOCK` (reading),
+`SPECTRO_SECONDS` (STFT pieces), `MAX_SAMPLES_BITS` (sample for the low-bit
 test), `MAX_FRAMES_PNG`, `DPI_ESPECTROGRAMA`, `MAX_WORKERS` and
 `MIN_ARCHIVOS_PARALELO`.
 
@@ -803,7 +803,7 @@ It is reused only if **all** of these match:
 |---|---|
 | File identity | Size + modification date + **STREAMINFO MD5** |
 | Analysis parameters | `VERSION_MOTOR`, spectral mode and seconds |
-| Render fingerprint | PNG parameters (`huella_render()`), and that the PNG still exists |
+| Render fingerprint | PNG parameters (`render_fingerprint()`), and that the PNG still exists |
 
 That is: if the audio changes, even with the same size and the same date, the
 STREAMINFO MD5 gives it away and it is analysed again. Each mode has its own
@@ -901,7 +901,7 @@ Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **PASS**.
 
 ### Album coherence (batch, addition A)
 
-A second batch runs through `analizar_archivos`: 8 homogeneous GENUINE tracks and
+A second batch runs through `analyze_files`: 8 homogeneous GENUINE tracks and
 1 acoustic low-ceiling track in the same directory. The acoustic track must be
 raised to PROBABLY LOSSLESS with `coherencia_album = true`:
 
