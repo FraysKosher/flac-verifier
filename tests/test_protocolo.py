@@ -13,7 +13,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
 
-import motor_flac as motor
+import motor_flac as engine
 
 
 class TestProtocolo(unittest.TestCase):
@@ -24,62 +24,62 @@ class TestProtocolo(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
     def test_batch_with_files_broken_emits_start_results_end(self):
-        p, eventos, crudas = fx.resultados(self.fx.dir)
+        p, events, crudas = fx.results(self.fx.dir)
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(eventos[0]["tipo"], "inicio")
-        self.assertEqual(eventos[-1]["tipo"], "fin")        # before, it was lost
-        resultados = [e for e in eventos if e["tipo"] == "resultado"]
-        self.assertEqual(len(resultados), eventos[0]["total"])
-        self.assertEqual(eventos[0]["total"], len(crudas) - 2)
+        self.assertEqual(events[0]["tipo"], "inicio")
+        self.assertEqual(events[-1]["tipo"], "fin")        # before, it was lost
+        results = [e for e in events if e["tipo"] == "resultado"]
+        self.assertEqual(len(results), events[0]["total"])
+        self.assertEqual(events[0]["total"], len(crudas) - 2)
         # all indices present and consecutive
-        self.assertEqual([r["indice"] for r in resultados],
-                         list(range(1, len(resultados) + 1)))
+        self.assertEqual([r["indice"] for r in results],
+                         list(range(1, len(results) + 1)))
 
     def test_all_lines_are_json_strict(self):
         """JavaScript's JSON.parse rejects the literals NaN/Infinity."""
-        _, _, crudas = fx.resultados(self.fx.dir)
-        for linea in crudas:
-            with self.subTest(linea=linea[:70]):
-                json.loads(linea, parse_constant=fx.rechaza_constante)
-                self.assertNotIn("NaN", linea)
-                self.assertNotIn("Infinity", linea)
+        _, _, crudas = fx.results(self.fx.dir)
+        for line in crudas:
+            with self.subTest(line=line[:70]):
+                json.loads(line, parse_constant=fx.rechaza_constante)
+                self.assertNotIn("NaN", line)
+                self.assertNotIn("Infinity", line)
 
     def test_file_32k_stereo_no_produces_nan(self):
         """Nyquist 16 kHz -> empty high-band masks (the origin of the NaN)."""
-        res = motor.analyze_file_data(self.fx["estereo32k"], "center", None, False)
+        res = engine.analyze_file_data(self.fx["estereo32k"], "center", None, False)
         esp = res["esp"]
         self.assertIsNone(esp["separacion_stereo"])       # before: nan
         self.assertEqual(esp["ratio"], 0.0)
-        for clave, valor in esp.items():
-            if isinstance(valor, float):
-                with self.subTest(metrica=clave):
-                    self.assertTrue(math.isfinite(valor), f"{clave} = {valor}")
+        for key, value in esp.items():
+            if isinstance(value, float):
+                with self.subTest(metrica=key):
+                    self.assertTrue(math.isfinite(value), f"{key} = {value}")
 
-    def test_sanear_convierte_no_finitos_en_null(self):
-        linea = motor._json_line({"esp": {"ratio": float("nan")},
+    def test_sanitize_converts_non_finite_to_null(self):
+        line = engine._json_line({"esp": {"ratio": float("nan")},
                                    "lista": [float("inf"), float("-inf")],
                                    "ok": 1.5})
-        self.assertNotIn("NaN", linea)
-        self.assertNotIn("Infinity", linea)
-        self.assertEqual(json.loads(linea)["esp"]["ratio"], None)
-        self.assertEqual(json.loads(linea)["lista"], [None, None])
-        self.assertEqual(json.loads(linea)["ok"], 1.5)
+        self.assertNotIn("NaN", line)
+        self.assertNotIn("Infinity", line)
+        self.assertEqual(json.loads(line)["esp"]["ratio"], None)
+        self.assertEqual(json.loads(line)["lista"], [None, None])
+        self.assertEqual(json.loads(line)["ok"], 1.5)
 
     def test_result_by_file_brings_verdict_o_error(self):
-        _, eventos, _ = fx.resultados(self.fx.dir)
-        for evento in eventos:
-            if evento["tipo"] != "resultado":
+        _, events, _ = fx.results(self.fx.dir)
+        for event in events:
+            if event["tipo"] != "resultado":
                 continue
-            with self.subTest(archivo=evento["archivo"]):
-                tiene_error = "error" in evento
-                tiene_veredicto = "veredicto" in evento
-                self.assertTrue(tiene_error or tiene_veredicto)
-                self.assertFalse(tiene_error and tiene_veredicto)
-                if tiene_veredicto:
-                    self.assertTrue(0.0 <= evento["score"] <= 1.0)
+            with self.subTest(file=event["archivo"]):
+                has_error = "error" in event
+                has_verdict = "veredicto" in event
+                self.assertTrue(has_error or has_verdict)
+                self.assertFalse(has_error and has_verdict)
+                if has_verdict:
+                    self.assertTrue(0.0 <= event["score"] <= 1.0)
 
 
 if __name__ == "__main__":

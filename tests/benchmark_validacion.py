@@ -19,20 +19,20 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if RAIZ not in sys.path:
-    sys.path.insert(0, RAIZ)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 import motor_flac
 
 SEMILLA = 2026
-VEREDICTOS_BUENOS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
-VEREDICTOS_MALOS = ("SUSPICIOUS", "PROBABLE UPSCALE", "TRANSCODE")
-UMBRAL = 0.95
+GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+BAD_VERDICTS = ("SUSPICIOUS", "PROBABLE UPSCALE", "TRANSCODE")
+THRESHOLD = 0.95
 
 
 # ─── SIGNALS ────────────────────────────────────────────────────────────────
 
-def pista_referencia(sr, duracion=4.0, seed=2026):
+def track_reference(sr, duracion=4.0, seed=2026):
     """Decorrelated pink noise + harmonics + periodic transients."""
     rng = np.random.default_rng(seed)
     n = int(sr * duracion)
@@ -59,108 +59,108 @@ def dsd_like(sr, duracion=4.0, seed=2026):
     musica = np.fft.irfft(musica, n, axis=0)
     musica /= np.max(np.abs(musica)) * 4.0
 
-    ruido = (rng.standard_normal((n // 2 + 1, 2))
+    noise = (rng.standard_normal((n // 2 + 1, 2))
              + 1j * rng.standard_normal((n // 2 + 1, 2)))
     rampa = np.clip((freqs - 24000.0) / 16000.0, 0.0, 1.0)
-    ruido *= (((freqs >= 24000.0) & (freqs <= 40000.0))[:, None]
+    noise *= (((freqs >= 24000.0) & (freqs <= 40000.0))[:, None]
               * (1.0 + 9.0 * rampa)[:, None])
-    ruido = np.fft.irfft(ruido, n, axis=0)
-    ruido /= np.max(np.abs(ruido)) * 3.0
+    noise = np.fft.irfft(noise, n, axis=0)
+    noise /= np.max(np.abs(noise)) * 3.0
 
-    mezcla = musica + ruido
-    return mezcla / (np.max(np.abs(mezcla)) * 1.05)
+    mix = musica + noise
+    return mix / (np.max(np.abs(mix)) * 1.05)
 
 
-def _brickwall(x, sr, corte_hz):
-    espectro = np.fft.rfft(x, axis=0)
+def _brickwall(x, sr, cutoff_hz):
+    spectrum = np.fft.rfft(x, axis=0)
     freqs = np.fft.rfftfreq(len(x), 1.0 / sr)
-    espectro[freqs > corte_hz] = 0.0
-    return np.fft.irfft(espectro, len(x), axis=0)
+    spectrum[freqs > cutoff_hz] = 0.0
+    return np.fft.irfft(spectrum, len(x), axis=0)
 
 
 def _opus_fullband(x, sr):
     """libopus-like 20 kHz cliff with a frame-varying cut-off (19.6/20.0 kHz)."""
     n = len(x)
-    espectro = np.fft.rfft(x, axis=0)
+    spectrum = np.fft.rfft(x, axis=0)
     freqs = np.fft.rfftfreq(n, 1.0 / sr)
-    espectro[freqs > 20000.0] = 0.0
-    y = np.fft.irfft(espectro, n, axis=0)
+    spectrum[freqs > 20000.0] = 0.0
+    y = np.fft.irfft(spectrum, n, axis=0)
     segmento = max(512, int(sr * 0.2))
-    for indice, inicio in enumerate(range(0, n, segmento)):
-        fin = min(n, inicio + segmento)
-        if fin - inicio < 512:
+    for index, start in enumerate(range(0, n, segmento)):
+        end = min(n, start + segmento)
+        if end - start < 512:
             continue
-        bloque = y[inicio:fin].copy()
-        if indice % 6 == 0:
-            transformada = np.fft.rfft(bloque, axis=0)
-            f_bloque = np.fft.rfftfreq(fin - inicio, 1.0 / sr)
-            transformada[f_bloque > 19600.0] = 0.0
-            bloque = np.fft.irfft(transformada, fin - inicio, axis=0)
-        y[inicio:fin] = bloque
+        block = y[start:end].copy()
+        if index % 6 == 0:
+            transformada = np.fft.rfft(block, axis=0)
+            f_block = np.fft.rfftfreq(end - start, 1.0 / sr)
+            transformada[f_block > 19600.0] = 0.0
+            block = np.fft.irfft(transformada, end - start, axis=0)
+        y[start:end] = block
     return y / (max(1.0, np.max(np.abs(y))) * 1.1)
 
 
-def _guardar(ruta, x, sr, subtipo):
-    sf.write(ruta, np.clip(x, -0.99, 0.99), sr, subtype=subtipo)
+def _save(path, x, sr, subtipo):
+    sf.write(path, np.clip(x, -0.99, 0.99), sr, subtype=subtipo)
 
 
 # ─── DATASET ────────────────────────────────────────────────────────────────
 
-def crear_dataset(directorio):
+def create_dataset(directory):
     """Returns [(path, authentic_bool, class_name)] with 20/20 balance."""
-    casos = []
+    cases = []
     sr = 44100
 
     for i in range(5):                                    # CD 16/44.1
-        x = pista_referencia(sr, 4.0, 1000 + i)
-        p = os.path.join(directorio, f"cd_{i}.flac")
-        _guardar(p, x, sr, "PCM_16")
-        casos.append((p, True, "CD 16/44.1"))
+        x = track_reference(sr, 4.0, 1000 + i)
+        p = os.path.join(directory, f"cd_{i}.flac")
+        _save(p, x, sr, "PCM_16")
+        cases.append((p, True, "CD 16/44.1"))
 
     for i in range(5):                                    # Hi-Res analogue
-        x = pista_referencia(96000, 4.0, 2000 + i)
+        x = track_reference(96000, 4.0, 2000 + i)
         x = signal.sosfilt(signal.butter(2, 18000, btype="low", fs=96000,
                                          output="sos"), x, axis=0)
         rng = np.random.default_rng(2100 + i)
         x = x + rng.normal(0.0, 10 ** (-104.0 / 20.0), x.shape)
-        p = os.path.join(directorio, f"hires_analog_{i}.flac")
-        _guardar(p, x, 96000, "PCM_24")
-        casos.append((p, True, "Hi-Res analogue 24/96"))
+        p = os.path.join(directory, f"hires_analog_{i}.flac")
+        _save(p, x, 96000, "PCM_24")
+        cases.append((p, True, "Hi-Res analogue 24/96"))
 
     for i in range(5):                                    # DSD-like
-        p = os.path.join(directorio, f"dsd_{i}.flac")
-        _guardar(p, dsd_like(88200, 4.0, 3000 + i), 88200, "PCM_24")
-        casos.append((p, True, "DSD/SACD-like 24/88.2"))
+        p = os.path.join(directory, f"dsd_{i}.flac")
+        _save(p, dsd_like(88200, 4.0, 3000 + i), 88200, "PCM_24")
+        cases.append((p, True, "DSD/SACD-like 24/88.2"))
 
     for i in range(5):                                    # Acoustic low-HF
-        x = pista_referencia(sr, 4.0, 4000 + i)
+        x = track_reference(sr, 4.0, 4000 + i)
         x = signal.sosfilt(signal.butter(2, 18000, btype="low", fs=sr,
                                          output="sos"), x, axis=0)
         x /= max(1.0, np.max(np.abs(x)))
-        p = os.path.join(directorio, f"acoustic_{i}.flac")
-        _guardar(p, x, sr, "PCM_16")
-        casos.append((p, True, "Acoustic 18 kHz roll-off"))
+        p = os.path.join(directory, f"acoustic_{i}.flac")
+        _save(p, x, sr, "PCM_16")
+        cases.append((p, True, "Acoustic 18 kHz roll-off"))
 
     for i in range(4):                                    # Sinc upscale
-        x = signal.resample_poly(pista_referencia(sr, 4.0, 5000 + i),
+        x = signal.resample_poly(track_reference(sr, 4.0, 5000 + i),
                                  up=320, down=147, axis=0)
-        p = os.path.join(directorio, f"fake_sinc_{i}.flac")
-        _guardar(p, x, 96000, "PCM_24")
-        casos.append((p, False, "Sinc upscale 44.1->96"))
+        p = os.path.join(directory, f"fake_sinc_{i}.flac")
+        _save(p, x, 96000, "PCM_24")
+        cases.append((p, False, "Sinc upscale 44.1->96"))
 
     for i in range(4):                                    # Aliasing mirror
-        x = pista_referencia(sr, 4.0, 5100 + i)
+        x = track_reference(sr, 4.0, 5100 + i)
         n = len(x)
         y = np.empty((n * 2, 2), dtype=np.float64)
         y[0::2] = x
         y[1:-1:2] = 0.5 * (x[:-1] + x[1:])
         y[-1] = x[-1]
-        p = os.path.join(directorio, f"fake_mirror_{i}.flac")
-        _guardar(p, y, 88200, "PCM_24")
-        casos.append((p, False, "Aliasing mirror 44.1->88.2"))
+        p = os.path.join(directory, f"fake_mirror_{i}.flac")
+        _save(p, y, 88200, "PCM_24")
+        cases.append((p, False, "Aliasing mirror 44.1->88.2"))
 
     for i in range(4):                                    # MP3 320 joint stereo
-        x = pista_referencia(sr, 4.0, 5200 + i)
+        x = track_reference(sr, 4.0, 5200 + i)
         mid = 0.5 * (x[:, 0] + x[:, 1])
         side = 0.5 * (x[:, 0] - x[:, 1])
         mid_f = signal.sosfilt(signal.ellip(10, 0.1, 80.0, 20100.0, btype="low",
@@ -168,62 +168,62 @@ def crear_dataset(directorio):
         side_f = signal.sosfilt(signal.ellip(10, 0.1, 80.0, 15800.0, btype="low",
                                              fs=sr, output="sos"), side)
         y = np.column_stack([mid_f + side_f, mid_f - side_f])
-        p = os.path.join(directorio, f"fake_mp3_320_{i}.flac")
-        _guardar(p, y, sr, "PCM_16")
-        casos.append((p, False, "MP3 320 joint stereo"))
+        p = os.path.join(directory, f"fake_mp3_320_{i}.flac")
+        _save(p, y, sr, "PCM_16")
+        cases.append((p, False, "MP3 320 joint stereo"))
 
     for i in range(4):                                    # Opus fullband 20 kHz
-        x = _opus_fullband(pista_referencia(sr, 4.0, 5300 + i), sr)
-        p = os.path.join(directorio, f"fake_opus_{i}.flac")
-        _guardar(p, x, sr, "PCM_16")
-        casos.append((p, False, "Opus fullband 20 kHz"))
+        x = _opus_fullband(track_reference(sr, 4.0, 5300 + i), sr)
+        p = os.path.join(directory, f"fake_opus_{i}.flac")
+        _save(p, x, sr, "PCM_16")
+        cases.append((p, False, "Opus fullband 20 kHz"))
 
     for i in range(2):                                    # 16-in-24 padding
-        x = np.round(pista_referencia(sr, 4.0, 5400 + i) * 32767.0) / 32768.0
-        p = os.path.join(directorio, f"fake_padded_{i}.flac")
-        _guardar(p, x, sr, "PCM_24")
-        casos.append((p, False, "16-bit padded into 24"))
+        x = np.round(track_reference(sr, 4.0, 5400 + i) * 32767.0) / 32768.0
+        p = os.path.join(directory, f"fake_padded_{i}.flac")
+        _save(p, x, sr, "PCM_24")
+        cases.append((p, False, "16-bit padded into 24"))
 
     for i in range(2):                                    # Quantisation comb
-        x = np.round(pista_referencia(sr, 6.0, 5500 + i) * 32767.0) / 32768.0
-        p = os.path.join(directorio, f"fake_comb_{i}.flac")
-        _guardar(p, x * 0.96605, sr, "PCM_24")
-        casos.append((p, False, "16-bit gain comb into 24"))
+        x = np.round(track_reference(sr, 6.0, 5500 + i) * 32767.0) / 32768.0
+        p = os.path.join(directory, f"fake_comb_{i}.flac")
+        _save(p, x * 0.96605, sr, "PCM_24")
+        cases.append((p, False, "16-bit gain comb into 24"))
 
-    return casos
+    return cases
 
 
-def crear_album_coherencia(directorio):
+def create_album_coherence(directory):
     """8 homogeneous genuine tracks + 1 acoustic low-ceiling track (9 total)."""
-    album = os.path.join(directorio, "album_coherencia")
+    album = os.path.join(directory, "album_coherencia")
     os.makedirs(album, exist_ok=True)
     sr = 44100
     for i in range(8):
-        x = pista_referencia(sr, 4.0, 6000 + i)
-        _guardar(os.path.join(album, f"genuine_{i}.flac"), x, sr, "PCM_16")
-    x = pista_referencia(sr, 4.0, 6100)
+        x = track_reference(sr, 4.0, 6000 + i)
+        _save(os.path.join(album, f"genuine_{i}.flac"), x, sr, "PCM_16")
+    x = track_reference(sr, 4.0, 6100)
     x = signal.sosfilt(signal.butter(2, 17000.0, btype="low", fs=sr,
                                      output="sos"), x, axis=0)
     x /= max(1.0, np.max(np.abs(x)))
-    _guardar(os.path.join(album, "acoustic.flac"), x, sr, "PCM_16")
+    _save(os.path.join(album, "acoustic.flac"), x, sr, "PCM_16")
     return album
 
 
-def evaluar_coherencia_album(directorio):
+def evaluate_album_coherence(directory):
     """Runs the real batch path so `apply_album_coherence` is exercised."""
-    album = crear_album_coherencia(directorio)
-    archivos = [os.path.join(album, nombre) for nombre in sorted(os.listdir(album))
-                if nombre.endswith(".flac")]
-    analisis, _ = motor_flac.analyze_files(
-        archivos, "center", None, False, workers=1, use_cache=False)
-    resultados = list(analisis)
-    acustica = next((r for r in resultados
+    album = create_album_coherence(directory)
+    files = [os.path.join(album, name) for name in sorted(os.listdir(album))
+                if name.endswith(".flac")]
+    analysis, _ = motor_flac.analyze_files(
+        files, "center", None, False, workers=1, use_cache=False)
+    results = list(analysis)
+    acustica = next((r for r in results
                      if r.get("archivo") == "acoustic.flac"), None)
     ok = bool(acustica
               and acustica.get("coherencia_album")
               and acustica.get("veredicto") == "PROBABLY LOSSLESS"
               and motor_flac.ALBUM_COHERENCE_NOTE in (acustica.get("problemas") or []))
-    return ok, resultados
+    return ok, results
 
 
 # ─── STATISTICS ─────────────────────────────────────────────────────────────
@@ -234,45 +234,45 @@ def wilson(k, n, z=1.96):
         return 0.0, 0.0
     p = k / float(n)
     denom = 1.0 + z * z / n
-    centro = (p + z * z / (2.0 * n)) / denom
-    margen = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
+    center = (p + z * z / (2.0 * n)) / denom
+    margin = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
               / denom)
-    return max(0.0, centro - margen), min(1.0, centro + margen)
+    return max(0.0, center - margin), min(1.0, center + margin)
 
 
-def evaluar(directorio):
-    casos = crear_dataset(directorio)
-    filas = []
-    for ruta, autentica, clase in casos:
-        res = motor_flac.analyze_file_data(ruta, use_cache=False)
-        veredicto = res.get("veredicto") or "indeterminate"
+def evaluate(directory):
+    cases = create_dataset(directory)
+    rows = []
+    for path, autentica, category in cases:
+        res = motor_flac.analyze_file_data(path, use_cache=False)
+        verdict = res.get("veredicto") or "indeterminate"
         if autentica:
-            correcto = veredicto in VEREDICTOS_BUENOS
+            correct = verdict in GOOD_VERDICTS
         else:
-            correcto = veredicto in VEREDICTOS_MALOS
-        filas.append({"clase": clase, "autentica": autentica,
-                      "veredicto": veredicto, "correcto": correcto,
-                      "archivo": os.path.basename(ruta),
+            correct = verdict in BAD_VERDICTS
+        rows.append({"clase": category, "autentica": autentica,
+                      "veredicto": verdict, "correcto": correct,
+                      "archivo": os.path.basename(path),
                       "error": res.get("error")})
-    return filas
+    return rows
 
 
-def matriz(filas):
-    tp = sum(1 for f in filas if not f["autentica"] and f["correcto"])
-    tn = sum(1 for f in filas if f["autentica"] and f["correcto"])
-    fp = sum(1 for f in filas if f["autentica"] and not f["correcto"])
-    fn = sum(1 for f in filas if not f["autentica"] and not f["correcto"])
+def matriz(rows):
+    tp = sum(1 for f in rows if not f["autentica"] and f["correcto"])
+    tn = sum(1 for f in rows if f["autentica"] and f["correcto"])
+    fp = sum(1 for f in rows if f["autentica"] and not f["correcto"])
+    fn = sum(1 for f in rows if not f["autentica"] and not f["correcto"])
     return tp, tn, fp, fn
 
 
 # ─── REPORT ─────────────────────────────────────────────────────────────────
 
-INICIO = "<!-- BENCHMARK:START -->"
-FIN = "<!-- BENCHMARK:END -->"
+START = "<!-- BENCHMARK:START -->"
+END = "<!-- BENCHMARK:END -->"
 
 
-def _seccion(tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherencia_ok):
-    return f"""{INICIO}
+def _section(tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok):
+    return f"""{START}
 ## Validation benchmark (synthetic, n = 40)
 
 Generated by `tests/benchmark_validacion.py` with the fixed seed `2026`:
@@ -290,7 +290,7 @@ joint stereo, Opus fullband 20 kHz, 16-in-24 padding and gain comb).
 | Sensitivity (TPR) | **{sens*100:.1f}%** | {ic_sens[0]*100:.1f}% – {ic_sens[1]*100:.1f}% |
 | Specificity (TNR) | **{spec*100:.1f}%** | {ic_spec[0]*100:.1f}% – {ic_spec[1]*100:.1f}% |
 
-Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **{'PASS' if sens >= UMBRAL and spec >= UMBRAL else 'FAIL'}**.
+Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **{'PASS' if sens >= THRESHOLD and spec >= THRESHOLD else 'FAIL'}**.
 
 ### Album coherence (batch, addition A)
 
@@ -298,73 +298,73 @@ A second batch runs through `analyze_files`: 8 homogeneous GENUINE tracks and
 1 acoustic low-ceiling track in the same directory. The acoustic track must be
 raised to PROBABLY LOSSLESS with `coherencia_album = true`:
 
-**{'PASS' if coherencia_ok else 'FAIL'}**
+**{'PASS' if coherence_ok else 'FAIL'}**
 
-{FIN}"""
+{END}"""
 
 
-def actualizar_documento(ruta, seccion):
-    texto = ""
-    if os.path.exists(ruta):
-        with open(ruta, encoding="utf-8") as f:
-            texto = f.read()
-    if INICIO in texto and FIN in texto:
-        antes = texto.split(INICIO, 1)[0]
-        despues = texto.split(FIN, 1)[1]
-        texto = antes + seccion + despues
+def update_document(path, section):
+    text = ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    if START in text and END in text:
+        before = text.split(START, 1)[0]
+        after = text.split(END, 1)[1]
+        text = before + section + after
     else:
-        texto = texto.rstrip() + "\n\n" + seccion + "\n"
-    with open(ruta, "w", encoding="utf-8", newline="\n") as f:
-        f.write(texto)
+        text = text.rstrip() + "\n\n" + section + "\n"
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
 
 
 def main():
-    directorio = tempfile.mkdtemp(prefix="flac_verifier_benchmark_")
+    directory = tempfile.mkdtemp(prefix="flac_verifier_benchmark_")
     try:
-        filas = evaluar(directorio)
-        coherencia_ok, album = evaluar_coherencia_album(directorio)
+        rows = evaluate(directory)
+        coherence_ok, album = evaluate_album_coherence(directory)
     finally:
-        shutil.rmtree(directorio, ignore_errors=True)
+        shutil.rmtree(directory, ignore_errors=True)
 
-    tp, tn, fp, fn = matriz(filas)
+    tp, tn, fp, fn = matriz(rows)
     sens = tp / float(tp + fn) if tp + fn else 0.0
     spec = tn / float(tn + fp) if tn + fp else 0.0
     ic_sens = wilson(tp, tp + fn)
     ic_spec = wilson(tn, tn + fp)
 
-    print("Validation benchmark (n = %d)" % len(filas))
+    print("Validation benchmark (n = %d)" % len(rows))
     print("  TP=%d  TN=%d  FP=%d  FN=%d" % (tp, tn, fp, fn))
     print("  Sensitivity: %.1f%%  Wilson 95%% CI %.1f%%-%.1f%%"
           % (sens * 100, ic_sens[0] * 100, ic_sens[1] * 100))
     print("  Specificity: %.1f%%  Wilson 95%% CI %.1f%%-%.1f%%"
           % (spec * 100, ic_spec[0] * 100, ic_spec[1] * 100))
 
-    por_clase = {}
-    for f in filas:
-        datos = por_clase.setdefault(f["clase"], [0, 0])
-        datos[0] += 1
-        datos[1] += int(f["correcto"])
-    for clase in sorted(por_clase):
-        total, aciertos = por_clase[clase]
-        print("  %-32s %d/%d" % (clase, aciertos, total))
+    by_category = {}
+    for f in rows:
+        payload = by_category.setdefault(f["clase"], [0, 0])
+        payload[0] += 1
+        payload[1] += int(f["correcto"])
+    for category in sorted(by_category):
+        total, aciertos = by_category[category]
+        print("  %-32s %d/%d" % (category, aciertos, total))
 
-    errores = [f for f in filas if not f["correcto"]]
-    for f in errores:
+    errors = [f for f in rows if not f["correcto"]]
+    for f in errors:
         print("  MISS %-32s %-20s -> %s" % (f["clase"], f["archivo"], f["veredicto"]))
 
     acustica = next((r for r in album if r.get("archivo") == "acoustic.flac"), {})
     print("  Album coherence (batch): %s · acoustic=%s · coherencia_album=%s"
-          % ("PASS" if coherencia_ok else "FAIL",
+          % ("PASS" if coherence_ok else "FAIL",
              acustica.get("veredicto"), acustica.get("coherencia_album")))
 
-    seccion = _seccion(tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherencia_ok)
-    with open(os.path.join(RAIZ, "VALIDATION.md"), "w", encoding="utf-8",
+    section = _section(tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
+    with open(os.path.join(ROOT, "VALIDATION.md"), "w", encoding="utf-8",
               newline="\n") as f:
-        f.write("# FLAC VERIFIER 2.3.0 — Validation (2026-10-24)\n\n" + seccion + "\n")
-    actualizar_documento(os.path.join(RAIZ, "README.md"), seccion)
-    actualizar_documento(os.path.join(RAIZ, "COMPARISON.md"), seccion)
+        f.write("# FLAC VERIFIER 2.3.0 — Validation (2026-10-24)\n\n" + section + "\n")
+    update_document(os.path.join(ROOT, "README.md"), section)
+    update_document(os.path.join(ROOT, "COMPARISON.md"), section)
 
-    if sens < UMBRAL or spec < UMBRAL or not coherencia_ok:
+    if sens < THRESHOLD or spec < THRESHOLD or not coherence_ok:
         print("FAILED: metrics below 95% or album coherence did not elevate the track")
         return 1
     print("PASS: sensitivity, specificity and album coherence")

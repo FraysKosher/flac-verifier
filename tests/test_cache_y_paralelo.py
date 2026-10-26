@@ -26,141 +26,141 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
 
-import motor_flac as motor
+import motor_flac as engine
 import informe_pdf
 
-PROCESOS = motor._probe_processes()
-CAMPOS_VOLATILES = ("desde_cache", "tipo", "indice", "total")
+PROCESSES = engine._probe_processes()
+VOLATILE_FIELDS = ("desde_cache", "tipo", "indice", "total")
 
 
-def comparable(resultado):
+def comparable(result):
     """The result without the fields that depend on the run."""
-    return {k: v for k, v in resultado.items() if k not in CAMPOS_VOLATILES}
+    return {k: v for k, v in result.items() if k not in VOLATILE_FIELDS}
 
 
-def eventos_final(salida):
+def events_end(output):
     """Last event of the protocol."""
-    return json.loads([l for l in salida.splitlines() if l.strip()][-1])
+    return json.loads([l for l in output.splitlines() if l.strip()][-1])
 
 
-class TestCache(unittest.TestCase):
+class test_cache(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.carpeta = cls.fx.subcarpeta("cache", ("ok16", "ok24", "corte_16k"))
+        cls.folder = cls.fx.subcarpeta("cache", ("ok16", "ok24", "corte_16k"))
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
-    def copia(self, nombre, origen="ok16"):
+    def copia(self, name, source="ok16"):
         """A copy of its own per test: the cache lives next to the file."""
-        destino = os.path.join(self.fx.dir, f"cache_{nombre}.flac")
-        shutil.copy(self.fx[origen], destino)
-        return destino
+        destination = os.path.join(self.fx.dir, f"cache_{name}.flac")
+        shutil.copy(self.fx[source], destination)
+        return destination
 
     def test_second_pass_reuses_gives_same(self):
-        ruta = self.copia("reuso")
-        primera = motor.analyze_file_data(ruta, "center", None, False)
+        path = self.copia("reuso")
+        primera = engine.analyze_file_data(path, "center", None, False)
         self.assertFalse(primera.get("desde_cache"))
-        segunda = motor.analyze_file_data(ruta, "center", None, False)
-        self.assertTrue(segunda.get("desde_cache"))
-        self.assertEqual(comparable(primera), comparable(segunda))
+        second = engine.analyze_file_data(path, "center", None, False)
+        self.assertTrue(second.get("desde_cache"))
+        self.assertEqual(comparable(primera), comparable(second))
 
     def test_input_cache_is_json_with_fingerprint(self):
-        ruta = self.copia("formato")
-        motor.analyze_file_data(ruta, "center", None, False)
-        ruta_cache = motor._cache_path(ruta, "center", None)
-        self.assertTrue(os.path.exists(ruta_cache))
-        with open(ruta_cache, encoding="utf-8") as f:
-            entrada = json.load(f)
-        self.assertEqual(sorted(entrada), ["clave", "identidad", "render", "resultado"])
-        self.assertEqual(entrada["clave"]["motor"], motor.VERSION_MOTOR)
-        self.assertEqual(entrada["clave"]["modo"], "center")
-        self.assertEqual(entrada["identidad"]["tamano"], os.path.getsize(ruta))
-        self.assertIn("resultado", entrada)
+        path = self.copia("formato")
+        engine.analyze_file_data(path, "center", None, False)
+        path_cache = engine._cache_path(path, "center", None)
+        self.assertTrue(os.path.exists(path_cache))
+        with open(path_cache, encoding="utf-8") as f:
+            input = json.load(f)
+        self.assertEqual(sorted(input), ["clave", "identidad", "render", "resultado"])
+        self.assertEqual(input["clave"]["motor"], engine.VERSION_MOTOR)
+        self.assertEqual(input["clave"]["modo"], "center")
+        self.assertEqual(input["identidad"]["tamano"], os.path.getsize(path))
+        self.assertIn("resultado", input)
 
     def test_invalidates_if_changes_date_file(self):
-        ruta = self.copia("fecha")
-        motor.analyze_file_data(ruta, "center", None, False)
-        info = os.stat(ruta)
-        os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
-        otra = motor.analyze_file_data(ruta, "center", None, False)
+        path = self.copia("fecha")
+        engine.analyze_file_data(path, "center", None, False)
+        info = os.stat(path)
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+        otra = engine.analyze_file_data(path, "center", None, False)
         self.assertFalse(otra.get("desde_cache"), "the cache was not invalidated by a different date")
 
     def test_invalidates_if_changes_md5_although_match_size_date(self):
         """The hard case: same size and same date, different content."""
-        ruta = self.copia("md5")
-        primera = motor.analyze_file_data(ruta, "center", None, False)
+        path = self.copia("md5")
+        primera = engine.analyze_file_data(path, "center", None, False)
         self.assertEqual(primera["md5"]["estado"], "match")
-        info = os.stat(ruta)
+        info = os.stat(path)
 
-        with open(ruta, "r+b") as f:            # fakes the STREAMINFO MD5
+        with open(path, "r+b") as f:            # fakes the STREAMINFO MD5
             f.seek(26)
             f.write(b"\x00" * 16)
-        os.utime(ruta, ns=(info.st_atime_ns, info.st_mtime_ns))   # same date
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))   # same date
 
-        segunda = motor.analyze_file_data(ruta, "center", None, False)
-        self.assertFalse(segunda.get("desde_cache"), "the cache did not look at the MD5")
-        self.assertEqual(segunda["md5"]["estado"], "absent")
+        second = engine.analyze_file_data(path, "center", None, False)
+        self.assertFalse(second.get("desde_cache"), "the cache did not look at the MD5")
+        self.assertEqual(second["md5"]["estado"], "absent")
 
     def test_invalidates_if_changes_version_engine(self):
-        ruta = self.copia("version")
-        motor.analyze_file_data(ruta, "center", None, False)
-        original = motor.VERSION_MOTOR
-        motor.VERSION_MOTOR = original + "-test"
+        path = self.copia("version")
+        engine.analyze_file_data(path, "center", None, False)
+        original = engine.VERSION_MOTOR
+        engine.VERSION_MOTOR = original + "-test"
         try:
-            otra = motor.analyze_file_data(ruta, "center", None, False)
+            otra = engine.analyze_file_data(path, "center", None, False)
         finally:
-            motor.VERSION_MOTOR = original
+            engine.VERSION_MOTOR = original
         self.assertFalse(otra.get("desde_cache"))
 
     def test_invalidates_if_changes_mode(self):
-        ruta = self.copia("modo")
-        motor.analyze_file_data(ruta, "center", None, False)
-        otra = motor.analyze_file_data(ruta, "full", None, False)
+        path = self.copia("modo")
+        engine.analyze_file_data(path, "center", None, False)
+        otra = engine.analyze_file_data(path, "full", None, False)
         self.assertFalse(otra.get("desde_cache"))
         # and repeating the original mode does reuse it
-        self.assertTrue(motor.analyze_file_data(ruta, "center", None, False)
+        self.assertTrue(engine.analyze_file_data(path, "center", None, False)
                         .get("desde_cache"))
 
     def test_without_cache_no_writes_nor_reuses(self):
-        ruta = self.copia("sin_cache")
-        primera = motor.analyze_file_data(ruta, "center", None, False, use_cache=False)
+        path = self.copia("sin_cache")
+        primera = engine.analyze_file_data(path, "center", None, False, use_cache=False)
         self.assertNotIn("desde_cache", primera)
-        self.assertFalse(os.path.exists(motor._cache_path(ruta, "center", None)))
-        segunda = motor.analyze_file_data(ruta, "center", None, False, use_cache=False)
-        self.assertNotIn("desde_cache", segunda)
-        self.assertFalse(os.path.exists(motor._cache_path(ruta, "center", None)))
+        self.assertFalse(os.path.exists(engine._cache_path(path, "center", None)))
+        second = engine.analyze_file_data(path, "center", None, False, use_cache=False)
+        self.assertNotIn("desde_cache", second)
+        self.assertFalse(os.path.exists(engine._cache_path(path, "center", None)))
 
     def test_spectrogram_cached_reuses(self):
-        ruta = self.copia("png")
-        primera = motor.analyze_file_data(ruta, "center", None, True)
-        ruta_png = primera["esp"]["espectrograma"]
-        self.assertIsNotNone(ruta_png)
-        sello = os.stat(ruta_png).st_mtime_ns
+        path = self.copia("png")
+        primera = engine.analyze_file_data(path, "center", None, True)
+        png_path = primera["esp"]["espectrograma"]
+        self.assertIsNotNone(png_path)
+        sello = os.stat(png_path).st_mtime_ns
 
-        segunda = motor.analyze_file_data(ruta, "center", None, True)
-        self.assertTrue(segunda.get("desde_cache"))
-        self.assertEqual(segunda["esp"]["espectrograma"], ruta_png)
-        self.assertEqual(os.stat(ruta_png).st_mtime_ns, sello,
+        second = engine.analyze_file_data(path, "center", None, True)
+        self.assertTrue(second.get("desde_cache"))
+        self.assertEqual(second["esp"]["espectrograma"], png_path)
+        self.assertEqual(os.stat(png_path).st_mtime_ns, sello,
                          "the spectrogram was drawn again instead of being reused")
 
     def test_if_missing_png_cache_no_works_for_report(self):
-        ruta = self.copia("png_borrado")
-        primera = motor.analyze_file_data(ruta, "center", None, True)
+        path = self.copia("png_borrado")
+        primera = engine.analyze_file_data(path, "center", None, True)
         os.remove(primera["esp"]["espectrograma"])
-        segunda = motor.analyze_file_data(ruta, "center", None, True)
-        self.assertFalse(segunda.get("desde_cache"), "it reused a cache entry with no PNG")
-        self.assertTrue(os.path.exists(segunda["esp"]["espectrograma"]))
+        second = engine.analyze_file_data(path, "center", None, True)
+        self.assertFalse(second.get("desde_cache"), "it reused a cache entry with no PNG")
+        self.assertTrue(os.path.exists(second["esp"]["espectrograma"]))
 
     def test_without_png_no_reports_path_generated_before(self):
-        ruta = self.copia("sin_png")
-        con_png = motor.analyze_file_data(ruta, "center", None, True)
-        self.assertIsNotNone(con_png["esp"]["espectrograma"])
-        sin_png = motor.analyze_file_data(ruta, "center", None, False)
-        self.assertIsNone(sin_png["esp"]["espectrograma"])
+        path = self.copia("sin_png")
+        with_png = engine.analyze_file_data(path, "center", None, True)
+        self.assertIsNotNone(with_png["esp"]["espectrograma"])
+        without_png = engine.analyze_file_data(path, "center", None, False)
+        self.assertIsNone(without_png["esp"]["espectrograma"])
 
 
 class TestParalelizacion(unittest.TestCase):
@@ -168,106 +168,106 @@ class TestParalelizacion(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.carpeta = cls.fx.subcarpeta(
+        cls.folder = cls.fx.subcarpeta(
             "paralelo", ("ok16", "ok24", "corte_16k", "master_cd_20k"))
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
-    def _motor(self, *extra):
+    def _engine(self, *extra):
         # No cache: the point is to compare real analyses, not JSON reads.
-        return fx.correr_motor(self.carpeta, extra=("--no-cache", *extra))
+        return fx.run_engine(self.folder, extra=("--no-cache", *extra))
 
-    def _resultados(self, salida):
-        return [json.loads(l) for l in salida.splitlines()
+    def _results(self, output):
+        return [json.loads(l) for l in output.splitlines()
                 if l.strip() and json.loads(l)["tipo"] == "resultado"]
 
     def test_parallel_gives_exactly_same_sequential(self):
-        serie = self._resultados(self._motor("--workers", "1").stdout)
-        paralelo = self._resultados(self._motor("--workers", "4").stdout)
-        self.assertEqual(len(serie), 4)
-        self.assertEqual(len(paralelo), 4)
-        for uno, otro in zip(serie, paralelo):
-            with self.subTest(archivo=uno["archivo"]):
-                self.assertEqual(comparable(uno), comparable(otro))
+        series = self._results(self._engine("--workers", "1").stdout)
+        parallel = self._results(self._engine("--workers", "4").stdout)
+        self.assertEqual(len(series), 4)
+        self.assertEqual(len(parallel), 4)
+        for one, otro in zip(series, parallel):
+            with self.subTest(file=one["archivo"]):
+                self.assertEqual(comparable(one), comparable(otro))
 
     def test_preserves_order_files(self):
-        esperados = sorted(f for f in os.listdir(self.carpeta) if f.endswith(".flac"))
-        resultados = self._resultados(self._motor("--workers", "4").stdout)
-        self.assertEqual([r["archivo"] for r in resultados], esperados)
-        self.assertEqual([r["indice"] for r in resultados], [1, 2, 3, 4])
+        esperados = sorted(f for f in os.listdir(self.folder) if f.endswith(".flac"))
+        results = self._results(self._engine("--workers", "4").stdout)
+        self.assertEqual([r["archivo"] for r in results], esperados)
+        self.assertEqual([r["indice"] for r in results], [1, 2, 3, 4])
 
     def test_event_start_informs_processes(self):
-        eventos = [json.loads(l) for l in self._motor("--workers", "4").stdout.splitlines()
+        events = [json.loads(l) for l in self._engine("--workers", "4").stdout.splitlines()
                    if l.strip()]
-        inicio = eventos[0]
-        self.assertEqual(inicio["tipo"], "inicio")
-        self.assertEqual(inicio["total"], 4)
-        self.assertIn("workers", inicio)
-        self.assertIn("paralelo", inicio)
-        self.assertFalse(inicio["cache"])          # --no-cache was requested
-        self.assertEqual(eventos[-1]["tipo"], "fin")
+        start = events[0]
+        self.assertEqual(start["tipo"], "inicio")
+        self.assertEqual(start["total"], 4)
+        self.assertIn("workers", start)
+        self.assertIn("paralelo", start)
+        self.assertFalse(start["cache"])          # --no-cache was requested
+        self.assertEqual(events[-1]["tipo"], "fin")
 
     def test_pdf_exits_equal_with_parallel(self):
-        sonda = self.fx.subcarpeta("paralelo_pdf", ("ok16", "ok24", "corte_16k"))
-        p = fx.correr_motor(sonda, extra=("--pdf", "--workers", "3"))
-        eventos = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
-        informe = [e for e in eventos if e["tipo"] == "informe"]
+        probe = self.fx.subcarpeta("paralelo_pdf", ("ok16", "ok24", "corte_16k"))
+        p = fx.run_engine(probe, extra=("--pdf", "--workers", "3"))
+        events = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+        report = [e for e in events if e["tipo"] == "informe"]
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertTrue(informe, "the report event was not emitted")
-        self.assertEqual(informe[0]["paginas"], 5)          # cover + 3 + summary
-        self.assertTrue(os.path.exists(informe[0]["ruta"]))
-        self.assertGreater(os.path.getsize(informe[0]["ruta"]), 20 * 1024)
-        self.assertEqual(informe[0]["desde_cache"], 0)      # first pass
+        self.assertTrue(report, "the report event was not emitted")
+        self.assertEqual(report[0]["paginas"], 5)          # cover + 3 + summary
+        self.assertTrue(os.path.exists(report[0]["ruta"]))
+        self.assertGreater(os.path.getsize(report[0]["ruta"]), 20 * 1024)
+        self.assertEqual(report[0]["desde_cache"], 0)      # first pass
 
     def test_file_broken_batch_no_knocks_down_parallel(self):
-        sonda = self.fx.subcarpeta("paralelo_roto", ("ok16", "ok24", "basura_magic"))
-        p = fx.correr_motor(sonda, extra=("--workers", "3", "--no-cache"))
-        resultados = self._resultados(p.stdout)
+        probe = self.fx.subcarpeta("paralelo_roto", ("ok16", "ok24", "basura_magic"))
+        p = fx.run_engine(probe, extra=("--workers", "3", "--no-cache"))
+        results = self._results(p.stdout)
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(len(resultados), 3)
-        con_error = [r for r in resultados if r.get("error")]
-        self.assertEqual(len(con_error), 1)
-        self.assertEqual(con_error[0]["archivo"], "basura_magic.flac")
-        con_veredicto = [r for r in resultados if r.get("veredicto")]
-        self.assertEqual(len(con_veredicto), 2)
-        self.assertEqual(eventos_final(p.stdout)["tipo"], "fin")
+        self.assertEqual(len(results), 3)
+        with_error = [r for r in results if r.get("error")]
+        self.assertEqual(len(with_error), 1)
+        self.assertEqual(with_error[0]["archivo"], "basura_magic.flac")
+        with_verdict = [r for r in results if r.get("veredicto")]
+        self.assertEqual(len(with_verdict), 2)
+        self.assertEqual(events_end(p.stdout)["tipo"], "fin")
 
     def test_environment_without_processes_degrades_sequential(self):
-        original = motor._probe_processes
-        motor._probe_processes = lambda: False
+        original = engine._probe_processes
+        engine._probe_processes = lambda: False
         try:
-            archivos = [os.path.join(self.carpeta, f)
-                        for f in sorted(os.listdir(self.carpeta))]
-            analisis, workers = motor.analyze_files(
-                archivos, "center", None, False, workers=8, use_cache=False)
+            files = [os.path.join(self.folder, f)
+                        for f in sorted(os.listdir(self.folder))]
+            analysis, workers = engine.analyze_files(
+                files, "center", None, False, workers=8, use_cache=False)
             self.assertEqual(workers, 1)
-            resultados = list(analisis)
-            self.assertEqual(len(resultados), 4)
-            self.assertTrue(all(r.get("archivo") for r in resultados))
+            results = list(analysis)
+            self.assertEqual(len(results), 4)
+            self.assertTrue(all(r.get("archivo") for r in results))
         finally:
-            motor._probe_processes = original
+            engine._probe_processes = original
 
-    @unittest.skipUnless(PROCESOS, "this environment does not allow creating processes")
+    @unittest.skipUnless(PROCESSES, "this environment does not allow creating processes")
     def test_with_processes_available_uses_pool(self):
-        archivos = [os.path.join(self.carpeta, f)
-                    for f in sorted(os.listdir(self.carpeta))]
-        _, workers = motor.analyze_files(archivos, "center", None, False,
+        files = [os.path.join(self.folder, f)
+                    for f in sorted(os.listdir(self.folder))]
+        _, workers = engine.analyze_files(files, "center", None, False,
                                              workers=4, use_cache=False)
         self.assertEqual(workers, 4)
 
     def test_cache_avoids_start_processes(self):
         """With everything cached there is no work to spread: the pool is not needed."""
-        sonda = self.fx.subcarpeta("cache_paralelo", ("ok16", "ok24", "corte_16k"))
-        archivos = [os.path.join(sonda, f) for f in sorted(os.listdir(sonda))]
-        for ruta in archivos:                      # first pass: fills the cache
-            motor.analyze_file_data(ruta, "center", None, False)
-        analisis, workers = motor.analyze_files(archivos, "center", None, False,
+        probe = self.fx.subcarpeta("cache_paralelo", ("ok16", "ok24", "corte_16k"))
+        files = [os.path.join(probe, f) for f in sorted(os.listdir(probe))]
+        for path in files:                      # first pass: fills the cache
+            engine.analyze_file_data(path, "center", None, False)
+        analysis, workers = engine.analyze_files(files, "center", None, False,
                                                    workers=8, use_cache=True)
-        resultados = list(analisis)
+        results = list(analysis)
         self.assertEqual(workers, 1, "it should not start processes when everything is cached")
-        self.assertTrue(all(r.get("desde_cache") for r in resultados))
+        self.assertTrue(all(r.get("desde_cache") for r in results))
 
 
 class TestStreamingProgresivo(unittest.TestCase):
@@ -275,45 +275,45 @@ class TestStreamingProgresivo(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.carpeta = cls.fx.subcarpeta("streaming", ("ok16", "ok24", "ok16_mono"))
+        cls.folder = cls.fx.subcarpeta("streaming", ("ok16", "ok24", "ok16_mono"))
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
     def test_results_arrive_before_finish_batch(self):
         """The generator must stream non-candidate tracks, not buffer them all."""
-        archivos = [os.path.join(self.carpeta, nombre)
-                    for nombre in sorted(os.listdir(self.carpeta))
-                    if nombre.endswith(".flac")]
-        original = motor.analyze_file_data
+        files = [os.path.join(self.folder, name)
+                    for name in sorted(os.listdir(self.folder))
+                    if name.endswith(".flac")]
+        original = engine.analyze_file_data
 
-        def lento(*args, **kwargs):
+        def slow(*args, **kwargs):
             time.sleep(0.25)
             return original(*args, **kwargs)
 
-        with mock.patch.object(motor, "analyze_file_data", side_effect=lento):
-            analisis, workers = motor.analyze_files(
-                archivos, "center", None, False, workers=1, use_cache=False)
-            inicio = time.perf_counter()
+        with mock.patch.object(engine, "analyze_file_data", side_effect=slow):
+            analysis, workers = engine.analyze_files(
+                files, "center", None, False, workers=1, use_cache=False)
+            start = time.perf_counter()
             llegadas = []
-            resultados = []
-            for resultado in analisis:
-                llegadas.append(time.perf_counter() - inicio)
-                resultados.append(resultado)
-            fin = time.perf_counter() - inicio
+            results = []
+            for result in analysis:
+                llegadas.append(time.perf_counter() - start)
+                results.append(result)
+            end = time.perf_counter() - start
 
         self.assertEqual(workers, 1)
-        self.assertEqual(len(resultados), 3)
+        self.assertEqual(len(results), 3)
         self.assertEqual(len(llegadas), 3)
         # Old buffered implementation yielded all three at `fin`: the first
         # arrival would be (almost) the same instant as the end.
         self.assertGreater(llegadas[0], 0.15)
-        self.assertGreater(fin - llegadas[0], 0.15)
+        self.assertGreater(end - llegadas[0], 0.15)
         self.assertGreater(llegadas[-1] - llegadas[0], 0.15)
 
 
-class TestCacheYOrdenConCoherencia(unittest.TestCase):
+class test_cache_and_order_with_coherence(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -321,64 +321,64 @@ class TestCacheYOrdenConCoherencia(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
     @staticmethod
-    def _acustica(ruta):
+    def _acustica(path):
         sr = 44100
-        x = fx.ruido_banda_completa(sr=sr, dur=4.0, seed=7)
+        x = fx.full_band_noise(sr=sr, dur=4.0, seed=7)
         y = signal.sosfilt(signal.butter(4, 15000.0, btype="low", fs=sr,
                                           output="sos"), x, axis=0)
         y /= max(1.0, np.max(np.abs(y)))
-        sf.write(ruta, y, sr, subtype="PCM_16")
+        sf.write(path, y, sr, subtype="PCM_16")
 
-    def _album(self, nombre, cantidad, posicion_candidata):
-        carpeta = os.path.join(self.fx.dir, nombre)
-        os.makedirs(carpeta, exist_ok=True)
-        for indice in range(cantidad):
-            destino = os.path.join(carpeta, f"{indice + 1:02d}_track.flac")
-            if indice == posicion_candidata:
-                self._acustica(destino)
+    def _album(self, name, cantidad, position_candidate):
+        folder = os.path.join(self.fx.dir, name)
+        os.makedirs(folder, exist_ok=True)
+        for index in range(cantidad):
+            destination = os.path.join(folder, f"{index + 1:02d}_track.flac")
+            if index == position_candidate:
+                self._acustica(destination)
             else:
-                shutil.copy(self.fx["ok16"], destino)
-        return carpeta
+                shutil.copy(self.fx["ok16"], destination)
+        return folder
 
     def test_cache_individual_no_inherits_coherence_batch(self):
-        carpeta = self._album("cache_coherencia", 9, 0)
-        archivos = [os.path.join(carpeta, nombre)
-                    for nombre in sorted(os.listdir(carpeta))]
-        lote = list(motor.analyze_files(
-            archivos, "center", None, False, workers=1, use_cache=True)[0])
-        rescatada = next(r for r in lote if r["archivo"].startswith("01_"))
+        folder = self._album("cache_coherencia", 9, 0)
+        files = [os.path.join(folder, name)
+                    for name in sorted(os.listdir(folder))]
+        batch = list(engine.analyze_files(
+            files, "center", None, False, workers=1, use_cache=True)[0])
+        rescatada = next(r for r in batch if r["archivo"].startswith("01_"))
         self.assertTrue(rescatada.get("coherencia_album"))
         self.assertEqual(rescatada["veredicto"], "PROBABLY LOSSLESS")
 
-        sola = motor.analyze_file_data(
+        alone = engine.analyze_file_data(
             rescatada["ruta"], "center", None, False, use_cache=True)
-        self.assertFalse(sola.get("coherencia_album"))
-        self.assertIn(sola["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
+        self.assertFalse(alone.get("coherencia_album"))
+        self.assertIn(alone["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 
     def test_pdf_restores_order_original_after_retention(self):
-        carpeta = self._album("orden_coherencia", 5, 1)
-        archivos = [os.path.join(carpeta, nombre)
-                    for nombre in sorted(os.listdir(carpeta))]
-        resultados = list(motor.analyze_files(
-            archivos, "center", None, False, workers=1, use_cache=False)[0])
-        self.assertEqual(len(resultados), 5)
-        self.assertEqual([r["indice_original"] for r in resultados],
+        folder = self._album("orden_coherencia", 5, 1)
+        files = [os.path.join(folder, name)
+                    for name in sorted(os.listdir(folder))]
+        results = list(engine.analyze_files(
+            files, "center", None, False, workers=1, use_cache=False)[0])
+        self.assertEqual(len(results), 5)
+        self.assertEqual([r["indice_original"] for r in results],
                          [0, 2, 3, 4, 1])   # the retained one arrives last
-        self.assertTrue(resultados[-1].get("coherencia_album"))
+        self.assertTrue(results[-1].get("coherencia_album"))
 
         with mock.patch("informe_pdf._elements",
-                        side_effect=lambda *a, **k: iter(())) as elementos:
-            informe = motor.generate_pdf_report(carpeta, resultados)
-        self.assertTrue(informe["ok"], informe.get("error"))
-        enviados = elementos.call_args[0][1]
+                        side_effect=lambda *a, **k: iter(())) as elements:
+            report = engine.generate_pdf_report(folder, results)
+        self.assertTrue(report["ok"], report.get("error"))
+        enviados = elements.call_args[0][1]
         self.assertEqual([r["indice_original"] for r in enviados],
                          [0, 1, 2, 3, 4])
 
 
-class TestRenderizador(unittest.TestCase):
+class test_renderer(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -386,55 +386,55 @@ class TestRenderizador(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
     def test_spectrogram_paints_with_pillow(self):
         """The PNG comes from the 256-colour NumPy LUT and Image.fromarray:
         no figure object, no Agg canvas, no matplotlib import."""
-        fuente = open(fx.MOTOR, encoding="utf-8").read()
-        self.assertIn("_LUT_SPECTROGRAM", fuente)
-        self.assertIn("Image.fromarray(", fuente)
-        self.assertIn("render_spectrogram_fast", fuente)
-        self.assertNotIn("import matplotlib", fuente)
-        self.assertNotIn("ax.imshow(", fuente)
+        source = open(fx.ENGINE, encoding="utf-8").read()
+        self.assertIn("_LUT_SPECTROGRAM", source)
+        self.assertIn("Image.fromarray(", source)
+        self.assertIn("render_spectrogram_fast", source)
+        self.assertNotIn("import matplotlib", source)
+        self.assertNotIn("ax.imshow(", source)
 
     def test_fingerprint_render_changes_with_params(self):
-        original_frames = motor.MAX_FRAMES_PNG
-        original_ancho = motor.WIDTH_PNG
-        base = motor.render_fingerprint()
+        original_frames = engine.MAX_FRAMES_PNG
+        original_width = engine.WIDTH_PNG
+        base = engine.render_fingerprint()
         try:
-            motor.MAX_FRAMES_PNG = original_frames + 1
-            self.assertNotEqual(motor.render_fingerprint(), base)
-            motor.MAX_FRAMES_PNG = original_frames
-            self.assertEqual(motor.render_fingerprint(), base)
-            motor.WIDTH_PNG = original_ancho + 1
-            self.assertNotEqual(motor.render_fingerprint(), base)
+            engine.MAX_FRAMES_PNG = original_frames + 1
+            self.assertNotEqual(engine.render_fingerprint(), base)
+            engine.MAX_FRAMES_PNG = original_frames
+            self.assertEqual(engine.render_fingerprint(), base)
+            engine.WIDTH_PNG = original_width + 1
+            self.assertNotEqual(engine.render_fingerprint(), base)
         finally:
-            motor.MAX_FRAMES_PNG = original_frames
-            motor.WIDTH_PNG = original_ancho
+            engine.MAX_FRAMES_PNG = original_frames
+            engine.WIDTH_PNG = original_width
 
-    @unittest.skipUnless(motor.PIL_OK, "Pillow not installed")
+    @unittest.skipUnless(engine.PIL_OK, "Pillow not installed")
     def test_png_still_exiting_with_size_reasonable(self):
-        ruta = self.fx["ok16"]
-        resultado = motor.analyze_file_data(ruta, "center", None, True,
+        path = self.fx["ok16"]
+        result = engine.analyze_file_data(path, "center", None, True,
                                                  use_cache=False)
-        ruta_png = resultado["esp"]["espectrograma"]
-        self.assertIsNotNone(ruta_png, resultado["esp"].get("espectrograma_error"))
-        self.assertGreater(os.path.getsize(ruta_png), 100 * 1024)
-        with open(ruta_png, "rb") as f:
+        png_path = result["esp"]["espectrograma"]
+        self.assertIsNotNone(png_path, result["esp"].get("espectrograma_error"))
+        self.assertGreater(os.path.getsize(png_path), 100 * 1024)
+        with open(png_path, "rb") as f:
             self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
 
     def test_failure_paint_informs(self):
         """The reason for the failure reaches the result (before, it was lost silently)."""
-        original = motor.Image
+        original = engine.Image
         try:
-            motor.Image = None                  # Image.fromarray() will blow up
-            resultado = motor.analyze_file_data(self.fx["ok16"], "center", None,
+            engine.Image = None                  # Image.fromarray() will blow up
+            result = engine.analyze_file_data(self.fx["ok16"], "center", None,
                                                      True, use_cache=False)
-            self.assertIsNone(resultado["esp"]["espectrograma"])
-            self.assertIn("espectrograma_error", resultado["esp"])
+            self.assertIsNone(result["esp"]["espectrograma"])
+            self.assertIn("espectrograma_error", result["esp"])
         finally:
-            motor.Image = original
+            engine.Image = original
 
 
 if __name__ == "__main__":

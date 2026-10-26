@@ -26,21 +26,22 @@ import re
 import sys
 import tokenize
 import unittest
+from pathlib import Path
 
-RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, RAIZ)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 # Everything the user can read: the application modules and the two tools that are
 # run by hand (the builder and the executable checker).
-MODULOS = ("main.py", "motor_flac.py", "gui.py", "verificar_flac.py",
+MODULES = ("main.py", "motor_flac.py", "gui.py", "verificar_flac.py",
            "informe_pdf.py", "build.py", "comprobar_ejecutable.py",
            "_motor_bits.py", "_motor_espectral.py", "_motor_veredicto.py",
            "_motor_cache.py")
 
-PROPIOS = re.compile(r"[ñÑáéíóúÁÉÍÓÚüÜ¿¡]")
+OWN = re.compile(r"[ñÑáéíóúÁÉÍÓÚüÜ¿¡]")
 
 # Words that do not exist in English: if one shows up, the text was not translated.
-PALABRAS = re.compile(
+SPANISH_WORDS = re.compile(
     r"\b(de|del|la|las|los|una|uno|unos|unas|que|con|para|por|sin|al|su|sus|"
     r"es|son|está|están|hay|más|muy|pero|como|cuando|donde|este|esta|esto|"
     r"archivo|archivos|carpeta|carpetas|ruta|rutas|modo|modos|segundos|informe|"
@@ -76,7 +77,8 @@ PALABRAS = re.compile(
     r"inicios?|longitud|longitudes)\b",
     re.IGNORECASE)
 # Words spelled the same in English: no signal of the language.
-FALSOS_POSITIVOS = {"album", "compatible", "control", "pie", "solo", "dos", "pro"}
+FALSE_POSITIVES = {"album", "compatible", "control", "pie", "solo", "dos", "pro",
+                    "sin"}   # `sin` is also numpy.sin, an English function name
 
 # JSON protocol keys: the public contract, never translated.
 JSON_KEYS = {
@@ -99,51 +101,51 @@ ARGPARSE_DESTS = {"espectrograma", "espectrogramas", "output"}
 
 # Union kept for the checks below; the split above documents why each name is
 # allowed, and the behaviour is identical to the old single set.
-PERMITIDOS = JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS | PROTOCOL_VALUES
-RUTA_O_ARCHIVO = re.compile(r"[\w/\\-]*\.(ico|png|svg|py|txt|pdf|zip|exe|flac|json)")
+ALLOWED = JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS | PROTOCOL_VALUES
+PATH_OR_FILE = re.compile(r"[\w/\\-]*\.(ico|png|svg|py|txt|pdf|zip|exe|flac|json)")
 
 
 def _external_import_names():
     """Names imported from third-party modules: not ours, never renamed."""
-    propias = {os.path.splitext(nombre)[0] for nombre in MODULOS}
+    propias = {os.path.splitext(name)[0] for name in MODULES}
     externas = set()
-    for nombre in archivos_con_prosa():
-        ruta = os.path.join(RAIZ, nombre)
-        arbol = ast.parse(open(ruta, "rb").read().decode("utf-8"))
-        for nodo in ast.walk(arbol):
+    for name in files_with_prose():
+        path = os.path.join(ROOT, name)
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+        for nodo in ast.walk(tree):
             if isinstance(nodo, ast.Import):
                 for alias in nodo.names:
                     if alias.name.split(".")[0] not in propias:
                         externas.add(alias.asname or alias.name.split(".")[0])
             elif isinstance(nodo, ast.ImportFrom):
-                raiz = (nodo.module or "").split(".")[0]
-                if raiz and raiz not in propias:
+                root = (nodo.module or "").split(".")[0]
+                if root and root not in propias:
                     for alias in nodo.names:
                         externas.add(alias.asname or alias.name)
     return externas
 
 
-def archivos_con_prosa():
+def files_with_prose():
     """Every Python file whose comments and docstrings are checked."""
-    carpeta = os.path.join(RAIZ, "tests")
-    pruebas = sorted(f"tests/{nombre}" for nombre in os.listdir(carpeta)
-                     if nombre.endswith(".py"))
-    return MODULOS + tuple(pruebas) + ("Logo/generar_logo.py",)
+    folder = os.path.join(ROOT, "tests")
+    tests = sorted(f"tests/{name}" for name in os.listdir(folder)
+                     if name.endswith(".py"))
+    return MODULES + tuple(tests) + ("Logo/generar_logo.py",)
 
 
-def nodos_docstring(fuente):
+def nodos_docstring(source):
     """The Constant nodes that are a module, class or function docstring."""
-    for nodo in ast.walk(ast.parse(fuente)):
+    for nodo in ast.walk(ast.parse(source)):
         if isinstance(nodo, (ast.Module, ast.ClassDef, ast.FunctionDef,
                              ast.AsyncFunctionDef)):
-            cuerpo = getattr(nodo, "body", [])
-            if (cuerpo and isinstance(cuerpo[0], ast.Expr)
-                    and isinstance(cuerpo[0].value, ast.Constant)
-                    and isinstance(cuerpo[0].value.value, str)):
-                yield cuerpo[0].value
+            body = getattr(nodo, "body", [])
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                yield body[0].value
 
 
-def rangos_docstring(fuente):
+def rangos_docstring(source):
     """Character ranges of the docstrings.
 
     Watch the units: `col_offset`/`end_col_offset` from the syntax tree are UTF-8
@@ -151,18 +153,18 @@ def rangos_docstring(fuente):
     ranges miss, and then the filter lets docstrings through into the visible-text
     scan — which is wrong in both directions.
     """
-    datos = fuente.encode("utf-8")
+    payload = source.encode("utf-8")
     saltos = [0]
-    for indice, byte in enumerate(datos):
+    for index, byte in enumerate(payload):
         if byte == 0x0A:
-            saltos.append(indice + 1)
+            saltos.append(index + 1)
 
-    def a_caracter(posicion_en_bytes):
-        return len(datos[:posicion_en_bytes].decode("utf-8"))
+    def a_caracter(position_bytes):
+        return len(payload[:position_bytes].decode("utf-8"))
 
     return [(a_caracter(saltos[nodo.lineno - 1] + nodo.col_offset),
              a_caracter(saltos[nodo.end_lineno - 1] + nodo.end_col_offset))
-            for nodo in nodos_docstring(fuente)]
+            for nodo in nodos_docstring(source)]
 
 
 def piezas(interior):
@@ -171,117 +173,117 @@ def piezas(interior):
     What the user sees is the text, not the names of the interpolated variables:
     `f"{icono} Ready"` shows "Ready".
     """
-    resultados = []
-    actual = []
-    indice = 0
-    profundidad = 0
-    while indice < len(interior):
-        if interior[indice] == "{":
-            if profundidad == 0 and actual:
-                resultados.append("".join(actual))
-                actual = []
-            profundidad += 1
-            indice += 1
+    results = []
+    current = []
+    index = 0
+    depth = 0
+    while index < len(interior):
+        if interior[index] == "{":
+            if depth == 0 and current:
+                results.append("".join(current))
+                current = []
+            depth += 1
+            index += 1
             continue
-        if interior[indice] == "}":
-            profundidad -= 1
-            indice += 1
+        if interior[index] == "}":
+            depth -= 1
+            index += 1
             continue
-        if profundidad == 0 and interior[indice:indice + 2] in ("{{", "}}"):
-            actual.append(interior[indice])
-            indice += 2
+        if depth == 0 and interior[index:index + 2] in ("{{", "}}"):
+            current.append(interior[index])
+            index += 2
             continue
-        if profundidad == 0:
-            actual.append(interior[indice])
-        indice += 1
-    if actual:
-        resultados.append("".join(actual))
-    return resultados
+        if depth == 0:
+            current.append(interior[index])
+        index += 1
+    if current:
+        results.append("".join(current))
+    return results
 
 
-def trozos_visibles(ruta):
+def chunks_visible(path):
     """(line, text) of every visible piece of every text literal."""
-    fuente = open(ruta, "rb").read().decode("utf-8")
-    omitir = rangos_docstring(fuente)
-    inicio_linea = [0]
-    for indice, caracter in enumerate(fuente):
+    source = Path(path).read_text(encoding="utf-8")
+    omitir = rangos_docstring(source)
+    start_line = [0]
+    for index, caracter in enumerate(source):
         if caracter == "\n":
-            inicio_linea.append(indice + 1)
-    for token in tokenize.generate_tokens(io.StringIO(fuente).readline):
+            start_line.append(index + 1)
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type != tokenize.STRING:
             continue
-        comienzo = inicio_linea[token.start[0] - 1] + token.start[1]
-        fin = inicio_linea[token.end[0] - 1] + token.end[1]
-        if any(comienzo >= a and fin <= b for a, b in omitir):
+        comienzo = start_line[token.start[0] - 1] + token.start[1]
+        end = start_line[token.end[0] - 1] + token.end[1]
+        if any(comienzo >= a and end <= b for a, b in omitir):
             continue
-        cuerpo = token.string
-        while cuerpo and cuerpo[0] in "fFrRbBuU":
-            cuerpo = cuerpo[1:]
-        if not cuerpo or cuerpo[0] not in "\"'":
+        body = token.string
+        while body and body[0] in "fFrRbBuU":
+            body = body[1:]
+        if not body or body[0] not in "\"'":
             continue
-        recorte = 3 if cuerpo.startswith(cuerpo[0] * 3) else 1
-        for trozo in piezas(cuerpo[recorte:len(cuerpo) - recorte]):
-            yield token.start[0], trozo
+        recorte = 3 if body.startswith(body[0] * 3) else 1
+        for chunk in piezas(body[recorte:len(body) - recorte]):
+            yield token.start[0], chunk
 
 
-def prosa(ruta):
+def prosa(path):
     """(line, text) of every comment line and every docstring line."""
-    fuente = open(ruta, "rb").read().decode("utf-8")
-    for token in tokenize.generate_tokens(io.StringIO(fuente).readline):
+    source = Path(path).read_text(encoding="utf-8")
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type == tokenize.COMMENT:
             yield token.start[0], token.string
-    for nodo in nodos_docstring(fuente):
-        for desplazamiento, linea in enumerate(nodo.value.splitlines()):
-            yield nodo.lineno + desplazamiento, linea
+    for nodo in nodos_docstring(source):
+        for desplazamiento, line in enumerate(nodo.value.splitlines()):
+            yield nodo.lineno + desplazamiento, line
 
 
 class TestIdioma(unittest.TestCase):
     """Interface text, comments and docstrings have to be in English."""
 
-    def _revisar(self, patron, descripcion):
-        problemas = []
-        fuentes = [(os.path.join(RAIZ, nombre), trozos_visibles, "text")
-                   for nombre in MODULOS]
-        fuentes += [(os.path.join(RAIZ, ruta), prosa, "prose")
-                    for ruta in archivos_con_prosa()]
-        for ruta, generador, origen in fuentes:
-            for linea, texto in generador(ruta):
-                if not texto.strip():
+    def _check(self, pattern, description):
+        problems = []
+        sources = [(os.path.join(ROOT, name), chunks_visible, "text")
+                   for name in MODULES]
+        sources += [(os.path.join(ROOT, path), prosa, "prose")
+                    for path in files_with_prose()]
+        for path, generator, source in sources:
+            for line, text in generator(path):
+                if not text.strip():
                     continue
                 # File names and paths may contain anything ("Logo/icono_app.ico").
                 # The rule is "looks like a path": no spaces. Skipping every text
                 # with a slash used to let prose through, such as the warning the
                 # engine prints when the high/mid ratio is very low.
-                if RUTA_O_ARCHIVO.search(texto) or ("/" in texto and " " not in texto.strip()):
+                if PATH_OR_FILE.search(text) or ("/" in text and " " not in text.strip()):
                     continue
-                if texto.strip().strip("\"'") in PERMITIDOS:
+                if text.strip().strip("\"'") in ALLOWED:
                     continue
-                for coincidencia in patron.finditer(texto):
-                    palabra = coincidencia.group(0)
-                    if palabra.lower() in PERMITIDOS or palabra.lower() in FALSOS_POSITIVOS:
+                for match in pattern.finditer(text):
+                    word = match.group(0)
+                    if word.lower() in ALLOWED or word.lower() in FALSE_POSITIVES:
                         continue
                     # "process(es)" and "(s)" are not Spanish, and a word glued to
                     # an underscore, to another word or to a call parenthesis
                     # belongs to an identifier: JSON protocol keys and reportlab
                     # style names are allowed, Spanish prose is not. That is how
                     # an English docstring may mention `informe_pdf.generate()`.
-                    inicio, fin = coincidencia.span()
-                    antes = texto[inicio - 1] if inicio else ""
-                    despues = texto[fin] if fin < len(texto) else ""
-                    if antes in "([{" or despues in ")]}(":
+                    start, end = match.span()
+                    before = text[start - 1] if start else ""
+                    after = text[end] if end < len(text) else ""
+                    if before in "([{" or after in ")]}(":
                         continue
-                    if antes.isalnum() or antes == "_" or despues.isalnum() or despues == "_":
+                    if before.isalnum() or before == "_" or after.isalnum() or after == "_":
                         continue
-                    problemas.append(
-                        f"{os.path.basename(ruta)}:{linea} [{origen}]: "
-                        f"{palabra!r} in {texto.strip()[:60]!r}")
-        self.assertEqual(problemas, [], f"{descripcion} in " + "; ".join(problemas[:6]))
+                    problems.append(
+                        f"{os.path.basename(path)}:{line} [{source}]: "
+                        f"{word!r} in {text.strip()[:60]!r}")
+        self.assertEqual(problems, [], f"{description} in " + "; ".join(problems[:6]))
 
     def test_no_spanish_characters(self):
-        self._revisar(PROPIOS, "Spanish characters")
+        self._check(OWN, "Spanish characters")
 
     def test_no_spanish_words(self):
-        self._revisar(PALABRAS, "Spanish words")
+        self._check(SPANISH_WORDS, "Spanish words")
 
     def test_verdicts_are_english_and_match(self):
         """The traffic light depends on engine, GUI and PDF using the SAME strings."""
@@ -293,25 +295,25 @@ class TestIdioma(unittest.TestCase):
         self.assertEqual(set(informe_pdf.STYLE_VERDICT), esperados)
         # The engine can only emit those labels. Only text literals are inspected,
         # so a comment or a docstring may still quote an old name on purpose.
-        visibles = {texto.strip() for _, texto in
-                    trozos_visibles(os.path.join(RAIZ, "motor_flac.py"))}
-        for veredicto in esperados:
-            with self.subTest(veredicto=veredicto):
-                self.assertIn(veredicto, visibles)
+        visible = {text.strip() for _, text in
+                    chunks_visible(os.path.join(ROOT, "motor_flac.py"))}
+        for verdict in esperados:
+            with self.subTest(verdict=verdict):
+                self.assertIn(verdict, visible)
         for antiguo in ("LOSSLESS GENUINO", "PROBABLEMENTE LOSSLESS", "DUDOSO"):
             with self.subTest(antiguo=antiguo):
-                self.assertNotIn(antiguo, visibles)
+                self.assertNotIn(antiguo, visible)
 
     def test_flags_are_english(self):
         import motor_flac
-        fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
-        for bandera in ("--path", "--mode", "--seconds", "--png", "--pdf",
+        source = Path(ROOT, "motor_flac.py").read_text(encoding="utf-8")
+        for flag in ("--path", "--mode", "--seconds", "--png", "--pdf",
                         "--workers", "--no-cache"):
-            with self.subTest(bandera=bandera):
-                self.assertIn(f'"{bandera}"', fuente)
+            with self.subTest(flag=flag):
+                self.assertIn(f'"{flag}"', source)
         for antigua in ("--ruta", "--modo", "--seg", "--sin-cache"):
-            with self.subTest(bandera=antigua):
-                self.assertNotIn(f'"{antigua}"', fuente)
+            with self.subTest(flag=antigua):
+                self.assertNotIn(f'"{antigua}"', source)
         # The engine's command-line entry point stays importable and callable.
         self.assertTrue(callable(motor_flac.main_cli))
 
@@ -320,53 +322,52 @@ class TestIdioma(unittest.TestCase):
         import informe_pdf
         self.assertEqual(gui.REPORT_NAME, "flac_verifier_report.pdf")
         self.assertEqual(informe_pdf.REPORT_NAME, "flac_verifier_report.pdf")
-        fuente = open(os.path.join(RAIZ, "motor_flac.py"), encoding="utf-8").read()
-        self.assertIn('"_spectrograms"', fuente)
-        self.assertNotIn('"_espectrogramas"', fuente)
+        source = Path(ROOT, "motor_flac.py").read_text(encoding="utf-8")
+        self.assertIn('"_spectrograms"', source)
+        self.assertNotIn('"_espectrogramas"', source)
 
     def test_no_spanish_identifiers(self):
-        """AST guard: Python identifiers in the shipped modules are English.
+        """AST guard: every Python identifier in the repo is English.
 
         JSON protocol keys and values, reportlab style names, argparse
         destinations, dunders, module file names and third-party imports are
-        excluded. The
-        test files are covered by the 1c pass, so this runs on MODULOS only.
+        excluded. This covers the production modules, the tests and Logo.
         """
-        permitidos = (JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS
-                      | PROTOCOL_VALUES)
-        externos = _external_import_names()
-        modulos = {os.path.splitext(nombre)[0] for nombre in MODULOS}
-        problemas = []
-        for nombre in MODULOS:
-            ruta = os.path.join(RAIZ, nombre)
-            fuente = open(ruta, "rb").read().decode("utf-8")
-            for nodo in ast.walk(ast.parse(fuente)):
-                if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef,
+        allowed = (JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS
+                   | PROTOCOL_VALUES)
+        external = _external_import_names()
+        module_names = {os.path.splitext(name)[0] for name in MODULES}
+        problems = []
+        for name in files_with_prose():
+            path = os.path.join(ROOT, name)
+            source = Path(path).read_text(encoding="utf-8")
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                      ast.ClassDef)):
-                    candidato = nodo.name
-                elif isinstance(nodo, ast.Name):
-                    candidato = nodo.id
-                elif isinstance(nodo, ast.arg):
-                    candidato = nodo.arg
-                elif isinstance(nodo, ast.Attribute):
-                    candidato = nodo.attr
+                    candidate = node.name
+                elif isinstance(node, ast.Name):
+                    candidate = node.id
+                elif isinstance(node, ast.arg):
+                    candidate = node.arg
+                elif isinstance(node, ast.Attribute):
+                    candidate = node.attr
                 else:
                     continue
-                if not candidato or candidato in permitidos or candidato in externos:
+                if not candidate or candidate in allowed or candidate in external:
                     continue
-                if candidato in modulos:
+                if candidate in module_names:
                     continue
-                if candidato.startswith("__") and candidato.endswith("__"):
+                if candidate.startswith("__") and candidate.endswith("__"):
                     continue
-                for trozo in re.split(r"_+|(?<=[a-z])(?=[A-Z])", candidato):
-                    bajo = trozo.lower()
-                    if not bajo or bajo in FALSOS_POSITIVOS or bajo in permitidos:
+                for chunk in re.split(r"_+|(?<=[a-z])(?=[A-Z])", candidate):
+                    low = chunk.lower()
+                    if not low or low in FALSE_POSITIVES or low in allowed:
                         continue
-                    if PALABRAS.fullmatch(bajo):
-                        problemas.append(f"{nombre}:{nodo.lineno}: {candidato!r}")
+                    if SPANISH_WORDS.fullmatch(low):
+                        problems.append(f"{name}:{node.lineno}: {candidate!r}")
                         break
-        self.assertEqual(problemas, [],
-                         "Spanish identifiers in " + "; ".join(problemas[:12]))
+        self.assertEqual(problems, [],
+                         "Spanish identifiers in " + "; ".join(problems[:12]))
 
 
 if __name__ == "__main__":

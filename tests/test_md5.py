@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
 
-import motor_flac as motor
+import motor_flac as engine
 
 
 class TestMD5(unittest.TestCase):
@@ -25,18 +25,18 @@ class TestMD5(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.fx.cerrar()
+        cls.fx.close()
 
     def test_matches_8_16_24_bits(self):
-        for nombre in ("ok8", "ok16", "ok24"):
-            with self.subTest(archivo=nombre):
-                res = motor.analyze_file_data(self.fx[nombre], "center", None, False)
+        for name in ("ok8", "ok16", "ok24"):
+            with self.subTest(file=name):
+                res = engine.analyze_file_data(self.fx[name], "center", None, False)
                 self.assertNotIn("error", res)
                 self.assertEqual(res["md5"]["estado"], "match")
                 self.assertEqual(res["md5"]["calculado"], res["md5"]["almacenado"])
 
     def test_md5_faked_is_error_hard(self):
-        res = motor.analyze_file_data(self.fx["md5_obsoleto"], "center", None, False)
+        res = engine.analyze_file_data(self.fx["md5_obsoleto"], "center", None, False)
         self.assertEqual(res["md5"]["estado"], "mismatch")
         self.assertIn("error", res)
         # it can receive neither a lossless verdict nor a score
@@ -47,7 +47,7 @@ class TestMD5(unittest.TestCase):
         self.assertNotEqual(res["md5"]["calculado"], res["md5"]["almacenado"])
 
     def test_md5_absent_no_is_error(self):
-        res = motor.analyze_file_data(self.fx["md5_ausente"], "center", None, False)
+        res = engine.analyze_file_data(self.fx["md5_ausente"], "center", None, False)
         self.assertEqual(res["md5"]["estado"], "absent")
         self.assertNotIn("error", res)
         self.assertIn("veredicto", res)
@@ -55,28 +55,28 @@ class TestMD5(unittest.TestCase):
 
     def test_el_md5_no_puntua(self):
         """Same audio with MD5 present and with MD5 absent -> identical score."""
-        con_md5    = motor.analyze_file_data(self.fx["ok16"], "center", None, False)
-        sin_md5    = motor.analyze_file_data(self.fx["md5_ausente"], "center", None, False)
-        self.assertEqual(con_md5["md5"]["estado"], "match")
-        self.assertEqual(sin_md5["md5"]["estado"], "absent")
-        self.assertEqual(con_md5["score"], sin_md5["score"])
-        self.assertEqual(con_md5["veredicto"], sin_md5["veredicto"])
-        self.assertEqual(con_md5["problemas"], sin_md5["problemas"])
+        with_md5    = engine.analyze_file_data(self.fx["ok16"], "center", None, False)
+        without_md5    = engine.analyze_file_data(self.fx["md5_ausente"], "center", None, False)
+        self.assertEqual(with_md5["md5"]["estado"], "match")
+        self.assertEqual(without_md5["md5"]["estado"], "absent")
+        self.assertEqual(with_md5["score"], without_md5["score"])
+        self.assertEqual(with_md5["veredicto"], without_md5["veredicto"])
+        self.assertEqual(with_md5["problemas"], without_md5["problemas"])
 
     def test_md5_pcm_matches_with_mutagen(self):
         """The recomputed hash is the same as the one mutagen reports from STREAMINFO."""
         from mutagen.flac import FLAC
-        for nombre in ("ok16", "ok24"):
-            with self.subTest(archivo=nombre):
-                data, _ = motor.read_audio(self.fx[nombre])
-                almacenado = int(FLAC(self.fx[nombre]).info.md5_signature)
-                calculado = motor._md5_pcm(data, 16 if nombre == "ok16" else 24)
-                self.assertEqual(int(calculado, 16), almacenado)
+        for name in ("ok16", "ok24"):
+            with self.subTest(file=name):
+                data, _ = engine.read_audio(self.fx[name])
+                stored = int(FLAC(self.fx[name]).info.md5_signature)
+                calculated = engine._md5_pcm(data, 16 if name == "ok16" else 24)
+                self.assertEqual(int(calculated, 16), stored)
 
     def test_depth_no_verifiable_returns_none(self):
         """An odd bit depth must not falsely accuse the file of corruption."""
-        self.assertIsNone(motor._md5_pcm([[0.0]], 20))
-        self.assertIsNone(motor._md5_pcm([[0.0]], 12))
+        self.assertIsNone(engine._md5_pcm([[0.0]], 20))
+        self.assertIsNone(engine._md5_pcm([[0.0]], 12))
 
 
 if __name__ == "__main__":
