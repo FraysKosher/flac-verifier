@@ -1253,8 +1253,8 @@ if CTK_OK:
                 command=self._change_parallel, switch_width=36,
                 switch_height=20, corner_radius=theme.RADIUS["pill"],
                 fg_color=c("border.strong"), progress_color=c("accent"),
-                button_color=c("text.primary"),
-                button_hover_color=c("text.primary"),
+                button_color=c("knob"),
+                button_hover_color=c("knob"),
                 text_color=c("text.primary"),
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
             self.parallel_switch.grid(row=8, column=0, padx=theme.SPACE["lg"],
@@ -1332,6 +1332,33 @@ if CTK_OK:
                                                text_color=c("text.tertiary"))
             self.label_progress.grid(row=0, column=1, sticky="w",
                                      padx=(theme.SPACE["sm"], 0))
+
+            # Theme button: the icon shows what the click will switch to. The
+            # change is saved here and applied on the next start, because this
+            # window builds every colour once (see theme.py).
+            self.btn_theme = self._button(
+                top, "icon", "", self._toggle_theme,
+                icon="sun" if theme.MODE == "dark" else "moon", width=32)
+            self.btn_theme.grid(row=0, column=3, sticky="e")
+            self.theme_tooltip = _Tooltip(
+                self.btn_theme, "Switch to light theme"
+                if theme.MODE == "dark" else "Switch to dark theme")
+
+            # Inline, dismissible notice under the top bar (restart contract).
+            self.notice = ctk.CTkFrame(top, fg_color="transparent")
+            self.notice.grid(row=1, column=0, columnspan=4, sticky="ew",
+                             pady=(theme.SPACE["xs"], 0))
+            self.notice.grid_columnconfigure(0, weight=1)
+            self.label_notice = ctk.CTkLabel(self.notice, text="", anchor="w",
+                                             font=theme.font(12),
+                                             text_color=c("text.secondary"))
+            self.label_notice.grid(row=0, column=0, sticky="ew")
+            self.btn_dismiss_notice = self._button(
+                self.notice, "icon", "", self._hide_notice, icon="x",
+                width=22, height=22)
+            self.btn_dismiss_notice.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
+            self.dismiss_tooltip = _Tooltip(self.btn_dismiss_notice, "Dismiss")
+            self.notice.grid_remove()
 
             # Progress line: 4 px, no radius (DESIGN.md 7.9).
             self.barra = ctk.CTkProgressBar(panel, height=4, corner_radius=0,
@@ -2112,8 +2139,8 @@ if CTK_OK:
                 switch_width=36, switch_height=20,
                 corner_radius=theme.RADIUS["pill"],
                 fg_color=c("border.strong"), progress_color=c("accent"),
-                button_color=c("text.primary"),
-                button_hover_color=c("text.primary"),
+                button_color=c("knob"),
+                button_hover_color=c("knob"),
                 text_color=c("text.secondary"), font=theme.font(12))
             self.switch_autoscroll.grid(row=0, column=1, sticky="w")
             self._ring_highlight(self.switch_autoscroll, c("bg.surface"))
@@ -2365,6 +2392,7 @@ if CTK_OK:
                            self.seconds_slider):
                 widget.configure(state="disabled" if active else "normal")
             self._set_enabled(self.btn_folder, not active)
+            self._set_enabled(self.btn_theme, not active)
             if not active:
                 self._change_mode()
                 self._change_parallel()
@@ -2373,6 +2401,25 @@ if CTK_OK:
             # Empty state until there is something to show (DESIGN.md 7.11).
             self._set_results_visible(active or bool(self.events))
             self._update_reveal()
+
+        def _toggle_theme(self) -> None:
+            """Saves the other mode; it applies the next time the window opens."""
+            if self.manager.active:
+                return
+            target = "light" if theme.MODE == "dark" else "dark"
+            if theme.save_preference(target):
+                self._show_notice(f"{target.capitalize()} theme saved. "
+                                  "Restart FLAC Verifier to apply.")
+            else:
+                self._show_notice("Could not save the theme preference; "
+                                  "the current theme stays.", "warn")
+
+        def _show_notice(self, text: str, tone: str = "text.secondary") -> None:
+            self.label_notice.configure(text=text, text_color=c(tone))
+            self.notice.grid()
+
+        def _hide_notice(self) -> None:
+            self.notice.grid_remove()
 
         def _show_action(self, button: Any) -> None:
             """Only one primary action is visible: Analyze or Cancel."""
@@ -2582,7 +2629,10 @@ def main(initial_path: str | None = None) -> int:
         print("   Meanwhile you can use the CLI:  python verificar_flac.py")
         return 1
     try:
-        ctk.set_appearance_mode("dark")
+        # The preference is read here, before the window exists: every colour is
+        # resolved once while the widgets are built.
+        theme.load_preference()
+        ctk.set_appearance_mode("light" if theme.MODE == "light" else "dark")
         ctk.set_default_color_theme("blue")
         window = FlacVerifierWindow(initial_path=initial_path)
         window.mainloop()

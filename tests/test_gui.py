@@ -1183,6 +1183,138 @@ class test_window(unittest.TestCase):
         self.window._reflow_facts(600)
         self.assertEqual(self.window._fact_columns, 4)
 
+    def test_theme_toggle_is_an_icon_button_with_focus(self):
+        button = self.window.btn_theme
+        self.assertEqual(str(button.tk.call(button._w, "cget", "-takefocus")), "1")
+        self.assertTrue(button.tk.call("bind", button._w, "<FocusIn>"))
+        self.assertIsNotNone(button.cget("image"), "the theme button has no icon")
+        self.assertEqual(button.cget("width"), 32)
+        self.assertEqual(self.window.theme_tooltip.text, "Switch to light theme")
+
+    def test_theme_toggle_saves_and_announces_the_restart(self):
+        with tempfile.TemporaryDirectory() as folder,                 mock.patch.dict(os.environ, {"APPDATA": folder}):
+            self.window.btn_theme.invoke()
+            path = os.path.join(folder, "FLAC Verifier", "settings.json")
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {"theme": "light"})
+            self.assertEqual(self.window.label_notice.cget("text"),
+                             "Light theme saved. Restart FLAC Verifier to apply.")
+            self.assertEqual(self.window.notice.winfo_manager(), "grid")
+            # The open window keeps its colours: the notice says "restart".
+            self.assertEqual(theme.MODE, "dark")
+            self.window.btn_dismiss_notice.invoke()
+            self.assertFalse(self.window.notice.winfo_manager())
+
+    def test_theme_toggle_is_disabled_while_running(self):
+        self.assertEqual(self.window.btn_theme.cget("state"), "normal")
+        self.window.manager.process = FakeProcess(['{"tipo": "fin"}'])
+        self.window._update_state()
+        self.assertEqual(self.window.btn_theme.cget("state"), "disabled")
+        self.window.manager.process.returncode = 0
+        self.window._update_state()
+        self.assertEqual(self.window.btn_theme.cget("state"), "normal")
+
+
+@unittest.skipUnless(VISUAL, "customtkinter and a display are required")
+class test_light_window(unittest.TestCase):
+    """The light theme must build and resolve every surface it paints.
+
+    The window is created once per test in light mode: this process can only
+    have one Tk window with CustomTkinter images alive at a time, so these
+    cases live in their own class instead of opening a second root next to the
+    dark window of `test_window`.
+    """
+
+    def setUp(self):
+        self.addCleanup(setattr, theme, "MODE", "dark")
+        self.addCleanup(ctk.set_appearance_mode, "dark")
+        theme.MODE = "light"
+        ctk.set_appearance_mode("light")
+        self.window = gui.FlacVerifierWindow()
+        self.window.withdraw()
+        self.window.update_idletasks()
+        self.addCleanup(self.window.destroy)
+
+    def test_renders_every_surface(self):
+        window = self.window
+        self.assertEqual(window.cget("fg_color"),
+                         theme.color("bg.canvas", "light"))
+        self.assertEqual(window.empty_state.winfo_manager(), "grid")
+        self.assertEqual(window.theme_tooltip.text, "Switch to dark theme")
+
+        genuine = {"tipo": "resultado", "archivo": "01 - intro.flac",
+                   "veredicto": "GENUINE LOSSLESS", "score": 0.9,
+                   "problemas": [], "meta": {"bits_per_sample": 16,
+                                             "sample_rate": 44100},
+                   "md5": {"estado": "match"}, "dr": 12.0,
+                   "bdi": {"aplica": False}, "esp": {"corte_detectado": False}}
+        broken = {"tipo": "resultado", "archivo": "02 - cut.flac",
+                  "veredicto": "SUSPICIOUS", "score": 0.3,
+                  "problemas": ["cut at 16 kHz"],
+                  "meta": {"bits_per_sample": 24, "sample_rate": 96000},
+                  "md5": {"estado": "match"}, "dr": 8.0,
+                  "bdi": {"aplica": True, "lsbs": "empty"},
+                  "esp": {"corte_detectado": True, "clase_corte": "far_cutoff",
+                          "frecuencia_corte": 16000}}
+        window._process("stdout", genuine)
+        window._process("stdout", broken)
+        window.update_idletasks()
+        self.assertEqual(window.results.winfo_manager(), "grid")
+        self.assertEqual(window.table_rows[0]["cells"]["verdict"].cget("fg_color"),
+                         theme.color("ok.bg", "light"))
+
+        window._select(broken)
+        window.update_idletasks()
+        self.assertEqual(window.hero.cget("fg_color"),
+                         theme.color("bg.surface", "light"))
+        self.assertEqual(window.table_rows[1]["bar"].cget("fg_color"),
+                         theme.color("accent", "light"))
+        self.assertEqual(window.table_rows[1]["frame"].cget("fg_color"),
+                         theme.mix(theme.color("accent", "light"),
+                                   theme.color("bg.surface", "light"), 0.08))
+        self.assertEqual(window.hero_evidence.winfo_manager(), "grid")
+        self.assertIn("cut at 16 kHz", self._problem_texts())
+
+        window._hover_row(window.table_rows[0], True)
+        self.assertEqual(window.table_rows[0]["frame"].cget("fg_color"),
+                         theme.color("bg.hover", "light"))
+        window._set_activity(True)
+        window.update_idletasks()
+        self.assertEqual(window.activity_panel.winfo_manager(), "grid")
+        self.assertTrue(window.log.get("1.0", "end").strip())
+        window._clear_selection()
+        self.assertEqual(window.hero_headline.cget("text"), "MIXED RESULTS")
+
+    def _problem_texts(self):
+        texts = []
+        stack = list(self.window.hero_problems.winfo_children())
+        while stack:
+            widget = stack.pop(0)
+            stack.extend(widget.winfo_children())
+            try:
+                text = widget.cget("text")
+            except Exception:
+                text = ""
+            if text and text not in texts:
+                texts.append(text)
+        return texts
+
+    def test_startup_reads_the_saved_preference(self):
+        with tempfile.TemporaryDirectory() as folder,                 mock.patch.dict(os.environ, {"APPDATA": folder}):
+            self.assertTrue(theme.save_preference("light"))
+            self.assertEqual(theme.load_preference(), "light")
+            self.assertEqual(theme.MODE, "light")
+
+    def test_toggle_in_light_mode_proposes_dark(self):
+        with tempfile.TemporaryDirectory() as folder,                 mock.patch.dict(os.environ, {"APPDATA": folder}):
+            self.window.btn_theme.invoke()
+            path = os.path.join(folder, "FLAC Verifier", "settings.json")
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {"theme": "dark"})
+            self.assertEqual(self.window.label_notice.cget("text"),
+                             "Dark theme saved. Restart FLAC Verifier to apply.")
+
+
 class test_integration_with_cli(unittest.TestCase):
     """`verificar_flac.py --gui` has to open the GUI, not the menu."""
 
