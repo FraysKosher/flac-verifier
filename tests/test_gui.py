@@ -324,6 +324,40 @@ class TestResultRow(unittest.TestCase):
         self.assertIn("1 genuine", text)
         self.assertIn("1 suspicious", text)
 
+    def test_inspector_texts_from_the_protocol(self):
+        """The inspector reads the protocol blocks; it computes no measurement."""
+        event = {
+            "tipo": "resultado", "archivo": "a.flac",
+            "meta": {"bits_per_sample": 24},
+            "bdi": {"aplica": True, "lsbs": "partial"},
+            "clip": {"runs_clip": 3, "hay_clipping": True},
+            "md5": {"estado": "match", "calculado": "49f12971197ac578"},
+            "esp": {"corte_detectado": True, "clase_corte": "far_cutoff",
+                    "frecuencia_corte": 16000, "espectrograma": "C:/x/spec.png"},
+        }
+        self.assertEqual(gui.cutoff_text(event), "far cut-off · 16.0 kHz")
+        self.assertEqual(gui.lsb_text(event), "partial")
+        self.assertEqual(gui.clipping_text(event), "3 run(s) at full scale")
+        self.assertEqual(gui.md5_detail(event), "verified · 49f12971…")
+        self.assertEqual(gui.spectrogram_path(event), "C:/x/spec.png")
+
+    def test_inspector_texts_without_data(self):
+        self.assertEqual(gui.cutoff_text({}), "—")
+        self.assertEqual(gui.lsb_text({}), "—")
+        self.assertEqual(gui.clipping_text({}), "—")
+        self.assertEqual(gui.md5_detail({}), "—")
+        self.assertEqual(gui.spectrogram_path({}), "")
+        self.assertEqual(gui.cutoff_text({"esp": {"error": "x"}}), "not analyzed")
+        self.assertEqual(gui.lsb_text({"bdi": {"aplica": False}}), "not applicable")
+        self.assertEqual(gui.clipping_text({"clip": {"runs_clip": 0}}), "no clipping")
+        self.assertEqual(gui.cutoff_text({"esp": {"corte_detectado": False}}),
+                         "no cut-off")
+        self.assertEqual(gui.cutoff_text({"esp": {"corte_detectado": True,
+                                                  "clase_corte": "near_nyquist_cutoff"}}),
+                         "near Nyquist")
+
+
+
 
 class TestDragAndDrop(unittest.TestCase):
 
@@ -992,6 +1026,135 @@ class test_window(unittest.TestCase):
             self.window.var_path.set(folder)
             self.window._update_state()
             self.assertEqual(self.window.btn_reveal.cget("state"), "normal")
+
+    def _track(self, **overrides):
+        """A result event with every block the inspector reads."""
+        event = {"tipo": "resultado", "archivo": "01.flac",
+                 "ruta": "C:/Music/01.flac", "veredicto": "SUSPICIOUS",
+                 "score": 0.41, "problemas": [],
+                 "meta": {"bits_per_sample": 24, "sample_rate": 96000},
+                 "md5": {"estado": "match",
+                         "calculado": "49f12971197ac578c7d0c9079247661c"},
+                 "dr": 15.2, "clip": {"runs_clip": 0, "hay_clipping": False},
+                 "bdi": {"aplica": True, "lsbs": "active"},
+                 "esp": {"corte_detectado": False, "espectrograma": None}}
+        event.update(overrides)
+        return event
+
+    def _problem_texts(self):
+        """Texts of the problem chips, in drawing order and without duplicates."""
+        texts = []
+        stack = list(self.window.hero_problems.winfo_children())
+        while stack:
+            widget = stack.pop(0)
+            stack.extend(widget.winfo_children())
+            try:
+                text = widget.cget("text")
+            except Exception:
+                text = ""
+            if text and text not in texts:
+                texts.append(text)
+        return texts
+
+    def test_row_selection_opens_the_detail_inspector(self):
+        event = self._track()
+        self.window._process("stdout", event)
+        self.assertFalse(self.window.hero_evidence.winfo_manager())
+        self.assertFalse(self.window.spectrogram_frame.winfo_manager())
+        self.assertFalse(self.window.btn_close_detail.winfo_manager())
+
+        self.window._select(event)
+        self.window.update_idletasks()
+        self.assertEqual(self.window.hero_evidence.winfo_manager(), "grid")
+        self.assertEqual(self.window.spectrogram_frame.winfo_manager(), "grid")
+        self.assertEqual(self.window.btn_close_detail.winfo_manager(), "grid")
+        evidence = [(caption.cget("text"), value.cget("text"))
+                    for caption, value in self.window.evidence_pairs]
+        self.assertEqual(evidence[0], ("CUT-OFF", "no cut-off"))
+        self.assertEqual(evidence[1], ("LSB", "active"))
+        self.assertEqual(evidence[2], ("CLIPPING", "no clipping"))
+        self.assertEqual(evidence[3], ("MD5", "verified · 49f12971…"))
+
+        self.window.btn_close_detail.invoke()
+        self.window.update_idletasks()
+        self.assertIsNone(self.window.selected_event)
+        self.assertFalse(self.window.hero_evidence.winfo_manager())
+        self.assertFalse(self.window.spectrogram_frame.winfo_manager())
+        self.assertEqual(self.window.hero_number_caption.cget("text"), "FILES")
+
+    def test_inspector_shows_the_spectrogram_thumbnail(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "spectrogram.png")
+            Image.new("RGB", (640, 240), (12, 48, 66)).save(path)
+            event = self._track(esp={"corte_detectado": False,
+                                     "espectrograma": path})
+            self.window._process("stdout", event)
+            self.window._select(event)
+            self.window.update_idletasks()
+            self.assertIsNotNone(self.window.spectrogram_label.cget("image"))
+            self.assertFalse(self.window.spectrogram_placeholder.winfo_manager())
+            self.assertEqual(self.window.btn_open_spectrogram.cget("state"),
+                             "normal")
+
+    def test_inspector_without_spectrogram_shows_a_note(self):
+        event = self._track(esp={"corte_detectado": False, "espectrograma": None})
+        self.window._select(event)
+        self.window.update_idletasks()
+        self.assertIsNone(self.window.spectrogram_label.cget("image"))
+        self.assertEqual(self.window.spectrogram_placeholder.winfo_manager(), "grid")
+        self.assertEqual(self.window.spectrogram_note.cget("text"),
+                         "No spectrogram")
+        self.assertEqual(self.window.btn_open_spectrogram.cget("state"), "disabled")
+
+        missing = self._track(esp={"espectrograma": "C:/no/such/spectrogram.png"})
+        self.window._select(missing)
+        self.window.update_idletasks()
+        self.assertEqual(self.window.spectrogram_note.cget("text"),
+                         "Image not available")
+        self.assertEqual(self.window.btn_open_spectrogram.cget("state"), "disabled")
+
+    def test_inspector_lists_the_problem_chips(self):
+        self.window._select(self._track())
+        self.window.update_idletasks()
+        self.assertEqual(self._problem_texts(), ["No anomalies detected"])
+
+        two = self._track(problemas=["cut at 16 kHz", "low bit usage"])
+        self.window._select(two)
+        self.window.update_idletasks()
+        self.assertEqual(self._problem_texts(),
+                         ["cut at 16 kHz", "low bit usage"])
+
+        many = self._track(problemas=[f"problem {index}" for index in range(9)])
+        self.window._select(many)
+        self.window.update_idletasks()
+        texts = self._problem_texts()
+        self.assertEqual(texts[:4], [f"problem {index}" for index in range(4)])
+        self.assertIn("+5 more", texts)
+
+    def test_escape_and_a_second_click_close_the_inspector(self):
+        event = self._track()
+        self.window._select(event)
+        self.window.update_idletasks()
+        self.assertIs(self.window.selected_event, event)
+        self.window._escape_detail()
+        self.assertIsNone(self.window.selected_event)
+        self.window._select(event)
+        self.window.update_idletasks()
+        self.window._select(event)          # clicking the selected row deselects
+        self.assertIsNone(self.window.selected_event)
+        self.assertEqual(self.window.hero_number_caption.cget("text"), "FILES")
+
+    def test_facts_reflow_when_the_hero_is_narrow(self):
+        self.window._reflow_facts(600)
+        self.assertEqual(self.window._fact_columns, 4)
+        self.window._reflow_facts(300)
+        self.assertEqual(self.window._fact_columns, 2)
+        rows = {int(caption.grid_info()["row"])
+                for caption, value in self.window.fact_pairs}
+        self.assertIn(2, rows, "the facts did not wrap onto a second row")
+        self.window._reflow_facts(600)
+        self.assertEqual(self.window._fact_columns, 4)
 
 class test_integration_with_cli(unittest.TestCase):
     """`verificar_flac.py --gui` has to open the GUI, not the menu."""

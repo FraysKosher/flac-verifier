@@ -390,6 +390,74 @@ def result_row(event: Event) -> dict[str, Any]:
     }
 
 
+CUTOFF_LABELS = {
+    "no_cutoff": "no cut-off",
+    "near_nyquist_cutoff": "near Nyquist",
+    "far_cutoff": "far cut-off",
+}
+LSBS_LABELS = {
+    "active": "active",
+    "partial": "partial",
+    "empty": "empty",
+    "indeterminate": "indeterminate",
+}
+
+
+def spectrogram_path(event: Event) -> str:
+    """Path of the spectrogram PNG of a result, or "" when none was produced."""
+    spectrum = event.get("esp")
+    if not isinstance(spectrum, dict):
+        return ""
+    return str(spectrum.get("espectrograma") or "")
+
+
+def cutoff_text(event: Event) -> str:
+    """Cut-off category and frequency, from the spectrum block of the protocol."""
+    spectrum = event.get("esp")
+    if not isinstance(spectrum, dict) or not spectrum:
+        return "—"
+    if spectrum.get("error"):
+        return "not analyzed"
+    if not spectrum.get("corte_detectado"):
+        return "no cut-off"
+    category = CUTOFF_LABELS.get(str(spectrum.get("clase_corte")), "cut-off")
+    frequency = spectrum.get("frecuencia_corte")
+    if isinstance(frequency, (int, float)) and frequency:
+        return f"{category} · {frequency / 1000:.1f} kHz"
+    return category
+
+
+def lsb_text(event: Event) -> str:
+    """LSB utilization state of a 24-bit container (not applicable below that)."""
+    bits = event.get("bdi")
+    if not isinstance(bits, dict) or not bits:
+        return "—"
+    if not bits.get("aplica"):
+        return "not applicable"
+    return LSBS_LABELS.get(str(bits.get("lsbs")), "—")
+
+
+def clipping_text(event: Event) -> str:
+    """Full-scale clipping runs of the track."""
+    clip = event.get("clip")
+    if not isinstance(clip, dict) or not clip:
+        return "—"
+    runs = clip.get("runs_clip") or 0
+    if clip.get("hay_clipping") or runs:
+        return f"{runs} run(s) at full scale"
+    return "no clipping"
+
+
+def md5_detail(event: Event) -> str:
+    """MD5 state plus the start of the recomputed stream hash."""
+    md5 = event.get("md5")
+    if not isinstance(md5, dict) or not md5:
+        return "—"
+    state = MD5_LABELS.get(str(md5.get("estado") or ""), "—")
+    digest = str(md5.get("calculado") or "")
+    return f"{state} · {digest[:8]}…" if digest else state
+
+
 def dnd_paths(payload: str) -> list[str]:
     """Paths contained in a <<Drop>> event from tkinterdnd2.
 
@@ -787,6 +855,12 @@ if CTK_OK:
     class FlacVerifierWindow(_BaseWindow):
         """Main window: controls on the left, telemetry on the right."""
 
+        # Thumbnail box inside the spectrogram frame of the hero (DESIGN.md 7.8).
+        SPECTROGRAM_WIDTH = 212
+        SPECTROGRAM_HEIGHT = 96
+        # More chips than this wrap the hero too far; the rest go into "+N more".
+        MAX_PROBLEM_CHIPS = 4
+
         def __init__(self, initial_path: str | None = None, engine: str | None = None) -> None:
             super().__init__(fg_color=c("bg.canvas"))
             # Resolve the families after the Tk root exists: Windows 10 has no
@@ -818,6 +892,9 @@ if CTK_OK:
             self.activity_expanded = False
             self._hero_width = 0
             self._preview_width = 0
+            self._spectrograms: dict[str, Any] = {}
+            self._spectrogram_path_value = ""
+            self._hero_layout_scheduled = False
 
             self.grid_columnconfigure(0, weight=0, minsize=RAIL_WIDTH)
             self.grid_columnconfigure(1, weight=1)
@@ -829,6 +906,7 @@ if CTK_OK:
             self._render_hero()
             self._update_state()
             self.protocol("WM_DELETE_WINDOW", self._on_close)
+            self.bind("<Escape>", self._escape_detail)
             self._register_dnd()
 
             if initial_path:
@@ -1288,61 +1366,125 @@ if CTK_OK:
             self._build_hero(self.results)
             self._build_table(self.results)
 
+        # ── verdict hero and track detail (DESIGN.md 7.8) ───────────────────
         def _build_hero(self, parent: Any) -> None:
-            """Verdict hero (DESIGN.md 7.8): the first thing the eye finds."""
+            """Verdict hero: the album summary, or the inspector of one track."""
             self.hero = ctk.CTkFrame(parent, fg_color=c("bg.surface"),
                                      corner_radius=theme.RADIUS["lg"],
                                      border_width=1,
-                                     border_color=c("border.subtle"), height=136)
+                                     border_color=c("border.subtle"))
             self.hero.grid(row=0, column=0, sticky="ew", padx=theme.SPACE["xl"],
                            pady=(theme.SPACE["xs"], theme.SPACE["md"]))
             self.hero.grid_columnconfigure(1, weight=1)
 
             self.hero_bar = ctk.CTkFrame(self.hero, width=3, height=1,
                                          corner_radius=0, fg_color=c("unknown"))
-            self.hero_bar.grid(row=0, column=0, rowspan=2, sticky="ns",
+            self.hero_bar.grid(row=0, column=0, sticky="ns",
                                padx=(theme.SPACE["md"], theme.SPACE["sm"]),
                                pady=theme.SPACE["sm"])
 
-            left = ctk.CTkFrame(self.hero, fg_color="transparent")
-            left.grid(row=0, column=1, rowspan=2, sticky="nsew",
-                      pady=theme.SPACE["sm"])
-            left.grid_columnconfigure(0, weight=1)
+            self.hero_left = ctk.CTkFrame(self.hero, fg_color="transparent")
+            self.hero_left.grid(row=0, column=1, sticky="nsew",
+                                pady=theme.SPACE["sm"])
+            self.hero_left.grid_columnconfigure(0, weight=1)
 
-            # The eyebrow is the album summary (or the selected file name), so
-            # the label the tests know as `label_summary` keeps its text.
-            self.hero_eyebrow = ctk.CTkLabel(left, text="No results", anchor="w",
-                                             height=20, font=theme.font(13),
+            # Eyebrow: the album summary or the file name, plus the close button.
+            eyebrow_row = ctk.CTkFrame(self.hero_left, fg_color="transparent")
+            eyebrow_row.grid(row=0, column=0, sticky="ew")
+            eyebrow_row.grid_columnconfigure(0, weight=1)
+            self.hero_eyebrow = ctk.CTkLabel(eyebrow_row, text="No results",
+                                             anchor="w", height=20,
+                                             font=theme.font(13),
                                              text_color=c("text.secondary"))
             self.hero_eyebrow.grid(row=0, column=0, sticky="ew")
             self.label_summary = self.hero_eyebrow
+            self.btn_close_detail = self._button(eyebrow_row, "icon", "",
+                                                 self._clear_selection, icon="x",
+                                                 height=22, width=22)
+            self.btn_close_detail.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
+            self.close_tooltip = _Tooltip(self.btn_close_detail,
+                                          "Back to album summary")
 
-            self.hero_headline = ctk.CTkLabel(left, text="NO RESULTS", anchor="w",
-                                              font=theme.font(28, 700),
+            # Verdict and score share the row: the verdict is the biggest thing.
+            headline_row = ctk.CTkFrame(self.hero_left, fg_color="transparent")
+            headline_row.grid(row=1, column=0, sticky="ew")
+            headline_row.grid_columnconfigure(0, weight=1)
+            self.hero_headline = ctk.CTkLabel(headline_row, text="NO RESULTS",
+                                              anchor="w", font=theme.font(28, 700),
                                               text_color=c("text.primary"))
-            self.hero_headline.grid(row=1, column=0, sticky="ew")
+            self.hero_headline.grid(row=0, column=0, sticky="ew")
+            score_block = ctk.CTkFrame(headline_row, fg_color="transparent")
+            score_block.grid(row=0, column=1, sticky="e", padx=(theme.SPACE["sm"], 0))
+            self.hero_number = ctk.CTkLabel(score_block, text="—", anchor="e",
+                                            height=46, font=theme.mono(40, 600),
+                                            text_color=c("text.primary"))
+            self.hero_number.grid(row=0, column=0, sticky="e")
+            self.hero_number_caption = ctk.CTkLabel(score_block, text="SCORE",
+                                                    anchor="e", height=15,
+                                                    font=theme.font(11, 600),
+                                                    text_color=c("text.tertiary"))
+            self.hero_number_caption.grid(row=1, column=0, sticky="e")
 
-            self.hero_facts = ctk.CTkFrame(left, fg_color="transparent")
+            self.hero_facts = ctk.CTkFrame(self.hero_left, fg_color="transparent")
             self.hero_facts.grid(row=2, column=0, sticky="w", pady=(6, 0))
             self.fact_pairs = [self._fact_pair(self.hero_facts, column)
                                for column in range(4)]
+            self._fact_columns = 4
 
-            self.hero.bind("<Configure>", self._on_hero_configure)
+            self.hero_evidence = ctk.CTkFrame(self.hero_left, fg_color="transparent")
+            self.hero_evidence.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+            self.evidence_pairs = [self._evidence_pair(self.hero_evidence)
+                                   for _ in range(4)]
+            self._evidence_columns = 2
+            self._evidence_values: tuple[tuple[str, str], ...] = ()
 
-            right = ctk.CTkFrame(self.hero, fg_color="transparent")
-            right.grid(row=0, column=2, rowspan=2, sticky="ne",
-                       padx=(theme.SPACE["md"], theme.SPACE["lg"]),
-                       pady=theme.SPACE["sm"])
-            self.hero_number = ctk.CTkLabel(right, text="—", anchor="e",
-                                            font=theme.mono(40, 600),
-                                            text_color=c("text.primary"))
-            self.hero_number.grid(row=0, column=0, sticky="e")
-            self.hero_number_caption = ctk.CTkLabel(right, text="SCORE", anchor="e",
-                                                    height=15, font=theme.font(11, 600),
-                                                    text_color=c("text.tertiary"))
-            self.hero_number_caption.grid(row=1, column=0, sticky="e")
-            actions = ctk.CTkFrame(right, fg_color="transparent")
-            actions.grid(row=2, column=0, sticky="e", pady=(theme.SPACE["xs"], 0))
+            self.hero_problems = ctk.CTkFrame(self.hero_left, fg_color="transparent")
+            self.hero_problems.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+
+            # Right column: spectrogram, its action, and the report actions. It
+            # stays in place in the album state (only the actions are shown), so
+            # the hero does not jump when a row is selected.
+            self.hero_right = ctk.CTkFrame(self.hero, fg_color="transparent")
+            self.hero_right.grid(row=0, column=2, sticky="nsew",
+                                 padx=(theme.SPACE["sm"], theme.SPACE["lg"]),
+                                 pady=theme.SPACE["sm"])
+            self.hero_right.grid_columnconfigure(0, weight=1)
+            self.hero_right.grid_rowconfigure(0, weight=1)
+
+            self.spectrogram_frame = ctk.CTkFrame(
+                self.hero_right, fg_color=c("bg.raised"),
+                corner_radius=theme.RADIUS["sm"], border_width=1,
+                border_color=c("border.subtle"), height=104)
+            self.spectrogram_frame.grid(row=0, column=0, sticky="nsew")
+            self.spectrogram_frame.grid_columnconfigure(0, weight=1)
+            self.spectrogram_frame.grid_rowconfigure(0, weight=1)
+            self.spectrogram_label = ctk.CTkLabel(self.spectrogram_frame, text="")
+            self.spectrogram_label.grid(row=0, column=0, sticky="nsew")
+            self.spectrogram_placeholder = ctk.CTkFrame(
+                self.spectrogram_frame, fg_color="transparent")
+            self.spectrogram_placeholder.grid(row=0, column=0, sticky="nsew")
+            self.spectrogram_placeholder.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(self.spectrogram_placeholder, text="",
+                         image=self._icon("music", 24, c("text.tertiary"))).grid(
+                row=0, column=0, pady=(theme.SPACE["sm"], theme.SPACE["2xs"]))
+            self.spectrogram_note = ctk.CTkLabel(
+                self.spectrogram_placeholder, text="No spectrogram",
+                font=theme.font(12), text_color=c("text.secondary"))
+            self.spectrogram_note.grid(row=1, column=0)
+            self.spectrogram_hint = ctk.CTkLabel(
+                self.spectrogram_placeholder, text="Enable the PDF report",
+                font=theme.font(11), text_color=c("text.tertiary"))
+            self.spectrogram_hint.grid(row=2, column=0,
+                                       pady=(0, theme.SPACE["xs"]))
+
+            self.btn_open_spectrogram = self._button(
+                self.hero_right, "ghost", "Open spectrogram",
+                self._open_spectrogram, icon="external-link", height=28)
+            self.btn_open_spectrogram.grid(row=1, column=0, sticky="ew",
+                                           pady=(theme.SPACE["xs"], 0))
+
+            actions = ctk.CTkFrame(self.hero_right, fg_color="transparent")
+            actions.grid(row=2, column=0, sticky="se", pady=(theme.SPACE["xs"], 0))
             self.btn_open_pdf = self._button(actions, "secondary", "Open report",
                                              self._open_pdf, icon="external-link",
                                              background=c("bg.surface"))
@@ -1352,15 +1494,28 @@ if CTK_OK:
                                            background=c("bg.surface"))
             self.btn_reveal.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
 
+            self.hero.bind("<Configure>", self._on_hero_configure)
+
         def _fact_pair(self, parent: Any, column: int) -> tuple[Any, Any]:
             """One label/value pair of the fact row (12 px, DESIGN.md 7.8)."""
             caption = ctk.CTkLabel(parent, text="", anchor="w", height=15,
                                    font=theme.font(11, 600),
                                    text_color=c("text.tertiary"))
-            caption.grid(row=0, column=column, sticky="w", padx=(0, theme.SPACE["lg"]))
+            caption.grid(row=0, column=column, sticky="w",
+                         padx=(0, theme.SPACE["lg"]))
             value = ctk.CTkLabel(parent, text="", anchor="w", height=17,
                                  font=theme.mono(12), text_color=c("text.primary"))
-            value.grid(row=1, column=column, sticky="w", padx=(0, theme.SPACE["lg"]))
+            value.grid(row=1, column=column, sticky="w",
+                       padx=(0, theme.SPACE["lg"]))
+            return caption, value
+
+        def _evidence_pair(self, parent: Any) -> tuple[Any, Any]:
+            """Inline label/value of the evidence grid (2 x 2, DESIGN.md 7.8)."""
+            caption = ctk.CTkLabel(parent, text="", anchor="w", height=18,
+                                   font=theme.font(11, 600),
+                                   text_color=c("text.tertiary"))
+            value = ctk.CTkLabel(parent, text="", anchor="w", height=18,
+                                 font=theme.mono(12), text_color=c("text.primary"))
             return caption, value
 
         def _build_table(self, parent: Any) -> None:
@@ -1543,11 +1698,19 @@ if CTK_OK:
             self.table_canvas.yview_moveto(0.0)
 
         def _select(self, event: Event) -> None:
+            if event is self.selected_event:
+                self._clear_selection()
+                return
             self.selected_event = event
             for entry in self.table_rows:
                 self._paint_row(entry)
             self._render_hero()
             self._update_reveal()
+
+        def _escape_detail(self, _event: Any = None) -> None:
+            """Escape closes the detail inspector (DESIGN.md 9)."""
+            if self.selected_event is not None:
+                self._clear_selection()
 
         def _clear_selection(self) -> None:
             self.selected_event = None
@@ -1619,14 +1782,19 @@ if CTK_OK:
                 tone = VERDICT_TONES.get(kinds[0], "unknown")
             else:
                 headline, tone = "MIXED RESULTS", SUMMARY_TONES.get(colour, "unknown")
+            self._show_detail(False)
             self._set_hero_headline(text, headline, tone)
             self._set_hero_number(str(total), "FILES")
             self._set_facts((("ERRORS", str(errors)),
                              ("CACHED", str(cached)),
                              ("VERDICTS", str(len(kinds)))))
+            self._set_evidence(())
+            self._show_spectrogram("")
+            self._schedule_hero_layout()
 
         def _render_file_hero(self, event: Event) -> None:
             values = result_row(event)
+            self._show_detail(True)
             self._set_hero_headline(
                 values["file"],
                 values["verdict"].upper() if values["verdict"] else "ERROR",
@@ -1637,6 +1805,24 @@ if CTK_OK:
                              ("RATE", values["rate"]),
                              ("DR", values["dr"]),
                              ("MD5", values["md5"])))
+            self._set_evidence((("CUT-OFF", cutoff_text(event)),
+                                ("LSB", lsb_text(event)),
+                                ("CLIPPING", clipping_text(event)),
+                                ("MD5", md5_detail(event))))
+            self._render_problems(event)
+            self._show_spectrogram(spectrogram_path(event))
+            self._schedule_hero_layout()
+
+        def _show_detail(self, visible: bool) -> None:
+            """Shows or hides the inspector parts of the hero (7.8, phase 3)."""
+            widgets = (self.btn_close_detail, self.hero_evidence,
+                       self.hero_problems, self.spectrogram_frame,
+                       self.btn_open_spectrogram)
+            for widget in widgets:
+                if visible:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
 
         def _set_hero_headline(self, eyebrow: str, headline: str, tone: str) -> None:
             ink = CHIP_STYLES.get(tone, CHIP_STYLES["unknown"])[0]
@@ -1668,24 +1854,176 @@ if CTK_OK:
                     caption.grid_remove()
                     value.grid_remove()
 
+        def _set_evidence(self, pairs: tuple[tuple[str, str], ...]) -> None:
+            """Label/value pairs of the evidence block, below the facts."""
+            self._evidence_values = pairs
+            for index, (caption, value) in enumerate(self.evidence_pairs):
+                if index < len(pairs):
+                    label, text = pairs[index]
+                    caption.configure(text=label)
+                    value.configure(text=text)
+            self._place_evidence()
+
+        def _place_evidence(self) -> None:
+            for index, (caption, value) in enumerate(self.evidence_pairs):
+                if index >= len(self._evidence_values):
+                    caption.grid_remove()
+                    value.grid_remove()
+                    continue
+                row, column = divmod(index, self._evidence_columns)
+                caption.grid(row=row, column=column * 2, sticky="w", padx=(0, 6))
+                value.grid(row=row, column=column * 2 + 1, sticky="w",
+                           padx=(0, theme.SPACE["lg"]))
+
+        def _reflow_evidence(self, width: int) -> None:
+            """Two pairs per row, or one when the hero is narrow (window minimum)."""
+            columns = 2 if width >= 430 else 1
+            if columns == self._evidence_columns:
+                return
+            self._evidence_columns = columns
+            self._place_evidence()
+
+        def _render_problems(self, event: Event | None) -> None:
+            """Chips for the detected issues (warn/bad), wrapped by width."""
+            for child in self.hero_problems.winfo_children():
+                child.destroy()
+            if event is None:
+                return
+            problems = [str(item) for item in (event.get("problemas") or [])]
+            if event.get("error"):
+                problems = [str(event["error"])]
+            if not problems:
+                self._chip(self.hero_problems, "No anomalies detected",
+                           "ok").grid(row=0, column=0, sticky="w")
+                return
+            tone = ("danger" if event.get("error")
+                    else "bad" if event.get("veredicto") == "PROBABLE UPSCALE"
+                    else "warn")
+            text_font = theme.font(11, 600)
+            available = max(180, self._usable_width(self.hero_problems, 420))
+            shown = problems[:self.MAX_PROBLEM_CHIPS]
+            hidden = problems[self.MAX_PROBLEM_CHIPS:]
+            row_frame = None
+            used = 0
+            row = 0
+            for problem in shown:
+                label = self._fit(problem, text_font, 240)
+                width = self._text_width(text_font, label) + 46
+                if row_frame is None or (used and used + width > available):
+                    row_frame = ctk.CTkFrame(self.hero_problems,
+                                             fg_color="transparent")
+                    row_frame.grid(row=row, column=0, sticky="w",
+                                   pady=(0, theme.SPACE["2xs"]))
+                    row += 1
+                    used = 0
+                chip = self._chip(row_frame, label, tone)
+                chip.pack(side="left", padx=(0, theme.SPACE["xs"]))
+                _Tooltip(chip, problem)
+                used += width
+            if hidden and row_frame is not None:
+                chip = self._chip(row_frame, f"+{len(hidden)} more", "unknown")
+                chip.pack(side="left", padx=(0, theme.SPACE["xs"]))
+                _Tooltip(chip, "\n".join(hidden))
+
+        def _show_spectrogram(self, path: str) -> None:
+            """Image, or a clean note when the analysis produced no PNG (7.8)."""
+            self._spectrogram_path_value = path
+            image = self._spectrogram_image(path)
+            if image is not None:
+                self.spectrogram_label.configure(image=image, text="")
+                self.spectrogram_label.grid()
+                self.spectrogram_placeholder.grid_remove()
+            else:
+                self.spectrogram_label.grid_remove()
+                self.spectrogram_placeholder.grid()
+                self.spectrogram_note.configure(
+                    text="No spectrogram" if not path else "Image not available")
+                self.spectrogram_hint.configure(
+                    text="Enable the PDF report" if not path else "The file was moved")
+            self._set_enabled(self.btn_open_spectrogram,
+                              bool(path and os.path.exists(path)))
+
+        def _spectrogram_image(self, path: str) -> Any:
+            """Thumbnail of the track spectrogram, cached by path."""
+            if not path or not os.path.exists(path):
+                return None
+            if path in self._spectrograms:
+                return self._spectrograms[path]
+            image = None
+            try:
+                from PIL import Image
+                with Image.open(path) as source:
+                    picture = source.convert("RGB")
+                picture.thumbnail((self.SPECTROGRAM_WIDTH * 2,
+                                   self.SPECTROGRAM_HEIGHT * 2))
+                width, height = picture.size
+                scale = min(self.SPECTROGRAM_WIDTH / width,
+                            self.SPECTROGRAM_HEIGHT / height)
+                display = (max(1, round(width * scale)),
+                           max(1, round(height * scale)))
+                image = ctk.CTkImage(light_image=picture, dark_image=picture,
+                                     size=display)
+            except Exception:
+                image = None
+            self._spectrograms[path] = image
+            return image
+
+        def _open_spectrogram(self) -> None:
+            path = self._spectrogram_path_value
+            if not path or not os.path.exists(path):
+                self._alert("No spectrogram",
+                            "This track has no spectrogram image.")
+                return
+            if not open_file(path):
+                self._alert("Could not open the spectrogram",
+                            f"Open it manually:\n{path}", error=True)
+
+        def _reflow_facts(self, width: int) -> None:
+            """Four columns, or two when the hero is narrow (window minimum)."""
+            columns = 4 if width >= 430 else 2
+            if columns == self._fact_columns:
+                return
+            self._fact_columns = columns
+            for index, (caption, value) in enumerate(self.fact_pairs):
+                row, column = divmod(index, columns)
+                caption.grid_configure(row=row * 2, column=column)
+                value.grid_configure(row=row * 2 + 1, column=column)
+
         def _usable_width(self, widget: Any, fallback: int = 320) -> int:
             """Measured width, with a fallback while the window is not mapped yet."""
             width = widget.winfo_width()
             return width if width > 1 else fallback
 
         def _on_hero_configure(self, event: Any) -> None:
-            """Refits the hero texts when the hero itself changes width.
+            """Refits the hero when the hero itself changes width.
 
             Listening to the hero and not to the labels is what keeps this from
             feeding back: truncating a label changes the label, not the width of
-            the hero, so no second Configure can bounce between two texts.
+            the hero, so no second Configure can bounce between two texts. The
+            work is deferred to idle because the inner columns are sized after
+            the hero itself.
             """
             if event.width <= 40:
                 return
             if abs(event.width - self._hero_width) < 2:
                 return
             self._hero_width = event.width
+            self._schedule_hero_layout()
+
+        def _schedule_hero_layout(self) -> None:
+            if self._hero_layout_scheduled:
+                return
+            self._hero_layout_scheduled = True
+            self.after_idle(self._apply_hero_layout)
+
+        def _apply_hero_layout(self) -> None:
+            self._hero_layout_scheduled = False
             self._refit_hero_texts()
+            width = self._usable_width(self.hero_left, 520) - 8
+            self._reflow_facts(width)
+            self._reflow_evidence(width)
+            if self.selected_event is not None:
+                self._render_problems(self.selected_event)
 
         def _refit_hero_texts(self) -> None:
             self.hero_eyebrow.configure(
@@ -1842,6 +2180,10 @@ if CTK_OK:
                                                     else "normal"))
                 self._measures[key] = measure
             return measure
+
+        def _text_width(self, font: Any, text: str) -> int:
+            """Width of `text` in on-screen pixels at the current scaling."""
+            return self._measure_font(font).measure(text)
 
         def _scaled_font(self, font: Any) -> tuple[Any, ...]:
             """Tk font tuple at the current scaling, for plain Tk widgets."""
