@@ -82,6 +82,19 @@ def pages_pdf(path):
     return max(int(c) for c in counts) if counts else 0
 
 
+def _contrast(foreground, background):
+    """WCAG contrast ratio between two #RRGGBB colours."""
+    def luminance(colour):
+        channels = [int(colour[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [value / 12.92 if value <= 0.04045
+                  else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    first, second = luminance(foreground), luminance(background)
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)
+
+
 def _fitz_available():
     try:
         import fitz                                    # noqa: F401
@@ -174,6 +187,43 @@ class test_report_pdf(unittest.TestCase):
                 self.assertIn(label, text)
         self.assertIn("verified (match)", text)            # MD5 state
         self.assertIn("Detected issues", text)
+
+    # ── print palette ───────────────────────────────────────────────────────
+    def test_palette_comes_from_the_design_tokens(self):
+        """No hard-coded colours: the report reads the light tokens of theme.py."""
+        import theme
+        self.assertEqual(pdf.PAPER, theme.color("bg.surface", "light"))
+        self.assertEqual(pdf.INK, theme.color("text.primary", "light"))
+        self.assertEqual(pdf.RULE, theme.color("border.subtle", "light"))
+        for label, text, background, border in (list(pdf.STYLE_VERDICT.values())
+                                                + [pdf.STYLE_ERROR]):
+            with self.subTest(verdict=label):
+                self.assertNotEqual(text.upper(), "#000000",
+                                    "pure black text is an anti-pattern")
+                self.assertGreaterEqual(_contrast(text, background), 4.5,
+                                        "the verdict text is not readable")
+                self.assertNotEqual(border, background)
+
+    def test_cover_shows_the_brand_and_the_footer_the_engine_version(self):
+        results = analyze_album(self.album)
+        report = pdf.generate(self.album, results)
+        self.assertTrue(report["ok"], report.get("error"))
+        text = text_pdf(report["ruta"])
+        self.assertIn("FLAC VERIFIER", text)                       # wordmark
+        self.assertIn("Authenticity and lossless verification", text)
+        self.assertIn("engine 9.8", text)                          # footer
+        self.assertIsNotNone(pdf._logo_image(), "the logo is missing")
+
+    def test_styles_never_fall_back_to_black(self):
+        for name, style in pdf._styles().items():
+            colour = style.textColor
+            if colour is None:
+                continue
+            rendered = "#%02X%02X%02X" % (round(colour.red * 255),
+                                          round(colour.green * 255),
+                                          round(colour.blue * 255))
+            with self.subTest(style=name):
+                self.assertNotEqual(rendered.upper(), "#000000")
 
     # ── spectrograms ────────────────────────────────────────────────────────
     def test_report_embeds_spectrograms(self):
@@ -325,9 +375,11 @@ class test_report_pdf(unittest.TestCase):
                 try:
                     with_title = [i + 1 for i, p in enumerate(document)
                                   if "Spectrogram" in p.get_text()]
+                    # The cover now carries the logo, so only the song pages
+                    # count for this pairing.
                     with_image = [i + 1 for i, p in enumerate(document)
-                                  if any(p.get_image_rects(im[0])
-                                         for im in p.get_images(full=True))]
+                                  if i > 0 and any(p.get_image_rects(im[0])
+                                                   for im in p.get_images(full=True))]
                     self.assertEqual(with_title, with_image,
                                      "the title and its image ended up on different pages")
                     for i, page in enumerate(document, start=1):

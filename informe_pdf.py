@@ -19,14 +19,17 @@ import tempfile
 import time
 from collections.abc import MutableSequence
 
+import theme
+
 try:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import (Image, KeepTogether, PageBreak, Paragraph,
-                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+    from reportlab.platypus import (HRFlowable, Image, KeepTogether, PageBreak,
+                                    Paragraph, SimpleDocTemplate, Spacer, Table,
+                                    TableStyle)
     REPORTLAB_OK = True
 except ImportError:                     # the analysis keeps working without this
     REPORTLAB_OK = False
@@ -41,17 +44,49 @@ HEIGHT_FRAME_MM  = 259                   # A4 minus the top and bottom margins (
 HEIGHT_IMG_MAX_MM = 62                   # desired height of the spectrogram
 HEIGHT_IMG_MIN_MM = 34                   # below this it is no longer shrunk
 
-# Canonical verdict -> (label, text colour, background colour).
-# Green / yellow / orange / red, with dark text on a light background so that it
-# reads well in print.
+# ─── PRINT PALETTE ───────────────────────────────────────────────────────────
+# The report uses the light tokens of theme.py (paper, ink, rules) and the
+# semantic hues of the dark set pulled towards the ink, so one source of truth
+# feeds both the window and the paper. No literal colour lives in this module
+# except the ones theme.py computes.
+PAPER = theme.color("bg.surface", "light")
+INK = theme.color("text.primary", "light")
+INK_SECONDARY = theme.color("text.secondary", "light")
+INK_TERTIARY = theme.color("text.tertiary", "light")
+RULE = theme.color("border.subtle", "light")
+RAISED = theme.color("bg.raised", "light")
+ACCENT = theme.color("accent", "light")
+
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "Logo", "logo_flac_verifier_128.png")
+
+
+def _tone(hue: str) -> tuple[str, str, str]:
+    """(text, background, border) of a semantic hue on paper.
+
+    The text is the hue pulled towards the ink so it keeps print contrast; the
+    background and the border are the 12 % and 30 % tints over the paper that
+    DESIGN.md 5.2 asks for in the light theme."""
+    return (theme.mix(hue, INK, 0.45), theme.mix(hue, PAPER, 0.12),
+            theme.mix(hue, PAPER, 0.30))
+
+
+OK_TONE = _tone(theme.color("ok"))
+WARN_TONE = _tone(theme.color("warn"))
+BAD_TONE = _tone(theme.color("bad"))
+UNKNOWN_TONE = _tone(theme.color("unknown"))
+DANGER_TONE = _tone(theme.color("danger"))
+
+# Canonical verdict -> (label, text, border, background, border). The first
+# three entries are the ones the interface uses; the fourth is the badge border.
 STYLE_VERDICT = {
-    "GENUINE LOSSLESS":       ("GENUINE LOSSLESS",        "#14632C", "#E3F4E7"),
-    "PROBABLY LOSSLESS": ("PROBABLY LOSSLESS",  "#8A6D00", "#FBF3D5"),
-    "SUSPICIOUS":                 ("SUSPICIOUS",                  "#A85B00", "#FDE8D5"),
-    "PROBABLE UPSCALE":       ("PROBABLE UPSCALE",        "#A11616", "#FBE0E0"),
-    "indeterminate":          ("INDETERMINATE",           "#444444", "#EDEDED"),
+    "GENUINE LOSSLESS":       ("GENUINE LOSSLESS",) + OK_TONE,
+    "PROBABLY LOSSLESS": ("PROBABLY LOSSLESS",) + WARN_TONE,
+    "SUSPICIOUS":                 ("SUSPICIOUS",) + WARN_TONE,
+    "PROBABLE UPSCALE":       ("PROBABLE UPSCALE",) + BAD_TONE,
+    "indeterminate":          ("INDETERMINATE",) + UNKNOWN_TONE,
 }
-STYLE_ERROR = ("NO VERDICT (ERROR)", "#A11616", "#FBE0E0")
+STYLE_ERROR = ("NO VERDICT (ERROR)",) + DANGER_TONE
 
 CUTOFF_CLASS_TEXT = {
     "no_cutoff":            "no cut-off detected",
@@ -130,29 +165,39 @@ def _summary(results):
 
 def _styles():
     hoja = getSampleStyleSheet()
+
+    def style(name, parent, **kwargs):
+        return ParagraphStyle(name, parent=hoja[parent], **kwargs)
+
     return {
-        "titulo":    ParagraphStyle("titulo", parent=hoja["Title"], fontSize=24,
-                                    leading=28, spaceAfter=2 * mm),
-        "subtitulo": ParagraphStyle("subtitulo", parent=hoja["Normal"], fontSize=10,
-                                    textColor=colors.HexColor("#555555"), leading=14),
-        "seccion":   ParagraphStyle("seccion", parent=hoja["Heading2"], fontSize=13,
-                                    spaceBefore=4 * mm, spaceAfter=2.5 * mm,
-                                    textColor=colors.HexColor("#222222")),
-        "cancion":   ParagraphStyle("cancion", parent=hoja["Heading2"], fontSize=12.5,
-                                    spaceAfter=1 * mm, textColor=colors.HexColor("#111111")),
-        "normal":    ParagraphStyle("normal", parent=hoja["Normal"], fontSize=9.5,
-                                    leading=13),
-        "celda":     ParagraphStyle("celda", parent=hoja["Normal"], fontSize=8.5,
-                                    leading=11),
-        "etiqueta":  ParagraphStyle("etiqueta", parent=hoja["Normal"], fontSize=8.5,
-                                    leading=11, textColor=colors.HexColor("#666666")),
-        "problema":  ParagraphStyle("problema", parent=hoja["Normal"], fontSize=9,
-                                    leading=12.5, leftIndent=4 * mm,
-                                    bulletIndent=1 * mm, spaceAfter=1 * mm),
-        "insignia":  ParagraphStyle("insignia", parent=hoja["Normal"], fontSize=10.5,
-                                    leading=13, alignment=1),
-        "pie":       ParagraphStyle("pie", parent=hoja["Normal"], fontSize=7.5,
-                                    textColor=colors.HexColor("#888888")),
+        "titulo":    style("titulo", "Title", fontSize=22, leading=26,
+                           spaceAfter=1 * mm, alignment=0,
+                           textColor=colors.HexColor(INK)),
+        "marca":     style("marca", "Normal", fontSize=12, leading=14,
+                           fontName="Helvetica-Bold",
+                           textColor=colors.HexColor(ACCENT)),
+        "subtitulo": style("subtitulo", "Normal", fontSize=9.5, leading=13,
+                           textColor=colors.HexColor(INK_SECONDARY)),
+        "seccion":   style("seccion", "Heading2", fontSize=12, spaceBefore=4 * mm,
+                           spaceAfter=2 * mm, textColor=colors.HexColor(INK)),
+        "cancion":   style("cancion", "Heading2", fontSize=12, spaceAfter=1 * mm,
+                           textColor=colors.HexColor(INK)),
+        "normal":    style("normal", "Normal", fontSize=9.5, leading=13,
+                           textColor=colors.HexColor(INK)),
+        "celda":     style("celda", "Normal", fontSize=8.5, leading=11,
+                           textColor=colors.HexColor(INK)),
+        "etiqueta":  style("etiqueta", "Normal", fontSize=8.5, leading=11,
+                           textColor=colors.HexColor(INK_TERTIARY)),
+        "encabezado": style("encabezado", "Normal", fontSize=8, leading=10,
+                            fontName="Helvetica-Bold",
+                            textColor=colors.HexColor(INK_TERTIARY)),
+        "problema":  style("problema", "Normal", fontSize=9, leading=12.5,
+                           leftIndent=4 * mm, bulletIndent=1 * mm,
+                           spaceAfter=1 * mm, textColor=colors.HexColor(INK)),
+        "insignia":  style("insignia", "Normal", fontSize=10.5, leading=13,
+                           alignment=1, textColor=colors.HexColor(INK)),
+        "pie":       style("pie", "Normal", fontSize=7.5,
+                           textColor=colors.HexColor(INK_TERTIARY)),
     }
 
 
@@ -239,13 +284,13 @@ def _technical_table(res, styles):
         rows.append(left + right)
     widths = [34 * mm, 50 * mm, 34 * mm, 50 * mm]
     return _table(rows, widths, styles,
-                  [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
-                   ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FAFAFA")),
-                   ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#FAFAFA"))])
+                  [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor(RULE)),
+                   ("BACKGROUND", (0, 0), (0, -1), colors.HexColor(RAISED)),
+                   ("BACKGROUND", (2, 0), (2, -1), colors.HexColor(RAISED))])
 
 
 def _badge(res, styles):
-    label, text_color, background_color = _style_verdict(res)
+    label, text_color, background_color, border_color = _style_verdict(res)
     if res.get("error"):
         text = label
     else:
@@ -253,9 +298,33 @@ def _badge(res, styles):
     cell = Paragraph(f'<font color="{text_color}"><b>{text}</b></font>', styles["insignia"])
     return _table([[cell]], [172 * mm], styles,
                   [("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(background_color)),
-                   ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor(text_color)),
+                   ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor(border_color)),
                    ("TOPPADDING", (0, 0), (-1, -1), 4),
                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4)])
+
+
+def _logo_image():
+    """Logo mark of the cover, or None when the asset is not next to the module."""
+    if not os.path.exists(LOGO_PATH):
+        return None
+    try:
+        return Image(LOGO_PATH, width=14 * mm, height=14 * mm)
+    except Exception:
+        return None
+
+
+def _framed_image(image):
+    """The spectrogram inside a 1 px subtle frame, never a drop shadow (DESIGN 10)."""
+    if image is None:
+        return None
+    frame = Table([[image]], colWidths=[image.drawWidth + 6], hAlign="LEFT")
+    frame.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor(RULE)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+    return frame
 
 
 def _spectrogram_image(res, temporal, width_max=None, height_max=None):
@@ -373,9 +442,9 @@ def _song_card(index, total, res, styles, temporal):
     image, warning = _spectrogram_image(res, temporal)
     image = _adjust_image(image,
                              HEIGHT_FRAME_MM * mm - _height_of(element + [spectrum_title])
-                             - 2 * mm)
+                             - 5 * mm)
     if image is not None:
-        element.append(KeepTogether([spectrum_title, image]))
+        element.append(KeepTogether([spectrum_title, _framed_image(image)]))
     else:
         element.append(spectrum_title)
         element.append(Paragraph(
@@ -386,11 +455,11 @@ def _song_card(index, total, res, styles, temporal):
 def _cover(album_path, results, mode, styles):
     conteo, errors = _summary(results)
     total = len(results)
-    rows = [[Paragraph("<b>Verdict</b>", styles["celda"]),
-              Paragraph("<b>Files</b>", styles["celda"]),
-              Paragraph("<b>Percentage</b>", styles["celda"])]]
-    comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
+    rows = [[Paragraph("VERDICT", styles["encabezado"]),
+              Paragraph("FILES", styles["encabezado"]),
+              Paragraph("PERCENTAGE", styles["encabezado"])]]
+    comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor(RULE)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(RAISED)),
                 ("ALIGN", (1, 0), (-1, -1), "CENTER")]
 
     def row(label, text_color, count):
@@ -399,13 +468,13 @@ def _cover(album_path, results, mode, styles):
                 Paragraph(f'<font color="{text_color}">'
                           f'{(count * 100 / total) if total else 0:.0f} %</font>', styles["celda"])]
 
-    for key, (label, text_color, background_color) in STYLE_VERDICT.items():
+    for key, (label, text_color, background_color, border_color) in STYLE_VERDICT.items():
         if conteo.get(key):
             rows.append(row(label, text_color, conteo[key]))
             comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
                              colors.HexColor(background_color)))
     if errors:
-        label, text_color, background_color = STYLE_ERROR
+        label, text_color, background_color, border_color = STYLE_ERROR
         rows.append(row(label, text_color, errors))
         comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
                          colors.HexColor(background_color)))
@@ -413,9 +482,29 @@ def _cover(album_path, results, mode, styles):
                   Paragraph(f"<b>{total}</b>", styles["celda"]),
                   Paragraph("<b>100 %</b>", styles["celda"])])
     comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
-                     colors.HexColor("#F0F0F0")))
+                     colors.HexColor(RAISED)))
 
-    element = [
+    element = []
+    brand = [Paragraph("FLAC VERIFIER", styles["marca"]),
+             Paragraph("Authenticity and lossless verification",
+                       styles["subtitulo"])]
+    logo = _logo_image()
+    if logo is not None:
+        header = Table([[logo, brand]], colWidths=[20 * mm, 150 * mm],
+                       hAlign="LEFT")
+        header.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+        element.append(header)
+    else:
+        element.extend(brand)
+    element += [
+        Spacer(1, 5 * mm),
+        HRFlowable(width="100%", thickness=0.8, color=colors.HexColor(ACCENT),
+                   spaceBefore=0, spaceAfter=5 * mm),
         Paragraph("FLAC verification report", styles["titulo"]),
         Paragraph("Fake lossless detection: lossy transcodes and "
                   "bit-depth upgrades.", styles["subtitulo"]),
@@ -443,17 +532,17 @@ def _cover(album_path, results, mode, styles):
 
 
 def _final_table(results, styles):
-    rows = [[Paragraph("<b>#</b>", styles["celda"]),
-              Paragraph("<b>File</b>", styles["celda"]),
-              Paragraph("<b>Verdict</b>", styles["celda"]),
-              Paragraph("<b>Score</b>", styles["celda"]),
-              Paragraph("<b>Issues</b>", styles["celda"])]]
-    comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
+    rows = [[Paragraph("#", styles["encabezado"]),
+              Paragraph("FILE", styles["encabezado"]),
+              Paragraph("VERDICT", styles["encabezado"]),
+              Paragraph("SCORE", styles["encabezado"]),
+              Paragraph("ISSUES", styles["encabezado"])]]
+    comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor(RULE)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(RAISED)),
                 ("ALIGN", (0, 0), (0, -1), "CENTER"),
                 ("ALIGN", (3, 0), (4, -1), "CENTER")]
     for i, res in enumerate(results, start=1):
-        label, text_color, background_color = _style_verdict(res)
+        label, text_color, background_color, border_color = _style_verdict(res)
         rows.append([Paragraph(str(i), styles["celda"]),
                       Paragraph(html.escape(str(res.get("archivo", "?"))),
                                 styles["celda"]),
@@ -468,17 +557,30 @@ def _final_table(results, styles):
                   repeat_rows=1)
 
 
+def _engine_version():
+    """Version of the engine that produced the records, for the footer."""
+    try:
+        from motor_flac import ENGINE_VERSION
+        return str(ENGINE_VERSION)
+    except Exception:
+        return ""
+
+
 def _page_footer(canvas, doc, album, counter):
-    """Footer with the album name and the page number."""
+    """Footer: album, page number and engine version, in tertiary text."""
     counter["paginas"] = max(counter["paginas"], canvas.getPageNumber())
     canvas.saveState()
-    canvas.setStrokeColor(colors.HexColor("#DDDDDD"))
+    canvas.setStrokeColor(colors.HexColor(RULE))
     canvas.setLineWidth(0.4)
     canvas.line(20 * mm, 14 * mm, A4[0] - 20 * mm, 14 * mm)
     canvas.setFont("Helvetica", 7.5)
-    canvas.setFillColor(colors.HexColor("#888888"))
+    canvas.setFillColor(colors.HexColor(INK_TERTIARY))
     canvas.drawString(20 * mm, 10 * mm, f"FLAC VERIFIER — {album}"[:110])
-    canvas.drawRightString(A4[0] - 20 * mm, 10 * mm, f"Page {canvas.getPageNumber()}")
+    right = f"Page {canvas.getPageNumber()}"
+    version = _engine_version()
+    if version:
+        right += f"  ·  engine {version}"
+    canvas.drawRightString(A4[0] - 20 * mm, 10 * mm, right)
     canvas.restoreState()
 
 
@@ -582,8 +684,8 @@ def generate(analyzed_path, results, destination=None, mode=None):
             author="FLAC VERIFIER",
             subject=f"Verification of {len(results)} file(s)")
 
-        footer = lambda canvas, doc: _page_footer(canvas, doc, os.path.basename(
-            os.path.dirname(destination) or destination), counter)
+        album_label = os.path.basename(os.path.normpath(os.path.abspath(analyzed_path)))
+        footer = lambda canvas, doc: _page_footer(canvas, doc, album_label, counter)
 
         document.build(
             _LazyStream(_elements(analyzed_path, results, mode, styles, temporal)),
