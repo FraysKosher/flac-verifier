@@ -348,3 +348,9 @@ armonico
 copia
 nodos
 sospecha
+
+est
+esp
+liberar
+llamada
+llamadas

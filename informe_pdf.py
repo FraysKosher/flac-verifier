@@ -167,17 +167,17 @@ def _table(payload, widths, styles, style_cells=None, repeat_rows=0):
     return table
 
 
-def _technical_table(res, est):
+def _technical_table(res, styles):
     """Technical data table: two label/value pairs per row."""
     meta = res.get("meta") or {}
-    esp  = res.get("esp") or {}
+    spectrum  = res.get("esp") or {}
     bdi  = res.get("bdi") or {}
     md5  = res.get("md5") or {}
     clip = res.get("clip") or {}
 
     def value(key, text):
-        return [Paragraph(key, est["etiqueta"]),
-                Paragraph(html.escape(str(text)), est["celda"])]
+        return [Paragraph(key, styles["etiqueta"]),
+                Paragraph(html.escape(str(text)), styles["celda"])]
 
     duration = meta.get("duracion")
     partes = [
@@ -209,25 +209,25 @@ def _technical_table(res, est):
         text_bits = "not applicable (≤ 16 bits)"
     partes.append(value("LSB utilization", text_bits))
 
-    if esp.get("error"):
-        partes.append(value("Spectrum", f"not analyzed ({esp['error']})"))
+    if spectrum.get("error"):
+        partes.append(value("Spectrum", f"not analyzed ({spectrum['error']})"))
     else:
-        nyq = esp.get("nyquist") or 0
+        nyq = spectrum.get("nyquist") or 0
         partes.append(value("Spectral ceiling",
-                            f"{_num(esp.get('techo_hz'), ' Hz', 0)}"
-                            f" ({_pct(esp.get('techo_rel_nyquist'))} of Nyquist)"))
-        if esp.get("corte_detectado"):
-            category = CUTOFF_CLASS_TEXT.get(esp.get("clase_corte"), esp.get("clase_corte"))
-            text_cutoff = (f"{_num(esp.get('frecuencia_corte'), ' Hz', 0)}"
-                           f" ({_pct(esp.get('distancia_nyquist'))} of Nyquist) · {category}")
+                            f"{_num(spectrum.get('techo_hz'), ' Hz', 0)}"
+                            f" ({_pct(spectrum.get('techo_rel_nyquist'))} of Nyquist)"))
+        if spectrum.get("corte_detectado"):
+            category = CUTOFF_CLASS_TEXT.get(spectrum.get("clase_corte"), spectrum.get("clase_corte"))
+            text_cutoff = (f"{_num(spectrum.get('frecuencia_corte'), ' Hz', 0)}"
+                           f" ({_pct(spectrum.get('distancia_nyquist'))} of Nyquist) · {category}")
         else:
             text_cutoff = "no cut-off detected"
         partes.append(value("Spectral cut-off", text_cutoff))
         partes.append(value("High/mid ratio",
-                            _num(esp.get("ratio"), "", 5)
-                            if esp.get("ratio_aplica") else "not applicable"))
-        partes.append(value("High-band variance", _num(esp.get("var_alta_db"), " dB²", 1)))
-        partes.append(value("L-R separation", _num(esp.get("separacion_stereo"), "", 4)))
+                            _num(spectrum.get("ratio"), "", 5)
+                            if spectrum.get("ratio_aplica") else "not applicable"))
+        partes.append(value("High-band variance", _num(spectrum.get("var_alta_db"), " dB²", 1)))
+        partes.append(value("L-R separation", _num(spectrum.get("separacion_stereo"), "", 4)))
         partes.append(value("Nyquist", _num(nyq, " Hz", 0)))
 
     # 4-column grid: label, value, label, value. The width of the labels
@@ -238,20 +238,20 @@ def _technical_table(res, est):
         right = partes[i + 1] if i + 1 < len(partes) else ["", ""]
         rows.append(left + right)
     widths = [34 * mm, 50 * mm, 34 * mm, 50 * mm]
-    return _table(rows, widths, est,
+    return _table(rows, widths, styles,
                   [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FAFAFA")),
                    ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#FAFAFA"))])
 
 
-def _badge(res, est):
+def _badge(res, styles):
     label, text_color, background_color = _style_verdict(res)
     if res.get("error"):
         text = label
     else:
         text = f"{label} &nbsp;·&nbsp; score {_pct(res.get('score'))}"
-    cell = Paragraph(f'<font color="{text_color}"><b>{text}</b></font>', est["insignia"])
-    return _table([[cell]], [172 * mm], est,
+    cell = Paragraph(f'<font color="{text_color}"><b>{text}</b></font>', styles["insignia"])
+    return _table([[cell]], [172 * mm], styles,
                   [("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(background_color)),
                    ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor(text_color)),
                    ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -328,48 +328,48 @@ def _adjust_image(image, available):
     return Image(image.filename, width=image.drawWidth * proportion, height=height)
 
 
-def _song_card(index, total, res, est, temporal):
+def _song_card(index, total, res, styles, temporal):
     """Page for one song."""
     element = [Paragraph(
         f"{index} of {total} &nbsp;·&nbsp; "
         f"{html.escape(str(res.get('archivo', '?')))}",
-        est["cancion"]),
-                _badge(res, est),
+        styles["cancion"]),
+                _badge(res, styles),
                 Spacer(1, 3 * mm)]
 
     if res.get("error"):
         element.append(Paragraph(
             f"<b>Could not analyze:</b> {html.escape(str(res['error']))}",
-            est["normal"]))
+            styles["normal"]))
         element.append(Spacer(1, 3 * mm))
 
-    element.append(_technical_table(res, est))
+    element.append(_technical_table(res, styles))
     element.append(Spacer(1, 4 * mm))
 
     problems = res.get("problemas") or []
-    element.append(Paragraph("Detected issues", est["seccion"]))
+    element.append(Paragraph("Detected issues", styles["seccion"]))
     if problems:
         for problem in problems:
             element.append(Paragraph(
-                f"• {html.escape(str(problem))}", est["problema"]))
+                f"• {html.escape(str(problem))}", styles["problema"]))
     else:
-        element.append(Paragraph("No issues detected.", est["normal"]))
+        element.append(Paragraph("No issues detected.", styles["normal"]))
 
     evidence = res.get("evidencias_forenses") or []
     # With a very long issue list the page budget is already at its limit: the
     # issues themselves are the evidence then, so the duplicate block is skipped.
     if evidence and len(problems) < 8:
         element.append(Spacer(1, 3 * mm))
-        element.append(Paragraph("Forensic evidence", est["seccion"]))
+        element.append(Paragraph("Forensic evidence", styles["seccion"]))
         for evidence_item in evidence:
             element.append(Paragraph(
-                f"• {html.escape(str(evidence_item))}", est["problema"]))
+                f"• {html.escape(str(evidence_item))}", styles["problema"]))
     element.append(Spacer(1, 4 * mm))
 
     # The image is measured and adjusted so that the heading and the spectrogram
     # always stay together on the same page. KeepTogether is the safety net for
     # the extreme case (an issue list that leaves no room even for the minimum).
-    spectrum_title = Paragraph("Spectrogram", est["seccion"])
+    spectrum_title = Paragraph("Spectrogram", styles["seccion"])
     image, warning = _spectrogram_image(res, temporal)
     image = _adjust_image(image,
                              HEIGHT_FRAME_MM * mm - _height_of(element + [spectrum_title])
@@ -379,25 +379,25 @@ def _song_card(index, total, res, est, temporal):
     else:
         element.append(spectrum_title)
         element.append(Paragraph(
-            f"(no image: {html.escape(str(warning))})", est["normal"]))
+            f"(no image: {html.escape(str(warning))})", styles["normal"]))
     return element
 
 
-def _cover(album_path, results, mode, est):
+def _cover(album_path, results, mode, styles):
     conteo, errors = _summary(results)
     total = len(results)
-    rows = [[Paragraph("<b>Verdict</b>", est["celda"]),
-              Paragraph("<b>Files</b>", est["celda"]),
-              Paragraph("<b>Percentage</b>", est["celda"])]]
+    rows = [[Paragraph("<b>Verdict</b>", styles["celda"]),
+              Paragraph("<b>Files</b>", styles["celda"]),
+              Paragraph("<b>Percentage</b>", styles["celda"])]]
     comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
                 ("ALIGN", (1, 0), (-1, -1), "CENTER")]
 
     def row(label, text_color, count):
-        return [Paragraph(f'<font color="{text_color}"><b>{label}</b></font>', est["celda"]),
-                Paragraph(f'<font color="{text_color}"><b>{count}</b></font>', est["celda"]),
+        return [Paragraph(f'<font color="{text_color}"><b>{label}</b></font>', styles["celda"]),
+                Paragraph(f'<font color="{text_color}"><b>{count}</b></font>', styles["celda"]),
                 Paragraph(f'<font color="{text_color}">'
-                          f'{(count * 100 / total) if total else 0:.0f} %</font>', est["celda"])]
+                          f'{(count * 100 / total) if total else 0:.0f} %</font>', styles["celda"])]
 
     for key, (label, text_color, background_color) in STYLE_VERDICT.items():
         if conteo.get(key):
@@ -409,62 +409,62 @@ def _cover(album_path, results, mode, est):
         rows.append(row(label, text_color, errors))
         comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
                          colors.HexColor(background_color)))
-    rows.append([Paragraph("<b>TOTAL</b>", est["celda"]),
-                  Paragraph(f"<b>{total}</b>", est["celda"]),
-                  Paragraph("<b>100 %</b>", est["celda"])])
+    rows.append([Paragraph("<b>TOTAL</b>", styles["celda"]),
+                  Paragraph(f"<b>{total}</b>", styles["celda"]),
+                  Paragraph("<b>100 %</b>", styles["celda"])])
     comandos.append(("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1),
                      colors.HexColor("#F0F0F0")))
 
     element = [
-        Paragraph("FLAC verification report", est["titulo"]),
+        Paragraph("FLAC verification report", styles["titulo"]),
         Paragraph("Fake lossless detection: lossy transcodes and "
-                  "bit-depth upgrades.", est["subtitulo"]),
+                  "bit-depth upgrades.", styles["subtitulo"]),
         Spacer(1, 6 * mm),
         Paragraph(f"<b>Album analyzed:</b> {html.escape(str(album_path))}",
-                  est["normal"]),
+                  styles["normal"]),
         Paragraph(f"<b>Analysis date:</b> "
-                  f"{time.strftime('%Y-%m-%d %H:%M:%S')}", est["normal"]),
-        Paragraph(f"<b>Files analyzed:</b> {total}", est["normal"]),
+                  f"{time.strftime('%Y-%m-%d %H:%M:%S')}", styles["normal"]),
+        Paragraph(f"<b>Files analyzed:</b> {total}", styles["normal"]),
     ]
     if mode:
         element.append(Paragraph(
             f"<b>Spectral analysis mode:</b> {html.escape(str(mode))}",
-            est["normal"]))
+            styles["normal"]))
     element += [Spacer(1, 6 * mm),
-                 Paragraph("Executive summary", est["seccion"]),
-                 _table(rows, [72 * mm, 30 * mm, 30 * mm], est, comandos),
+                 Paragraph("Executive summary", styles["seccion"]),
+                 _table(rows, [72 * mm, 30 * mm, 30 * mm], styles, comandos),
                  Spacer(1, 4 * mm),
                  Paragraph("The verdict rests on four verifiable facts: "
                            "STREAMINFO MD5 integrity, actual LSB utilization, spectral "
                            "analysis with distance to Nyquist, and coherence between the declared "
                            "format and the content. A file with a confirmed defect "
-                           "never receives the top verdict.", est["subtitulo"])]
+                           "never receives the top verdict.", styles["subtitulo"])]
     return element
 
 
-def _final_table(results, est):
-    rows = [[Paragraph("<b>#</b>", est["celda"]),
-              Paragraph("<b>File</b>", est["celda"]),
-              Paragraph("<b>Verdict</b>", est["celda"]),
-              Paragraph("<b>Score</b>", est["celda"]),
-              Paragraph("<b>Issues</b>", est["celda"])]]
+def _final_table(results, styles):
+    rows = [[Paragraph("<b>#</b>", styles["celda"]),
+              Paragraph("<b>File</b>", styles["celda"]),
+              Paragraph("<b>Verdict</b>", styles["celda"]),
+              Paragraph("<b>Score</b>", styles["celda"]),
+              Paragraph("<b>Issues</b>", styles["celda"])]]
     comandos = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
                 ("ALIGN", (0, 0), (0, -1), "CENTER"),
                 ("ALIGN", (3, 0), (4, -1), "CENTER")]
     for i, res in enumerate(results, start=1):
         label, text_color, background_color = _style_verdict(res)
-        rows.append([Paragraph(str(i), est["celda"]),
+        rows.append([Paragraph(str(i), styles["celda"]),
                       Paragraph(html.escape(str(res.get("archivo", "?"))),
-                                est["celda"]),
+                                styles["celda"]),
                       Paragraph(f'<font color="{text_color}"><b>{label}</b></font>',
-                                est["celda"]),
-                      Paragraph(_pct(res.get("score")), est["celda"]),
+                                styles["celda"]),
+                      Paragraph(_pct(res.get("score")), styles["celda"]),
                       Paragraph("—" if res.get("error") else str(len(res.get("problemas") or [])),
-                                est["celda"])])
+                                styles["celda"])])
         comandos.append(("BACKGROUND", (2, len(rows) - 1), (2, len(rows) - 1),
                          colors.HexColor(background_color)))
-    return _table(rows, [10 * mm, 62 * mm, 52 * mm, 20 * mm, 22 * mm], est, comandos,
+    return _table(rows, [10 * mm, 62 * mm, 52 * mm, 20 * mm, 22 * mm], styles, comandos,
                   repeat_rows=1)
 
 
@@ -539,15 +539,15 @@ class _LazyStream(MutableSequence):
         self._buffer.insert(position, value)
 
 
-def _elements(analyzed_path, results, mode, est, temporal):
+def _elements(analyzed_path, results, mode, styles, temporal):
     """Yields the report flowables lazily: cover, one page per song, final table."""
-    yield from _cover(analyzed_path, results, mode, est)
+    yield from _cover(analyzed_path, results, mode, styles)
     for i, res in enumerate(results, start=1):
         yield PageBreak()
-        yield from _song_card(i, len(results), res, est, temporal)
+        yield from _song_card(i, len(results), res, styles, temporal)
     yield PageBreak()
-    yield Paragraph("Overall summary", est["seccion"])
-    yield _final_table(results, est)
+    yield Paragraph("Overall summary", styles["seccion"])
+    yield _final_table(results, styles)
 
 
 def generate(analyzed_path, results, destination=None, mode=None):
@@ -568,7 +568,7 @@ def generate(analyzed_path, results, destination=None, mode=None):
         key=lambda par: par[1].get("indice_original", par[0]))]
 
     destination = destination or report_path(analyzed_path)
-    est = _styles()
+    styles = _styles()
     counter = {"paginas": 0}
     temporal = None
     try:
@@ -586,7 +586,7 @@ def generate(analyzed_path, results, destination=None, mode=None):
             os.path.dirname(destination) or destination), counter)
 
         document.build(
-            _LazyStream(_elements(analyzed_path, results, mode, est, temporal)),
+            _LazyStream(_elements(analyzed_path, results, mode, styles, temporal)),
             onFirstPage=footer, onLaterPages=footer)
         pages = counter["paginas"]
         return {"ok": True, "ruta": destination, "error": None, "paginas": pages}

@@ -46,11 +46,11 @@ class test_streaming_equal_array(unittest.TestCase):
         self.assertEqual(res["bdi"], engine.analyze_bit_depth(data, meta), "low bits")
         self.assertEqual(res["md5"], engine.verify_md5(data, meta), "MD5")
 
-        esp = engine.analyze_spectrum(data, sr, mode, None, False, None)
-        self.assertIsNone(esp.get("error"), esp.get("error"))
+        spectrum = engine.analyze_spectrum(data, sr, mode, None, False, None)
+        self.assertIsNone(spectrum.get("error"), spectrum.get("error"))
         for key in KEYS_SPECTRAL:
             with self.subTest(key=key):
-                self.assertEqual(res["esp"][key], esp[key])
+                self.assertEqual(res["esp"][key], spectrum[key])
 
     def test_stereo_16_bits(self):
         self._compare("ok16")

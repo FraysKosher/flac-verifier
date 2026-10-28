@@ -20,7 +20,7 @@ import motor_flac as engine
 
 GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
 
-ESP_PERFECTO = {"error": None, "techo_hz": 22050, "techo_rel_nyquist": 1.0,
+PERFECT_SPECTRUM = {"error": None, "techo_hz": 22050, "techo_rel_nyquist": 1.0,
                 "clase_corte": "no_cutoff", "corte_detectado": False,
                 "frecuencia_corte": None, "distancia_nyquist": None,
                 "corte_artificial": False, "ratio": 1.0, "ratio_aplica": True,
@@ -57,13 +57,13 @@ class test_verdict(unittest.TestCase):
     # ── Block 5: CD master with a 20 kHz LPF ────────────────────────────────
     def test_master_cd_with_lpf_no_is_accused_transcoding(self):
         res = self.analyze("master_cd_20k")
-        esp = res["esp"]
+        spectrum = res["esp"]
         # The step is detected as a fact...
-        self.assertTrue(esp["corte_detectado"])
+        self.assertTrue(spectrum["corte_detectado"])
         # ...but it is at less than 12% of Nyquist: the anti-alias filter zone.
-        self.assertGreaterEqual(esp["distancia_nyquist"], 0.88)
-        self.assertEqual(esp["clase_corte"], "near_nyquist_cutoff")
-        self.assertFalse(esp["corte_artificial"])          # it is no longer an accusation
+        self.assertGreaterEqual(spectrum["distancia_nyquist"], 0.88)
+        self.assertEqual(spectrum["clase_corte"], "near_nyquist_cutoff")
+        self.assertFalse(spectrum["corte_artificial"])          # it is no longer an accusation
         # No message may accuse it of transcoding.
         text = " ".join(res["problemas"]).lower()
         for acusacion in ("codec signature", "codec signature", "transcode",
@@ -73,10 +73,10 @@ class test_verdict(unittest.TestCase):
 
     def test_cutoff_very_by_below_nyquist_if_accuses(self):
         res = self.analyze("corte_16k")
-        esp = res["esp"]
-        self.assertLess(esp["distancia_nyquist"], 0.88)
-        self.assertEqual(esp["clase_corte"], "far_cutoff")
-        self.assertTrue(esp["corte_artificial"])
+        spectrum = res["esp"]
+        self.assertLess(spectrum["distancia_nyquist"], 0.88)
+        self.assertEqual(spectrum["clase_corte"], "far_cutoff")
+        self.assertTrue(spectrum["corte_artificial"])
         self.assertTrue(any("artificial cut-off" in p for p in res["problemas"]))
         self.assertNotIn(res["veredicto"], GOOD_VERDICTS)
 
@@ -91,10 +91,10 @@ class test_verdict(unittest.TestCase):
     def test_cutoff_distant_blocks_verdict_max(self):
         """With all the rest of the evidence perfect, a confirmed defect cannot
         coexist with 'GENUINE LOSSLESS'."""
-        esp = dict(ESP_PERFECTO, clase_corte="far_cutoff", corte_detectado=True,
+        spectrum = dict(PERFECT_SPECTRUM, clase_corte="far_cutoff", corte_detectado=True,
                    frecuencia_corte=16000, distancia_nyquist=0.73,
                    corte_artificial=True)
-        score, verdict, problems = engine.calculate_score(CD_META, esp, NO_BITDEPTH)
+        score, verdict, problems = engine.calculate_score(CD_META, spectrum, NO_BITDEPTH)
         self.assertNotIn(verdict, GOOD_VERDICTS)
         self.assertTrue(any("artificial cut-off" in p for p in problems))
 
@@ -105,7 +105,7 @@ class test_verdict(unittest.TestCase):
         Invariant: an ambiguous cut-off (hugging Nyquist) costs its whole block,
         so with all the rest of the evidence perfect it does NOT reach the maximum
         verdict — but neither is anything accused."""
-        near = dict(ESP_PERFECTO, techo_hz=20000, techo_rel_nyquist=0.907,
+        near = dict(PERFECT_SPECTRUM, techo_hz=20000, techo_rel_nyquist=0.907,
                      clase_corte="near_nyquist_cutoff", corte_detectado=True,
                      frecuencia_corte=19800, distancia_nyquist=0.898,
                      corte_artificial=False)
@@ -131,16 +131,16 @@ class test_verdict(unittest.TestCase):
         """'active' bdi must score EXACTLY the same as bdi not applicable."""
         active = {"aplica": True, "lsbs": "active", "resolucion_efectiva_bits": 24,
                    "fraccion_16bit_grid": 9.8, "conclusion": "..."}
-        s_without, v_without, _ = engine.calculate_score(CD_META, ESP_PERFECTO, NO_BITDEPTH)
-        s_act, v_act, _ = engine.calculate_score(CD_META, ESP_PERFECTO, active)
+        s_without, v_without, _ = engine.calculate_score(CD_META, PERFECT_SPECTRUM, NO_BITDEPTH)
+        s_act, v_act, _ = engine.calculate_score(CD_META, PERFECT_SPECTRUM, active)
         self.assertEqual(s_without, s_act)
         self.assertEqual(v_without, v_act)
 
     def test_empty_lsb_penalize_and_block(self):
         empty_lsb = {"aplica": True, "lsbs": "empty", "resolucion_efectiva_bits": 16,
                   "fraccion_16bit_grid": 100.0, "conclusion": "..."}
-        s_act, _, _ = engine.calculate_score(CD_META, ESP_PERFECTO, NO_BITDEPTH)
-        s_vac, v_vac, problems = engine.calculate_score(CD_META, ESP_PERFECTO, empty_lsb)
+        s_act, _, _ = engine.calculate_score(CD_META, PERFECT_SPECTRUM, NO_BITDEPTH)
+        s_vac, v_vac, problems = engine.calculate_score(CD_META, PERFECT_SPECTRUM, empty_lsb)
         self.assertLess(s_vac, s_act)
         self.assertNotIn(v_vac, GOOD_VERDICTS)
         self.assertTrue(any("LSBs are empty" in p for p in problems))
@@ -190,9 +190,9 @@ class TestHiRes(unittest.TestCase):
     def _counts(self, meta, ceiling, **extra):
         """calcular_score with a synthetic spectrum at the given ceiling."""
         nyquist = meta["sample_rate"] // 2
-        esp = dict(ESP_PERFECTO, techo_hz=ceiling, techo_rel_nyquist=ceiling / nyquist,
+        spectrum = dict(PERFECT_SPECTRUM, techo_hz=ceiling, techo_rel_nyquist=ceiling / nyquist,
                    **extra)
-        return engine.calculate_score(meta, esp, NO_BITDEPTH)
+        return engine.calculate_score(meta, spectrum, NO_BITDEPTH)
 
     def test_master_hires_with_rolloff_30_khz_no_penalizes(self):
         """Real case: Steven Wilson, 'The Raven that Refused to Sing' (96/24)."""

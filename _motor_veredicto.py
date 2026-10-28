@@ -6,7 +6,7 @@ import os
 
 LIMIT_CD_HZ = 22050
 
-def calculate_score(meta, esp, bdi):
+def calculate_score(meta, spectrum, bdi):
     votos   = 0.0
     max_v   = 0.0
     resta   = 0.0
@@ -24,11 +24,11 @@ def calculate_score(meta, esp, bdi):
         resta += amount
         blocks = blocks or blocks_max_verdict
 
-    if not esp.get("error"):
-        ceiling     = esp["techo_hz"]
-        category     = esp.get("clase_corte", "no_cutoff")
-        rel_cutoff = esp.get("distancia_nyquist")
-        rel_ceiling = esp.get("techo_rel_nyquist")
+    if not spectrum.get("error"):
+        ceiling     = spectrum["techo_hz"]
+        category     = spectrum.get("clase_corte", "no_cutoff")
+        rel_cutoff = spectrum.get("distancia_nyquist")
+        rel_ceiling = spectrum.get("techo_rel_nyquist")
         if rel_ceiling is None:
             rel_ceiling = ceiling / nyquist if nyquist else 0.0
         nyq_txt = f"{nyquist/1000:.1f} kHz"
@@ -37,7 +37,7 @@ def calculate_score(meta, esp, bdi):
         #    claims to be hi-res. At 44.1/48 kHz it is physically impossible.
         if is_hires:
             max_v += 3
-            if esp.get("rolloff_analogico_genuino") or esp.get("es_transferencia_dsd"):
+            if spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
                 votos += 3
                 problems.append("hi-res morphology consistent with an analogue/DSD "
                                  "master (smooth roll-off and continuous ultrasonic floor)")
@@ -78,16 +78,16 @@ def calculate_score(meta, esp, bdi):
         )
         without_signatures_lossy = (
             category == "no_cutoff"
-            and not esp.get("sospecha_joint_stereo")
-            and not esp.get("sospecha_corte_opus_20k")
-            and not esp.get("clipping_reconstruccion_lossy")
-            and not esp.get("islas_mdct_sfb21")
-            and not esp.get("sospecha_excitador_armonico")
-            and (esp.get("iqr_corte_hz") or 0.0) <= 550.0
-            and (esp.get("ratio_huecos_mdct") or 0.0) <= 0.10
+            and not spectrum.get("sospecha_joint_stereo")
+            and not spectrum.get("sospecha_corte_opus_20k")
+            and not spectrum.get("clipping_reconstruccion_lossy")
+            and not spectrum.get("islas_mdct_sfb21")
+            and not spectrum.get("sospecha_excitador_armonico")
+            and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
+            and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
         )
         acoustic_exemption = bool(
-            esp.get("decaimiento_acustico_suave")
+            spectrum.get("decaimiento_acustico_suave")
             and bits_ok_acoustic
             and without_signatures_lossy
         )
@@ -95,7 +95,7 @@ def calculate_score(meta, esp, bdi):
         if sr > 48000:
             if ceiling >= LIMIT_CD_HZ:
                 votos += 3
-            elif esp.get("rolloff_analogico_genuino") or esp.get("es_transferencia_dsd"):
+            elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
                 votos += 3
                 problems.append("hi-res ceiling explained by an analogue/DSD master: "
                                  "the declared band is backed by the morphology")
@@ -127,16 +127,16 @@ def calculate_score(meta, esp, bdi):
                      f"of {nyq_txt}): the high band is destroyed", 0.40)
 
         # 3b. Vector 3: morphology that no legitimate master produces.
-        if esp.get("muro_brickwall_nyquist"):
+        if spectrum.get("muro_brickwall_nyquist"):
             penalizes(f"Hi-Res container with a brickwall at the CD/DAT Nyquist "
-                     f"({esp.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz, "
-                     f"{esp.get('salto_ultrasonico_db', 0.0):.1f} dB into the digital void): "
+                     f"({spectrum.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz, "
+                     f"{spectrum.get('salto_ultrasonico_db', 0.0):.1f} dB into the digital void): "
                      f"upscaled from a 44.1/48 kHz source", 0.40)
-        if esp.get("espejo_aliasing_detectado"):
+        if spectrum.get("espejo_aliasing_detectado"):
             penalizes(f"ultrasonic band mirrors the content below 22.05 kHz "
-                     f"(r = {esp.get('correlacion_espejo_22k', 0.0):.2f}): "
+                     f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f}): "
                      f"unfiltered-interpolator upscale (spectral aliasing)", 0.40)
-        if esp.get("es_transferencia_dsd"):
+        if spectrum.get("es_transferencia_dsd"):
             problems.append("DSD/SACD noise-shaping profile detected in 24-40 kHz "
                              "(legitimate hi-res transfer)")
 
@@ -146,18 +146,18 @@ def calculate_score(meta, esp, bdi):
         # far_cutoff cannot bypass this penalty.
         max_v += 3
         if category == "far_cutoff":
-            if esp.get("es_transferencia_dsd") or esp.get("rolloff_analogico_genuino"):
-                problems.append(f"band edge at {esp['frecuencia_corte']/1000:.1f} kHz "
+            if spectrum.get("es_transferencia_dsd") or spectrum.get("rolloff_analogico_genuino"):
+                problems.append(f"band edge at {spectrum['frecuencia_corte']/1000:.1f} kHz "
                                  f"({rel_cutoff*100:.0f}% of Nyquist): the musical band ends "
                                  f"there, consistent with an analogue/DSD master")
             else:
-                penalizes(f"artificial cut-off at {esp['frecuencia_corte']/1000:.1f} kHz "
+                penalizes(f"artificial cut-off at {spectrum['frecuencia_corte']/1000:.1f} kHz "
                          f"({rel_cutoff*100:.0f}% of Nyquist of {nyq_txt}): lossy codec signature",
                          0.40)
         elif category == "near_nyquist_cutoff":
             # It is neither flagged nor rewarded: the anti-alias filter of a
             # legitimate master lives here too. It is reported as inconclusive.
-            problems.append(f"band cut at {esp['frecuencia_corte']/1000:.1f} kHz "
+            problems.append(f"band cut at {spectrum['frecuencia_corte']/1000:.1f} kHz "
                              f"({rel_cutoff*100:.0f}% of Nyquist): consistent with the anti-alias "
                              f"filter of a legitimate master AND with a high-rate codec "
                              f"— inconclusive")
@@ -165,19 +165,19 @@ def calculate_score(meta, esp, bdi):
             votos += 3
 
         # 4. High-band metrics (not applicable if the file has no high band).
-        if esp.get("ratio_aplica"):
+        if spectrum.get("ratio_aplica"):
             max_v += 2
-            r = esp["ratio"]
+            r = spectrum["ratio"]
             if r > 0.05:   votos += 2
             elif r > 0.01: votos += 1
             else:          problems.append(f"high/mid ratio very low ({r:.5f})")
 
             max_v += 1
-            if esp.get("var_alta_db", 0) > 3:
+            if spectrum.get("var_alta_db", 0) > 3:
                 votos += 1
 
-        sep = esp.get("separacion_stereo")
-        if sep is not None and not esp.get("es_dual_mono"):
+        sep = spectrum.get("separacion_stereo")
+        if sep is not None and not spectrum.get("es_dual_mono"):
             max_v += 1
             if sep > 0.1:
                 votos += 1
@@ -185,26 +185,26 @@ def calculate_score(meta, esp, bdi):
         # 4b. Vector 1 (Mid/Side) and Vector 2 (cut-off jitter + MDCT holes).
         # Only ADD penalties when the signature is present: existing keys, votes
         # and verdicts of files without it stay exactly as they were.
-        if esp.get("es_dual_mono"):
+        if spectrum.get("es_dual_mono"):
             problems.append("dual-mono (left and right carry the same programme): "
                              "stereo separation is not informative")
-        if esp.get("sospecha_joint_stereo"):
+        if spectrum.get("sospecha_joint_stereo"):
             penalizes(f"the Side channel (L-R) collapses at high frequency "
-                     f"(Mid-Side drop {esp.get('caida_side_agudos_db', 0.0):.1f} dB, "
-                     f"cut-off delta {esp.get('delta_corte_ms_hz', 0.0):.0f} Hz): "
+                     f"(Mid-Side drop {spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, "
+                     f"cut-off delta {spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz): "
                      f"joint-stereo lossy codec signature", 0.30)
-        iqr = esp.get("iqr_corte_hz") or 0.0
+        iqr = spectrum.get("iqr_corte_hz") or 0.0
         # The jitter is already part of the Opus evidence: do not penalise the
         # same symptom twice when the 20.00 kHz cliff is already corroborated.
-        opus_corroborado = bool(esp.get("sospecha_corte_opus_20k") and
-                                not (esp.get("es_transferencia_dsd") or
-                                     esp.get("rolloff_analogico_genuino")) and
-                                (esp.get("sospecha_joint_stereo") or iqr > 550.0 or
-                                 (esp.get("ratio_huecos_mdct") or 0.0) > 0.10))
+        opus_corroborado = bool(spectrum.get("sospecha_corte_opus_20k") and
+                                not (spectrum.get("es_transferencia_dsd") or
+                                     spectrum.get("rolloff_analogico_genuino")) and
+                                (spectrum.get("sospecha_joint_stereo") or iqr > 550.0 or
+                                 (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10))
         if iqr > 550.0 and not opus_corroborado:
             penalizes(f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
                      f"frame-adaptive codec signature", 0.20, blocks_max_verdict=False)
-        huecos = esp.get("ratio_huecos_mdct") or 0.0
+        huecos = spectrum.get("ratio_huecos_mdct") or 0.0
         if huecos > 0.10:
             penalizes(f"MDCT spectral holes in {huecos*100:.0f}% of the high-energy "
                      f"frames: lossy codec signature", 0.25, blocks_max_verdict=False)
@@ -213,33 +213,33 @@ def calculate_score(meta, esp, bdi):
         # positive proof of a codec: the top scalefactor band switches on and off
         # frame by frame, or the high band is rebuilt from the 8-14 kHz envelope
         # and leaves a notch where the original band was cut.
-        if esp.get("islas_mdct_sfb21"):
+        if spectrum.get("islas_mdct_sfb21"):
             penalizes(f"intermittent MDCT spectral islands in 16-20.5 kHz "
-                     f"(P90-P10 gap {esp.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB, "
-                     f"{(esp.get('ratio_huecos_sfb21') or esp.get('ratio_apagado_sfb21') or 0.0)*100:.0f}% "
+                     f"(P90-P10 gap {spectrum.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB, "
+                     f"{(spectrum.get('ratio_huecos_sfb21') or spectrum.get('ratio_apagado_sfb21') or 0.0)*100:.0f}% "
                      f"of frames zeroed): lowpass-disabled lossy codec signature",
                      0.25, blocks_max_verdict=True)
-        if esp.get("sospecha_excitador_armonico"):
+        if spectrum.get("sospecha_excitador_armonico"):
             penalizes(f"synthetic high-frequency harmonic exciter / SBR signature "
-                     f"(envelope correlation r = {esp.get('corr_env_excitador', 0.0):.2f}, "
-                     f"{esp.get('muesca_excitador_db', 0.0):.1f} dB notch): "
+                     f"(envelope correlation r = {spectrum.get('corr_env_excitador', 0.0):.2f}, "
+                     f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch): "
                      f"adversarial bandwidth extension",
                      0.30, blocks_max_verdict=True)
 
         # Vector 5: libopus fullband cliff at 20.00 kHz. In isolation it is
         # indistinguishable from a mastering anti-alias low-pass, so it is scored
         # only together with another codec signature; on its own it stays a fact.
-        if (esp.get("sospecha_corte_opus_20k")
-                and not (esp.get("es_transferencia_dsd")
-                         or esp.get("rolloff_analogico_genuino"))):
+        if (spectrum.get("sospecha_corte_opus_20k")
+                and not (spectrum.get("es_transferencia_dsd")
+                         or spectrum.get("rolloff_analogico_genuino"))):
             corroborado = bool(
-                esp.get("sospecha_joint_stereo")
-                or (esp.get("iqr_corte_hz") or 0.0) > 550.0
-                or (esp.get("ratio_huecos_mdct") or 0.0) > 0.10
+                spectrum.get("sospecha_joint_stereo")
+                or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
+                or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
             )
             if corroborado:
                 penalizes(f"20.00 kHz cliff of "
-                         f"{esp.get('caida_opus_20k_db', 0.0):.0f} dB with other "
+                         f"{spectrum.get('caida_opus_20k_db', 0.0):.0f} dB with other "
                          f"codec evidence: libopus fullband transcode signature", 0.20,
                           blocks_max_verdict=False)
             else:
@@ -249,12 +249,12 @@ def calculate_score(meta, esp, bdi):
 
         # Vector 6: nature of the clipping. Only Gibbs overshoot is evidence of
         # lossy reconstruction; a mastering limiter is reported, never penalised.
-        if esp.get("clipping_reconstruccion_lossy"):
+        if spectrum.get("clipping_reconstruccion_lossy"):
             penalizes(f"clipping made of isolated 1-2 sample events "
-                     f"({esp.get('clipping_fraccion_cortos', 0.0)*100:.0f}% of them) "
+                     f"({spectrum.get('clipping_fraccion_cortos', 0.0)*100:.0f}% of them) "
                      f"with a band limit below 20.5 kHz: Gibbs overshoot from lossy "
                      f"reconstruction", 0.25, blocks_max_verdict=False)
-        if esp.get("clipping_mastering_limitador"):
+        if spectrum.get("clipping_mastering_limitador"):
             problems.append("clipping runs of 4+ consecutive samples with content up to "
                              "Nyquist: mastering brickwall limiter (observation, not an "
                              "authenticity defect)")
@@ -267,8 +267,8 @@ def calculate_score(meta, esp, bdi):
         #    filter, so that band is only penalised when the bit depth itself or
         #    the morphology smells like a transcode.
         if bits > 16 and sr <= 48000:
-            cutoff_txt = (f"cut at {esp['frecuencia_corte']/1000:.1f} kHz"
-                         if esp.get("frecuencia_corte") else
+            cutoff_txt = (f"cut at {spectrum['frecuencia_corte']/1000:.1f} kHz"
+                         if spectrum.get("frecuencia_corte") else
                          f"limited to {rel_ceiling*100:.0f}% of Nyquist "
                          f"({ceiling/1000:.1f} kHz)")
             forensic = bdi.get("forense_bits") or {}
@@ -285,11 +285,11 @@ def calculate_score(meta, esp, bdi):
                 )
                 without_codec_nor_brickwall = (
                     category == "no_cutoff"
-                    and not esp.get("sospecha_joint_stereo")
-                    and not esp.get("sospecha_corte_opus_20k")
-                    and (esp.get("iqr_corte_hz") or 0.0) <= 550.0
-                    and (esp.get("ratio_huecos_mdct") or 0.0) <= 0.10
-                    and (esp.get("gradiente_borde_db_khz") or 0.0) < 35.0
+                    and not spectrum.get("sospecha_joint_stereo")
+                    and not spectrum.get("sospecha_corte_opus_20k")
+                    and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
+                    and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
+                    and (spectrum.get("gradiente_borde_db_khz") or 0.0) < 35.0
                 )
                 if not (bits_clean and without_codec_nor_brickwall):
                     penalizes(f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
@@ -361,23 +361,23 @@ ALBUM_COHERENCE_NOTE = ("Acoustic/low-HF track validated by album-level "
 
 def _deserves_album_coherence(result):
     """True when the only evidence against the track is a low spectral ceiling."""
-    esp = result.get("esp") or {}
+    spectrum = result.get("esp") or {}
     bdi = result.get("bdi") or {}
-    if esp.get("error"):
+    if spectrum.get("error"):
         return False
     if (result.get("md5") or {}).get("estado") != "match":
         return False
-    if esp.get("corte_detectado"):
+    if spectrum.get("corte_detectado"):
         return False                       # a step is not "only a low ceiling"
-    if (esp.get("techo_rel_nyquist") or 1.0) >= 0.88:
+    if (spectrum.get("techo_rel_nyquist") or 1.0) >= 0.88:
         return False
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
                   "sospecha_joint_stereo", "sospecha_corte_opus_20k",
                   "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
                   "sospecha_excitador_armonico"):
-        if esp.get(key):
+        if spectrum.get(key):
             return False
-    if (esp.get("ratio_huecos_mdct") or 0.0) > 0.10:
+    if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
         return False
     forensic = bdi.get("forense_bits") or {}
     if (forensic.get("es_padded_16_en_24")
@@ -464,54 +464,54 @@ def forensic_evidence(result):
 
     It is additive to `problemas`: the GUI/PDF can explain *why* the verdict was
     reached without re-deriving the detectors from the raw metrics."""
-    esp = result.get("esp") or {}
+    spectrum = result.get("esp") or {}
     bdi = result.get("bdi") or {}
     evidence = []
-    if esp.get("error"):
+    if spectrum.get("error"):
         return evidence
 
-    ceiling = esp.get("techo_hz")
-    rel = esp.get("techo_rel_nyquist")
+    ceiling = spectrum.get("techo_hz")
+    rel = spectrum.get("techo_rel_nyquist")
     if isinstance(ceiling, (int, float)) and ceiling > 0:
         evidence.append(f"Spectral ceiling {ceiling/1000:.1f} kHz"
                           + (f" ({float(rel)*100:.0f}% of Nyquist)"
                              if isinstance(rel, (int, float)) else ""))
-    if esp.get("muro_brickwall_nyquist"):
+    if spectrum.get("muro_brickwall_nyquist"):
         evidence.append(f"Hi-Res brickwall at the CD/DAT Nyquist "
-                          f"({esp.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz)")
-    if esp.get("espejo_aliasing_detectado"):
+                          f"({spectrum.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz)")
+    if spectrum.get("espejo_aliasing_detectado"):
         evidence.append(f"Spectral mirror around 22.05 kHz "
-                          f"(r = {esp.get('correlacion_espejo_22k', 0.0):.2f})")
-    if esp.get("es_transferencia_dsd"):
+                          f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f})")
+    if spectrum.get("es_transferencia_dsd"):
         evidence.append("DSD/SACD noise-shaping profile in 24-40 kHz")
-    elif esp.get("rolloff_analogico_genuino"):
+    elif spectrum.get("rolloff_analogico_genuino"):
         evidence.append("Analogue/acoustic roll-off with a continuous ultrasonic floor")
-    if esp.get("sospecha_joint_stereo"):
+    if spectrum.get("sospecha_joint_stereo"):
         evidence.append(f"Side channel (L-R) collapse: "
-                          f"{esp.get('caida_side_agudos_db', 0.0):.1f} dB, "
-                          f"cut-off delta {esp.get('delta_corte_ms_hz', 0.0):.0f} Hz")
-    if esp.get("es_dual_mono"):
+                          f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, "
+                          f"cut-off delta {spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz")
+    if spectrum.get("es_dual_mono"):
         evidence.append("Dual-mono: left and right carry the same programme")
-    if (esp.get("iqr_corte_hz") or 0.0) > 550.0:
+    if (spectrum.get("iqr_corte_hz") or 0.0) > 550.0:
         evidence.append(f"Instantaneous cut-off jitter: "
-                          f"IQR {esp.get('iqr_corte_hz', 0.0):.0f} Hz")
-    if (esp.get("ratio_huecos_mdct") or 0.0) > 0.10:
+                          f"IQR {spectrum.get('iqr_corte_hz', 0.0):.0f} Hz")
+    if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
         evidence.append(f"MDCT spectral holes in "
-                          f"{(esp.get('ratio_huecos_mdct') or 0.0)*100:.0f}% of the frames")
-    if esp.get("sospecha_corte_opus_20k"):
-        evidence.append(f"20.00 kHz cliff ({esp.get('caida_opus_20k_db', 0.0):.0f} dB): "
+                          f"{(spectrum.get('ratio_huecos_mdct') or 0.0)*100:.0f}% of the frames")
+    if spectrum.get("sospecha_corte_opus_20k"):
+        evidence.append(f"20.00 kHz cliff ({spectrum.get('caida_opus_20k_db', 0.0):.0f} dB): "
                           f"libopus fullband signature")
-    if esp.get("clipping_reconstruccion_lossy"):
+    if spectrum.get("clipping_reconstruccion_lossy"):
         evidence.append("Clipping: isolated 1-2 sample Gibbs overshoot")
-    if esp.get("clipping_mastering_limitador"):
+    if spectrum.get("clipping_mastering_limitador"):
         evidence.append("Clipping: 4+ sample mastering limiter plateaus")
-    if esp.get("islas_mdct_sfb21"):
+    if spectrum.get("islas_mdct_sfb21"):
         evidence.append(f"Intermittent sfb21 MDCT islands: "
-                          f"{esp.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB P90-P10 gap")
-    if esp.get("sospecha_excitador_armonico"):
+                          f"{spectrum.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB P90-P10 gap")
+    if spectrum.get("sospecha_excitador_armonico"):
         evidence.append(f"Harmonic exciter / SBR signature: "
-                          f"r = {esp.get('corr_env_excitador', 0.0):.2f}, "
-                          f"{esp.get('muesca_excitador_db', 0.0):.1f} dB notch")
+                          f"r = {spectrum.get('corr_env_excitador', 0.0):.2f}, "
+                          f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch")
     forensic = bdi.get("forense_bits") or {}
     if forensic.get("es_padded_16_en_24"):
         evidence.append("16-bit content zero-padded into a 24-bit container")

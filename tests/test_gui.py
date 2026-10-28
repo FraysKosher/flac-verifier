@@ -61,16 +61,16 @@ class BlockedStream(io.StringIO):
     `terminate`/`kill` — releases it removes the race entirely.
     """
 
-    def __init__(self, text, liberar):
+    def __init__(self, text, release):
         super().__init__(text)
-        self._liberar = liberar
+        self._release = release
 
     def readline(self, *args, **kwargs):
         line = super().readline(*args, **kwargs)
         if line:
             return line
         # A bounded wait: a bug must not hang the whole suite for ever.
-        self._liberar.wait(timeout=5.0)
+        self._release.wait(timeout=5.0)
         return ""
 
     def __next__(self):
@@ -87,9 +87,9 @@ class FakeProcess:
                  bloquear=False):
         # With `bloquear=True` the process stays alive until the test releases it,
         # so assertions about a running analysis are deterministic.
-        self._liberar = threading.Event()
+        self._release = threading.Event()
         text = "\n".join(lines) + ("\n" if lines else "")
-        self.stdout = (BlockedStream(text, self._liberar) if bloquear
+        self.stdout = (BlockedStream(text, self._release) if bloquear
                        else io.StringIO(text))
         self.stderr = io.StringIO("\n".join(error) + ("\n" if error else ""))
         self.pid = 4242
@@ -99,28 +99,28 @@ class FakeProcess:
         self.finished = 0
         self.dead = 0
 
-    def liberar(self):
+    def release(self):
         """Lets a blocked stdout reach its end, so the reader thread can finish."""
-        self._liberar.set()
+        self._release.set()
 
     def poll(self):
         return self.returncode
 
     def wait(self, timeout=None):
-        self.liberar()
+        self.release()
         self.returncode = self._code if self.returncode is None else self.returncode
         return self.returncode
 
     def terminate(self):
         self.finished += 1
-        self.liberar()                      # a dead process cannot keep writing
+        self.release()                      # a dead process cannot keep writing
         if self.fails_terminate:
             raise OSError("could not terminate")
         self.returncode = 1
 
     def kill(self):
         self.dead += 1
-        self.liberar()
+        self.release()
         self.returncode = 1
 
 
@@ -318,20 +318,20 @@ class test_open_file(unittest.TestCase):
 class test_manager_process(unittest.TestCase):
     """Start-up, reading and cancellation, with a fake launcher."""
 
-    def _manager(self, process, llamadas=None):
+    def _manager(self, process, calls=None):
         def lanzador(command, **kwargs):
-            if llamadas is not None:
-                llamadas.append((command, kwargs))
+            if calls is not None:
+                calls.append((command, kwargs))
             return process
-        return gui.ProcessManager(queue.Queue(), lanzador=lanzador), llamadas
+        return gui.ProcessManager(queue.Queue(), lanzador=lanzador), calls
 
     def test_starts_with_options_critical_windows(self):
         process = FakeProcess(['{"tipo": "inicio", "total": 1}'])
-        llamadas = []
-        manager, _ = self._manager(process, llamadas)
+        calls = []
+        manager, _ = self._manager(process, calls)
         manager.start("C:/Album", mode="center", pdf=True)
-        self.assertEqual(len(llamadas), 1)
-        command, options = llamadas[0]
+        self.assertEqual(len(calls), 1)
+        command, options = calls[0]
         self.assertEqual(command[1], "-u")
         self.assertEqual(options["stdout"], subprocess.PIPE)
         self.assertEqual(options["stderr"], subprocess.PIPE)
@@ -378,7 +378,7 @@ class test_manager_process(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 manager.start("C:/Album")
         finally:
-            process.liberar()
+            process.release()
             manager.wait(duration=5)
 
     def test_cancel_finishes_process(self):
@@ -392,7 +392,7 @@ class test_manager_process(unittest.TestCase):
             self.assertGreaterEqual(process.finished, 1)
             self.assertFalse(manager.active)
         finally:
-            process.liberar()
+            process.release()
             manager.wait(duration=5)
 
     def test_if_terminate_fails_uses_kill(self):
@@ -409,7 +409,7 @@ class test_manager_process(unittest.TestCase):
             self.assertGreaterEqual(process.finished, 1)
             self.assertGreaterEqual(process.dead, 1)
         finally:
-            process.liberar()
+            process.release()
             manager.wait(duration=5)
 
     def test_finish_process_kills_tree_windows(self):
@@ -446,7 +446,7 @@ class test_manager_process(unittest.TestCase):
             manager.start("C:/Album")
             self.assertTrue(manager.active_thread)
         finally:
-            process.liberar()
+            process.release()
             manager.wait(duration=5)
         self.assertFalse(manager.active_thread)
 

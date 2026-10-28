@@ -36,12 +36,12 @@ def _create_track_reference(sr: int, duration: float = 8.0, seed: int = 2026) ->
     base_tonal_l = 0.25 * np.sin(2.0 * np.pi * 110.0 * t) + 0.15 * np.sin(2.0 * np.pi * 440.0 * t)
     base_tonal_r = 0.25 * np.sin(2.0 * np.pi * 110.0 * t) + 0.15 * np.cos(2.0 * np.pi * 440.0 * t)
 
-    est = np.column_stack([
+    estimate = np.column_stack([
         base_tonal_l + rosa_l * env_percusiva * 0.40,
         base_tonal_r + rosa_r * env_percusiva * 0.40,
     ])
-    est /= np.max(np.abs(est)) * 1.12
-    return est
+    estimate /= np.max(np.abs(estimate)) * 1.12
+    return estimate
 
 
 def _dsd_like(sr: int, duration: float, seed: int) -> np.ndarray:
@@ -168,9 +168,9 @@ class test_forensic_rigorous(unittest.TestCase):
         mid_f = signal.sosfilt(sos_mid, mid)
         side_f = signal.sosfilt(sos_side, side)
 
-        est_js = np.column_stack([mid_f + side_f, mid_f - side_f])
+        estimate_js = np.column_stack([mid_f + side_f, mid_f - side_f])
         path = self.base_path / "fake_mp3_320_joint_stereo.flac"
-        sf.write(path, np.clip(est_js, -0.98, 0.98), sr, subtype="PCM_16")
+        sf.write(path, np.clip(estimate_js, -0.98, 0.98), sr, subtype="PCM_16")
 
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
         self.assertIn(res["veredicto"], BAD_VERDICTS)
@@ -181,10 +181,10 @@ class test_forensic_rigorous(unittest.TestCase):
         n_intro = sr * 50
         t_intro = np.linspace(0.0, 50.0, n_intro, endpoint=False)
         intro_bass = 0.2 * np.sin(2.0 * np.pi * 180.0 * t_intro)
-        intro_est = np.column_stack([intro_bass, intro_bass * 0.95])
+        intro_estimate = np.column_stack([intro_bass, intro_bass * 0.95])
 
         body_active = _create_track_reference(sr, duration=12.0, seed=106)
-        track_full = np.vstack([intro_est, body_active])
+        track_full = np.vstack([intro_estimate, body_active])
 
         path = self.base_path / "prog_rock_long_intro.flac"
         sf.write(path, np.clip(track_full, -0.98, 0.98), sr, subtype="PCM_16")
@@ -447,11 +447,11 @@ class test_forensic_rigorous(unittest.TestCase):
         sf.write(path_ok, np.clip(smooth + dither, -0.99, 0.99), sr, subtype="PCM_24")
         res_ok = motor_flac.analyze_file_data(str(path_ok), use_cache=False)
 
-        esp_ok = res_ok["esp"]
-        self.assertTrue(0.88 <= esp_ok["techo_rel_nyquist"] < 0.95,
-                        f"ceiling {esp_ok['techo_hz']} Hz outside the test window")
-        self.assertEqual(esp_ok["clase_corte"], "no_cutoff")
-        self.assertLess(esp_ok["gradiente_borde_db_khz"], 35.0)
+        spectrum_ok = res_ok["esp"]
+        self.assertTrue(0.88 <= spectrum_ok["techo_rel_nyquist"] < 0.95,
+                        f"ceiling {spectrum_ok['techo_hz']} Hz outside the test window")
+        self.assertEqual(spectrum_ok["clase_corte"], "no_cutoff")
+        self.assertLess(spectrum_ok["gradiente_borde_db_khz"], 35.0)
         self.assertFalse(res_ok["bdi"]["forense_bits"]["es_24bit_escalado_en_peine"])
         self.assertEqual(res_ok["veredicto"], "GENUINE LOSSLESS")
 
@@ -709,8 +709,8 @@ class test_forensic_rigorous(unittest.TestCase):
                                    reference[:, 1] + shimmer])
         path = self.base_path / "stereo_control_16bit.flac"
         sf.write(path, np.clip(control, -0.98, 0.98), sr, subtype="PCM_16")
-        res_est = motor_flac.analyze_file_data(str(path), use_cache=False)
-        self.assertIs(res_est["esp"]["es_dual_mono"], False)
+        result_estimate = motor_flac.analyze_file_data(str(path), use_cache=False)
+        self.assertIs(result_estimate["esp"]["es_dual_mono"], False)
 
     def test_19_dsd_96khz_ramp_direct(self):
         """A DSD transfer stored at 96 kHz is DSD: the profile is universal.
@@ -1225,16 +1225,16 @@ class test_forensic_rigorous(unittest.TestCase):
         path = self.base_path / "solo_acustico_centroide_bajo.flac"
         sf.write(path, acoustic, sr, subtype="PCM_16")
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
-        esp = res["esp"]
+        spectrum = res["esp"]
 
-        self.assertGreater(esp["centroide_hz"], 1250.0)
-        self.assertLess(esp["centroide_hz"], 1800.0)
-        self.assertGreaterEqual(esp["techo_hz"], 11500)
-        self.assertLessEqual(esp["techo_hz"], 15000)
-        self.assertLess(esp["techo_rel_nyquist"], 0.70)
-        self.assertIs(esp["corte_detectado"], False)
-        self.assertLess(esp["gradiente_borde_db_khz"], 20.0)
-        self.assertIs(esp["decaimiento_acustico_suave"], True)
+        self.assertGreater(spectrum["centroide_hz"], 1250.0)
+        self.assertLess(spectrum["centroide_hz"], 1800.0)
+        self.assertGreaterEqual(spectrum["techo_hz"], 11500)
+        self.assertLessEqual(spectrum["techo_hz"], 15000)
+        self.assertLess(spectrum["techo_rel_nyquist"], 0.70)
+        self.assertIs(spectrum["corte_detectado"], False)
+        self.assertLess(spectrum["gradiente_borde_db_khz"], 20.0)
+        self.assertIs(spectrum["decaimiento_acustico_suave"], True)
         self.assertEqual(res["veredicto"], "PROBABLY LOSSLESS")
         self.assertIn("solo acoustic/low-centroid", " ".join(res["problemas"]))
 
@@ -1245,7 +1245,7 @@ class test_forensic_rigorous(unittest.TestCase):
                 "duracion": 100.0}
         bdi = {"aplica": False}
 
-        def _esp_with_ceiling(ceiling_hz, acoustic_smooth):
+        def _spectrum_with_ceiling(ceiling_hz, acoustic_smooth):
             return {"techo_hz": ceiling_hz,
                     "techo_rel_nyquist": round(ceiling_hz / 22050.0, 4),
                     "clase_corte": "no_cutoff", "frecuencia_corte": None,
@@ -1254,15 +1254,15 @@ class test_forensic_rigorous(unittest.TestCase):
                     "separacion_stereo": 1.0,
                     "decaimiento_acustico_suave": acoustic_smooth}
 
-        mid_with, _, _ = motor_flac.calculate_score(meta, _esp_with_ceiling(16500, True), bdi)
-        mid_without, _, _ = motor_flac.calculate_score(meta, _esp_with_ceiling(16500, False), bdi)
+        mid_with, _, _ = motor_flac.calculate_score(meta, _spectrum_with_ceiling(16500, True), bdi)
+        mid_without, _, _ = motor_flac.calculate_score(meta, _spectrum_with_ceiling(16500, False), bdi)
         self.assertEqual(mid_with, mid_without)
         self.assertLess(mid_with, 0.80)          # 1.5 votes, never 3.0
 
         low_with, _, prob_low_with = motor_flac.calculate_score(
-            meta, _esp_with_ceiling(13000, True), bdi)
+            meta, _spectrum_with_ceiling(13000, True), bdi)
         low_without, _, prob_low_without = motor_flac.calculate_score(
-            meta, _esp_with_ceiling(13000, False), bdi)
+            meta, _spectrum_with_ceiling(13000, False), bdi)
         self.assertGreater(low_with, low_without)
         self.assertIn("solo acoustic/low-centroid", " ".join(prob_low_with))
         self.assertFalse(any("destroyed" in p for p in prob_low_with))
@@ -1276,9 +1276,9 @@ class test_forensic_rigorous(unittest.TestCase):
         bdi_24_clean = {"aplica": True, "lsbs": "active",
                          "forense_bits": {"es_padded_16_en_24": False,
                                           "es_24bit_escalado_en_peine": False}}
-        esp_13000 = _esp_with_ceiling(13000, True)
+        spectrum_13000 = _spectrum_with_ceiling(13000, True)
         _, verdict, prob = motor_flac.calculate_score(
-            meta_24, esp_13000, bdi_24_clean)
+            meta_24, spectrum_13000, bdi_24_clean)
         self.assertIn("solo acoustic/low-centroid", " ".join(prob))
         self.assertFalse(any("destroyed" in p for p in prob))
         # Rule 5 is untouched by the exemption: 24 bits below 88 % of Nyquist
@@ -1290,14 +1290,14 @@ class test_forensic_rigorous(unittest.TestCase):
             bdi_24 = {"aplica": True, "lsbs": state, "forense_bits": {}}
 
             _, _, prob = motor_flac.calculate_score(
-                meta_24, _esp_with_ceiling(13000, True), bdi_24)
+                meta_24, _spectrum_with_ceiling(13000, True), bdi_24)
             self.assertTrue(any("destroyed" in p for p in prob), state)
             self.assertNotIn("solo acoustic/low-centroid", " ".join(prob), state)
 
-            esp_075 = _esp_with_ceiling(16538, True)
-            self.assertGreaterEqual(esp_075["techo_rel_nyquist"], 0.70)
-            self.assertLess(esp_075["techo_rel_nyquist"], 0.88)
-            _, verdict, prob = motor_flac.calculate_score(meta_24, esp_075, bdi_24)
+            spectrum_075 = _spectrum_with_ceiling(16538, True)
+            self.assertGreaterEqual(spectrum_075["techo_rel_nyquist"], 0.70)
+            self.assertLess(spectrum_075["techo_rel_nyquist"], 0.88)
+            _, verdict, prob = motor_flac.calculate_score(meta_24, spectrum_075, bdi_24)
             self.assertTrue(any("not backed by the content" in p for p in prob),
                             state)
             self.assertNotEqual(verdict, "GENUINE LOSSLESS", state)

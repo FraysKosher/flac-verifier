@@ -100,34 +100,34 @@ def _bit_depth(bdi):
     ic = {"empty": "❌", "partial": "⚠️ ", "active": "ℹ️ "}.get(bdi.get("lsbs"), "⚠️ ")
     print(f"  {ic} LSB utilization: {bdi['conclusion']}")
 
-def _spectrum(esp):
-    if esp.get("error"):
-        print(f"  ⚠️  Spectral error: {esp['error']}")
+def _spectrum(spectrum):
+    if spectrum.get("error"):
+        print(f"  ⚠️  Spectral error: {spectrum['error']}")
         return
-    nyquist = esp.get("nyquist") or 0
-    pct_nyquist = esp["techo_hz"] * 100 // nyquist if nyquist else 0
-    print(f"  • Spectral ceiling (-60 dB): {esp['techo_hz']:,} Hz  "
+    nyquist = spectrum.get("nyquist") or 0
+    pct_nyquist = spectrum["techo_hz"] * 100 // nyquist if nyquist else 0
+    print(f"  • Spectral ceiling (-60 dB): {spectrum['techo_hz']:,} Hz  "
           f"({pct_nyquist}% of Nyquist = {nyquist//1000} kHz)")
-    if esp.get("ratio_aplica"):
-        print(f"  • High/mid ratio:           {esp['ratio']:.5f}")
-        print(f"  • High-band variance:       {esp['var_alta_db']:.1f} dB²")
+    if spectrum.get("ratio_aplica"):
+        print(f"  • High/mid ratio:           {spectrum['ratio']:.5f}")
+        print(f"  • High-band variance:       {spectrum['var_alta_db']:.1f} dB²")
     else:
         print("  • High band:                not evaluable (no content above 18 kHz)")
-    if esp.get("separacion_stereo") is not None:
-        print(f"  • L-R separation:           {esp['separacion_stereo']:.4f}")
+    if spectrum.get("separacion_stereo") is not None:
+        print(f"  • L-R separation:           {spectrum['separacion_stereo']:.4f}")
 
-    category = esp.get("clase_corte")
+    category = spectrum.get("clase_corte")
     if category == "far_cutoff":
-        fc = esp.get("frecuencia_corte") or 0
+        fc = spectrum.get("frecuencia_corte") or 0
         print(f"  ❌ Artificial cut-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
-              f"{(esp.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): codec signature")
+              f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): codec signature")
     elif category == "near_nyquist_cutoff":
-        fc = esp.get("frecuencia_corte") or 0
+        fc = spectrum.get("frecuencia_corte") or 0
         print(f"  ℹ️  Band cut at {fc:,} Hz ({fc/1000:.1f} kHz, "
-              f"{(esp.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist) — inconclusive: "
+              f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist) — inconclusive: "
               f"a legitimate master's anti-alias filter lives here too")
-    if esp.get("espectrograma"):
-        print(f"  📊 Spectrogram: {esp['espectrograma']}")
+    if spectrum.get("espectrograma"):
+        print(f"  📊 Spectrogram: {spectrum['espectrograma']}")
 
 def _body(res):
     """Prints the report for an already analysed file. Returns the verdict or None."""

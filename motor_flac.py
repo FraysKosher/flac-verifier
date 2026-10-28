@@ -447,15 +447,15 @@ class _BlockAnalysis:
         return output
 
     def _spectral_result(self):
-        esp = self._spectrum_acc.result()
-        if not esp.get("error"):
+        spectrum = self._spectrum_acc.result()
+        if not spectrum.get("error"):
             # Vector 6: the nature of the clipping needs the spectrum (cut-off
             # below 20.5 kHz or content up to Nyquist).
-            esp.update(_classify_streaks(self._clip_lengths,
-                                          esp.get("techo_hz"),
-                                          esp.get("frecuencia_corte"),
+            spectrum.update(_classify_streaks(self._clip_lengths,
+                                          spectrum.get("techo_hz"),
+                                          spectrum.get("frecuencia_corte"),
                                           self.sr // 2))
-        return esp
+        return spectrum
 
 def _analyze_streaming(path, meta, mode, seconds, save_png):
     """A single read of the file, with memory bounded per block."""

@@ -100,18 +100,18 @@ class TestThinLayer(unittest.TestCase):
         self.assertIn("reportlab", lines[1])
 
     def test_table_verdicts_covers_outputs_engine(self):
-        esp_ok = {"error": None, "techo_hz": 22050, "corte_artificial": False,
+        spectrum_ok = {"error": None, "techo_hz": 22050, "corte_artificial": False,
                   "frecuencia_corte": None, "ratio": 1.0, "var_alta_db": 50.0,
                   "separacion_stereo": 1.0, "nyquist": 22050, "espectrograma": None}
         meta = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2,
                 "duracion": 10.0, "md5": 1}
-        cases = [esp_ok,
-                 dict(esp_ok, techo_hz=8000, corte_artificial=True,
+        cases = [spectrum_ok,
+                 dict(spectrum_ok, techo_hz=8000, corte_artificial=True,
                       frecuencia_corte=16000, ratio=0.0, var_alta_db=0.0),
-                 dict(esp_ok, error="simulated failure")]
-        for esp in cases:
-            with self.subTest(esp=esp.get("error") or esp["techo_hz"]):
-                score, verdict, problems = engine.calculate_score(meta, esp, {"aplica": False})
+                 dict(spectrum_ok, error="simulated failure")]
+        for spectrum in cases:
+            with self.subTest(spectrum=spectrum.get("error") or spectrum["techo_hz"]):
+                score, verdict, problems = engine.calculate_score(meta, spectrum, {"aplica": False})
                 self.assertTrue(0.0 <= score <= 1.0)
                 self.assertIn(verdict, cli.VERDICTS)
                 self.assertIsInstance(problems, list)

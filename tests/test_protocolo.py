@@ -50,10 +50,10 @@ class TestProtocol(unittest.TestCase):
     def test_file_32k_stereo_no_produces_nan(self):
         """Nyquist 16 kHz -> empty high-band masks (the origin of the NaN)."""
         res = engine.analyze_file_data(self.fx["estereo32k"], "center", None, False)
-        esp = res["esp"]
-        self.assertIsNone(esp["separacion_stereo"])       # before: nan
-        self.assertEqual(esp["ratio"], 0.0)
-        for key, value in esp.items():
+        spectrum = res["esp"]
+        self.assertIsNone(spectrum["separacion_stereo"])       # before: nan
+        self.assertEqual(spectrum["ratio"], 0.0)
+        for key, value in spectrum.items():
             if isinstance(value, float):
                 with self.subTest(metrica=key):
                     self.assertTrue(math.isfinite(value), f"{key} = {value}")

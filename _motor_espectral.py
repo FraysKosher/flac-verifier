@@ -1297,18 +1297,18 @@ class _SpectralAccumulator:
         mean_total = sum_total / np.float32(frames)
         mean_mid = (sum_mid / np.float32(frames)) if self.is_stereo else None
         mean_side = (sum_side / np.float32(frames)) if self.is_stereo else None
-        esp = _spectral_metrics(freqs, mean_l, mean_r, self.sr,
+        spectrum = _spectral_metrics(freqs, mean_l, mean_r, self.sr,
                                     is_stereo=self.is_stereo,
                                     power=mean_total,
                                     power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
-        esp.update(self._psycho.result())
+        spectrum.update(self._psycho.result())
         if self.save_png and png_power:
             png_path, error = self._renderer(
                 freqs, np.concatenate(png_times),
                 np.concatenate(png_power, axis=0).T,
-                self.sr, self.path, esp["techo_hz"], esp["frecuencia_corte"])
-            esp["espectrograma"] = png_path
+                self.sr, self.path, spectrum["techo_hz"], spectrum["frecuencia_corte"])
+            spectrum["espectrograma"] = png_path
             if error:
-                esp["espectrograma_error"] = error
-        return esp
+                spectrum["espectrograma_error"] = error
+        return spectrum

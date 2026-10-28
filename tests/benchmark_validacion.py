@@ -44,9 +44,9 @@ def track_reference(sr, duration=4.0, seed=2026):
     env = 0.12 + 0.88 * (np.sin(2.0 * np.pi * 2.5 * t) ** 10)
     tonal_l = 0.25 * np.sin(2.0 * np.pi * 110.0 * t) + 0.15 * np.sin(2.0 * np.pi * 440.0 * t)
     tonal_r = 0.25 * np.sin(2.0 * np.pi * 110.0 * t) + 0.15 * np.cos(2.0 * np.pi * 440.0 * t)
-    est = np.column_stack([tonal_l + rosa_l * env * 0.40,
+    estimate = np.column_stack([tonal_l + rosa_l * env * 0.40,
                            tonal_r + rosa_r * env * 0.40])
-    return est / (np.max(np.abs(est)) * 1.12)
+    return estimate / (np.max(np.abs(estimate)) * 1.12)
 
 
 def dsd_like(sr, duration=4.0, seed=2026):
