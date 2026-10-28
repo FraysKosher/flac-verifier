@@ -290,10 +290,14 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
 
 ### 7.8 Verdict hero
 
-- Height 120–140, radius 12, `bg.surface`, 1 px border.
+- Height 120–140 for the album summary, 200–280 for the track inspector;
+  radius 12, `bg.surface`, 1 px border.
 - Left 3 px verdict bar or a chip; verdict 28/700; score 40/600 mono.
 - File name 13 secondary, truncating from the left if long.
 - Fact row: bit depth, sample rate, DR, MD5 as label/value pairs, 12 px.
+- Issue messages are wrapped lines with a severity dot, never truncated chips.
+  More than three are folded behind **Show all (N)**, which expands in place;
+  the full text is always reachable without a tooltip.
 - Actions on the right: **Open report** (secondary), **Reveal** (ghost).
 
 ### 7.9 Progress and status

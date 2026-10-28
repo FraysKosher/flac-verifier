@@ -1042,7 +1042,7 @@ class test_window(unittest.TestCase):
         return event
 
     def _problem_texts(self):
-        """Texts of the problem chips, in drawing order and without duplicates."""
+        """Texts of the issue lines, in drawing order and without duplicates."""
         texts = []
         stack = list(self.window.hero_problems.winfo_children())
         while stack:
@@ -1114,23 +1114,50 @@ class test_window(unittest.TestCase):
                          "Image not available")
         self.assertEqual(self.window.btn_open_spectrogram.cget("state"), "disabled")
 
-    def test_inspector_lists_the_problem_chips(self):
+    def _problem_button(self, prefix):
+        stack = list(self.window.hero_problems.winfo_children())
+        while stack:
+            widget = stack.pop(0)
+            stack.extend(widget.winfo_children())
+            try:
+                text = widget.cget("text")
+            except Exception:
+                continue
+            if text.startswith(prefix) and hasattr(widget, "invoke"):
+                return widget
+        return None
+
+    def test_inspector_lists_the_full_problem_text(self):
         self.window._select(self._track())
         self.window.update_idletasks()
         self.assertEqual(self._problem_texts(), ["No anomalies detected"])
 
-        two = self._track(problemas=["cut at 16 kHz", "low bit usage"])
+        long = ("the instantaneous cut-off jitters (IQR 958 Hz), which is "
+                "not enough to call the file lossy on its own")
+        two = self._track(problemas=["cut at 16 kHz", long])
         self.window._select(two)
         self.window.update_idletasks()
-        self.assertEqual(self._problem_texts(),
-                         ["cut at 16 kHz", "low bit usage"])
+        texts = self._problem_texts()
+        self.assertEqual(texts, ["cut at 16 kHz", long])
+        self.assertFalse(any("…" in text for text in texts))
 
         many = self._track(problemas=[f"problem {index}" for index in range(9)])
         self.window._select(many)
         self.window.update_idletasks()
-        texts = self._problem_texts()
-        self.assertEqual(texts[:4], [f"problem {index}" for index in range(4)])
-        self.assertIn("+5 more", texts)
+        raw = self._problem_texts()
+        texts = [text for text in raw
+                 if not text.startswith(("Show all", "Show less"))]
+        self.assertEqual(texts[:3], [f"problem {index}" for index in range(3)])
+        self.assertNotIn("+6 more", raw)
+        button = self._problem_button("Show all")
+        self.assertIsNotNone(button)
+        self.assertEqual(button.cget("text"), "Show all (9)")
+        button.invoke()
+        self.window.update_idletasks()
+        raw = self._problem_texts()
+        for index in range(9):
+            self.assertIn(f"problem {index}", raw)
+        self.assertIn("Show less", raw)
 
     def test_escape_and_a_second_click_close_the_inspector(self):
         event = self._track()

@@ -858,8 +858,9 @@ if CTK_OK:
         # Thumbnail box inside the spectrogram frame of the hero (DESIGN.md 7.8).
         SPECTROGRAM_WIDTH = 212
         SPECTROGRAM_HEIGHT = 96
-        # More chips than this wrap the hero too far; the rest go into "+N more".
-        MAX_PROBLEM_CHIPS = 4
+        # More issue lines than this are folded behind "Show all"; the text of
+        # each issue is always shown in full, wrapped, never truncated.
+        MAX_VISIBLE_PROBLEMS = 3
 
         def __init__(self, initial_path: str | None = None, engine: str | None = None) -> None:
             super().__init__(fg_color=c("bg.canvas"))
@@ -884,6 +885,7 @@ if CTK_OK:
             # Results surface: the selected row, its widgets and the text metrics
             # used by the ellipsis.
             self.selected_event: Event | None = None
+            self._problems_expanded = False
             self.table_rows: list[dict[str, Any]] = []
             self._measures: dict[tuple[Any, ...], Any] = {}
             self._eyebrow_full = ""
@@ -1702,6 +1704,7 @@ if CTK_OK:
                 self._clear_selection()
                 return
             self.selected_event = event
+            self._problems_expanded = False
             for entry in self.table_rows:
                 self._paint_row(entry)
             self._render_hero()
@@ -1714,6 +1717,7 @@ if CTK_OK:
 
         def _clear_selection(self) -> None:
             self.selected_event = None
+            self._problems_expanded = False
             for entry in self.table_rows:
                 self._paint_row(entry)
             self._render_hero()
@@ -1884,7 +1888,13 @@ if CTK_OK:
             self._place_evidence()
 
         def _render_problems(self, event: Event | None) -> None:
-            """Chips for the detected issues (warn/bad), wrapped by width."""
+            """Issue text lines (warn/bad), wrapped in full and never truncated.
+
+            A chip is a label, not a sentence: cutting the only message and
+            hiding the rest in a tooltip leaves the user without the reason the
+            track was flagged. The text wraps; more than MAX_VISIBLE_PROBLEMS
+            are folded behind "Show all (N)" instead of being dropped.
+            """
             for child in self.hero_problems.winfo_children():
                 child.destroy()
             if event is None:
@@ -1899,31 +1909,41 @@ if CTK_OK:
             tone = ("danger" if event.get("error")
                     else "bad" if event.get("veredicto") == "PROBABLE UPSCALE"
                     else "warn")
-            text_font = theme.font(11, 600)
-            available = max(180, self._usable_width(self.hero_problems, 420))
-            shown = problems[:self.MAX_PROBLEM_CHIPS]
-            hidden = problems[self.MAX_PROBLEM_CHIPS:]
-            row_frame = None
-            used = 0
-            row = 0
-            for problem in shown:
-                label = self._fit(problem, text_font, 240)
-                width = self._text_width(text_font, label) + 46
-                if row_frame is None or (used and used + width > available):
-                    row_frame = ctk.CTkFrame(self.hero_problems,
-                                             fg_color="transparent")
-                    row_frame.grid(row=row, column=0, sticky="w",
-                                   pady=(0, theme.SPACE["2xs"]))
-                    row += 1
-                    used = 0
-                chip = self._chip(row_frame, label, tone)
-                chip.pack(side="left", padx=(0, theme.SPACE["xs"]))
-                _Tooltip(chip, problem)
-                used += width
-            if hidden and row_frame is not None:
-                chip = self._chip(row_frame, f"+{len(hidden)} more", "unknown")
-                chip.pack(side="left", padx=(0, theme.SPACE["xs"]))
-                _Tooltip(chip, "\n".join(hidden))
+            available = max(220, self._usable_width(self.hero_problems, 420))
+            expanded = self._problems_expanded
+            visible = problems if expanded else problems[:self.MAX_VISIBLE_PROBLEMS]
+            for index, problem in enumerate(visible):
+                self._problem_line(index, problem, tone, available)
+            if len(problems) > self.MAX_VISIBLE_PROBLEMS:
+                label = "Show less" if expanded else f"Show all ({len(problems)})"
+                link = ctk.CTkButton(
+                    self.hero_problems, text=label, height=24, width=120,
+                    fg_color="transparent", hover_color=c("bg.hover"),
+                    text_color=c("accent"), font=theme.font(11, 600),
+                    border_width=0, anchor="w", command=self._toggle_problems)
+                link.grid(row=len(visible), column=0, sticky="w",
+                          padx=(14, 0), pady=(2, 0))
+
+        def _problem_line(self, index: int, text: str, tone: str,
+                          available: int) -> None:
+            """One wrapped issue line: a severity dot and the full message."""
+            row = ctk.CTkFrame(self.hero_problems, fg_color="transparent")
+            row.grid(row=index, column=0, sticky="ew", pady=(0, 4))
+            row.grid_columnconfigure(1, weight=1)
+            dot = ctk.CTkFrame(row, width=6, height=6, corner_radius=3,
+                               fg_color=c(tone))
+            dot.grid(row=0, column=0, padx=(0, 8), pady=(7, 0), sticky="nw")
+            ctk.CTkLabel(row, text=text, font=theme.font(11),
+                         text_color=c("text.secondary"),
+                         wraplength=max(160, available - 24),
+                         justify="left", anchor="w").grid(
+                row=0, column=1, sticky="ew")
+
+        def _toggle_problems(self) -> None:
+            self._problems_expanded = not self._problems_expanded
+            if self.selected_event is not None:
+                self._render_problems(self.selected_event)
+                self._schedule_hero_layout()
 
         def _show_spectrogram(self, path: str) -> None:
             """Image, or a clean note when the analysis produced no PNG (7.8)."""
