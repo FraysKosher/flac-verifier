@@ -20,9 +20,29 @@ the same in Tk and 700 looks bold.
 """
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from typing import Any
 
 # ─── Colour ─────────────────────────────────────────────────────────────────
+
+def _rgb(value: str) -> tuple[int, int, int]:
+    value = value.lstrip("#")
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
+def mix(color_hex: str, background_hex: str, opacity: float) -> str:
+    """`color_hex` painted over `background_hex` at `opacity` (0..1).
+
+    CustomTkinter has no per-widget opacity, so the disabled state of a filled
+    button is approximated by blending its fill with the surface behind it."""
+    foreground = _rgb(color_hex)
+    background = _rgb(background_hex)
+    blended = tuple(round(opacity * fg + (1.0 - opacity) * bg)
+                    for fg, bg in zip(foreground, background))
+    return "#" + "".join(f"{channel:02X}" for channel in blended)
+
 
 DARK = {
     "bg.canvas": "#0E1113",
@@ -33,12 +53,15 @@ DARK = {
     "border.strong": "#3A4852",
     "text.primary": "#E9EFF2",
     "text.secondary": "#A8B6BE",
-    "text.tertiary": "#74828B",
+    # 4.64:1 on bg.hover, 5.44:1 on bg.raised: the previous #74828B sat at
+    # 3.65:1 on hover and could not be used for the 11 px timestamps.
+    "text.tertiary": "#87949D",
     "accent": "#63B7C2",
     "accent.hover": "#79C8D2",
     "accent.pressed": "#4E9DA8",
     "on.accent": "#06282C",
     "focus": "#9BE3EA",
+    "knob": "#FFFFFF",
     "ok": "#63D08D",
     "ok.bg": "#102A1B",
     "ok.border": "#1F5C38",
@@ -55,10 +78,11 @@ DARK = {
     "danger.bg": "#2A1414",
 }
 
-# The light theme of DESIGN.md section 5.2 only defines the core surfaces, text
-# and accent: its verdict tints are designed together with the theme (phase 4).
-# A token that is not here raises KeyError on purpose instead of quietly falling
-# back to the dark value, so phase 4 cannot ship a half-lit window by accident.
+# The light theme (DESIGN.md 5.2). Its verdict tones are the semantic hues of the
+# dark palette turned into tints of the paper: the text is the hue pulled
+# towards the ink so it stays readable at 11 px, the fill is a 12 % tint and the
+# border a 30 % tint. They are derived here instead of copied so both palettes
+# can never drift apart.
 LIGHT = {
     "bg.canvas": "#F4F6F7",
     "bg.surface": "#FFFFFF",
@@ -68,10 +92,22 @@ LIGHT = {
     "border.strong": "#C3CFD4",
     "text.primary": "#132028",
     "text.secondary": "#53646D",
-    "text.tertiary": "#7C8B93",
+    # Darker than the old #7C8B93 (3.5:1): 4.62:1 on bg.hover, 5.21:1 on paper.
+    "text.tertiary": "#5F6F78",
     "accent": "#2F7F89",
+    "accent.hover": "#29707A",
+    "accent.pressed": "#235F68",
     "on.accent": "#FFFFFF",
+    "focus": "#1D6F7A",
+    "knob": "#FFFFFF",
 }
+
+for _tone_name in ("ok", "warn", "bad", "unknown", "danger"):
+    _hue = DARK[_tone_name]
+    LIGHT[_tone_name] = mix(_hue, LIGHT["text.primary"], 0.45)
+    LIGHT[f"{_tone_name}.bg"] = mix(_hue, LIGHT["bg.surface"], 0.12)
+    if _tone_name != "danger":
+        LIGHT[f"{_tone_name}.border"] = mix(_hue, LIGHT["bg.surface"], 0.30)
 
 PALETTE = {"dark": DARK, "light": LIGHT}
 MODE = "dark"
@@ -82,22 +118,66 @@ def color(token: str, mode: str | None = None) -> str:
     return PALETTE[mode or MODE][token]
 
 
-def mix(color_hex: str, background_hex: str, opacity: float) -> str:
-    """`color_hex` painted over `background_hex` at `opacity` (0..1).
+# ─── Persisted preference ───────────────────────────────────────────────────
+# One JSON file with the chosen mode. Reading or writing it never raises: an
+# unreadable, malformed or unwritable file simply leaves the dark theme in
+# place. The window reads it once, before any widget exists, and applies it on
+# the next start: this interface builds every colour once, so a live switch is
+# not part of 2.4.0.
 
-    CustomTkinter has no per-widget opacity, so the disabled state of a filled
-    button is approximated by blending its fill with the surface behind it.
-    """
-    foreground = _rgb(color_hex)
-    background = _rgb(background_hex)
-    blended = tuple(round(opacity * fg + (1.0 - opacity) * bg)
-                    for fg, bg in zip(foreground, background))
-    return "#" + "".join(f"{channel:02X}" for channel in blended)
+SETTINGS_FOLDER = "FLAC Verifier"
+SETTINGS_FILE = "settings.json"
 
 
-def _rgb(value: str) -> tuple[int, int, int]:
-    value = value.lstrip("#")
-    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+def settings_path() -> str:
+    """`%APPDATA%\FLAC Verifier\settings.json`, with the home folder as fallback."""
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, SETTINGS_FOLDER, SETTINGS_FILE)
+
+
+def load_preference() -> str:
+    """Reads the saved mode, defaults to dark and sets `MODE`. Never raises."""
+    global MODE
+    mode = "dark"
+    try:
+        with open(settings_path(), encoding="utf-8") as stream:
+            data = json.load(stream)
+        candidate = str(data.get("theme", "")).strip().lower()
+        if candidate in PALETTE:
+            mode = candidate
+    except Exception:                      # missing, malformed, unreadable…
+        mode = "dark"
+    MODE = mode
+    return mode
+
+
+def save_preference(mode: str) -> bool:
+    """Stores the mode atomically. Returns False instead of raising."""
+    mode = str(mode).strip().lower()
+    if mode not in PALETTE:
+        return False
+    path = settings_path()
+    folder = os.path.dirname(path)
+    temporary = None
+    try:
+        os.makedirs(folder, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".settings-",
+                                                 suffix=".json", dir=folder)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"theme": mode}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    except Exception:                      # unwritable folder, permissions…
+        return False
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 # ─── Typography ─────────────────────────────────────────────────────────────
