@@ -38,8 +38,8 @@ def _mean_safe(values):
 
 def _create_lut_inferno_256():
     """256-level RGB lookup table (Inferno/Magma style), pure NumPy."""
-    nodos_pos = np.array([0.0, 0.20, 0.45, 0.70, 0.90, 1.0], dtype=np.float32)
-    nodos_rgb = np.array([
+    nodes_pos = np.array([0.0, 0.20, 0.45, 0.70, 0.90, 1.0], dtype=np.float32)
+    nodes_rgb = np.array([
         [4, 4, 20],       # -120 dBFS: deep blue-black
         [48, 12, 84],     # -96 dBFS:  dark violet
         [132, 30, 108],   # -72 dBFS:  purple / magenta
@@ -51,46 +51,46 @@ def _create_lut_inferno_256():
     lut = np.empty((256, 3), dtype=np.uint8)
     for channel in range(3):
         lut[:, channel] = np.clip(
-            np.interp(x, nodos_pos, nodos_rgb[:, channel]), 0, 255).astype(np.uint8)
+            np.interp(x, nodes_pos, nodes_rgb[:, channel]), 0, 255).astype(np.uint8)
     return lut
 
 _LUT_SPECTROGRAM = _create_lut_inferno_256()
 
-def _source_png(tam=14):
+def _source_png(font_size=14):
     """TrueType font with support for the em dash; bitmap fallback otherwise."""
     for name in ("arial.ttf", "segoeui.ttf", "DejaVuSans.ttf"):
         try:
-            return ImageFont.truetype(name, tam)
+            return ImageFont.truetype(name, font_size)
         except OSError:
             continue
     try:
-        return ImageFont.load_default(size=tam)
+        return ImageFont.load_default(size=font_size)
     except TypeError:                  # very old Pillow: no size parameter
         return ImageFont.load_default()
 
-def _text_vertical(lienzo, xy, text, source, color):
+def _text_vertical(canvas, xy, text, source, color):
     """Draws rotated (90 CCW) text for the axis/colorbar labels."""
-    caja = ImageDraw.Draw(lienzo).textbbox((0, 0), text, font=source)
+    caja = ImageDraw.Draw(canvas).textbbox((0, 0), text, font=source)
     width, height = caja[2] - caja[0], caja[3] - caja[1]
-    capa = Image.new("RGBA", (width + 4, height + 4), (0, 0, 0, 0))
-    ImageDraw.Draw(capa).text((2 - caja[0], 2 - caja[1]), text,
+    layer = Image.new("RGBA", (width + 4, height + 4), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).text((2 - caja[0], 2 - caja[1]), text,
                               font=source, fill=color)
-    capa = capa.rotate(90, expand=True)
-    lienzo.paste(capa, xy, capa)
+    layer = layer.rotate(90, expand=True)
+    canvas.paste(layer, xy, layer)
 
-def _line_dashed(dibujo, x0, x1, y, color, width=1, jump=10, gap=7):
+def _line_dashed(drawing, x0, x1, y, color, width=1, jump=10, gap=7):
     x = x0
     while x < x1:
-        dibujo.line([(x, y), (min(x + jump, x1), y)], fill=color, width=width)
+        drawing.line([(x, y), (min(x + jump, x1), y)], fill=color, width=width)
         x += jump + gap
 
-def _time_step(duracion):
+def _time_step(duration):
     """A readable time-tick step: 25 s on normal tracks, finer on short clips."""
-    if duracion <= 10.0:
+    if duration <= 10.0:
         return 1.0
-    if duracion <= 30.0:
+    if duration <= 30.0:
         return 5.0
-    if duracion <= 60.0:
+    if duration <= 60.0:
         return 10.0
     return 25.0
 
@@ -112,45 +112,45 @@ def _time_axis(times):
     discontinuo = bool(step_size > 0.0 and np.any(
         (diferencias > 3.0 * step_size) | (diferencias > 1.0)))
     if discontinuo:
-        posiciones = np.arange(times.size, dtype=np.float64) * step_size
-        return posiciones, float(posiciones[-1]), "Selected active blocks (s)"
+        positions = np.arange(times.size, dtype=np.float64) * step_size
+        return positions, float(positions[-1]), "Selected active blocks (s)"
     return times - times[0], float(max(0.0, times[-1] - times[0])), "Time (s)"
 
 
-def _draw_colorbar(lienzo, dibujo, x0, y0, width, height, db_min, db_max, source):
+def _draw_colorbar(canvas, drawing, x0, y0, width, height, db_min, db_max, source):
     """Vertical LUT gradient from db_min (bottom) to db_max (top), with ticks."""
     indices = np.linspace(255, 0, int(height), dtype=np.uint8).reshape(-1, 1)
     gradient = _LUT_SPECTROGRAM[indices]              # (height, 1, 3)
     barra = Image.fromarray(gradient, mode="RGB").resize((width, int(height)))
-    lienzo.paste(barra, (x0, y0))
-    dibujo.rectangle([x0, y0, x0 + width, y0 + height], outline=(120, 120, 135), width=1)
+    canvas.paste(barra, (x0, y0))
+    drawing.rectangle([x0, y0, x0 + width, y0 + height], outline=(120, 120, 135), width=1)
 
     for value in np.arange(db_min, db_max + 1e-9, 10.0):
         frac = (float(value) - db_min) / max(db_max - db_min, 1.0)
         y = y0 + int(round((1.0 - frac) * height))
-        dibujo.line([(x0 + width, y), (x0 + width + 6, y)],
+        drawing.line([(x0 + width, y), (x0 + width + 6, y)],
                     fill=(190, 190, 200), width=1)
-        dibujo.text((x0 + width + 10, y), f"{value:.0f}",
+        drawing.text((x0 + width + 10, y), f"{value:.0f}",
                     fill=(215, 215, 225), font=source, anchor="lm")
 
-def _draw_legend(lienzo, dibujo, x1, y0, entradas, source):
+def _draw_legend(canvas, drawing, x1, y0, entries, source):
     """Boxed upper-right legend with a dashed sample line per entry."""
-    if not entradas:
+    if not entries:
         return
-    widths = [dibujo.textbbox((0, 0), text, font=source)[2] for _, _, text in entradas]
+    widths = [drawing.textbbox((0, 0), text, font=source)[2] for _, _, text in entries]
     width = max(widths) + 70
-    height = 14 + 23 * len(entradas)
+    height = 14 + 23 * len(entries)
     x0 = x1 - width
-    capa = Image.new("RGBA", lienzo.size, (0, 0, 0, 0))
-    lapiz = ImageDraw.Draw(capa)
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    lapiz = ImageDraw.Draw(layer)
     lapiz.rounded_rectangle([x0, y0, x1, y0 + height], radius=5,
                             fill=(15, 15, 22, 215), outline=(140, 140, 160, 255),
                             width=1)
-    lienzo.alpha_composite(capa)
-    for index, (color, _, text) in enumerate(entradas):
+    canvas.alpha_composite(layer)
+    for index, (color, _, text) in enumerate(entries):
         y = y0 + 12 + index * 23
-        _line_dashed(dibujo, x0 + 10, x0 + 48, y, color, jump=8, gap=5)
-        dibujo.text((x0 + 56, y - 8), text, fill=(230, 230, 235), font=source)
+        _line_dashed(drawing, x0 + 10, x0 + 48, y, color, jump=8, gap=5)
+        drawing.text((x0 + 56, y - 8), text, fill=(230, 230, 235), font=source)
 
 def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
                                     db_min=-80.0, db_max=0.0,
@@ -188,9 +188,9 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
     img_spec = Image.fromarray(rgb, mode="RGB").resize(
         (width, height), resample=Image.Resampling.BILINEAR)
 
-    lienzo = Image.new("RGBA", (width_total, height_total), (18, 18, 24, 255))
-    lienzo.paste(img_spec, (margin_left, margin_top))
-    dibujo = ImageDraw.Draw(lienzo)
+    canvas = Image.new("RGBA", (width_total, height_total), (18, 18, 24, 255))
+    canvas.paste(img_spec, (margin_left, margin_top))
+    drawing = ImageDraw.Draw(canvas)
     source = _source_png(19)
     axis_font = _source_png(16)
     tick_font = _source_png(14)
@@ -207,10 +207,10 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
     # Y axis: 0, 2.5, 5.0 ... kHz
     for value in np.arange(0.0, nyquist_khz + 1e-9, 2.5):
         y = y_for(value * 1000.0)
-        dibujo.line([(margin_left - 7, y), (margin_left, y)], fill=axis_color, width=1)
-        dibujo.text((margin_left - 12, y), f"{value:.1f}",
+        drawing.line([(margin_left - 7, y), (margin_left, y)], fill=axis_color, width=1)
+        drawing.text((margin_left - 12, y), f"{value:.1f}",
                     fill=text_color, font=tick_font, anchor="rm")
-    _text_vertical(lienzo, (8, margin_top + height // 2 - 70),
+    _text_vertical(canvas, (8, margin_top + height // 2 - 70),
                     "Frequency (kHz)", axis_font, text_color)
 
     # X axis: real times, 25 s steps (finer for short clips)
@@ -218,48 +218,48 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
                if times is not None else np.array([]))
     if times.size != matriz.shape[1] or not np.all(np.isfinite(times)):
         times = np.arange(matriz.shape[1], dtype=np.float64)
-    posiciones, duracion, time_label = _time_axis(times)
-    step_size = _time_step(duracion)
-    if duracion > 0.0:
-        for value in np.arange(0.0, duracion + 1e-9, step_size):
-            x = margin_left + int(round((value / duracion) * width))
-            dibujo.line([(x, y_end), (x, y_end + 7)], fill=axis_color, width=1)
-            dibujo.text((x, y_end + 12), f"{value:.0f}",
+    positions, duration, time_label = _time_axis(times)
+    step_size = _time_step(duration)
+    if duration > 0.0:
+        for value in np.arange(0.0, duration + 1e-9, step_size):
+            x = margin_left + int(round((value / duration) * width))
+            drawing.line([(x, y_end), (x, y_end + 7)], fill=axis_color, width=1)
+            drawing.text((x, y_end + 12), f"{value:.0f}",
                         fill=text_color, font=tick_font, anchor="ma")
-    dibujo.text(((margin_left + x_end) // 2, y_end + 44), time_label,
+    drawing.text(((margin_left + x_end) // 2, y_end + 44), time_label,
                 fill=text_color, font=axis_font, anchor="ma")
 
     # Reference lines
-    entradas = []
+    entries = []
     if nyquist_khz > 24.0:
-        _line_dashed(dibujo, margin_left, x_end, y_for(22050.0),
+        _line_dashed(drawing, margin_left, x_end, y_for(22050.0),
                            (0, 220, 255), jump=8, gap=6)
-        entradas.append(((0, 220, 255), True, "22.05 kHz (CD Nyquist)"))
+        entries.append(((0, 220, 255), True, "22.05 kHz (CD Nyquist)"))
     if ceiling_hz:
-        _line_dashed(dibujo, margin_left, x_end, y_for(float(ceiling_hz)),
+        _line_dashed(drawing, margin_left, x_end, y_for(float(ceiling_hz)),
                            (0, 220, 255), width=2, jump=10, gap=6)
-        entradas.append(((0, 220, 255), True,
+        entries.append(((0, 220, 255), True,
                          f"Ceiling: {float(ceiling_hz)/1000:.1f} kHz"))
     if frequency_cutoff:
-        _line_dashed(dibujo, margin_left, x_end, y_for(float(frequency_cutoff)),
+        _line_dashed(drawing, margin_left, x_end, y_for(float(frequency_cutoff)),
                            (235, 70, 70), width=2, jump=10, gap=6)
-        entradas.append(((235, 70, 70), True,
+        entries.append(((235, 70, 70), True,
                          f"Cut-off: {float(frequency_cutoff)/1000:.1f} kHz"))
 
-    dibujo.rectangle([margin_left, margin_top, x_end, y_end],
+    drawing.rectangle([margin_left, margin_top, x_end, y_end],
                      outline=(90, 90, 110), width=1)
-    _draw_legend(lienzo, dibujo, x_end - 12, margin_top + 12,
-                     entradas, _source_png(14))
+    _draw_legend(canvas, drawing, x_end - 12, margin_top + 12,
+                     entries, _source_png(14))
 
     # Colorbar and title
-    _draw_colorbar(lienzo, dibujo, x_end + 32, margin_top, 26, height,
+    _draw_colorbar(canvas, drawing, x_end + 32, margin_top, 26, height,
                       float(db_min), float(db_max), tick_font)
-    _text_vertical(lienzo, (width_total - 24, margin_top + height // 2 - 65),
+    _text_vertical(canvas, (width_total - 24, margin_top + height // 2 - 65),
                     "dB (relative to peak)", axis_font, text_color)
 
-    dibujo.text((margin_left, 14), (title or "Spectrogram")[:85],
+    drawing.text((margin_left, 14), (title or "Spectrogram")[:85],
                 fill=text_color, font=source)
-    lienzo.convert("RGB").save(output_png_path, format="PNG", compress_level=3)
+    canvas.convert("RGB").save(output_png_path, format="PNG", compress_level=3)
 
 def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, frequency_cutoff):
     """Draws the spectrogram. Returns (png_path, error): it never raises, and the
@@ -454,13 +454,13 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
     # Spectral mirror around the CD Nyquist (unfiltered interpolation). The fine
     # 250 Hz curve keeps the texture the mirror copies; the coarse curve is only
     # for slopes and levels.
-    bins_fino = max(3, int(round(250.0 / df)))
-    curva_fina = np.convolve(spectrum,
-                             np.ones(bins_fino, dtype=np.float32) / bins_fino,
+    fine_bins = max(3, int(round(250.0 / df)))
+    fine_curve = np.convolve(spectrum,
+                             np.ones(fine_bins, dtype=np.float32) / fine_bins,
                              mode="same")
     deltas = np.linspace(1000.0, 7000.0, 48)
-    band_lower = np.interp(22050.0 - deltas, freqs, curva_fina)
-    band_upper = np.interp(22050.0 + deltas, freqs, curva_fina)
+    band_lower = np.interp(22050.0 - deltas, freqs, fine_curve)
+    band_upper = np.interp(22050.0 + deltas, freqs, fine_curve)
     if (np.std(band_lower) > 0.5 and np.std(band_upper) > 0.5
             and np.mean(band_upper) > -115.0):
         # The interpolator's anti-imaging response tilts the mirror copy, so a
@@ -558,35 +558,35 @@ def _analyze_mid_side_asymmetry(spectrum_mid_db, spectrum_side_db, freqs_hz,
     if (math.isfinite(diff_mean_db) and math.isfinite(diff_high_db)
             and diff_mean_db > 24.0 and diff_high_db > 20.0):
         output["es_dual_mono"] = True
-    colapso = diff_high_db - diff_mean_db
+    collapse = diff_high_db - diff_mean_db
 
-    mask_alta = (freqs >= 13000.0) & (freqs <= 21000.0)
+    high_mask = (freqs >= 13000.0) & (freqs <= 21000.0)
     mask_pivote = (freqs >= 6000.0) & (freqs <= 10000.0)
-    if not np.any(mask_alta) or not np.any(mask_pivote):
+    if not np.any(high_mask) or not np.any(mask_pivote):
         return output
-    f_alta = freqs[mask_alta]
+    f_high = freqs[high_mask]
 
     mid_threshold = max(float(np.percentile(mid[mask_pivote], 75)) - 38.0, -92.0)
     side_threshold = max(float(np.percentile(side[mask_pivote], 75)) - 38.0, -95.0)
-    active_mid = np.flatnonzero(mid[mask_alta] > mid_threshold)
-    active_side = np.flatnonzero(side[mask_alta] > side_threshold)
-    mid_ceiling_hz = float(f_alta[active_mid[-1]]) if active_mid.size else 13000.0
-    side_ceiling_hz = float(f_alta[active_side[-1]]) if active_side.size else 13000.0
+    active_mid = np.flatnonzero(mid[high_mask] > mid_threshold)
+    active_side = np.flatnonzero(side[high_mask] > side_threshold)
+    mid_ceiling_hz = float(f_high[active_mid[-1]]) if active_mid.size else 13000.0
+    side_ceiling_hz = float(f_high[active_side[-1]]) if active_side.size else 13000.0
     delta_cutoff = max(0.0, mid_ceiling_hz - side_ceiling_hz)
 
-    sospecha = (
+    suspicion = (
         not output["es_dual_mono"]
         and diff_mean_db < 14.0
         and mid_ceiling_hz >= 17500.0
-        and ((colapso > 11.5 and delta_cutoff > 1100.0) or colapso > 16.5)
+        and ((collapse > 11.5 and delta_cutoff > 1100.0) or collapse > 16.5)
     )
 
-    output["caida_side_agudos_db"] = round(colapso, 2) if math.isfinite(colapso) else 0.0
+    output["caida_side_agudos_db"] = round(collapse, 2) if math.isfinite(collapse) else 0.0
     output["delta_corte_ms_hz"] = round(delta_cutoff, 1) if math.isfinite(delta_cutoff) else 0.0
-    output["sospecha_joint_stereo"] = bool(sospecha)
+    output["sospecha_joint_stereo"] = bool(suspicion)
     return output
 
-def _gradient_edge_db_khz(freqs_hz, pot_db, ceiling_hz, nyquist):
+def _gradient_edge_db_khz(freqs_hz, power_db, ceiling_hz, nyquist):
     """Steepest smoothed descent (dB/kHz) in the transition band around the ceiling.
 
     The band covers 1.5 kHz below the ceiling and 0.5 kHz above it, clamped to
@@ -598,18 +598,18 @@ def _gradient_edge_db_khz(freqs_hz, pot_db, ceiling_hz, nyquist):
     Returns a positive number for a descent, 0.0 when the band cannot be
     measured."""
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    pot_db = np.asarray(pot_db, dtype=np.float64)
-    if freqs.size < 8 or pot_db.shape != freqs.shape or not ceiling_hz:
+    power_db = np.asarray(power_db, dtype=np.float64)
+    if freqs.size < 8 or power_db.shape != freqs.shape or not ceiling_hz:
         return 0.0
     f_min = max(12000.0, float(ceiling_hz) - 1500.0)
     f_max = min(float(nyquist), float(ceiling_hz) + 500.0)
     if f_max <= f_min:
         return 0.0
-    mascara = (freqs >= f_min) & (freqs <= f_max)
-    if np.count_nonzero(mascara) < 8:
+    mask = (freqs >= f_min) & (freqs <= f_max)
+    if np.count_nonzero(mask) < 8:
         return 0.0
-    f = freqs[mascara]
-    d = pot_db[mascara]
+    f = freqs[mask]
+    d = power_db[mask]
     if not np.all(np.isfinite(d)):
         return 0.0
     step_hz = float(f[1] - f[0])
@@ -646,14 +646,14 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         is_stereo = power_l is not power_r
     if power is None:
         power = (power_l + power_r) / 2
-    pot_db    = 10.0 * np.log10(np.maximum(power, 1e-28))
+    power_db    = 10.0 * np.log10(np.maximum(power, 1e-28))
     # The reference level is usually the global peak, but a huge sub-bass line
     # (an 808 or a kick) would drag every other band below the -60 dB activity
     # window and hide the real ceiling. The sub-bass peak is used as the anchor
     # only when it takes over the whole spectrum: it must sit below 150 Hz AND
     # exceed the [150, 6000] Hz peak by more than 6 dB. Ordinary bass never does.
-    idx_max = int(np.argmax(pot_db))
-    max_global = float(pot_db[idx_max])
+    idx_max = int(np.argmax(power_db))
+    max_global = float(power_db[idx_max])
     peak_freq = float(freqs[idx_max]) if freqs.size else 0.0
     mask_without_subbass = (freqs >= 150.0) & (freqs <= 6000.0)
     # The DC bin is not a sub-bass programme peak: a 1/f tilt puts the maximum at
@@ -661,14 +661,14 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # 88% of Nyquist window and hide its ceiling.
     peak_bass = 0.0 < peak_freq < 150.0
     if peak_bass and np.any(mask_without_subbass):
-        ref_without_subbass = float(np.max(pot_db[mask_without_subbass]))
+        ref_without_subbass = float(np.max(power_db[mask_without_subbass]))
         ref_ceiling_db = (ref_without_subbass if (max_global - ref_without_subbass) > 6.0
                         else max_global)
     else:
         ref_ceiling_db = max_global
-    pot_db_n  = pot_db - ref_ceiling_db
+    power_db_n  = power_db - ref_ceiling_db
 
-    mask_act = pot_db_n > -60
+    mask_act = power_db_n > -60
     if np.any(mask_act):
         # Last bin above -60 dB, located from the end in C without copying freqs.
         last_idx = len(freqs) - 1 - int(np.argmax(mask_act[::-1]))
@@ -679,7 +679,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     cutoff_hz = None
     mask_s = (freqs >= 12000) & (freqs <= 25000)
     if np.count_nonzero(mask_s) > 10:
-        pr   = pot_db_n[mask_s]
+        pr   = power_db_n[mask_s]
         fr   = freqs[mask_s]
         n_pr = len(pr)
         step_size = max(1, n_pr // 20)
@@ -717,7 +717,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         ratio = _mean_safe(power[mask_a]) / (_mean_safe(power[mask_m]) + 1e-30)
     else:
         ratio = 0.0
-    var_alta = float(np.var(pot_db_n[mask_a])) if has_a else 0
+    var_high = float(np.var(power_db_n[mask_a])) if has_a else 0
 
     sep = None
     if is_stereo and ratio_applies:
@@ -759,15 +759,15 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
 
     # Transition-band slope around the ceiling: distinguishes a studio
     # anti-aliasing filter (gentle) from a brickwall or a resampler (a cliff).
-    gradient_edge = _gradient_edge_db_khz(freqs, pot_db_n, ceiling_hz, nyquist)
+    gradient_edge = _gradient_edge_db_khz(freqs, power_db_n, ceiling_hz, nyquist)
 
     # Spectral centroid and acoustic decay: a solo instrument or a low-centroid
     # acoustic mix ends its band early without any codec signature, and that is
     # the only case where a low ceiling is not a defect. The centroid separates
     # it from a bass-heavy electronic mix (centroid far below 1800 Hz).
-    sum_pot = float(np.sum(power))
-    centroid_hz = (float(np.sum(freqs * power) / sum_pot)
-                    if sum_pot > 1e-30 else 0.0)
+    sum_power = float(np.sum(power))
+    centroid_hz = (float(np.sum(freqs * power) / sum_power)
+                    if sum_power > 1e-30 else 0.0)
     smooth_acoustic_decay = bool(
         0.0 < centroid_hz < 1800.0
         and cutoff_hz is None
@@ -789,7 +789,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "corte_artificial":   category_cutoff == "far_cutoff",
         "ratio":              ratio,
         "ratio_aplica":       ratio_applies,
-        "var_alta_db":        var_alta,
+        "var_alta_db":        var_high,
         "separacion_stereo":  sep,
         # Vector 1 (additive keys: old consumers ignore them).
         "caida_side_agudos_db": asymmetry["caida_side_agudos_db"],
@@ -886,14 +886,14 @@ def _activity_score(block, last_sample=None):
         e_diff = 0.0
     return rms_db, e_diff
 
-def _stft_complejo(channel, nperseg, hop, window, escala):
+def _stft_complex(channel, nperseg, hop, window, scale):
     """float32 STFT with sliding_window_view: no copies beyond the windowed
     frames, and the result stays in single precision (half the RAM of float64)."""
     x = np.asarray(channel, dtype=np.float32)
     marcos = np.lib.stride_tricks.sliding_window_view(x, nperseg)[::hop]
     marcos = marcos * window
     spectrum = np.fft.rfft(marcos, axis=1)
-    spectrum *= escala
+    spectrum *= scale
     return spectrum
 
 def _power_from_fft(spectrum):
@@ -927,7 +927,7 @@ class PsychoacousticSTFTAccumulator:
         self._fc = []
         self._frames = 0
         self._frames_with_gap = 0
-        self._sum_pot = None
+        self._sum_power = None
         self._freqs = None
         self._error = None
         # sfb21 islands (per active frame, dB relative to the 4-11 kHz band) and
@@ -956,19 +956,19 @@ class PsychoacousticSTFTAccumulator:
             active_mask = band > 10.0 ** (self.BAND_THRESHOLD_DBFS / 10.0)
             if not np.any(active_mask):
                 return
-            pot = power[active_mask]
-            self._frames += int(pot.shape[0])
+            block_power = power[active_mask]
+            self._frames += int(block_power.shape[0])
             self._freqs = freqs
-            sum = pot.sum(axis=0, dtype=np.float64)
-            self._sum_pot = (sum if self._sum_pot is None
-                              else self._sum_pot + sum)
+            sum = block_power.sum(axis=0, dtype=np.float64)
+            self._sum_power = (sum if self._sum_power is None
+                              else self._sum_power + sum)
 
             # Instantaneous cut-off: last bin above -60 dB relative to the
             # frame's 4-11 kHz mean power. Referencing the frame peak made a
             # strong bass sweep the reference and produced fake cut-off jitter.
-            pot_db = 10.0 * np.log10(np.maximum(pot, 1e-28))
+            power_db = 10.0 * np.log10(np.maximum(block_power, 1e-28))
             ref_db = 10.0 * np.log10(np.maximum(
-                pot[:, mask_band].mean(axis=1), np.float32(1e-28)))
+                block_power[:, mask_band].mean(axis=1), np.float32(1e-28)))
 
             # sfb21 islands and the exciter envelopes. Both are referenced to the
             # 4-11 kHz band of the SAME frame: a 1-8 kHz reference would follow a
@@ -978,15 +978,15 @@ class PsychoacousticSTFTAccumulator:
                 mask_sfb21 = (freqs >= 16000.0) & (freqs <= 20500.0)
                 if np.any(mask_8_14) and np.any(mask_sfb21):
                     db_8_14 = 10.0 * np.log10(np.maximum(
-                        pot[:, mask_8_14].mean(axis=1, dtype=np.float64), 1e-28))
+                        block_power[:, mask_8_14].mean(axis=1, dtype=np.float64), 1e-28))
                     db_16_20 = 10.0 * np.log10(np.maximum(
-                        pot[:, mask_sfb21].mean(axis=1, dtype=np.float64), 1e-28))
+                        block_power[:, mask_sfb21].mean(axis=1, dtype=np.float64), 1e-28))
                     e_sfb21 = db_16_20 - ref_db.astype(np.float64)
                     self._e_sfb21.extend(e_sfb21.tolist())
                     self._env_8_14.extend(db_8_14.tolist())
                     self._env_16_20.extend(db_16_20.tolist())
             threshold = (ref_db - np.float32(60.0))[:, None]
-            over = pot_db > threshold
+            over = power_db > threshold
 
             # A cut-off is only meaningful when the frame also has energy in
             # 10-14 kHz; otherwise a voice/guitar frame with no cymbals looks
@@ -996,11 +996,11 @@ class PsychoacousticSTFTAccumulator:
             if not np.any(mask_presence) or not np.any(mask_hf):
                 # Low sample rates (Nyquist <= 12 kHz) have no 10-14 kHz band
                 # or no bins above 11 kHz: no measurable cut-off.
-                active_presence = np.zeros(pot.shape[0], dtype=bool)
+                active_presence = np.zeros(block_power.shape[0], dtype=bool)
                 with_cutoff = np.empty(0, dtype=int)
             else:
                 presence_db = 10.0 * np.log10(np.maximum(
-                    pot[:, mask_presence].mean(axis=1), np.float32(1e-28)))
+                    block_power[:, mask_presence].mean(axis=1), np.float32(1e-28)))
                 active_presence = presence_db > (ref_db - np.float32(25.0))
                 over_hf = over[:, mask_hf]
                 with_cutoff = np.flatnonzero(active_presence
@@ -1021,7 +1021,7 @@ class PsychoacousticSTFTAccumulator:
                 if not np.any(mask):
                     return
                 subbands.append(10.0 * np.log10(
-                    np.maximum(pot[:, mask].mean(axis=1), 1e-28)))
+                    np.maximum(block_power[:, mask].mean(axis=1), 1e-28)))
             sb = np.column_stack(subbands)
             gap = np.zeros(sb.shape[0], dtype=bool)
             for i in range(1, self.N_SUBBANDS - 1):
@@ -1045,11 +1045,11 @@ class PsychoacousticSTFTAccumulator:
         # flat. A mastering anti-alias filter can look the same in isolation, so
         # this is reported as a fact and only scored with corroborating evidence.
         fall_opus = 0.0
-        sospecha_opus = False
-        if (self._sum_pot is not None and self._freqs is not None
+        opus_suspicion = False
+        if (self._sum_power is not None and self._freqs is not None
                 and self._frames >= self.MIN_FRAMES_FC and self.sr >= 41000):
             freqs = self._freqs
-            mean = self._sum_pot / float(self._frames)
+            mean = self._sum_power / float(self._frames)
 
             def level_db(lo, hi):
                 mask = (freqs >= lo) & (freqs < hi)
@@ -1067,7 +1067,7 @@ class PsychoacousticSTFTAccumulator:
                 curva = 10.0 * np.log10(np.maximum(mean[mask_plano], 1e-28))
                 plano = bool(np.percentile(curva, 95)
                              - np.percentile(curva, 5) < 6.0)
-            sospecha_opus = bool(fall_opus > 45.0 and plano
+            opus_suspicion = bool(fall_opus > 45.0 and plano
                                  and after < low - 40.0)
 
         # sfb21 islands: a lowpass-disabled lossy codec (LAME -V 0, AAC without
@@ -1090,8 +1090,8 @@ class PsychoacousticSTFTAccumulator:
         # or a step where the original band was cut.
         corr_env = 0.0
         notch_db = 0.0
-        sospecha_excitador = False
-        if (len(self._env_8_14) >= 24 and self._sum_pot is not None
+        exciter_suspicion = False
+        if (len(self._env_8_14) >= 24 and self._sum_power is not None
                 and self._freqs is not None and self.sr >= 41000):
             arr_lo = np.asarray(self._env_8_14, dtype=np.float64)
             arr_hi = np.asarray(self._env_16_20, dtype=np.float64)
@@ -1102,7 +1102,7 @@ class PsychoacousticSTFTAccumulator:
                 if not math.isfinite(corr_env):
                     corr_env = 0.0
             freqs = self._freqs
-            mean = self._sum_pot / float(self._frames)
+            mean = self._sum_power / float(self._frames)
             curva_db = 10.0 * np.log10(np.maximum(mean, 1e-28))
             mask_pre = (freqs >= 14500.0) & (freqs <= 15800.0)
             mask_post = (freqs >= 16200.0) & (freqs <= 17500.0)
@@ -1123,14 +1123,14 @@ class PsychoacousticSTFTAccumulator:
                                       + np.mean(curva_db[mask_flank_hi]))
                 prof_notch = float(flancos - np.min(curva_db[mask_notch]))
             notch_db = max(0.0, jump_band, prof_notch)
-            sospecha_excitador = bool(corr_env > 0.92 and notch_db >= 15.0)
+            exciter_suspicion = bool(corr_env > 0.92 and notch_db >= 15.0)
 
         return {
             "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
             "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
             "caida_opus_20k_db": (round(fall_opus, 2)
                                   if math.isfinite(fall_opus) else 0.0),
-            "sospecha_corte_opus_20k": sospecha_opus,
+            "sospecha_corte_opus_20k": opus_suspicion,
             "brecha_p90_p10_agudos_db": (round(brecha_sfb21, 2)
                                          if math.isfinite(brecha_sfb21) else 0.0),
             "ratio_apagado_sfb21":      (round(ratio_off, 4)
@@ -1140,7 +1140,7 @@ class PsychoacousticSTFTAccumulator:
                                          if math.isfinite(corr_env) else 0.0),
             "muesca_excitador_db":      (round(notch_db, 2)
                                          if math.isfinite(notch_db) else 0.0),
-            "sospecha_excitador_armonico": sospecha_excitador,
+            "sospecha_excitador_armonico": exciter_suspicion,
         }
 
 class _SpectralAccumulator:
@@ -1210,7 +1210,7 @@ class _SpectralAccumulator:
         hop = max(1, nperseg // 8)      # 87.5 % overlap: enough time detail for the PNG
 
         window = np.hanning(nperseg + 1)[:-1].astype(np.float32)   # periodic Hann
-        escala = np.float32(1.0 / float(window.sum()))
+        scale = np.float32(1.0 / float(window.sum()))
         gain_noise = _white_noise_gain(nperseg, window)
         frames_estimados = sum((n - nperseg) // hop + 1
                                for n in lengths if n >= nperseg)
@@ -1230,15 +1230,15 @@ class _SpectralAccumulator:
         freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
         frames = 0
         frames_global = 0
-        png_pot, png_times, png_n = [], [], 0
+        png_power, png_times, png_n = [], [], 0
 
         for _, _, _, start, audio in chosen:
             if len(audio) < nperseg:
                 continue                  # a very short trailing block
-            zl = _stft_complejo(audio[:, 0], nperseg, hop, window, escala)
+            zl = _stft_complex(audio[:, 0], nperseg, hop, window, scale)
             power_l = _power_from_fft(zl)
             if self.is_stereo:
-                zr = _stft_complejo(audio[:, 1], nperseg, hop, window, escala)
+                zr = _stft_complex(audio[:, 1], nperseg, hop, window, scale)
                 power_r = _power_from_fft(zr)
                 medium = np.float32(0.5)
                 zm = (zl + zr) * medium
@@ -1273,14 +1273,14 @@ class _SpectralAccumulator:
 
             n_frames = power_total.shape[0]
             if self.save_png:
-                restantes = MAX_FRAMES_PNG - png_n
-                if restantes > 0:
+                remaining = MAX_FRAMES_PNG - png_n
+                if remaining > 0:
                     i0 = (-frames_global) % step_png
-                    idx = np.arange(i0, n_frames, step_png)[:restantes]
+                    idx = np.arange(i0, n_frames, step_png)[:remaining]
                     if idx.size:
                         # power_total is (frames, bins): keep the time rows here and
                         # transpose once, so the PNG gets (bins, frames).
-                        png_pot.append(power_total[idx])
+                        png_power.append(power_total[idx])
                         png_times.append((start + idx * hop) / float(self.sr))
                         png_n += idx.size
             frames_global += n_frames
@@ -1303,10 +1303,10 @@ class _SpectralAccumulator:
                                     power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
         esp.update(self._psycho.result())
-        if self.save_png and png_pot:
+        if self.save_png and png_power:
             png_path, error = self._renderer(
                 freqs, np.concatenate(png_times),
-                np.concatenate(png_pot, axis=0).T,
+                np.concatenate(png_power, axis=0).T,
                 self.sr, self.path, esp["techo_hz"], esp["frecuencia_corte"])
             esp["espectrograma"] = png_path
             if error:

@@ -92,14 +92,14 @@ def _style_verdict(res):
     return STYLE_VERDICT.get(res.get("veredicto"), STYLE_VERDICT["indeterminate"])
 
 
-def _num(value, unidad="", decimales=1, if_none="—"):
+def _num(value, unit="", decimals=1, if_none="—"):
     if value is None:
         return if_none
     if isinstance(value, float):
-        text = f"{value:,.{decimales}f}".replace(",", " ")
+        text = f"{value:,.{decimals}f}".replace(",", " ")
     else:
         text = f"{value:,}".replace(",", " ")
-    return f"{text}{unidad}"
+    return f"{text}{unit}"
 
 
 def _pct(value):
@@ -128,7 +128,7 @@ def _summary(results):
 
 # ─── DOCUMENT CONSTRUCTION ───────────────────────────────────────────────────
 
-def _estilos():
+def _styles():
     hoja = getSampleStyleSheet()
     return {
         "titulo":    ParagraphStyle("titulo", parent=hoja["Title"], fontSize=24,
@@ -156,7 +156,7 @@ def _estilos():
     }
 
 
-def _table(payload, widths, estilos, style_cells=None, repeat_rows=0):
+def _table(payload, widths, styles, style_cells=None, repeat_rows=0):
     table = Table(payload, colWidths=widths, hAlign="LEFT", repeatRows=repeat_rows)
     comandos = [("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
@@ -179,10 +179,10 @@ def _technical_table(res, est):
         return [Paragraph(key, est["etiqueta"]),
                 Paragraph(html.escape(str(text)), est["celda"])]
 
-    duracion = meta.get("duracion")
+    duration = meta.get("duracion")
     partes = [
         value("Format", _format_meta(meta)),
-        value("Duration", _num(duracion, " s", 1) if duracion is not None else "—"),
+        value("Duration", _num(duration, " s", 1) if duration is not None else "—"),
     ]
 
     size = None
@@ -282,10 +282,10 @@ def _spectrogram_image(res, temporal, width_max=None, height_max=None):
         from PIL import Image as ImagenPIL
         with ImagenPIL.open(path) as image:
             px_width, px_height = image.size
-            copia = image.convert("RGB")
-            copia.thumbnail((MAX_PX_SPECTROGRAM, MAX_PX_SPECTROGRAM))
+            copy = image.convert("RGB")
+            copy.thumbnail((MAX_PX_SPECTROGRAM, MAX_PX_SPECTROGRAM))
             source = os.path.join(temporal, os.path.basename(path) + ".jpg")
-            copia.save(source, format="JPEG", quality=88, optimize=True)
+            copy.save(source, format="JPEG", quality=88, optimize=True)
     except Exception:
         source = path                              # without Pillow: original PNG
         try:
@@ -468,9 +468,9 @@ def _final_table(results, est):
                   repeat_rows=1)
 
 
-def _page_footer(canvas, doc, album, contador):
+def _page_footer(canvas, doc, album, counter):
     """Footer with the album name and the page number."""
-    contador["paginas"] = max(contador["paginas"], canvas.getPageNumber())
+    counter["paginas"] = max(counter["paginas"], canvas.getPageNumber())
     canvas.saveState()
     canvas.setStrokeColor(colors.HexColor("#DDDDDD"))
     canvas.setLineWidth(0.4)
@@ -500,39 +500,39 @@ class _LazyStream(MutableSequence):
         self._buffer = []
         self._agotado = False
 
-    def _rellenar(self, cuantos):
-        while not self._agotado and len(self._buffer) < cuantos:
+    def _fill(self, how_many):
+        while not self._agotado and len(self._buffer) < how_many:
             try:
                 self._buffer.append(next(self._generator))
             except StopIteration:
                 self._agotado = True
 
     def __len__(self):
-        self._rellenar(1)                    # just enough to know if there is one
+        self._fill(1)                    # just enough to know if there is one
         return len(self._buffer)
 
     def __getitem__(self, index):
         if isinstance(index, slice):
             if index.stop is not None:
-                self._rellenar(index.stop)
+                self._fill(index.stop)
             return self._buffer[index]
-        self._rellenar(index + 1)
+        self._fill(index + 1)
         return self._buffer[index]
 
     def __setitem__(self, index, value):
         if isinstance(index, slice):
             self._buffer[index] = list(value)
         else:
-            self._rellenar(index + 1)
+            self._fill(index + 1)
             self._buffer[index] = value
 
     def __delitem__(self, index):
         if isinstance(index, slice):
             if index.stop is not None:
-                self._rellenar(index.stop)
+                self._fill(index.stop)
             del self._buffer[index]
         else:
-            self._rellenar(index + 1)
+            self._fill(index + 1)
             del self._buffer[index]
 
     def insert(self, position, value):
@@ -568,8 +568,8 @@ def generate(analyzed_path, results, destination=None, mode=None):
         key=lambda par: par[1].get("indice_original", par[0]))]
 
     destination = destination or report_path(analyzed_path)
-    est = _estilos()
-    contador = {"paginas": 0}
+    est = _styles()
+    counter = {"paginas": 0}
     temporal = None
     try:
         # The recompressed images live here and are deleted when the build ends.
@@ -582,13 +582,13 @@ def generate(analyzed_path, results, destination=None, mode=None):
             author="FLAC VERIFIER",
             subject=f"Verification of {len(results)} file(s)")
 
-        footer = lambda lienzo, doc: _page_footer(lienzo, doc, os.path.basename(
-            os.path.dirname(destination) or destination), contador)
+        footer = lambda canvas, doc: _page_footer(canvas, doc, os.path.basename(
+            os.path.dirname(destination) or destination), counter)
 
         document.build(
             _LazyStream(_elements(analyzed_path, results, mode, est, temporal)),
             onFirstPage=footer, onLaterPages=footer)
-        pages = contador["paginas"]
+        pages = counter["paginas"]
         return {"ok": True, "ruta": destination, "error": None, "paginas": pages}
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,

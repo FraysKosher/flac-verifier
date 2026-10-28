@@ -50,7 +50,7 @@ from _motor_bits import (
 from _motor_espectral import (
     WIDTH_PNG, HEIGHT_PNG, PNG_SPECTROGRAM_FPS, SPECTRO_SECONDS,
     MAX_FRAMES_PNG, ACTIVE_RMS_THRESHOLD_DB, _LUT_SPECTROGRAM, _mean_safe, _power_db,
-    _spectrum_dbfs, _white_noise_gain, _stft_complejo,
+    _spectrum_dbfs, _white_noise_gain, _stft_complex,
     _power_from_fft, _needed_active_blocks, _activity_score,
     _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
@@ -168,10 +168,10 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path,
     return _spectrogram_save(freqs, times, mix, samplerate, audio_path,
                                       ceiling_hz, frequency_cutoff)
 
-def read_cache(path, meta, mode, seconds, requiere_png):
+def read_cache(path, meta, mode, seconds, requires_png):
     """Facade wrapper: the mutable VERSION_MOTOR/render fingerprint are passed
     explicitly, so changing `motor_flac.VERSION_MOTOR` still invalidates them."""
-    return _cache_read(path, meta, mode, seconds, requiere_png,
+    return _cache_read(path, meta, mode, seconds, requires_png,
                        VERSION_MOTOR, VERSION_ESQUEMA_CACHE, render_fingerprint())
 
 def write_cache(path, meta, mode, seconds, result):
@@ -519,9 +519,9 @@ def default_workers(n_files):
     nucleos = os.cpu_count() or 1
     return max(1, min(nucleos, MAX_WORKERS, n_files))
 
-def _work_analysis(tarea):
+def _work_analysis(task):
     """Work for one file in a child process (it must be at module level)."""
-    path, mode, seconds, save_png, use_cache = tarea
+    path, mode, seconds, save_png, use_cache = task
     return analyze_file_data(path, mode, seconds, save_png, use_cache)
 
 _PROBE_PROCESSES_CACHE = None
@@ -565,7 +565,7 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
             meta = verify_metadata(path)
             if meta.get("valido"):
                 cached = read_cache(path, meta, mode, seconds,
-                                      requiere_png=save_png)
+                                      requires_png=save_png)
                 if cached is not None:
                     cached["desde_cache"] = True
         plan.append((index, path, cached))
@@ -581,14 +581,14 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
 
     def calculate_pending():
         """Analyses in series or in parallel the files that were not in the cache."""
-        tareas = [(path, mode, seconds, save_png, use_cache) for path in pendientes]
+        tasks = [(path, mode, seconds, save_png, use_cache) for path in pendientes]
         if not parallel:
-            for tarea in tareas:
-                yield _work_analysis(tarea)
+            for task in tasks:
+                yield _work_analysis(task)
             return
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=workers_efectivos) as ejecutor:
-            futuros = [ejecutor.submit(_work_analysis, tarea) for tarea in tareas]
+            futuros = [ejecutor.submit(_work_analysis, task) for task in tasks]
             for path, futuro in zip(pendientes, futuros):
                 try:
                     yield futuro.result()
@@ -661,7 +661,7 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
 
         # Cache: an already verified album is not decoded or drawn again.
         if use_cache:
-            cached = read_cache(path, meta, mode, seconds, requiere_png=save_png)
+            cached = read_cache(path, meta, mode, seconds, requires_png=save_png)
             if cached is not None:
                 cached["desde_cache"] = True
                 return cached

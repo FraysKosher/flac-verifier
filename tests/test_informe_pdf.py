@@ -20,27 +20,27 @@ import motor_flac as engine
 import informe_pdf as pdf
 
 
-def _desescapar(stream):
+def _unescape(stream):
     """Resolves the escapes of PDF strings: \\(  \\)  \\\\  and octal \\ddd."""
-    def reemplazo(found):
+    def replacement(found):
         body = found.group(1)
         if body[:1] in b"01234567":          # only 0-7 are octal digits
             return bytes([int(body[:3], 8) & 0xFF])
         return body
 
-    return re.sub(rb"\\([0-7]{1,3}|.)", reemplazo, stream)
+    return re.sub(rb"\\([0-7]{1,3}|.)", replacement, stream)
 
 
-def _a_ascii85(crudo):
+def _a_ascii85(raw):
     """Decodes ASCII85 the way PDF's ASCII85Decode does (without delimiters)."""
-    end = crudo.find(b"~>")
-    return base64.a85decode(crudo[:end] if end >= 0 else crudo, adobe=False,
+    end = raw.find(b"~>")
+    return base64.a85decode(raw[:end] if end >= 0 else raw, adobe=False,
                             ignorechars=b" \t\r\n\f\v")
 
 
-def _decodificar_stream(crudo, filters):
+def _decode_stream(raw, filters):
     """Applies the filters declared in the object (reportlab uses ASCII85+Flate)."""
-    payload = crudo
+    payload = raw
     if b"ASCII85Decode" in filters:
         payload = _a_ascii85(payload)
     if b"FlateDecode" in filters:
@@ -69,10 +69,10 @@ def text_pdf(path):
         header = payload[max(0, found.start() - 400) : found.start()]
         filters = b" ".join(re.findall(rb"/(ASCII85Decode|FlateDecode)", header))
         try:
-            partes.append(_decodificar_stream(payload[start:end], filters))
+            partes.append(_decode_stream(payload[start:end], filters))
         except Exception:
             continue                               # a stream that is not content
-    return _desescapar(b"".join(partes)).decode("latin-1", "replace")
+    return _unescape(b"".join(partes)).decode("latin-1", "replace")
 
 
 def pages_pdf(path):
@@ -122,14 +122,14 @@ class test_report_pdf(unittest.TestCase):
 
     def test_only_file_saves_pdf_next_to(self):
         path = self.fx["ok16"]
-        esperado = os.path.join(os.path.dirname(os.path.abspath(path)), pdf.REPORT_NAME)
-        self.assertEqual(pdf.report_path(path), esperado)
+        expected = os.path.join(os.path.dirname(os.path.abspath(path)), pdf.REPORT_NAME)
+        self.assertEqual(pdf.report_path(path), expected)
         result = engine.analyze_file_data(path, "center", None, False)
         report = pdf.generate(path, [result])
         self.assertTrue(report["ok"], report.get("error"))
-        self.assertEqual(report["ruta"], esperado)
-        self.assertTrue(os.path.exists(esperado))
-        os.remove(esperado)
+        self.assertEqual(report["ruta"], expected)
+        self.assertTrue(os.path.exists(expected))
+        os.remove(expected)
 
     # ── document structure ──────────────────────────────────────────────────
     def test_page_by_song_more_cover_summary(self):
@@ -280,17 +280,17 @@ class test_report_pdf(unittest.TestCase):
         self.assertIn("is no longer available", text_pdf(report["ruta"]))
 
     # ── layout: the record must not overflow its page ───────────────────────
-    def _result_with_problems(self, cuantos):
+    def _result_with_problems(self, how_many):
         """A real result with a list of long issues."""
         base = [r for r in analyze_album(self.album, save_png=True)
                 if (r.get("esp") or {}).get("espectrograma")][0]
-        copia = dict(base)
-        copia["esp"] = dict(base["esp"])
-        copia["problemas"] = [
+        copy = dict(base)
+        copy["esp"] = dict(base["esp"])
+        copy["problemas"] = [
             f"{i + 1}) declares 24 bits at 44.1 kHz but its high band is cut at "
             f"16.4 kHz: the declared resolution is not backed by the content"
-            for i in range(cuantos)]
-        return copia
+            for i in range(how_many)]
+        return copy
 
     def test_card_with_many_problems_no_overflows_page(self):
         """Before, 12 issues pushed the spectrogram onto the next page
@@ -315,10 +315,10 @@ class test_report_pdf(unittest.TestCase):
         far from its title."""
         import fitz
         clean = self.fx.subfolder("maqueta_separa", ("ok16",))
-        for cuantos in (2, 6, 12, 20):
-            with self.subTest(problems=cuantos):
-                destination = os.path.join(clean, f"informe_{cuantos}.pdf")
-                report = pdf.generate(clean, [self._result_with_problems(cuantos)],
+        for how_many in (2, 6, 12, 20):
+            with self.subTest(problems=how_many):
+                destination = os.path.join(clean, f"informe_{how_many}.pdf")
+                report = pdf.generate(clean, [self._result_with_problems(how_many)],
                                       destination=destination)
                 self.assertTrue(report["ok"], report.get("error"))
                 document = fitz.open(destination)

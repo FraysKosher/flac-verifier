@@ -53,10 +53,10 @@ def build_fixtures(directory):
     paths = {}
     audio = full_band_noise()
 
-    for name, subtipo in (("ok16", "PCM_16"), ("ok24", "PCM_24"),
+    for name, subtype in (("ok16", "PCM_16"), ("ok24", "PCM_24"),
                             ("ok8", "PCM_S8")):
         path = os.path.join(directory, f"{name}.flac")
-        sf.write(path, audio, 44100, subtype=subtipo)
+        sf.write(path, audio, 44100, subtype=subtype)
         paths[name] = path
 
     path = os.path.join(directory, "silence.flac")
@@ -117,20 +117,20 @@ def build_fixtures(directory):
 
     # Corrupt variants derived from the ok16 byte stream.
     with open(paths["ok16"], "rb") as f:
-        crudo = f.read()
+        raw = f.read()
     variantes = {
         "basura_magic": b"fLaC" + os.urandom(4000),   # valid header, the rest is garbage
-        "truncado":     crudo[: len(crudo) // 2],
+        "truncado":     raw[: len(raw) // 2],
         "texto":        b"this is not a flac " * 200,
         "cero_bytes":   b"",
     }
     # The STREAMINFO MD5 field lives in bytes 26-41 (after "fLaC" + the block
     # header + 8 bytes of min/max block and frame size + 8 of sample_rate...).
-    buf = bytearray(crudo)
+    buf = bytearray(raw)
     buf[26] ^= 0xFF
     variantes["md5_obsoleto"] = bytes(buf)
 
-    buf = bytearray(crudo)
+    buf = bytearray(raw)
     buf[26:42] = b"\x00" * 16                        # simulates a --no-md5 encoder
     variantes["md5_ausente"] = bytes(buf)
 
@@ -182,7 +182,7 @@ def results(folder):
     crudas = [l for l in p.stdout.splitlines() if l.strip()]
     return p, [json.loads(l) for l in crudas], crudas
 
-def rechaza_constante(name):
+def rejects_constant(name):
     """json's parse_constant: rejects NaN/Infinity (they are not valid JSON)."""
     raise AssertionError(f"literal not allowed in JSON: {name}")
 

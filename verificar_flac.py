@@ -58,7 +58,7 @@ def verdict_label(verdict):
     icon, text = VERDICTS.get(verdict, ("❓", str(verdict)))
     return f"{icon}  {text}"
 
-def _encabezado(name):
+def _header(name):
     print(f"\n{'─'*60}")
     print(f"📄 {name}")
 
@@ -189,7 +189,7 @@ def analyze_file(path, mode, seconds=None, save_png=False, result=None):
 
     Returns the engine dict (for the PDF report) or None if it failed
     unexpectedly."""
-    _encabezado(os.path.basename(path))
+    _header(os.path.basename(path))
     if result is None:
         if sys.stdout.isatty():
             print("  ⏳ analyzing…", flush=True)

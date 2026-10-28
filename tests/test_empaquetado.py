@@ -76,13 +76,13 @@ class test_point_input(unittest.TestCase):
         ui.assert_called_once_with(None)
 
     def test_ui_accepts_path_initial(self):
-        for arguments, esperada in ((["--gui", "D:/Music"], "D:/Music"),
+        for arguments, expected in ((["--gui", "D:/Music"], "D:/Music"),
                                      (["-g", "D:/Music"], "D:/Music"),
                                      (["D:/Music"], "D:/Music")):
             with self.subTest(arguments=arguments):
                 with mock.patch.object(gui, "main", return_value=0) as ui:
                     main.main(arguments)
-                ui.assert_called_once_with(esperada)
+                ui.assert_called_once_with(expected)
 
     def test_if_fails_ui_warns_without_tracebacks(self):
         with mock.patch.dict(sys.modules, {"gui": None}):
@@ -238,7 +238,7 @@ class test_engine_packaging(unittest.TestCase):
             sys.stdout = original
 
 
-class TestEspecificacion(unittest.TestCase):
+class TestSpecification(unittest.TestCase):
     """The .spec must collect everything the project needs."""
 
     @classmethod
@@ -306,10 +306,10 @@ class TestEspecificacion(unittest.TestCase):
         # PyInstaller runs this file with ITS classes (VSVersionInfo,
         # FixedFileInfo...) already defined; here we supply doubles that accept
         # any argument to check that the file is valid Python.
-        def nodo(*args, **kwargs):
+        def node(*args, **kwargs):
             return args, kwargs
 
-        espacio = {name: nodo for name in
+        espacio = {name: node for name in
                    ("VSVersionInfo", "FixedFileInfo", "StringFileInfo",
                     "StringTable", "StringStruct", "VarFileInfo", "VarStruct")}
         exec(open(VERSION_INFO, encoding="utf-8").read(), espacio)   # pyinstaller runs it
@@ -337,10 +337,10 @@ class TestEspecificacion(unittest.TestCase):
 
     def test_builder_clean_verifies(self):
         source = open(os.path.join(ROOT, "build.py"), encoding="utf-8").read()
-        for esperado in ("shutil.rmtree", "PyInstaller", "--noconfirm",
+        for expected in ("shutil.rmtree", "PyInstaller", "--noconfirm",
                          "FLAC_Verifier.exe", "flac_motor.exe", "--version"):
-            with self.subTest(esperado=esperado):
-                self.assertIn(esperado, source)
+            with self.subTest(expected=expected):
+                self.assertIn(expected, source)
 
 
 class test_comparison_with_source(unittest.TestCase):
@@ -412,7 +412,7 @@ class test_renderer_without_matplotlib(unittest.TestCase):
         self.assertIn("_LUT_SPECTROGRAM", source)
         self.assertIn("Image.fromarray(", source)
 
-    def test_el_spec_excluye_matplotlib(self):
+    def test_spec_excludes_matplotlib(self):
         source = open(SPEC, encoding="utf-8").read()
         block = source.split("excludes=[", 1)[1]
         self.assertIn('"matplotlib"', block)

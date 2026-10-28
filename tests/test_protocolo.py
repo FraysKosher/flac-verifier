@@ -16,7 +16,7 @@ import fixtures as fx
 import motor_flac as engine
 
 
-class TestProtocolo(unittest.TestCase):
+class TestProtocol(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -43,7 +43,7 @@ class TestProtocolo(unittest.TestCase):
         _, _, crudas = fx.results(self.fx.dir)
         for line in crudas:
             with self.subTest(line=line[:70]):
-                json.loads(line, parse_constant=fx.rechaza_constante)
+                json.loads(line, parse_constant=fx.rejects_constant)
                 self.assertNotIn("NaN", line)
                 self.assertNotIn("Infinity", line)
 

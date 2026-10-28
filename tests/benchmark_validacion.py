@@ -32,11 +32,11 @@ THRESHOLD = 0.95
 
 # ─── SIGNALS ────────────────────────────────────────────────────────────────
 
-def track_reference(sr, duracion=4.0, seed=2026):
+def track_reference(sr, duration=4.0, seed=2026):
     """Decorrelated pink noise + harmonics + periodic transients."""
     rng = np.random.default_rng(seed)
-    n = int(sr * duracion)
-    t = np.linspace(0.0, duracion, n, endpoint=False)
+    n = int(sr * duration)
+    t = np.linspace(0.0, duration, n, endpoint=False)
     b, a = ([0.049922, -0.095993, 0.050612, -0.004408],
             [1.0, -2.494956, 2.017265, -0.522189])
     rosa_l = signal.lfilter(b, a, rng.standard_normal(n))
@@ -49,9 +49,9 @@ def track_reference(sr, duracion=4.0, seed=2026):
     return est / (np.max(np.abs(est)) * 1.12)
 
 
-def dsd_like(sr, duracion=4.0, seed=2026):
+def dsd_like(sr, duration=4.0, seed=2026):
     rng = np.random.default_rng(seed)
-    n = int(sr * duracion)
+    n = int(sr * duration)
     freqs = np.fft.rfftfreq(n, 1.0 / sr)
     musica = (rng.standard_normal((n // 2 + 1, 2))
               + 1j * rng.standard_normal((n // 2 + 1, 2)))
@@ -61,9 +61,9 @@ def dsd_like(sr, duracion=4.0, seed=2026):
 
     noise = (rng.standard_normal((n // 2 + 1, 2))
              + 1j * rng.standard_normal((n // 2 + 1, 2)))
-    rampa = np.clip((freqs - 24000.0) / 16000.0, 0.0, 1.0)
+    ramp = np.clip((freqs - 24000.0) / 16000.0, 0.0, 1.0)
     noise *= (((freqs >= 24000.0) & (freqs <= 40000.0))[:, None]
-              * (1.0 + 9.0 * rampa)[:, None])
+              * (1.0 + 9.0 * ramp)[:, None])
     noise = np.fft.irfft(noise, n, axis=0)
     noise /= np.max(np.abs(noise)) * 3.0
 
@@ -100,8 +100,8 @@ def _opus_fullband(x, sr):
     return y / (max(1.0, np.max(np.abs(y))) * 1.1)
 
 
-def _save(path, x, sr, subtipo):
-    sf.write(path, np.clip(x, -0.99, 0.99), sr, subtype=subtipo)
+def _save(path, x, sr, subtype):
+    sf.write(path, np.clip(x, -0.99, 0.99), sr, subtype=subtype)
 
 
 # ─── DATASET ────────────────────────────────────────────────────────────────

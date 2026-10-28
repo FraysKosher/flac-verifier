@@ -54,14 +54,14 @@ class test_cache(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.close()
 
-    def copia(self, name, source="ok16"):
+    def copy(self, name, source="ok16"):
         """A copy of its own per test: the cache lives next to the file."""
         destination = os.path.join(self.fx.dir, f"cache_{name}.flac")
         shutil.copy(self.fx[source], destination)
         return destination
 
     def test_second_pass_reuses_gives_same(self):
-        path = self.copia("reuso")
+        path = self.copy("reuso")
         primera = engine.analyze_file_data(path, "center", None, False)
         self.assertFalse(primera.get("desde_cache"))
         second = engine.analyze_file_data(path, "center", None, False)
@@ -69,7 +69,7 @@ class test_cache(unittest.TestCase):
         self.assertEqual(comparable(primera), comparable(second))
 
     def test_input_cache_is_json_with_fingerprint(self):
-        path = self.copia("formato")
+        path = self.copy("formato")
         engine.analyze_file_data(path, "center", None, False)
         path_cache = engine._cache_path(path, "center", None)
         self.assertTrue(os.path.exists(path_cache))
@@ -82,7 +82,7 @@ class test_cache(unittest.TestCase):
         self.assertIn("resultado", input)
 
     def test_invalidates_if_changes_date_file(self):
-        path = self.copia("fecha")
+        path = self.copy("fecha")
         engine.analyze_file_data(path, "center", None, False)
         info = os.stat(path)
         os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
@@ -91,7 +91,7 @@ class test_cache(unittest.TestCase):
 
     def test_invalidates_if_changes_md5_although_match_size_date(self):
         """The hard case: same size and same date, different content."""
-        path = self.copia("md5")
+        path = self.copy("md5")
         primera = engine.analyze_file_data(path, "center", None, False)
         self.assertEqual(primera["md5"]["estado"], "match")
         info = os.stat(path)
@@ -106,7 +106,7 @@ class test_cache(unittest.TestCase):
         self.assertEqual(second["md5"]["estado"], "absent")
 
     def test_invalidates_if_changes_version_engine(self):
-        path = self.copia("version")
+        path = self.copy("version")
         engine.analyze_file_data(path, "center", None, False)
         original = engine.VERSION_MOTOR
         engine.VERSION_MOTOR = original + "-test"
@@ -117,7 +117,7 @@ class test_cache(unittest.TestCase):
         self.assertFalse(otra.get("desde_cache"))
 
     def test_invalidates_if_changes_mode(self):
-        path = self.copia("modo")
+        path = self.copy("modo")
         engine.analyze_file_data(path, "center", None, False)
         otra = engine.analyze_file_data(path, "full", None, False)
         self.assertFalse(otra.get("desde_cache"))
@@ -126,7 +126,7 @@ class test_cache(unittest.TestCase):
                         .get("desde_cache"))
 
     def test_without_cache_no_writes_nor_reuses(self):
-        path = self.copia("sin_cache")
+        path = self.copy("sin_cache")
         primera = engine.analyze_file_data(path, "center", None, False, use_cache=False)
         self.assertNotIn("desde_cache", primera)
         self.assertFalse(os.path.exists(engine._cache_path(path, "center", None)))
@@ -135,7 +135,7 @@ class test_cache(unittest.TestCase):
         self.assertFalse(os.path.exists(engine._cache_path(path, "center", None)))
 
     def test_spectrogram_cached_reuses(self):
-        path = self.copia("png")
+        path = self.copy("png")
         primera = engine.analyze_file_data(path, "center", None, True)
         png_path = primera["esp"]["espectrograma"]
         self.assertIsNotNone(png_path)
@@ -148,7 +148,7 @@ class test_cache(unittest.TestCase):
                          "the spectrogram was drawn again instead of being reused")
 
     def test_if_missing_png_cache_no_works_for_report(self):
-        path = self.copia("png_borrado")
+        path = self.copy("png_borrado")
         primera = engine.analyze_file_data(path, "center", None, True)
         os.remove(primera["esp"]["espectrograma"])
         second = engine.analyze_file_data(path, "center", None, True)
@@ -156,14 +156,14 @@ class test_cache(unittest.TestCase):
         self.assertTrue(os.path.exists(second["esp"]["espectrograma"]))
 
     def test_without_png_no_reports_path_generated_before(self):
-        path = self.copia("sin_png")
+        path = self.copy("sin_png")
         with_png = engine.analyze_file_data(path, "center", None, True)
         self.assertIsNotNone(with_png["esp"]["espectrograma"])
         without_png = engine.analyze_file_data(path, "center", None, False)
         self.assertIsNone(without_png["esp"]["espectrograma"])
 
 
-class TestParalelizacion(unittest.TestCase):
+class TestParallelization(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -270,7 +270,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertTrue(all(r.get("desde_cache") for r in results))
 
 
-class TestStreamingProgresivo(unittest.TestCase):
+class TestProgressiveStreaming(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -332,10 +332,10 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
         y /= max(1.0, np.max(np.abs(y)))
         sf.write(path, y, sr, subtype="PCM_16")
 
-    def _album(self, name, cantidad, position_candidate):
+    def _album(self, name, quantity, position_candidate):
         folder = os.path.join(self.fx.dir, name)
         os.makedirs(folder, exist_ok=True)
-        for index in range(cantidad):
+        for index in range(quantity):
             destination = os.path.join(folder, f"{index + 1:02d}_track.flac")
             if index == position_candidate:
                 self._acoustic(destination)

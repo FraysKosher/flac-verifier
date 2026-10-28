@@ -53,7 +53,7 @@ class TestMD5(unittest.TestCase):
         self.assertIn("veredicto", res)
         self.assertIn("score", res)
 
-    def test_el_md5_no_puntua(self):
+    def test_md5_does_not_score(self):
         """Same audio with MD5 present and with MD5 absent -> identical score."""
         with_md5    = engine.analyze_file_data(self.fx["ok16"], "center", None, False)
         without_md5    = engine.analyze_file_data(self.fx["md5_ausente"], "center", None, False)

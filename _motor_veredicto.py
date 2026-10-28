@@ -18,10 +18,10 @@ def calculate_score(meta, esp, bdi):
     nyquist = sr // 2
     is_hires = sr >= 88200
 
-    def penalizes(text, cuanto, blocks_max_verdict=True):
+    def penalizes(text, amount, blocks_max_verdict=True):
         nonlocal resta, blocks
         problems.append(text)
-        resta += cuanto
+        resta += amount
         blocks = blocks or blocks_max_verdict
 
     if not esp.get("error"):
@@ -86,7 +86,7 @@ def calculate_score(meta, esp, bdi):
             and (esp.get("iqr_corte_hz") or 0.0) <= 550.0
             and (esp.get("ratio_huecos_mdct") or 0.0) <= 0.10
         )
-        exencion_acustica = bool(
+        acoustic_exemption = bool(
             esp.get("decaimiento_acustico_suave")
             and bits_ok_acoustic
             and without_signatures_lossy
@@ -107,7 +107,7 @@ def calculate_score(meta, esp, bdi):
             votos += 3
         elif rel_ceiling >= 0.70:
             votos += 1.5
-            if exencion_acustica:
+            if acoustic_exemption:
                 problems.append(f"spectral ceiling {ceiling/1000:.1f} kHz "
                                  f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
                                  f"low spectral ceiling consistent with solo "
@@ -116,7 +116,7 @@ def calculate_score(meta, esp, bdi):
                 problems.append(f"spectral ceiling {ceiling/1000:.1f} kHz "
                                  f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
                                  f"reduced high band")
-        elif exencion_acustica:
+        elif acoustic_exemption:
             votos += 1.5
             problems.append(f"spectral ceiling {ceiling/1000:.1f} kHz "
                              f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "

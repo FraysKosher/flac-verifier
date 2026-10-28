@@ -129,7 +129,7 @@ def normalize_integrity_windows(folder: str) -> None:
     print(f"  ✓ {os.path.basename(folder)}/ now carries the Medium integrity label")
 
 
-def compilar() -> float:
+def compile_binary() -> float:
     if not os.path.exists(SPEC):
         raise SystemExit(f"Cannot find {os.path.basename(SPEC)}")
     command = [sys.executable, "-m", "PyInstaller", SPEC, "--noconfirm", "--clean",
@@ -190,7 +190,7 @@ def main() -> int:
         clean()
 
     step_size(3, "Building (this can take several minutes)")
-    seconds = compilar()
+    seconds = compile_binary()
     print(f"  finished in {seconds / 60:.1f} minutes")
 
     step_size(4, "Verifying the result")

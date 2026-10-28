@@ -48,7 +48,7 @@ def _analysis_key(mode, seconds, version, schema):
     return {"motor": version, "esquema": schema,
             "modo": mode, "seconds": seconds}
 
-def read_cache(path, meta, mode, seconds, requiere_png, version, schema,
+def read_cache(path, meta, mode, seconds, requires_png, version, schema,
                render):
     """Returns the cached result, or None if it cannot be reused."""
     try:
@@ -66,7 +66,7 @@ def read_cache(path, meta, mode, seconds, requiere_png, version, schema,
     if not isinstance(result, dict):
         return None
 
-    if requiere_png:
+    if requires_png:
         # The PNG must exist and match the current parameters.
         png_path = (result.get("esp") or {}).get("espectrograma")
         if input.get("render") != render or not png_path:
@@ -77,11 +77,11 @@ def read_cache(path, meta, mode, seconds, requiere_png, version, schema,
 
     # No PNG was requested: the caller must not see a path that this run has not
     # generated (the cache entry does keep it for next time).
-    copia = dict(result)
-    copia["esp"] = dict(result.get("esp") or {})
-    copia["esp"]["espectrograma"] = None
-    copia["esp"].pop("espectrograma_error", None)
-    return copia
+    copy = dict(result)
+    copy["esp"] = dict(result.get("esp") or {})
+    copy["esp"]["espectrograma"] = None
+    copy["esp"].pop("espectrograma_error", None)
+    return copy
 
 def _replace_with_retries(source, destination, attempts=3, wait_time=0.015):
     """os.replace with a short retry: on Windows, another worker or the antivirus

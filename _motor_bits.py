@@ -52,13 +52,13 @@ def _pcm_bytes(block, bits_per_sample, width):
     """Little-endian interleaved PCM of a block, exactly as the format hashes it.
 
     float64 -> exact integer: the soundfile conversion is m / 2**(bits-1)."""
-    escala = float(1 << (bits_per_sample - 1))
+    scale = float(1 << (bits_per_sample - 1))
     dt = _DTYPE_BY_WIDTH.get(width)
     if dt is not None:
-        return np.rint(block * escala).astype(dt).tobytes()
+        return np.rint(block * scale).astype(dt).tobytes()
     # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
     # little-endian layout the old <i8 path produced, at half the memory.
-    q = np.rint(block * escala).astype("<i4")
+    q = np.rint(block * scale).astype("<i4")
     return q.view(np.uint8).reshape(-1, 4)[:, :width].tobytes()
 
 def _md5_pcm(data, bits_per_sample, frames_by_block=1 << 20):
@@ -135,10 +135,10 @@ def analyze_bit_depth(data, meta, include_forensic=True):
         q = np.round(active_mask * float(1 << (bits - 1))).astype(np.int64)
         q = q[q != 0]
         if q.size:
-            pot     = np.abs(q) & -np.abs(q)                  # 2^(trailing zeros)
-            ceros   = np.log2(pot).round().astype(np.int64)
-            moda    = int(np.bincount(ceros).argmax())
-            effective = max(1, bits - moda)
+            pow2     = np.abs(q) & -np.abs(q)                  # 2^(trailing zeros)
+            zeros   = np.log2(pow2).round().astype(np.int64)
+            mode    = int(np.bincount(zeros).argmax())
+            effective = max(1, bits - mode)
         else:
             effective = bits
 
@@ -469,10 +469,10 @@ class ForensicBitsAccumulator:
 
         value_or = int(self._or)
         if value_or == 0:                      # digital silence: no grid to judge
-            ceros = self.bits
+            zeros = self.bits
         else:
-            ceros = (value_or & -value_or).bit_length() - 1
-        padded = bool(value_or and ceros >= 8)
+            zeros = (value_or & -value_or).bit_length() - 1
+        padded = bool(value_or and zeros >= 8)
 
         r_low = self._evaluate_bitmap(self._bitmap_low, self.low_int,
                                       self._samples_low)
@@ -520,7 +520,7 @@ class ForensicBitsAccumulator:
         return {
             "aplica":                     True,
             "es_padded_16_en_24":         padded,
-            "trailing_zeros_lsb":         int(ceros),
+            "trailing_zeros_lsb":         int(zeros),
             "lsb8_entropia_bits":         round(entropy_rep, 3) if entropy_rep is not None else None,
             "lsb8_cajones_ocupados":      ocupados_rep,
             "muestras_pasaje_bajo":       int(self._samples_low),

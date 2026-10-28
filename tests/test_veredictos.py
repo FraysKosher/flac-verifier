@@ -84,9 +84,9 @@ class test_verdict(unittest.TestCase):
         """It used to be printed with integer division: 19 821 Hz -> '19.0 kHz'."""
         res = self.analyze("corte_16k")
         fc = res["esp"]["frecuencia_corte"]
-        esperado = f"{fc/1000:.1f} kHz"
-        self.assertTrue(any(esperado in p for p in res["problemas"]),
-                        f"no problem mentions {esperado}")
+        expected = f"{fc/1000:.1f} kHz"
+        self.assertTrue(any(expected in p for p in res["problemas"]),
+                        f"no problem mentions {expected}")
 
     def test_cutoff_distant_blocks_verdict_max(self):
         """With all the rest of the evidence perfect, a confirmed defect cannot

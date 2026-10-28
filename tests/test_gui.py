@@ -154,7 +154,7 @@ class test_command(unittest.TestCase):
         self.assertNotIn("--pdf", gui.build_command("C:/Album", pdf=False))
 
 
-class TestParseo(unittest.TestCase):
+class TestParsing(unittest.TestCase):
 
     def test_event_correct(self):
         event = gui.parse_event('{"tipo": "resultado", "archivo": "a.flac"}')
@@ -235,7 +235,7 @@ class test_format(unittest.TestCase):
         self.assertEqual(text, "No results")
 
 
-class TestArrastrarYSoltar(unittest.TestCase):
+class TestDragAndDrop(unittest.TestCase):
 
     def test_paths_with_spaces_between_braces(self):
         self.assertEqual(gui.dnd_paths("{C:/my music/Album 1} D:/other/path"),
@@ -611,8 +611,8 @@ class test_window(unittest.TestCase):
         self.window._process("stdout", {"tipo": "__ilegible__", "mensaje": "junk"})
         self.window._process("stderr", {"tipo": "__stderr__", "mensaje": "diagnostics"})
         registro = self.window.log.get("1.0", "end")
-        for esperado in ("no report", "invalid path", "junk", "diagnostics"):
-            self.assertIn(esperado, registro)
+        for expected in ("no report", "invalid path", "junk", "diagnostics"):
+            self.assertIn(expected, registro)
         self.assertTrue(self.window.winfo_exists())        # still standing
 
     def test_cancel_without_analysis_no_does_nothing(self):
@@ -740,12 +740,12 @@ class test_logo(unittest.TestCase):
         """The five bars and their heights come from splashscreen.html."""
         from PIL import Image
         with Image.open(self.PATHS["cuadrado"]) as image:
-            lienzo = image.convert("RGBA")
-            width, height = lienzo.size
+            canvas = image.convert("RGBA")
+            width, height = canvas.size
             white = (255, 255, 255, 255)
             columns = []
             for x in range(width):
-                ys = [y for y in range(height) if lienzo.getpixel((x, y)) == white]
+                ys = [y for y in range(height) if canvas.getpixel((x, y)) == white]
                 columns.append((min(ys), max(ys)) if ys else None)
 
         grupos, current = [], None
@@ -763,19 +763,19 @@ class test_logo(unittest.TestCase):
         self.assertEqual(len(grupos), len(self.ALTURAS_SPLASH))
         alturas = [end - start + 1 for start, end in grupos]
         reference = max(self.ALTURAS_SPLASH)
-        for measurement, esperada in zip(alturas, self.ALTURAS_SPLASH):
-            with self.subTest(barra=esperada):
-                self.assertAlmostEqual(measurement / max(alturas), esperada / reference,
+        for measurement, expected in zip(alturas, self.ALTURAS_SPLASH):
+            with self.subTest(barra=expected):
+                self.assertAlmostEqual(measurement / max(alturas), expected / reference,
                                        delta=0.02)
 
     def test_check_is_teal_below_right(self):
         from PIL import Image
         teal = (0x4F, 0x98, 0xA3, 255)
         with Image.open(self.PATHS["cuadrado"]) as image:
-            lienzo = image.convert("RGBA")
-            width, height = lienzo.size
+            canvas = image.convert("RGBA")
+            width, height = canvas.size
             pixeles = [(x, y) for x in range(0, width, 2) for y in range(0, height, 2)
-                       if lienzo.getpixel((x, y)) == teal]
+                       if canvas.getpixel((x, y)) == teal]
         self.assertTrue(pixeles, "there is no teal check")
         self.assertGreater(min(x for x, _ in pixeles), width * 0.5)
         self.assertGreater(min(y for _, y in pixeles), height * 0.5)
@@ -843,7 +843,7 @@ class test_control_seconds(unittest.TestCase):
         self.window._change_mode()
         self.window.update_idletasks()
 
-    def _posiciones(self):
+    def _positions(self):
         return {name: getattr(self.window, name).winfo_y()
                 for name in ("check_pdf", "parallel_switch", "check_cache",
                                "btn_analyze", "btn_cancel")}
@@ -874,9 +874,9 @@ class test_control_seconds(unittest.TestCase):
 
     def test_show_it_controls_below_go_down(self):
         self._set_mode("center")
-        without_seconds = self._posiciones()
+        without_seconds = self._positions()
         self._set_mode("seconds")
-        with_seconds = self._posiciones()
+        with_seconds = self._positions()
         for name, y in without_seconds.items():
             with self.subTest(control=name):
                 self.assertLess(y, with_seconds[name],
@@ -885,18 +885,18 @@ class test_control_seconds(unittest.TestCase):
     def test_hide_it_controls_return_place(self):
         """Round trip without drift: no phantom gaps and no displacement."""
         self._set_mode("center")
-        reference = self._posiciones()
+        reference = self._positions()
         self._set_mode("seconds")
         self._set_mode("full")
-        self.assertEqual(self._posiciones(), reference)
+        self.assertEqual(self._positions(), reference)
 
     def test_hidden_shown_several_times_no_accumulates_gap(self):
         self._set_mode("center")
-        reference = self._posiciones()
+        reference = self._positions()
         for _ in range(3):
             self._set_mode("seconds")
             self._set_mode("center")
-        self.assertEqual(self._posiciones(), reference)
+        self.assertEqual(self._positions(), reference)
 
 
 if __name__ == "__main__":

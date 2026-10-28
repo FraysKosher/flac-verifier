@@ -22,11 +22,11 @@ GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
 BAD_VERDICTS = ("SUSPICIOUS", "PROBABLE UPSCALE", "TRANSCODE")
 
 
-def _create_track_reference(sr: int, duracion: float = 8.0, seed: int = 2026) -> np.ndarray:
+def _create_track_reference(sr: int, duration: float = 8.0, seed: int = 2026) -> np.ndarray:
     """Stereo reference with decorrelated pink noise, harmonics and transients."""
     rng = np.random.default_rng(seed)
-    n = int(sr * duracion)
-    t = np.linspace(0.0, duracion, n, endpoint=False)
+    n = int(sr * duration)
+    t = np.linspace(0.0, duration, n, endpoint=False)
 
     b, a = ([0.049922, -0.095993, 0.050612, -0.004408],
             [1.0, -2.494956, 2.017265, -0.522189])
@@ -44,10 +44,10 @@ def _create_track_reference(sr: int, duracion: float = 8.0, seed: int = 2026) ->
     return est
 
 
-def _dsd_like(sr: int, duracion: float, seed: int) -> np.ndarray:
+def _dsd_like(sr: int, duration: float, seed: int) -> np.ndarray:
     """Music below 20 kHz plus an independent rising noise floor in 24-40 kHz."""
     rng = np.random.default_rng(seed)
-    n = int(sr * duracion)
+    n = int(sr * duration)
     rng_freq = np.fft.rfftfreq(n, 1.0 / sr)
     musica = (rng.standard_normal((n // 2 + 1, 2))
               + 1j * rng.standard_normal((n // 2 + 1, 2)))
@@ -57,9 +57,9 @@ def _dsd_like(sr: int, duracion: float, seed: int) -> np.ndarray:
 
     noise = (rng.standard_normal((n // 2 + 1, 2))
              + 1j * rng.standard_normal((n // 2 + 1, 2)))
-    rampa = np.clip((rng_freq - 24000.0) / 16000.0, 0.0, 1.0)
+    ramp = np.clip((rng_freq - 24000.0) / 16000.0, 0.0, 1.0)
     noise *= (((rng_freq >= 24000.0) & (rng_freq <= 40000.0))[:, None]
-              * (1.0 + 9.0 * rampa)[:, None])
+              * (1.0 + 9.0 * ramp)[:, None])
     noise = np.fft.irfft(noise, n, axis=0)
     noise /= np.max(np.abs(noise)) * 3.0
 
@@ -110,7 +110,7 @@ class test_forensic_rigorous(unittest.TestCase):
         """24/96 analogue master: smooth 18 kHz roll-off plus -104 dBFS dither."""
         sr = 96000
         rng = np.random.default_rng(2026)
-        sig = _create_track_reference(sr, duracion=8.0, seed=101)
+        sig = _create_track_reference(sr, duration=8.0, seed=101)
         sos_analog = signal.butter(2, 18000.0, btype="low", fs=sr, output="sos")
         sig_smooth = signal.sosfilt(sos_analog, sig, axis=0)
         piso_termico = rng.normal(0.0, 10 ** (-104.0 / 20.0), size=sig.shape)
@@ -123,7 +123,7 @@ class test_forensic_rigorous(unittest.TestCase):
 
     def test_02_upscale_brickwall_44_96_is_detected(self):
         """CD 16/44.1 -> 24/96 with a sinc resampler: brickwall at 22.05 kHz."""
-        sig_44 = _create_track_reference(44100, duracion=8.0, seed=102)
+        sig_44 = _create_track_reference(44100, duration=8.0, seed=102)
         sig_96 = signal.resample_poly(sig_44, up=320, down=147, axis=0)
         path = self.base_path / "upscale_sinc_24_96.flac"
         sf.write(path, np.clip(sig_96, -0.98, 0.98), 96000, subtype="PCM_24")
@@ -133,7 +133,7 @@ class test_forensic_rigorous(unittest.TestCase):
 
     def test_03_upscale_aliasing_mirror_without_filter_is_detected(self):
         """44.1 -> 88.2 linear interpolation: the image mirrors around 22.05 kHz."""
-        sig_44 = _create_track_reference(44100, duracion=8.0, seed=103)
+        sig_44 = _create_track_reference(44100, duration=8.0, seed=103)
         n = sig_44.shape[0]
         sig_88 = np.empty((n * 2, 2), dtype=np.float64)
         sig_88[0::2] = sig_44
@@ -148,7 +148,7 @@ class test_forensic_rigorous(unittest.TestCase):
 
     def test_04_false_24bit_with_padding_16bit(self):
         """16-bit samples stored in a 24-bit container (8 LSBs always zero)."""
-        sig = _create_track_reference(44100, duracion=6.0, seed=104)
+        sig = _create_track_reference(44100, duration=6.0, seed=104)
         sig_q16 = np.round(sig * 32767.0) / 32768.0
         path = self.base_path / "padded_16_in_24.flac"
         sf.write(path, np.clip(sig_q16, -0.99, 0.99), 44100, subtype="PCM_24")
@@ -156,10 +156,10 @@ class test_forensic_rigorous(unittest.TestCase):
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
         self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS")
 
-    def test_05_transcode_joint_stereo_colapso_side(self):
+    def test_05_transcode_joint_stereo_collapse_side(self):
         """Mid reaches 20.1 kHz while Side is cut at 15.8 kHz (MP3 320 joint)."""
         sr = 44100
-        sig = _create_track_reference(sr, duracion=8.0, seed=105)
+        sig = _create_track_reference(sr, duration=8.0, seed=105)
         mid = 0.5 * (sig[:, 0] + sig[:, 1])
         side = 0.5 * (sig[:, 0] - sig[:, 1])
 
@@ -183,7 +183,7 @@ class test_forensic_rigorous(unittest.TestCase):
         intro_bass = 0.2 * np.sin(2.0 * np.pi * 180.0 * t_intro)
         intro_est = np.column_stack([intro_bass, intro_bass * 0.95])
 
-        body_active = _create_track_reference(sr, duracion=12.0, seed=106)
+        body_active = _create_track_reference(sr, duration=12.0, seed=106)
         track_full = np.vstack([intro_est, body_active])
 
         path = self.base_path / "prog_rock_long_intro.flac"
@@ -195,28 +195,28 @@ class test_forensic_rigorous(unittest.TestCase):
     def test_07_track_silence_digital_no_produces_nan_nor_crash(self):
         """100% zeros: no verdict, no NaN/Inf, no exception."""
         sr = 44100
-        ceros = np.zeros((sr * 4, 2), dtype=np.float32)
+        zeros = np.zeros((sr * 4, 2), dtype=np.float32)
         path = self.base_path / "digital_silence.flac"
-        sf.write(path, ceros, sr, subtype="PCM_16")
+        sf.write(path, zeros, sr, subtype="PCM_16")
 
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
-        self._assert_finito(res, "resultado")
+        self._assert_finite(res, "resultado")
 
-    def _assert_finito(self, value, path):
+    def _assert_finite(self, value, path):
         if isinstance(value, float):
             self.assertFalse(np.isnan(value), f"{path} is NaN")
             self.assertFalse(np.isinf(value), f"{path} is Inf")
         elif isinstance(value, dict):
             for key, hijo in value.items():
-                self._assert_finito(hijo, f"{path}.{key}")
+                self._assert_finite(hijo, f"{path}.{key}")
         elif isinstance(value, (list, tuple)):
             for index, hijo in enumerate(value):
-                self._assert_finito(hijo, f"{path}[{index}]")
+                self._assert_finite(hijo, f"{path}[{index}]")
 
     def test_08_transfer_dsd_detected_no_penalized(self):
         """DSD64-like 88.2 kHz: music <20 kHz plus an ultrasonic noise ramp."""
         sr = 88200
-        sig = _dsd_like(sr, duracion=4.0, seed=108)
+        sig = _dsd_like(sr, duration=4.0, seed=108)
         path = self.base_path / "dsd_transfer_88k.flac"
         sf.write(path, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
 
@@ -227,7 +227,7 @@ class test_forensic_rigorous(unittest.TestCase):
     def test_09_transcode_opus_20k_is_detected(self):
         """Realistic libopus fullband: 20.00 kHz cliff + frame-varying cut-off."""
         sr = 44100
-        sig = _create_track_reference(sr, duracion=6.0, seed=109)
+        sig = _create_track_reference(sr, duration=6.0, seed=109)
         opus = _opus_fullband(sig, sr)
         path = self.base_path / "opus_fullband_20k.flac"
         sf.write(path, np.clip(opus, -0.98, 0.98), sr, subtype="PCM_16")
@@ -266,7 +266,7 @@ class test_forensic_rigorous(unittest.TestCase):
 
     def test_10_false_24bit_upscaled_comb_is_detected(self):
         """16-bit grid scaled by a gain into 24 bits: LSB quantisation comb."""
-        sig = _create_track_reference(44100, duracion=6.0, seed=110)
+        sig = _create_track_reference(44100, duration=6.0, seed=110)
         q16 = np.round(sig * 32767.0) / 32768.0
         comb = np.clip(q16 * 0.96605, -1.0, 1.0)
         path = self.base_path / "fake_24bit_gain_comb.flac"
@@ -286,7 +286,7 @@ class test_forensic_rigorous(unittest.TestCase):
         """
         sr = 96000
         rng = np.random.default_rng(2026)
-        sig = _create_track_reference(sr, duracion=6.0, seed=112)
+        sig = _create_track_reference(sr, duration=6.0, seed=112)
         spectrum = np.fft.rfft(sig, axis=0)
         freqs = np.fft.rfftfreq(len(sig), 1.0 / sr)
         spectrum[freqs > 15800.0] = 0.0
@@ -341,7 +341,7 @@ class test_forensic_rigorous(unittest.TestCase):
     def test_14_voices_without_cymbals_no_trigger_jitter_artificial(self):
         """Voice/guitar frames without cymbals have no >14 kHz intermittency."""
         sr = 44100
-        base = _create_track_reference(sr, duracion=6.0, seed=114)
+        base = _create_track_reference(sr, duration=6.0, seed=114)
         vocal = signal.sosfilt(signal.butter(6, 9000.0, btype="low", fs=sr,
                                              output="sos"), base, axis=0)
         t = np.arange(len(vocal)) / float(sr)
@@ -370,21 +370,21 @@ class test_forensic_rigorous(unittest.TestCase):
         -18 / -12 dBFS slices either, so only the global lattice can rule.
         """
         sr = 44100
-        sig = _create_track_reference(sr, duracion=6.0, seed=115)
+        sig = _create_track_reference(sr, duration=6.0, seed=115)
         peak = float(np.max(np.abs(sig)))
 
-        def _comprimir(floor_db, ceiling_db):
+        def _compress(floor_db, ceiling_db):
             """Loudness-war squash: keep the waveform shape, fill the window."""
             floor, ceiling = 10 ** (floor_db / 20.0), 10 ** (ceiling_db / 20.0)
             return np.sign(sig) * (floor + (np.abs(sig) / peak) * (ceiling - floor))
 
-        def _false(comprimido):
+        def _false(compressed):
             """16-bit master with a -0.3 dB digital gain, written into 24 bits."""
-            q16 = np.round(comprimido * 32768.0)
+            q16 = np.round(compressed * 32768.0)
             return np.clip(q16 * 0.96605 / 32768.0, -1.0, 1.0)
 
         path = self.base_path / "fake_24bit_loud_no_quiet_samples.flac"
-        sf.write(path, _false(_comprimir(-18.0, -1.0)), sr, subtype="PCM_24")
+        sf.write(path, _false(_compress(-18.0, -1.0)), sr, subtype="PCM_24")
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
         forensic = res["bdi"]["forense_bits"]
 
@@ -397,7 +397,7 @@ class test_forensic_rigorous(unittest.TestCase):
         for floor_db in (-10.0, -6.0):
             label = f"{abs(int(floor_db))}db"
             path = self.base_path / f"fake_24bit_loud_{label}_no_quiet_samples.flac"
-            sf.write(path, _false(_comprimir(floor_db, -1.0)), sr, subtype="PCM_24")
+            sf.write(path, _false(_compress(floor_db, -1.0)), sr, subtype="PCM_24")
             res = motor_flac.analyze_file_data(str(path), use_cache=False)
             r = res["bdi"]["forense_bits"]
 
@@ -417,7 +417,7 @@ class test_forensic_rigorous(unittest.TestCase):
         rng = np.random.default_rng(2026)
         lsb = 2.0 ** -23
         dither = (rng.random(sig.shape) - rng.random(sig.shape)) * lsb
-        genuine = np.clip(_comprimir(-6.0, -1.0) + dither, -0.999, 0.999)
+        genuine = np.clip(_compress(-6.0, -1.0) + dither, -0.999, 0.999)
         path = self.base_path / "genuine_24bit_loud_dither.flac"
         sf.write(path, genuine, sr, subtype="PCM_24")
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
@@ -434,7 +434,7 @@ class test_forensic_rigorous(unittest.TestCase):
         """
         sr = 48000
         lsb = 2.0 ** -23
-        base = _create_track_reference(sr, duracion=6.0, seed=116)
+        base = _create_track_reference(sr, duration=6.0, seed=116)
         noise = np.random.default_rng(7)
         base = base + 0.05 * noise.standard_normal(base.shape)
         base /= max(1.0, float(np.max(np.abs(base)))) * 1.02
@@ -478,9 +478,9 @@ class test_forensic_rigorous(unittest.TestCase):
         rng = np.random.default_rng(2026)
         marker = np.where(np.arange(n) % 2 == 0, 0x05, 0xFA).astype(np.int64)
         load = rng.integers(0, 1 << 16, size=n, dtype=np.int64)
-        crudo = (marker << 16) | load
-        crudo = np.where(crudo >= (1 << 23), crudo - (1 << 24), crudo)
-        block = (crudo.astype(np.float64) / float(1 << 23)).reshape(-1, 1)
+        raw = (marker << 16) | load
+        raw = np.where(raw >= (1 << 23), raw - (1 << 24), raw)
+        block = (raw.astype(np.float64) / float(1 << 23)).reshape(-1, 1)
 
         accumulator = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
         accumulator.add(block)
@@ -496,7 +496,7 @@ class test_forensic_rigorous(unittest.TestCase):
         accumulator.add(block)
         self.assertFalse(accumulator.result()["es_flujo_dop"])
 
-        def _crudo_stereo(skew_right):
+        def _raw_stereo(skew_right):
             """Two-channel DoP stream, split in two blocks to test the join."""
             def _channel(markers):
                 load = rng.integers(0, 1 << 16, size=n, dtype=np.int64)
@@ -506,12 +506,12 @@ class test_forensic_rigorous(unittest.TestCase):
             left = _channel(np.where(np.arange(n) % 2 == 0, 0x05, 0xFA))
             right = _channel(np.where(np.arange(n) % 2 == skew_right,
                                       0x05, 0xFA))
-            crudo = np.column_stack([left, right]).astype(np.float64)
-            return crudo / float(1 << 23)
+            raw = np.column_stack([left, right]).astype(np.float64)
+            return raw / float(1 << 23)
 
         # Both channels in phase: ravel() would interleave 0x05, 0x05, 0xFA, 0xFA
         # and see no pair at all, so every marker pair must be counted per channel.
-        stereo = _crudo_stereo(skew_right=0)
+        stereo = _raw_stereo(skew_right=0)
         accumulator = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
         accumulator.add(stereo[: n // 2])
         accumulator.add(stereo[n // 2 :])
@@ -520,7 +520,7 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertGreaterEqual(res["dop_ratio"], 0.90)
 
         # Out of phase: the left channel starts at 0x05 and the right one at 0xFA.
-        stereo = _crudo_stereo(skew_right=1)
+        stereo = _raw_stereo(skew_right=1)
         accumulator = motor_flac.ForensicBitsAccumulator(24, sample_rate=sr)
         accumulator.add(stereo[: n // 2])
         accumulator.add(stereo[n // 2 :])
@@ -538,8 +538,8 @@ class test_forensic_rigorous(unittest.TestCase):
         the occupied levels dense enough to judge.
         """
         sr = 48000
-        duracion = 10.0
-        n = int(sr * duracion)
+        duration = 10.0
+        n = int(sr * duration)
         t = np.arange(n) / float(sr)
         envolvente = 1.0 + 0.01 * np.sin(2.0 * np.pi * 0.25 * t)
         envolvente /= float(np.max(np.abs(envolvente)))
@@ -581,9 +581,9 @@ class test_forensic_rigorous(unittest.TestCase):
         sub-bass re-anchor keeps the ceiling measurable.
         """
         sr = 44100
-        duracion = 6.0
-        t = np.arange(int(sr * duracion)) / float(sr)
-        track = _create_track_reference(sr, duracion=duracion, seed=117) * 0.12
+        duration = 6.0
+        t = np.arange(int(sr * duration)) / float(sr)
+        track = _create_track_reference(sr, duration=duration, seed=117) * 0.12
         # 0.85 against a 0.12 backing track: the 50 Hz line beats the whole
         # 150-6000 Hz band by more than 20 dB.
         subbass = 0.85 * np.sin(2.0 * np.pi * 50.0 * t)
@@ -609,22 +609,22 @@ class test_forensic_rigorous(unittest.TestCase):
         sr = 44100
         freqs = np.arange(0.0, sr / 2.0 + 5.0, 5.0)
 
-        def _spectrum(picos):
+        def _spectrum(peaks):
             """Flat 150-6000 Hz programme band, -0.004 dB/Hz above it, + peaks."""
-            pot_db = np.full(freqs.shape, -130.0)
+            power_db = np.full(freqs.shape, -130.0)
             band = (freqs >= 150.0) & (freqs <= 6000.0)
-            pot_db[band] = 0.0
+            power_db[band] = 0.0
             highs = freqs > 6000.0
-            pot_db[highs] = -0.004 * (freqs[highs] - 6000.0)
-            for frequency, level_db in picos:
+            power_db[highs] = -0.004 * (freqs[highs] - 6000.0)
+            for frequency, level_db in peaks:
                 idx = int(np.argmin(np.abs(freqs - frequency)))
-                pot_db[idx] = max(pot_db[idx], level_db)
-            return 10.0 ** (pot_db / 10.0)
+                power_db[idx] = max(power_db[idx], level_db)
+            return 10.0 ** (power_db / 10.0)
 
         def _ceiling_with_anchor(power, anchor_db):
             """Last bin above -60 dB relative to the given reference level."""
-            pot_db_n = 10.0 * np.log10(np.maximum(power, 1e-28)) - anchor_db
-            mask = pot_db_n > -60.0
+            power_db_n = 10.0 * np.log10(np.maximum(power, 1e-28)) - anchor_db
+            mask = power_db_n > -60.0
             idx = len(freqs) - 1 - int(np.argmax(mask[::-1]))
             return round(float(freqs[idx]))
 
@@ -657,9 +657,9 @@ class test_forensic_rigorous(unittest.TestCase):
         caps at 0.9 for reasons that have nothing to do with dual mono.
         """
         sr = 44100
-        duracion = 6.0
-        t = np.arange(int(sr * duracion)) / float(sr)
-        mono = _create_track_reference(sr, duracion=duracion, seed=118)[:, 0]
+        duration = 6.0
+        t = np.arange(int(sr * duration)) / float(sr)
+        mono = _create_track_reference(sr, duration=duration, seed=118)[:, 0]
         shimmer = 0.02 * (np.sin(2.0 * np.pi * 19500.0 * t)
                           + 0.6 * np.sin(2.0 * np.pi * 20750.0 * t))
         mono = mono + shimmer
@@ -682,11 +682,11 @@ class test_forensic_rigorous(unittest.TestCase):
         detector honest.
         """
         sr = 44100
-        duracion = 6.0
-        t = np.arange(int(sr * duracion)) / float(sr)
+        duration = 6.0
+        t = np.arange(int(sr * duration)) / float(sr)
         shimmer = 0.02 * (np.sin(2.0 * np.pi * 19500.0 * t)
                           + 0.6 * np.sin(2.0 * np.pi * 20750.0 * t))
-        reference = _create_track_reference(sr, duracion=duracion, seed=118)
+        reference = _create_track_reference(sr, duration=duration, seed=118)
         mono = reference[:, 0] + shimmer
         rng = np.random.default_rng(2028)
         noise = rng.normal(0.0, 10 ** (-62.0 / 20.0), size=mono.shape)
@@ -712,7 +712,7 @@ class test_forensic_rigorous(unittest.TestCase):
         res_est = motor_flac.analyze_file_data(str(path), use_cache=False)
         self.assertIs(res_est["esp"]["es_dual_mono"], False)
 
-    def test_19_dsd_96khz_rampa_directa(self):
+    def test_19_dsd_96khz_ramp_direct(self):
         """A DSD transfer stored at 96 kHz is DSD: the profile is universal.
 
         The DSD detector used to require a sample rate that is a multiple of
@@ -720,7 +720,7 @@ class test_forensic_rigorous(unittest.TestCase):
         rules even though its 24-40 kHz noise-shaping ramp is unmistakable.
         """
         sr = 96000
-        sig = _dsd_like(sr, duracion=4.0, seed=119)
+        sig = _dsd_like(sr, duration=4.0, seed=119)
 
         path = self.base_path / "dsd_transfer_96k.flac"
         sf.write(path, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
@@ -732,7 +732,7 @@ class test_forensic_rigorous(unittest.TestCase):
 
         # The same direct transfer at 192 kHz: same profile, same verdict.
         sr = 192000
-        sig = _dsd_like(sr, duracion=4.0, seed=119)
+        sig = _dsd_like(sr, duration=4.0, seed=119)
 
         path = self.base_path / "dsd_transfer_192k.flac"
         sf.write(path, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
@@ -753,7 +753,7 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
     @staticmethod
-    def _dsd128_192k(sr=192000, duracion=4.0, seed=119):
+    def _dsd128_192k(sr=192000, duration=4.0, seed=119):
         """DSD128 transfer: music below 20 kHz and a shaped floor above it.
 
         The floor sits about 22 dB below the 18-20 kHz music band (roughly
@@ -762,10 +762,10 @@ class test_forensic_rigorous(unittest.TestCase):
         the 1 kHz smoothing of the engine reaches into the band edge; the level
         is high enough that the file is not mistaken for shaped dither on a
         lossy transcode (a cliff of more than 25 dB would be)."""
-        n = int(sr * duracion)
+        n = int(sr * duration)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
 
-        musica = _create_track_reference(sr, duracion=duracion, seed=seed)
+        musica = _create_track_reference(sr, duration=duration, seed=seed)
         spectrum = np.fft.rfft(musica, axis=0)
         spectrum[freqs > 20000.0] = 0.0
         musica = np.fft.irfft(spectrum, n, axis=0)
@@ -773,8 +773,8 @@ class test_forensic_rigorous(unittest.TestCase):
 
         level_db = np.full(freqs.shape, -400.0)
         level_db[(freqs >= 20000.0) & (freqs <= 40000.0)] = 0.0
-        rampa = (freqs > 40000.0) & (freqs <= 86000.0)
-        level_db[rampa] = 20.0 * (freqs[rampa] - 40000.0) / 40000.0
+        ramp = (freqs > 40000.0) & (freqs <= 86000.0)
+        level_db[ramp] = 20.0 * (freqs[ramp] - 40000.0) / 40000.0
 
         rng = np.random.default_rng(2026)
         noise = (rng.standard_normal((freqs.size, 2))
@@ -787,7 +787,7 @@ class test_forensic_rigorous(unittest.TestCase):
         dither = (rng.random((n, 2)) - rng.random((n, 2))) * lsb
         return np.clip(musica + noise + dither, -0.999, 0.999)
 
-    def test_19b_dsd_scarlet_book_30k_aislado(self):
+    def test_19b_dsd_scarlet_book_30k_isolated(self):
         """Scarlet Book: the 30 kHz hump survives the SACD protective filter.
 
         Profile A needs a ramp that rises more than 12 dB from 24 to 40 kHz. The
@@ -796,11 +796,11 @@ class test_forensic_rigorous(unittest.TestCase):
         built so that Profile A cannot fire (a 1.5 dB total rise and 41 % of
         rising steps), and the reported profile pins which profile fired.
         """
-        duracion = 4.0
+        duration = 4.0
         sr = 96000
-        n = int(sr * duracion)
+        n = int(sr * duration)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
-        level_db, mix = self._scarlet_book(sr, duracion)
+        level_db, mix = self._scarlet_book(sr, duration)
 
         # Profile A is ruled out by construction on this fixture.
         mask_a = (freqs >= 24000.0) & (freqs <= 40000.0)
@@ -829,7 +829,7 @@ class test_forensic_rigorous(unittest.TestCase):
         # The same SACD master stored at 192 kHz: the profile does not depend on
         # the sample rate.
         sr = 192000
-        _, mix = self._scarlet_book(sr, duracion)
+        _, mix = self._scarlet_book(sr, duration)
         path = self.base_path / "dsd_scarlet_book_30k_24_192.flac"
         sf.write(path, mix, sr, subtype="PCM_24")
         res = motor_flac.analyze_file_data(str(path), use_cache=False)
@@ -839,14 +839,14 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
 
     @staticmethod
-    def _scarlet_book(sr, duracion=4.0, seed=121):
+    def _scarlet_book(sr, duration=4.0, seed=121):
         """SACD master: music to 20 kHz, 30 kHz hump and protective filter.
 
         Returns the designed per-bin envelope in dB and the stereo waveform."""
-        n = int(sr * duracion)
+        n = int(sr * duration)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
 
-        musica = _create_track_reference(sr, duracion=duracion, seed=seed)
+        musica = _create_track_reference(sr, duration=duration, seed=seed)
         spectrum = np.fft.rfft(musica, axis=0)
         spectrum[freqs > 20000.0] = 0.0                  # SACD passband
         musica = np.fft.irfft(spectrum, n, axis=0)
@@ -881,7 +881,7 @@ class test_forensic_rigorous(unittest.TestCase):
         """
         for sr, name in ((96000, "hires_24_96_studio_control"),
                            (192000, "hires_24_192_studio_control")):
-            sig = _create_track_reference(sr, duracion=4.0, seed=120)
+            sig = _create_track_reference(sr, duration=4.0, seed=120)
             path = self.base_path / f"{name}.flac"
             sf.write(path, np.clip(sig, -0.98, 0.98), sr, subtype="PCM_24")
             res = motor_flac.analyze_file_data(str(path), use_cache=False)
@@ -894,17 +894,17 @@ class test_forensic_rigorous(unittest.TestCase):
         # per bin). The 32 dB cliff is what keeps it out of the DSD profiles,
         # and the cut keeps its codec penalty.
         sr = 96000
-        duracion = 4.0
-        n = int(sr * duracion)
+        duration = 4.0
+        n = int(sr * duration)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
-        base = _create_track_reference(sr, duracion=duracion, seed=124)
+        base = _create_track_reference(sr, duration=duration, seed=124)
         sos = signal.ellip(12, 0.1, 80.0, 20000.0, btype="low", fs=sr, output="sos")
         clipped = signal.sosfilt(sos, base, axis=0)
         clipped /= np.max(np.abs(clipped)) * 1.05
 
         level_db = np.full(freqs.shape, -400.0)
-        alta = (freqs >= 20000.0) & (freqs <= 40000.0)
-        level_db[alta] = 6.0 * (freqs[alta] - 20000.0) / 20000.0
+        high = (freqs >= 20000.0) & (freqs <= 40000.0)
+        level_db[high] = 6.0 * (freqs[high] - 20000.0) / 20000.0
         rng = np.random.default_rng(2027)
         noise = (rng.standard_normal((freqs.size, 2))
                  + 1j * rng.standard_normal((freqs.size, 2)))
@@ -930,8 +930,8 @@ class test_forensic_rigorous(unittest.TestCase):
         a vinyl transfer sounds like, not what a codec leaves behind.
         """
         sr = 44100
-        duracion = 6.0
-        base = _create_track_reference(sr, duracion=duracion, seed=122)
+        duration = 6.0
+        base = _create_track_reference(sr, duration=duration, seed=122)
         sos = signal.butter(6, 19000.0, btype="low", fs=sr, output="sos")
         y = signal.sosfilt(sos, base, axis=0)
         y = y / (np.max(np.abs(y)) * 1.05)
@@ -971,16 +971,16 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIs(without_band["clipping_reconstruccion_lossy"], False)
 
         sr = 44100
-        duracion = 6.0
-        base = _create_track_reference(sr, duracion=duracion, seed=123)
+        duration = 6.0
+        base = _create_track_reference(sr, duration=duration, seed=123)
         sos = signal.butter(6, 19000.0, btype="low", fs=sr, output="sos")
         clean = signal.sosfilt(sos, base, axis=0)
         clean = clean / (np.max(np.abs(clean)) * 1.05)
 
-        def _with_events(cantidad, short):
+        def _with_events(quantity, short):
             """`cortos` 1-sample pops followed by 4-sample plateaus."""
             y = clean.copy()
-            for k in range(cantidad):
+            for k in range(quantity):
                 start = int(sr * 0.3) + k * int(sr * 0.35)
                 if k < short:
                     y[start, 0] = 1.0
@@ -1014,12 +1014,12 @@ class test_forensic_rigorous(unittest.TestCase):
         zeroed sfb21 as -55 dB.
         """
         sr = 44100
-        duracion = 6.0
-        n = int(sr * duracion)
+        duration = 6.0
+        n = int(sr * duration)
         t = np.arange(n) / float(sr)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
 
-        base = _create_track_reference(sr, duracion=duracion, seed=125)
+        base = _create_track_reference(sr, duration=duration, seed=125)
         spectrum = np.fft.rfft(base, axis=0)
         spectrum[(freqs >= 4000.0) & (freqs <= 11000.0)] *= 10.0 ** (30.0 / 20.0)
         base = np.fft.irfft(spectrum, n, axis=0)
@@ -1091,7 +1091,7 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertGreaterEqual(res["esp"]["techo_hz"], 20500)
         self.assertIs(res["esp"]["islas_mdct_sfb21"], False)
 
-    def test_21b_excitador_armonico_notch_sbr(self):
+    def test_21b_harmonic_exciter_notch_sbr(self):
         """SBR / harmonic exciter: correlated envelopes plus a deep notch.
 
         The band is cut at 15.2 kHz and 16.2-20.5 kHz is regenerated from the
@@ -1100,12 +1100,12 @@ class test_forensic_rigorous(unittest.TestCase):
         a deep notch where the original band ended.
         """
         sr = 44100
-        duracion = 6.0
-        n = int(sr * duracion)
+        duration = 6.0
+        n = int(sr * duration)
         t = np.arange(n) / float(sr)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
 
-        base = _create_track_reference(sr, duracion=duracion, seed=126)
+        base = _create_track_reference(sr, duration=duration, seed=126)
         rng = np.random.default_rng(2031)
         white = rng.standard_normal((n, 2))
         env = (0.10 + 0.90 * (np.sin(2.0 * np.pi * 2.2 * t) ** 8))[:, None]
@@ -1169,8 +1169,8 @@ class test_forensic_rigorous(unittest.TestCase):
         musica = signal.sosfilt(
             signal.ellip(8, 0.5, 80.0, 13000.0, btype="low", fs=sr, output="sos"),
             source, axis=0)
-        rampa = np.clip((freqs - 15800.0) / (16200.0 - 15800.0), 0.0, 1.0)
-        gain = 10.0 ** (22.0 * (0.5 - 0.5 * np.cos(np.pi * rampa)) / 20.0)
+        ramp = np.clip((freqs - 15800.0) / (16200.0 - 15800.0), 0.0, 1.0)
+        gain = 10.0 ** (22.0 * (0.5 - 0.5 * np.cos(np.pi * ramp)) / 20.0)
         step = np.fft.irfft(
             np.fft.rfft(step_band, axis=0) * gain[:, None], n, axis=0)
         subida = musica + step
@@ -1200,8 +1200,8 @@ class test_forensic_rigorous(unittest.TestCase):
         bits are clean: the low ceiling is the instrumentation, not a defect.
         """
         sr = 44100
-        duracion = 6.0
-        n = int(sr * duracion)
+        duration = 6.0
+        n = int(sr * duration)
         t = np.arange(n) / float(sr)
         freqs = np.fft.rfftfreq(n, 1.0 / sr)
 

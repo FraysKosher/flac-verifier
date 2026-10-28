@@ -239,19 +239,19 @@ def dnd_paths(payload: str) -> list[str]:
     paths: list[str] = []
     current = ""
     inside = False
-    for caracter in payload or "":
-        if caracter == "{":
+    for character in payload or "":
+        if character == "{":
             inside = True
-        elif caracter == "}":
+        elif character == "}":
             inside = False
             paths.append(current)
             current = ""
-        elif caracter == " " and not inside:
+        elif character == " " and not inside:
             if current:
                 paths.append(current)
                 current = ""
         else:
-            current += caracter
+            current += character
     if current:
         paths.append(current)
     return [r for r in paths if r]
@@ -295,7 +295,7 @@ def finish_process(process: "subprocess.Popen[str] | None", wait_time: float = 3
             continue
 
 
-def output_reader(process: "subprocess.Popen[str]", message_queue: "queue.Queue[Mensaje]",
+def output_reader(process: "subprocess.Popen[str]", message_queue: "queue.Queue[Message]",
                   cancelled: Callable[[], bool] | None = None) -> None:
     """Daemon thread: reads stdout and stderr and puts them into the queue.
 
@@ -331,7 +331,7 @@ def output_reader(process: "subprocess.Popen[str]", message_queue: "queue.Queue[
 class ProcessManager:
     """Lifecycle of the engine subprocess: start, read and cancel."""
 
-    def __init__(self, message_queue: "queue.Queue[Mensaje]", engine: str | None = None,
+    def __init__(self, message_queue: "queue.Queue[Message]", engine: str | None = None,
                  lanzador: Callable[..., Any] = subprocess.Popen) -> None:
         self.message_queue = message_queue
         self.engine = engine
@@ -409,7 +409,7 @@ if CTK_OK:
             self.geometry("1120x740")
             self.minsize(980, 640)
 
-            self.message_queue: "queue.Queue[Mensaje]" = queue.Queue(maxsize=MAX_QUEUE)
+            self.message_queue: "queue.Queue[Message]" = queue.Queue(maxsize=MAX_QUEUE)
             self.manager = ProcessManager(self.message_queue, engine=engine)
             # Bounded: a very long batch must not grow the window's memory forever.
             self.events: "deque[Evento]" = deque(maxlen=MAX_EVENTS_IN_MEMORY)
@@ -426,7 +426,7 @@ if CTK_OK:
             self._load_identity()
             self._update_state()
             self.protocol("WM_DELETE_WINDOW", self._on_close)
-            self._registrar_dnd()
+            self._register_dnd()
 
             if initial_path:
                 self.var_path.set(initial_path)
@@ -614,12 +614,12 @@ if CTK_OK:
                 self.log.tag_add(label, "end-2l", "end-1c")
             except Exception:
                 pass
-            self._recortar_log()
+            self._trim_log()
             self.log.configure(state="disabled")
             if scroll:
                 self.log.see("end")
 
-        def _recortar_log(self) -> None:
+        def _trim_log(self) -> None:
             """Keeps the text box bounded: drops the oldest lines past the limit."""
             try:
                 total = int(self.log.index("end-1c").split(".")[0])
@@ -628,7 +628,7 @@ if CTK_OK:
             except Exception:
                 pass
 
-        def _registrar_dnd(self) -> bool:
+        def _register_dnd(self) -> bool:
             if not DND_OK:
                 return False
             try:
@@ -703,10 +703,10 @@ if CTK_OK:
         def _analyze(self) -> None:
             path = self.var_path.get().strip().strip('"')
             if not path:
-                self._alerta("Path missing", "Choose a folder or a .flac file.")
+                self._alert("Path missing", "Choose a folder or a .flac file.")
                 return
             if not os.path.exists(path):
-                self._alerta("Path does not exist", f"Not found:\n{path}", error=True)
+                self._alert("Path does not exist", f"Not found:\n{path}", error=True)
                 return
 
             self.events.clear()
@@ -725,7 +725,7 @@ if CTK_OK:
                     without_cache=bool(self.var_without_cache.get()))
             except Exception as e:
                 self._log(f"Could not start the analysis: {e}", "error")
-                self._alerta("Could not start the engine", str(e), error=True)
+                self._alert("Could not start the engine", str(e), error=True)
                 self._update_state()
                 return
             self._log("Running: " + " ".join(command[1:]))
@@ -834,13 +834,13 @@ if CTK_OK:
                 # once in _finalizar, not for every engine error event.
                 self._log(f"Engine error: {event.get('mensaje')}", "error")
             elif kind == "__fin__":
-                self._finalizar(event)
+                self._finish(event)
             elif kind == "__ilegible__":
                 self._log(f"Unreadable line from the engine: {event.get('mensaje')}", "aviso")
             elif kind == "__aviso_lectura__":
                 self._log(f"Problem reading the output: {event.get('mensaje')}", "aviso")
 
-        def _finalizar(self, event: Event) -> None:
+        def _finish(self, event: Event) -> None:
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
             if event.get("cancelado"):
@@ -849,7 +849,7 @@ if CTK_OK:
             elif event.get("codigo") not in (0, None):
                 self.label_state.configure(text=f"Finished with code {event['codigo']}")
                 self._log(f"The engine finished with code {event['codigo']}.", "error")
-                self._alerta("The engine finished with an error",
+                self._alert("The engine finished with an error",
                              f"Exit code: {event['codigo']}", error=True)
             else:
                 self.label_state.configure(text="Finished")
@@ -859,13 +859,13 @@ if CTK_OK:
 
         def _open_pdf(self) -> None:
             if not self.pdf_path or not os.path.exists(self.pdf_path):
-                self._alerta("No report", "No PDF has been generated yet.")
+                self._alert("No report", "No PDF has been generated yet.")
                 return
             if not open_file(self.pdf_path):
-                self._alerta("Could not open the PDF",
+                self._alert("Could not open the PDF",
                              f"Open it manually:\n{self.pdf_path}", error=True)
 
-        def _alerta(self, title: str, message: str, error: bool = False) -> None:
+        def _alert(self, title: str, message: str, error: bool = False) -> None:
             """Native alert. It is also written to the log, so it can be reviewed later."""
             self._log(f"{title}: {message}", "error" if error else "aviso")
             from tkinter import messagebox

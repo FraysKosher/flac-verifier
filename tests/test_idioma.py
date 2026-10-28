@@ -77,9 +77,44 @@ SPANISH_WORDS = re.compile(
     r"inicios?|longitud|longitudes)\b",
     re.IGNORECASE)
 # Words spelled the same in English: no signal of the language.
-FALSE_POSITIVES = {"album", "compatible", "control", "pie", "solo", "dos", "pro",
-                    "sin", "volatile", "cached", "nonexistent", "anchor"}   # English
-                    # names that happen to contain a Spanish fragment
+FALSE_POSITIVES = {
+    "album", "compatible", "control", "pie", "solo", "dos", "pro",
+    "volatile", "cached", "nonexistent", "anchor", "variable",
+    "error", "total", "cache", "ratio", "output", "normal",
+    "controls", "decimals",
+}   # English names that happen to contain a Spanish fragment or are homographs
+
+# The lexicon is vendored so the guard does not depend on a regex written by
+# hand. SPANISH_WORDS stays as the prose guard; identifiers use the file.
+def _load_spanish_lexicon():
+    path = os.path.join(ROOT, "tests", "data", "spanish_words.txt")
+    words = set()
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            words.add(line.lower())
+    return words
+
+
+SPANISH_LEXICON = _load_spanish_lexicon()
+SPANISH_SUBSTRINGS = re.compile(
+    "|".join(re.escape(word) for word in sorted(
+        (word for word in SPANISH_LEXICON if len(word) >= 5),
+        key=len, reverse=True)),
+    re.IGNORECASE)
+
+
+def _is_spanish_token(token):
+    token = token.lower()
+    if token in SPANISH_LEXICON:
+        return True
+    if len(token) >= 5 and SPANISH_SUBSTRINGS.search(token):
+        return True
+    for prefix in ("sub", "sobre", "anti", "pre"):
+        rest = token[len(prefix):]
+        if token.startswith(prefix) and rest and rest in SPANISH_LEXICON:
+            return True
+    return False
 
 # Word boundaries are right for prose, but an identifier such as `subcarpeta`
 # hides a Spanish word inside a longer token. The identifier guard searches
@@ -118,15 +153,15 @@ def _external_import_names():
     for name in files_with_prose():
         path = os.path.join(ROOT, name)
         tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-        for nodo in ast.walk(tree):
-            if isinstance(nodo, ast.Import):
-                for alias in nodo.names:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
                     if alias.name.split(".")[0] not in propias:
                         externas.add(alias.asname or alias.name.split(".")[0])
-            elif isinstance(nodo, ast.ImportFrom):
-                root = (nodo.module or "").split(".")[0]
+            elif isinstance(node, ast.ImportFrom):
+                root = (node.module or "").split(".")[0]
                 if root and root not in propias:
-                    for alias in nodo.names:
+                    for alias in node.names:
                         externas.add(alias.asname or alias.name)
     return externas
 
@@ -139,19 +174,19 @@ def files_with_prose():
     return MODULES + tuple(tests) + ("Logo/generar_logo.py",)
 
 
-def nodos_docstring(source):
+def docstring_nodes(source):
     """The Constant nodes that are a module, class or function docstring."""
-    for nodo in ast.walk(ast.parse(source)):
-        if isinstance(nodo, (ast.Module, ast.ClassDef, ast.FunctionDef,
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
                              ast.AsyncFunctionDef)):
-            body = getattr(nodo, "body", [])
+            body = getattr(node, "body", [])
             if (body and isinstance(body[0], ast.Expr)
                     and isinstance(body[0].value, ast.Constant)
                     and isinstance(body[0].value.value, str)):
                 yield body[0].value
 
 
-def rangos_docstring(source):
+def docstring_ranges(source):
     """Character ranges of the docstrings.
 
     Watch the units: `col_offset`/`end_col_offset` from the syntax tree are UTF-8
@@ -165,15 +200,15 @@ def rangos_docstring(source):
         if byte == 0x0A:
             saltos.append(index + 1)
 
-    def a_caracter(position_bytes):
+    def to_character(position_bytes):
         return len(payload[:position_bytes].decode("utf-8"))
 
-    return [(a_caracter(saltos[nodo.lineno - 1] + nodo.col_offset),
-             a_caracter(saltos[nodo.end_lineno - 1] + nodo.end_col_offset))
-            for nodo in nodos_docstring(source)]
+    return [(to_character(saltos[node.lineno - 1] + node.col_offset),
+             to_character(saltos[node.end_lineno - 1] + node.end_col_offset))
+            for node in docstring_nodes(source)]
 
 
-def piezas(interior):
+def pieces(inner):
     """Text pieces of a literal, without the `{…}` expressions of an f-string.
 
     What the user sees is the text, not the names of the interpolated variables:
@@ -183,24 +218,24 @@ def piezas(interior):
     current = []
     index = 0
     depth = 0
-    while index < len(interior):
-        if interior[index] == "{":
+    while index < len(inner):
+        if inner[index] == "{":
             if depth == 0 and current:
                 results.append("".join(current))
                 current = []
             depth += 1
             index += 1
             continue
-        if interior[index] == "}":
+        if inner[index] == "}":
             depth -= 1
             index += 1
             continue
-        if depth == 0 and interior[index:index + 2] in ("{{", "}}"):
-            current.append(interior[index])
+        if depth == 0 and inner[index:index + 2] in ("{{", "}}"):
+            current.append(inner[index])
             index += 2
             continue
         if depth == 0:
-            current.append(interior[index])
+            current.append(inner[index])
         index += 1
     if current:
         results.append("".join(current))
@@ -210,10 +245,10 @@ def piezas(interior):
 def chunks_visible(path):
     """(line, text) of every visible piece of every text literal."""
     source = Path(path).read_text(encoding="utf-8")
-    omitir = rangos_docstring(source)
+    omitir = docstring_ranges(source)
     start_line = [0]
-    for index, caracter in enumerate(source):
-        if caracter == "\n":
+    for index, character in enumerate(source):
+        if character == "\n":
             start_line.append(index + 1)
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type != tokenize.STRING:
@@ -228,29 +263,29 @@ def chunks_visible(path):
         if not body or body[0] not in "\"'":
             continue
         recorte = 3 if body.startswith(body[0] * 3) else 1
-        for chunk in piezas(body[recorte:len(body) - recorte]):
+        for chunk in pieces(body[recorte:len(body) - recorte]):
             yield token.start[0], chunk
 
 
-def prosa(path):
+def prose(path):
     """(line, text) of every comment line and every docstring line."""
     source = Path(path).read_text(encoding="utf-8")
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type == tokenize.COMMENT:
             yield token.start[0], token.string
-    for nodo in nodos_docstring(source):
-        for desplazamiento, line in enumerate(nodo.value.splitlines()):
-            yield nodo.lineno + desplazamiento, line
+    for node in docstring_nodes(source):
+        for desplazamiento, line in enumerate(node.value.splitlines()):
+            yield node.lineno + desplazamiento, line
 
 
-class TestIdioma(unittest.TestCase):
+class TestLanguage(unittest.TestCase):
     """Interface text, comments and docstrings have to be in English."""
 
     def _check(self, pattern, description):
         problems = []
         sources = [(os.path.join(ROOT, name), chunks_visible, "text")
                    for name in MODULES]
-        sources += [(os.path.join(ROOT, path), prosa, "prose")
+        sources += [(os.path.join(ROOT, path), prose, "prose")
                     for path in files_with_prose()]
         for path, generator, source in sources:
             for line, text in generator(path):
@@ -335,19 +370,24 @@ class TestIdioma(unittest.TestCase):
     def test_no_spanish_identifiers(self):
         """AST guard: every Python identifier in the repo is English.
 
-        JSON protocol keys and values, reportlab style names, argparse
-        destinations, dunders, module file names and third-party imports are
-        excluded. This covers the production modules, the tests and Logo.
+        The lexicon is vendored in `tests/data/spanish_words.txt`. JSON protocol
+        keys are strings, not identifiers: a Spanish key that leaked into a
+        variable or function name is still a defect and must be renamed.
+        Dunders, module file names, third-party imports and an explicit list of
+        English homographs are the only exceptions.
         """
-        allowed = (JSON_KEYS | INTERNAL_STYLE_NAMES | ARGPARSE_DESTS
-                   | PROTOCOL_VALUES)
         external = _external_import_names()
         module_names = {os.path.splitext(name)[0] for name in MODULES}
+        keep = {"VERSION_MOTOR", "VERSION_ESQUEMA_CACHE"}
         problems = []
         for name in files_with_prose():
             path = os.path.join(ROOT, name)
             source = Path(path).read_text(encoding="utf-8")
             for node in ast.walk(ast.parse(source)):
+                # numpy's sine is an English function name, not the Spanish word.
+                if (isinstance(node, ast.Attribute) and node.attr == "sin"
+                        and isinstance(node.value, ast.Name) and node.value.id == "np"):
+                    continue
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                      ast.ClassDef)):
                     candidate = node.name
@@ -359,30 +399,17 @@ class TestIdioma(unittest.TestCase):
                     candidate = node.attr
                 else:
                     continue
-                if not candidate or candidate in allowed or candidate in external:
+                if not candidate or candidate in external:
                     continue
-                if candidate in module_names:
+                if candidate in module_names or candidate in keep:
                     continue
                 if candidate.startswith("__") and candidate.endswith("__"):
                     continue
                 for chunk in re.split(r"_+|(?<=[a-z])(?=[A-Z])", candidate):
                     low = chunk.lower()
-                    if not low or low in FALSE_POSITIVES or low in allowed:
+                    if not low or low in FALSE_POSITIVES:
                         continue
-                    matched = None
-                    if len(low) >= 5:
-                        matched = next((match for match in SPANISH_FRAGMENTS.finditer(low)
-                                        if len(match.group(0)) >= 5), None)
-                    else:
-                        matched = SPANISH_WORDS.fullmatch(low)
-                    if not matched:
-                        for prefix in ("sub", "sobre", "anti", "pre"):
-                            rest = low[len(prefix):]
-                            if (low.startswith(prefix) and rest
-                                    and SPANISH_WORDS.fullmatch(rest)):
-                                matched = True
-                                break
-                    if matched:
+                    if _is_spanish_token(low):
                         problems.append(f"{name}:{node.lineno}: {candidate!r}")
                         break
         self.assertEqual(problems, [],

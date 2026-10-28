@@ -99,11 +99,11 @@ class test_reader_by_blocks(unittest.TestCase):
                          engine._md5_pcm(data, meta["bits_per_sample"]))
 
 
-class TestVectorizacion(unittest.TestCase):
+class TestVectorization(unittest.TestCase):
     """The vectorisation must count exactly the same as the naive loop."""
 
     @staticmethod
-    def _clipping_ingenuo(data):
+    def _naive_clipping(data):
         """Original implementation, sample by sample (reference)."""
         amp = np.max(np.abs(data), axis=1) if data.ndim > 1 else np.abs(data)
         en_clip = (amp >= 0.9999).astype(np.int8)
@@ -127,7 +127,7 @@ class TestVectorizacion(unittest.TestCase):
         x[20:24, 0] = 1.0        # run of 4 -> counts
         x[47:50, 1] = 1.0        # run of 3 right at the end -> counts
         # the whole file: both agree and the result is the expected one
-        self.assertEqual(engine.detect_clipping(x), self._clipping_ingenuo(x))
+        self.assertEqual(engine.detect_clipping(x), self._naive_clipping(x))
         self.assertEqual(engine.detect_clipping(x)["runs_clip"], 3)
 
     def test_equivalence_with_data_random_clipping_real(self):
@@ -140,7 +140,7 @@ class TestVectorizacion(unittest.TestCase):
         cases.append(with_clip)
         for data in cases:
             with self.subTest(shape=data.shape):
-                self.assertEqual(engine.detect_clipping(data), self._clipping_ingenuo(data))
+                self.assertEqual(engine.detect_clipping(data), self._naive_clipping(data))
 
     def test_streak_split_between_blocks_counts_alone_time(self):
         data = np.zeros((10, 1))
@@ -197,8 +197,8 @@ class TestVectorizacion(unittest.TestCase):
         rng = np.random.default_rng(9)
         x = rng.standard_normal((sr * 20, 2)) * 0.2
         x[sr * 6 : sr * 9] *= 5.0                # one clearly louder block
-        esperado = engine.calculate_dr(x, sr)
-        self.assertIsNotNone(esperado)
+        expected = engine.calculate_dr(x, sr)
+        self.assertIsNotNone(expected)
 
         meta = {"sample_rate": sr, "bits_per_sample": 16, "canales": 2,
                 "duracion": 20.0, "md5": 1}
@@ -211,7 +211,7 @@ class TestVectorizacion(unittest.TestCase):
             accumulator.add(chunk, offset)
             offset += len(chunk)
         self.assertEqual(offset, len(x))
-        self.assertEqual(accumulator.result()["dr"], esperado)
+        self.assertEqual(accumulator.result()["dr"], expected)
 
     def test_dr_file_short_still_being_none(self):
         """Less than 6 seconds = less than two 3 s blocks."""

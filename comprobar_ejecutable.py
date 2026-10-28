@@ -181,7 +181,7 @@ def _titles_windows_visible(pid: int) -> list[str]:
 
     titles: list[str] = []
 
-    def visitar(hwnd, _lparam):
+    def visit(hwnd, _lparam):
         pid_window = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_window))
         if pid_window.value != pid:
@@ -197,7 +197,7 @@ def _titles_windows_visible(pid: int) -> list[str]:
                 titles.append(title)
         return True
 
-    user32.EnumWindows(prototipo(visitar), 0)
+    user32.EnumWindows(prototipo(visit), 0)
     return titles
 
 
@@ -244,7 +244,7 @@ class Checker:
         self.temporal = tempfile.mkdtemp(prefix="flac_exe_")
 
     # ── utilities ───────────────────────────────────────────────────────────
-    def anotar(self, name: str, well: bool, detail: str = "") -> None:
+    def annotate(self, name: str, well: bool, detail: str = "") -> None:
         self.results.append((name, well, detail))
         print(f"  {'OK  ' if well else 'FALLA'} {name}"
               + (f"  ·  {detail}" if detail else ""))
@@ -291,7 +291,7 @@ class Checker:
                 if e.get("tipo") == "resultado" and e.get("archivo")}
 
     @staticmethod
-    def abreviar(text: str, limit: int = 90) -> str:
+    def abbreviate(text: str, limit: int = 90) -> str:
         text = " ".join(text.split())
         return text[:limit] + ("…" if len(text) > limit else "")
 
@@ -309,14 +309,14 @@ class Checker:
         print("\n[1] Both executables exist and respond")
         for label, path in (("interface", self.gui), ("engine", self.engine)):
             if not os.path.exists(path):
-                self.anotar(f"{label}: {os.path.basename(path)}", False, "no existe")
+                self.annotate(f"{label}: {os.path.basename(path)}", False, "no existe")
                 continue
             size = os.path.getsize(path) / 1e6
             code, text = self.launch([path, "--version"], limit=180,
                                         label=f"version_{label}")
             well = code == 0
-            self.anotar(f"{label}: {os.path.basename(path)} ({size:.1f} MB)",
-                        well, self.abreviar(text) or f"exit code {code}")
+            self.annotate(f"{label}: {os.path.basename(path)} ({size:.1f} MB)",
+                        well, self.abbreviate(text) or f"exit code {code}")
 
     def step_2_series(self, album: str) -> None:
         print("\n[2] Frozen engine, serial (no multiprocessing)")
@@ -330,10 +330,10 @@ class Checker:
         results = [e for e in events if e.get("tipo") == "resultado"]
         well = (code == 0 and tipos[:1] == ["inicio"] and tipos[-1:] == ["fin"]
                 and bool(results))
-        self.anotar(f"serial analysis of {len(results)} file(s)",
+        self.annotate(f"serial analysis of {len(results)} file(s)",
                     well, f"{seconds:.1f} s, exit code {code}, fin={('fin' in tipos)}")
         if not well:
-            print("     " + self.abreviar(text, 300))
+            print("     " + self.abbreviate(text, 300))
 
     def step_3_parallel(self, album: str, workers: int = 8) -> None:
         print(f"\n[3] Frozen engine IN PARALLEL with {workers} processes "
@@ -344,7 +344,7 @@ class Checker:
                                     label="parallel")
         seconds = time.perf_counter() - start
         if code is None:
-            self.anotar(f"analysis with {workers} processes", False, text)
+            self.annotate(f"analysis with {workers} processes", False, text)
             return
         events = self.events(text)
         results = [e for e in events if e.get("tipo") == "resultado"]
@@ -354,19 +354,19 @@ class Checker:
         detail = (f"{seconds:.1f} s, {len(results)} resultados, "
                    f"workers={start_event.get('workers')}, "
                    f"paralelo={start_event.get('paralelo')}, exit code {code}")
-        self.anotar(f"analysis with {workers} processes", well, detail)
+        self.annotate(f"analysis with {workers} processes", well, detail)
         if not well:
-            print("     " + self.abreviar(text, 300))
+            print("     " + self.abbreviate(text, 300))
         elif "paralelo" not in start_event:
             # The protocol keys are Spanish by design: they are identifiers and were
             # never renamed. Reading "parallel" here — the English word — silently
             # returned None and made this check report a fallback that had not
             # happened, which is worse than not checking at all.
-            self.anotar("real processes were used", False,
+            self.annotate("real processes were used", False,
                         "the engine did not report the 'paralelo' field: the protocol "
                         "contract changed")
         elif not start_event.get("paralelo"):
-            self.anotar("real processes were used", False,
+            self.annotate("real processes were used", False,
                         "the engine fell back to serial: this environment cannot create "
                         "processes (the intended fallback). Run it in a "
                         "normal console, without a sandbox, to test the parallel path")
@@ -382,23 +382,23 @@ class Checker:
         report = next((e for e in events if e.get("tipo") == "informe"), None)
         warnings = [e for e in events if e.get("tipo") == "aviso"]
         if report is None:
-            detail = self.abreviar(warnings[0].get("mensaje", "") if warnings else text)
+            detail = self.abbreviate(warnings[0].get("mensaje", "") if warnings else text)
             integrity = _integrity_process_windows()
             if integrity is not None and integrity < INTEGRITY_MEAN:
                 detail += (f" [caller token has Low Mandatory Integrity "
                             f"0x{integrity:x}; run: icacls <venv> "
                             f"/setintegritylevel (OI)(CI)M /T]")
-            self.anotar("PDF report", False, detail)
+            self.annotate("PDF report", False, detail)
             return
         pdf_path = report.get("ruta", "")
         exists = os.path.exists(pdf_path)
-        self.anotar("PDF report generated", exists and code == 0,
+        self.annotate("PDF report generated", exists and code == 0,
                     f"{os.path.basename(pdf_path)} "
                     f"({os.path.getsize(pdf_path) / 1e6:.2f} MB, "
                     f"{report.get('paginas')} pages, {seconds:.1f} s)" if exists else pdf_path)
         png_folder = os.path.join(album, "_spectrograms")
         pngs = [f for f in os.listdir(png_folder)] if os.path.isdir(png_folder) else []
-        self.anotar("PNG spectrograms (Pillow packaged)",
+        self.annotate("PNG spectrograms (Pillow packaged)",
                     any(f.endswith(".png") for f in pngs), f"{len(pngs)} file(s)")
 
     def step_5_flag_internal(self, album: str) -> None:
@@ -411,7 +411,7 @@ class Checker:
         try:
             import gui
         except Exception as e:                 # no customtkinter on this machine
-            self.anotar("command built by the packaged GUI", False,
+            self.annotate("command built by the packaged GUI", False,
                         f"could not read gui.engine_path(): {type(e).__name__}: {e}"
                         " · install customtkinter on the build machine")
         else:
@@ -431,7 +431,7 @@ class Checker:
             code, text = self.launch(command, limit=180, label="packaged_gui")
             events = self.events(text)
             results = [e for e in events if e.get("tipo") == "resultado"]
-            self.anotar(f"command built by the packaged GUI: {' '.join(base)}",
+            self.annotate(f"command built by the packaged GUI: {' '.join(base)}",
                         code == 0 and bool(results),
                         f"{len(results)} result(s), exit code {code}")
 
@@ -443,17 +443,17 @@ class Checker:
                                      "--no-cache"], limit=180, label="flag")
         events = self.events(text)
         results = [e for e in events if e.get("tipo") == "resultado"]
-        self.anotar("the windowed .exe delivers the NDJSON protocol with --motor-cli",
+        self.annotate("the windowed .exe delivers the NDJSON protocol with --motor-cli",
                     code == 0 and bool(results),
                     f"{len(results)} result(s), exit code {code}")
         if not results:
-            self.anotar("(that is why the GUI uses flac_motor.exe, which does have a console)",
+            self.annotate("(that is why the GUI uses flac_motor.exe, which does have a console)",
                         True, "expected behaviour in a windowed .exe")
 
     def step_6_window(self) -> None:
         print("\n[6] The graphical interface opens and closes leaving no processes")
         if not os.path.exists(self.gui):
-            self.anotar("GUI window", False, "the executable does not exist")
+            self.annotate("GUI window", False, "the executable does not exist")
             return
         process = subprocess.Popen([self.gui, "--gui"], creationflags=NO_WINDOW)
         try:
@@ -475,7 +475,7 @@ class Checker:
                            + ", ".join(repr(t) for t in titles[:3]))
             else:
                 detail = f"no visible FLAC window (exit code {process.poll()})"
-            self.anotar("the window opens", well, detail)
+            self.annotate("the window opens", well, detail)
         finally:
             _close_process_and_children(process)
         time.sleep(1.5)
@@ -483,9 +483,9 @@ class Checker:
             ["powershell", "-NoProfile", "-Command",
              "@(Get-Process -Name FLAC_Verifier,flac_motor -ErrorAction SilentlyContinue).Count"],
             capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
-        cuantos = (overflow.stdout or "0").strip() or "0"
-        self.anotar("no processes left after closing", cuantos == "0",
-                    f"live processes: {cuantos}")
+        how_many = (overflow.stdout or "0").strip() or "0"
+        self.annotate("no processes left after closing", how_many == "0",
+                    f"live processes: {how_many}")
 
     def step_7_same_verdicts(self, album: str) -> None:
         """The executable cannot analyse differently from the source code.
@@ -503,7 +503,7 @@ class Checker:
         source = self.cards(text_source)
         exe_file = self.cards(text_exe)
         if not source or not exe_file:
-            self.anotar("comparison against the source code", False,
+            self.annotate("comparison against the source code", False,
                         f"records read: source={len(source)}, executable={len(exe_file)}")
             return
         diferencias = [name for name, card in source.items()
@@ -511,11 +511,11 @@ class Checker:
         detail = (f"{len(source)} record(s) compared"
                    if not diferencias else
                    "differing: " + ", ".join(diferencias[:3]))
-        self.anotar("same records field by field (verdict, MD5, DR…)", not diferencias,
+        self.annotate("same records field by field (verdict, MD5, DR…)", not diferencias,
                     detail)
         for name in diferencias[:2]:
-            print(f"     fuente     {name}: {self.abreviar(json.dumps(source[name], ensure_ascii=False), 200)}")
-            print(f"     executable {name}: {self.abreviar(json.dumps(exe_file.get(name), ensure_ascii=False), 200)}")
+            print(f"     fuente     {name}: {self.abbreviate(json.dumps(source[name], ensure_ascii=False), 200)}")
+            print(f"     executable {name}: {self.abbreviate(json.dumps(exe_file.get(name), ensure_ascii=False), 200)}")
 
     def summary(self) -> int:
         print("\n" + "=" * 72)
@@ -559,7 +559,7 @@ def main() -> int:
                 checker.step_5_flag_internal(args.album)
                 checker.step_7_same_verdicts(args.album)
         else:
-            checker.anotar("test album", False,
+            checker.annotate("test album", False,
                                f"not found: {args.album} — pass --album")
         if not args.quick:
             checker.step_6_window()

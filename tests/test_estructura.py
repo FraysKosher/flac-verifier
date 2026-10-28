@@ -39,7 +39,7 @@ class test_without_effects_side_effects(unittest.TestCase):
         self.assertEqual(p.stderr.strip(), "")
 
 
-class TestCapaFina(unittest.TestCase):
+class TestThinLayer(unittest.TestCase):
 
     def test_cli_no_redefines_engine(self):
         for name in FUNCTIONS_ENGINE:
