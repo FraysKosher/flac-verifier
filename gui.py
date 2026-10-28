@@ -1787,7 +1787,7 @@ if CTK_OK:
             self._set_hero_number(str(total), "FILES")
             self._set_facts((("ERRORS", str(errors)),
                              ("CACHED", str(cached)),
-                             ("VERDICTS", str(len(kinds)))))
+                             ("TYPES", str(len(kinds)))))
             self._set_evidence(())
             self._show_spectrogram("")
             self._schedule_hero_layout()

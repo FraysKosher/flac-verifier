@@ -560,7 +560,7 @@ class test_manager_process(unittest.TestCase):
         gui.finish_process(None)
 
     def test_thread_active_distinguishes_reader_running(self):
-        """`hilo_activo` is what the window uses so as not to lose the final `__fin__`.
+        """`active_thread` is what the window uses so as not to lose the final `__fin__`.
 
         It has to be True while the reader thread is working and False once that
         thread has ended, even if the process has already been reaped."""

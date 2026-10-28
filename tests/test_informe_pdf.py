@@ -214,6 +214,40 @@ class test_report_pdf(unittest.TestCase):
         self.assertIn("engine 9.8", text)                          # footer
         self.assertIsNotNone(pdf._logo_image(), "the logo is missing")
 
+    def test_every_style_is_readable_on_paper(self):
+        """Small labels need 4.5:1 on paper; large bold text needs 3:1 (DESIGN.md 9)."""
+        for name, style in pdf._styles().items():
+            colour = style.textColor
+            if colour is None:
+                continue
+            rendered = "#%02X%02X%02X" % (round(colour.red * 255),
+                                          round(colour.green * 255),
+                                          round(colour.blue * 255))
+            bold = "Bold" in (style.fontName or "")
+            minimum = 3.0 if (style.fontSize >= 14 and bold) else 4.5
+            with self.subTest(style=name, size=style.fontSize):
+                self.assertGreaterEqual(
+                    _contrast(rendered, pdf.PAPER), minimum,
+                    f"{name} ({rendered}) is not readable on the paper")
+
+    def test_missing_spectrogram_says_why(self):
+        """Three different reasons must not share one vague message."""
+        clean = {"archivo": "ok.flac", "ruta": self.fx["ok16"],
+                 "veredicto": "GENUINE LOSSLESS", "score": 0.9, "problemas": [],
+                 "evidencias_forenses": [], "meta": {}, "esp": {}, "bdi": {},
+                 "md5": {}, "clip": {}}
+        broken = {"archivo": "broken.flac", "error": "Not a valid FLAC signature"}
+        destination = os.path.join(self.fx.dir, "sin_png.pdf")
+        report = pdf.generate(self.album, [clean, broken], destination=destination)
+        self.assertTrue(report["ok"], report.get("error"))
+        text = text_pdf(destination)
+        self.assertIn("not generated (run with the PDF report or --png)", text)
+        self.assertIn("the file could not be analyzed", text)
+        self.assertIn("No issues detected.", text)
+        self.assertIn("Not analyzed: no issues were evaluated.", text)
+        # A record that failed is never described as clean.
+        self.assertEqual(text.count("No issues detected."), 1)
+
     def test_styles_never_fall_back_to_black(self):
         for name, style in pdf._styles().items():
             colour = style.textColor

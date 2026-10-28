@@ -52,7 +52,6 @@ HEIGHT_IMG_MIN_MM = 34                   # below this it is no longer shrunk
 PAPER = theme.color("bg.surface", "light")
 INK = theme.color("text.primary", "light")
 INK_SECONDARY = theme.color("text.secondary", "light")
-INK_TERTIARY = theme.color("text.tertiary", "light")
 RULE = theme.color("border.subtle", "light")
 RAISED = theme.color("bg.raised", "light")
 ACCENT = theme.color("accent", "light")
@@ -187,17 +186,17 @@ def _styles():
         "celda":     style("celda", "Normal", fontSize=8.5, leading=11,
                            textColor=colors.HexColor(INK)),
         "etiqueta":  style("etiqueta", "Normal", fontSize=8.5, leading=11,
-                           textColor=colors.HexColor(INK_TERTIARY)),
+                           textColor=colors.HexColor(INK_SECONDARY)),
         "encabezado": style("encabezado", "Normal", fontSize=8, leading=10,
                             fontName="Helvetica-Bold",
-                            textColor=colors.HexColor(INK_TERTIARY)),
+                            textColor=colors.HexColor(INK_SECONDARY)),
         "problema":  style("problema", "Normal", fontSize=9, leading=12.5,
                            leftIndent=4 * mm, bulletIndent=1 * mm,
                            spaceAfter=1 * mm, textColor=colors.HexColor(INK)),
         "insignia":  style("insignia", "Normal", fontSize=10.5, leading=13,
                            alignment=1, textColor=colors.HexColor(INK)),
         "pie":       style("pie", "Normal", fontSize=7.5,
-                           textColor=colors.HexColor(INK_TERTIARY)),
+                           textColor=colors.HexColor(INK_SECONDARY)),
     }
 
 
@@ -330,6 +329,11 @@ def _framed_image(image):
 def _spectrogram_image(res, temporal, width_max=None, height_max=None):
     """Returns (flowable, warning). The warning explains why there is no image.
 
+    The three ways of ending up without a picture are distinct and say so: the
+    track could not be analyzed, the analysis was run without PNG output, or the
+    image was there and Pillow (only needed for the JPEG recompression) is not
+    installed and reportlab could not read the PNG either.
+
     The PNG files weigh several hundred KB each; for the PDF they are rescaled and
     recompressed to JPEG inside a temporary directory (reportlab needs a file
     path). Without Pillow the original PNG is embedded: the report comes out the
@@ -342,11 +346,14 @@ def _spectrogram_image(res, temporal, width_max=None, height_max=None):
     height_max  = height_max or 62 * mm
     path = (res.get("esp") or {}).get("espectrograma")
     if not path:
-        return None, "spectrogram not generated (Pillow not available)"
+        if res.get("error"):
+            return None, "not available: the file could not be analyzed"
+        return None, "not generated (run with the PDF report or --png)"
     if not os.path.exists(path):
         return None, "the spectrogram file is no longer available"
 
     source = path
+    pillow_ok = True
     try:
         from PIL import Image as ImagenPIL
         with ImagenPIL.open(path) as image:
@@ -355,11 +362,17 @@ def _spectrogram_image(res, temporal, width_max=None, height_max=None):
             copy.thumbnail((MAX_PX_SPECTROGRAM, MAX_PX_SPECTROGRAM))
             source = os.path.join(temporal, os.path.basename(path) + ".jpg")
             copy.save(source, format="JPEG", quality=88, optimize=True)
-    except Exception:
-        source = path                              # without Pillow: original PNG
+    except ImportError:                    # Pillow is optional for the report
+        pillow_ok = False
+        source = path
+    except Exception:                      # unreadable PNG: let reportlab try
+        source = path
+    if source == path:
         try:
             px_width, px_height = ImageReader(path).getSize()
         except Exception as e:
+            if not pillow_ok:
+                return None, "Pillow not available"
             return None, f"could not embed the spectrogram ({type(e).__name__})"
 
     altura = width_max * px_height / float(px_width)
@@ -367,6 +380,7 @@ def _spectrogram_image(res, temporal, width_max=None, height_max=None):
     if altura > height_max:                          # scaled down keeping the aspect ratio
         altura = height_max
         width = altura * px_width / float(px_height)
+
     return Image(source, width=width, height=altura), None
 
 
@@ -421,6 +435,11 @@ def _song_card(index, total, res, styles, temporal):
         for problem in problems:
             element.append(Paragraph(
                 f"• {html.escape(str(problem))}", styles["problema"]))
+    elif res.get("error"):
+        # A file that could not be analyzed was never evaluated: saying "no
+        # issues" would read as a clean result.
+        element.append(Paragraph("Not analyzed: no issues were evaluated.",
+                                 styles["normal"]))
     else:
         element.append(Paragraph("No issues detected.", styles["normal"]))
 
@@ -574,7 +593,7 @@ def _page_footer(canvas, doc, album, counter):
     canvas.setLineWidth(0.4)
     canvas.line(20 * mm, 14 * mm, A4[0] - 20 * mm, 14 * mm)
     canvas.setFont("Helvetica", 7.5)
-    canvas.setFillColor(colors.HexColor(INK_TERTIARY))
+    canvas.setFillColor(colors.HexColor(INK_SECONDARY))
     canvas.drawString(20 * mm, 10 * mm, f"FLAC VERIFIER — {album}"[:110])
     right = f"Page {canvas.getPageNumber()}"
     version = _engine_version()

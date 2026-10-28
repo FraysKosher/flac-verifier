@@ -135,7 +135,7 @@ PROTOCOL_VALUES = {"inicio", "resultado", "informe", "aviso", "fin", "error"}
 # reportlab style names used by the PDF: internal identifiers, not prose.
 INTERNAL_STYLE_NAMES = {
     "etiqueta", "celda", "pie", "seccion", "codigo", "cancelado", "normal",
-    "subtitulo", "titulo", "insignia",
+    "subtitulo", "titulo", "insignia", "encabezado", "marca",
 }
 
 # argparse destinations that stay as they are: internal identifiers, not prose.
