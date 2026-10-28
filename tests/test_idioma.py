@@ -33,7 +33,8 @@ sys.path.insert(0, ROOT)
 
 # Everything the user can read: the application modules and the two tools that are
 # run by hand (the builder and the executable checker).
-MODULES = ("main.py", "motor_flac.py", "gui.py", "verificar_flac.py",
+MODULES = ("main.py", "motor_flac.py", "gui.py", "theme.py",
+           "verificar_flac.py",
            "informe_pdf.py", "build.py", "comprobar_ejecutable.py",
            "_motor_bits.py", "_motor_espectral.py", "_motor_veredicto.py",
            "_motor_cache.py")
@@ -171,7 +172,8 @@ def files_with_prose():
     folder = os.path.join(ROOT, "tests")
     tests = sorted(f"tests/{name}" for name in os.listdir(folder)
                      if name.endswith(".py"))
-    return MODULES + tuple(tests) + ("Logo/generar_logo.py",)
+    return MODULES + tuple(tests) + ("Logo/generar_logo.py",
+                                     "Logo/generate_icons.py")
 
 
 def docstring_nodes(source):

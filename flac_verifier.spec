@@ -94,6 +94,7 @@ hiddenimports += [
     "informe_pdf",
     "verificar_flac",
     "gui",
+    "theme",
     "argparse",
     "multiprocessing",
     "multiprocessing.spawn",
@@ -113,6 +114,8 @@ datas += [
     ("Logo/logo_flac_verifier_128.png", "Logo"),
     ("Logo/logo_flac_verifier.svg", "Logo"),
     ("Logo/icono_app.ico", "Logo"),
+    # Line icons of the interface (DESIGN.md 8), whole folder in one entry.
+    ("Logo/icons", "Logo/icons"),
 ]
 
 ICONO = "Logo/icono_app.ico"

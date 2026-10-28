@@ -87,6 +87,24 @@ def ensure_pyinstaller() -> None:
     print("  PyInstaller installed")
 
 
+def check_assets() -> None:
+    """The interface artwork must exist and stay inside its size budget.
+
+    The icons are data of the executable: if they are missing, the window still
+    opens but every button loses its icon, so the build says it out loud instead
+    of shipping a quieter interface.
+    """
+    folder = os.path.join(HERE, "Logo", "icons")
+    if not os.path.isdir(folder):
+        print("  warning: Logo/icons is missing; the buttons will show text only")
+        return
+    files = [name for name in os.listdir(folder) if name.endswith(".png")]
+    total = sum(os.path.getsize(os.path.join(folder, name)) for name in files)
+    print(f"  ✓ Logo/icons: {len(files)} icons, {total / 1024:.1f} kB")
+    if total >= 100_000:
+        print("  warning: the icon set is over the 100 kB budget of DESIGN.md")
+
+
 def clean() -> None:
     for folder in (BUILD, DIST):
         if os.path.isdir(folder):
@@ -181,6 +199,7 @@ def main() -> int:
 
     step_size(1, "Checking the environment")
     check_python()
+    check_assets()
     ensure_pyinstaller()
 
     step_size(2, "Removing leftovers from previous builds")

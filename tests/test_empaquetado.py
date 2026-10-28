@@ -293,7 +293,7 @@ class TestSpecification(unittest.TestCase):
 
     def test_includes_assets_logo(self):
         for asset in ("logo_flac_verifier.png", "logo_flac_verifier_128.png",
-                      "icono_app.ico"):
+                      "icono_app.ico", "Logo/icons"):
             with self.subTest(asset=asset):
                 self.assertIn(asset, self.source)
 
