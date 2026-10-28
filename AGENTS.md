@@ -24,7 +24,7 @@ file is genuine lossless or a lossy transcode. Architecture is deliberately flat
 ## Commands
 
 ```bash
-.venv/Scripts/python.exe -m unittest discover -s tests        # ~266 tests, fast; run this first
+.venv/Scripts/python.exe -m unittest discover -s tests        # ~267 tests, fast; run this first
 .venv/Scripts/python.exe -m unittest tests.test_veredictos     # one module
 FLAC_VERIFIER_SIN_GUI=1 python -m unittest discover -s tests   # no desktop (skips Tk tests)
 python build.py                                                # package the .exe (slow)
@@ -40,7 +40,7 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
    the CLI, the GUI or the PDF. `tests/test_estructura.py` catches it.
 2. `multiprocessing.freeze_support()` stays the **first statement** of the `__main__`
    block in `main.py` (`tests/test_empaquetado.py`).
-3. **Raise `VERSION_MOTOR`** (currently `"9.8"`, line 76 of `motor_flac.py`) whenever any
+3. **Raise `ENGINE_VERSION`** (currently `"9.8"`, line 76 of `motor_flac.py`) whenever any
    analysis calculation changes: it is what invalidates existing caches.
 4. No new runtime dependencies without discussing it. `numpy`, `scipy`, `soundfile`,
    `mutagen`, `pillow` are required; `reportlab`, `customtkinter`, `tkinterdnd2` must stay
@@ -67,10 +67,8 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
   parameters and attributes. The only Spanish names left are the **JSON protocol keys**
   (`tipo`, `veredicto`, `archivo`, `coherencia_album`, `esp`, `bdi`, …), the reportlab
   style names and a few argparse destinations; they are the public contract and must not
-  be renamed. `VERSION_MOTOR` and `VERSION_ESQUEMA_CACHE` are also kept by explicit
-  exception (declared in `PUBLIC_CONSTANTS` in `tests/test_idioma.py`): they are public
-  module attributes used by the cache and the tests, so both name and value stay.
-  Spanish **prose** anywhere is not allowed; `tests/test_idioma.py` enforces it.
+  be renamed. Spanish **prose** anywhere is not allowed; `tests/test_idioma.py`
+  enforces it.
 - Honest wording over marketing: if a change removes a documented limitation, justify it.
 
 ## Git
@@ -82,5 +80,5 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
 
 ## Known doc drift (trust the code, not the doc)
 
-- The suite is **266 tests** and `VERSION_MOTOR = "9.8"`; `README.md` and
+- The suite is **267 tests** and `ENGINE_VERSION = "9.8"`; `README.md` and
   `CONTRIBUTING.md` agree. Keep the number you touch in sync.

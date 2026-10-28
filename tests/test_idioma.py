@@ -77,10 +77,6 @@ SPANISH_WORDS = re.compile(
     r"inicios?|longitud|longitudes)\b",
     re.IGNORECASE)
 # Words spelled the same in English: no signal of the language.
-# Public module constants that keep their Spanish name and value by explicit
-# exception: the cache key and every consumer read them.
-PUBLIC_CONSTANTS = {"VERSION_MOTOR", "VERSION_ESQUEMA_CACHE"}
-
 FALSE_POSITIVES = {
     "album", "compatible", "control", "pie", "solo", "dos", "pro",
     "volatile", "cached", "nonexistent", "anchor", "variable",
@@ -404,7 +400,7 @@ class TestLanguage(unittest.TestCase):
                     continue
                 if not candidate or candidate in external:
                     continue
-                if candidate in module_names or candidate in PUBLIC_CONSTANTS:
+                if candidate in module_names:
                     continue
                 if candidate.startswith("__") and candidate.endswith("__"):
                     continue

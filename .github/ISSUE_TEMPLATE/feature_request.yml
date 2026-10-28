@@ -57,7 +57,7 @@ body:
       options:
         - label: |
             A change to the analysis invalidates every cached result, so it comes with
-            a `VERSION_MOTOR` bump and re-measured fixtures.
+            a `ENGINE_VERSION` bump and re-measured fixtures.
           required: false
         - label: |
             The verdict model only accepts evidence that can be measured and shown;

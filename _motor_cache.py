@@ -1,7 +1,7 @@
 """Result cache: identity, atomic read/write and Windows retries.
 
 Extracted from the motor facade in Phase 4. The version and the render
-fingerprint are passed by the facade, so mutating `motor_flac.VERSION_MOTOR`
+fingerprint are passed by the facade, so mutating `motor_flac.ENGINE_VERSION`
 still invalidates the cache (the tests rely on that).
 """
 import json

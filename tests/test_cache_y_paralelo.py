@@ -76,7 +76,7 @@ class test_cache(unittest.TestCase):
         with open(path_cache, encoding="utf-8") as f:
             input = json.load(f)
         self.assertEqual(sorted(input), ["clave", "identidad", "render", "resultado"])
-        self.assertEqual(input["clave"]["motor"], engine.VERSION_MOTOR)
+        self.assertEqual(input["clave"]["motor"], engine.ENGINE_VERSION)
         self.assertEqual(input["clave"]["modo"], "center")
         self.assertEqual(input["identidad"]["tamano"], os.path.getsize(path))
         self.assertIn("resultado", input)
@@ -108,12 +108,12 @@ class test_cache(unittest.TestCase):
     def test_invalidates_if_changes_version_engine(self):
         path = self.copy("version")
         engine.analyze_file_data(path, "center", None, False)
-        original = engine.VERSION_MOTOR
-        engine.VERSION_MOTOR = original + "-test"
+        original = engine.ENGINE_VERSION
+        engine.ENGINE_VERSION = original + "-test"
         try:
             otra = engine.analyze_file_data(path, "center", None, False)
         finally:
-            engine.VERSION_MOTOR = original
+            engine.ENGINE_VERSION = original
         self.assertFalse(otra.get("desde_cache"))
 
     def test_invalidates_if_changes_mode(self):

@@ -13,9 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameters and attributes) from Spanish to English across the production
   modules and the test methods. The JSON protocol keys (`tipo`, `veredicto`,
   `archivo`, `coherencia_album`, `esp`, `bdi`, ...), the reportlab style names,
-  `VERSION_MOTOR` (`"9.8"`), `VERSION_ESQUEMA_CACHE` (`"2.3.0"`) and the module
-  file names keep their names. No threshold, score, verdict, cache schema or
-  behaviour changed.
+  the argparse destinations and the module file names keep their names. No
+  threshold, score, verdict, cache schema or behaviour changed.
+- Renamed the public version constants to `ENGINE_VERSION` and
+  `CACHE_SCHEMA_VERSION`. Their values (`"9.8"` and `"2.3.0"`) and the cache
+  schema are unchanged, so existing caches remain valid; external code that
+  imports the previous names must update.
 
 ## [2.3.0] - 2026-10-24
 

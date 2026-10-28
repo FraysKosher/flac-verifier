@@ -29,7 +29,7 @@ a comparison against the fixtures: verdict, score, issues and MD5, before and af
 These four have caused real bugs. Please confirm each one that applies:
 
 - [ ] **`multiprocessing.freeze_support()` is still the first statement** of `main.py`'s `__main__` block. If it moves, every worker of the parallel analysis relaunches the whole application — a new window per worker in the packaged build. `tests/test_empaquetado.py` checks it.
-- [ ] **If the analysis changed at all, `VERSION_MOTOR` in `motor_flac.py` was bumped.** The cache stores finished results keyed by that version; without the bump, stale verdicts survive an upgrade. If your change only affects presentation, no bump is needed.
+- [ ] **If the analysis changed at all, `ENGINE_VERSION` in `motor_flac.py` was bumped.** The cache stores finished results keyed by that version; without the bump, stale verdicts survive an upgrade. If your change only affects presentation, no bump is needed.
 - [ ] **Nothing the user sees is in Spanish**, and the JSON protocol values match in the engine, the GUI and the PDF. `tests/test_idioma.py` is the guard for both.
 - [ ] **The presentation layers stay thin.** `motor_flac.py` owns every analysis decision; `verificar_flac.py`, `gui.py` and `informe_pdf.py` format and display. No scoring logic may be duplicated in them.
 

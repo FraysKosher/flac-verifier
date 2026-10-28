@@ -114,9 +114,9 @@ Two more invariants worth knowing before you touch anything:
 
 - `multiprocessing.freeze_support()` must stay as the **first statement** of the
   `__main__` block of `main.py`. `tests/test_empaquetado.py` checks it.
-- `VERSION_MOTOR` in `motor_flac.py` must be raised whenever any analysis
+- `ENGINE_VERSION` in `motor_flac.py` must be raised whenever any analysis
   calculation changes: it is what invalidates the caches written by earlier
-  versions. It currently reads `VERSION_MOTOR = "9.8"`.
+  versions. It currently reads `ENGINE_VERSION = "9.8"`.
 
 ---
 
@@ -249,7 +249,7 @@ it changed.
    count changed, say so in the PR description and update the README.
 2. `python -m unittest tests.test_idioma` passes: no Spanish text has leaked into
    anything the user sees.
-3. If you touched scoring, thresholds or spectral analysis: `VERSION_MOTOR` has
+3. If you touched scoring, thresholds or spectral analysis: `ENGINE_VERSION` has
    been raised, the affected numbers in the README are updated, and the change is
    justified with a measurement (a fixture, a real file, a before/after table).
 4. If you touched the presentation layers: no analysis logic was duplicated, and

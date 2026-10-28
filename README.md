@@ -802,7 +802,7 @@ It is reused only if **all** of these match:
 | Part of the key | What it includes |
 |---|---|
 | File identity | Size + modification date + **STREAMINFO MD5** |
-| Analysis parameters | `VERSION_MOTOR`, spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION`, spectral mode and seconds |
 | Render fingerprint | PNG parameters (`render_fingerprint()`), and that the PNG still exists |
 
 That is: if the audio changes, even with the same size and the same date, the
@@ -810,9 +810,9 @@ STREAMINFO MD5 gives it away and it is analysed again. Each mode has its own
 entry, so alternating `center` and `full` does not recompute.
 
 It is disabled with `--no-cache`. When any analysis calculation changes,
-`VERSION_MOTOR` in `motor_flac.py` must be raised: that invalidates all the old
-caches. It currently reads `VERSION_MOTOR = "9.8"` and
-`VERSION_ESQUEMA_CACHE = "2.3.0"`.
+`ENGINE_VERSION` in `motor_flac.py` must be raised: that invalidates all the old
+caches. It currently reads `ENGINE_VERSION = "9.8"` and
+`CACHE_SCHEMA_VERSION = "2.3.0"`.
 
 ---
 

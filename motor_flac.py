@@ -73,7 +73,7 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-VERSION_MOTOR = "9.8"
+ENGINE_VERSION = "9.8"
 # 9.8: Phase 8 detectors (24-bit lattice, DSD/Scarlet/DSD128, sfb21 islands, exciter, acoustic centroid).
 #      Album coherence now also covers the Phase 8D acoustic exemption: a
 #      low-centroid acoustic track that already reached PROBABLY LOSSLESS on its
@@ -100,14 +100,14 @@ VERSION_MOTOR = "9.8"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-VERSION_ESQUEMA_CACHE = "2.3.0"
+CACHE_SCHEMA_VERSION = "2.3.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 
 def render_fingerprint():
     """Parameters that define the PNG. If any of them changes, the spectrogram
     cache is no longer valid (the analysis itself can still be reused)."""
-    return (f"v{VERSION_MOTOR}-f{MAX_FRAMES_PNG}-p{SPECTRO_SECONDS}-"
+    return (f"v{ENGINE_VERSION}-f{MAX_FRAMES_PNG}-p{SPECTRO_SECONDS}-"
             f"{WIDTH_PNG}x{HEIGHT_PNG}-pil-lut")
 
 def force_utf8_output():
@@ -169,14 +169,14 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path,
                                       ceiling_hz, frequency_cutoff)
 
 def read_cache(path, meta, mode, seconds, requires_png):
-    """Facade wrapper: the mutable VERSION_MOTOR/render fingerprint are passed
-    explicitly, so changing `motor_flac.VERSION_MOTOR` still invalidates them."""
+    """Facade wrapper: the mutable ENGINE_VERSION/render fingerprint are passed
+    explicitly, so changing `motor_flac.ENGINE_VERSION` still invalidates them."""
     return _cache_read(path, meta, mode, seconds, requires_png,
-                       VERSION_MOTOR, VERSION_ESQUEMA_CACHE, render_fingerprint())
+                       ENGINE_VERSION, CACHE_SCHEMA_VERSION, render_fingerprint())
 
 def write_cache(path, meta, mode, seconds, result):
     return _cache_write(path, meta, mode, seconds, result,
-                           VERSION_MOTOR, VERSION_ESQUEMA_CACHE, render_fingerprint())
+                           ENGINE_VERSION, CACHE_SCHEMA_VERSION, render_fingerprint())
 
 def verify_signature(path):
     try:
