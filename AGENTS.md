@@ -24,7 +24,7 @@ file is genuine lossless or a lossy transcode. Architecture is deliberately flat
 ## Commands
 
 ```bash
-.venv/Scripts/python.exe -m unittest discover -s tests        # ~300 tests, fast; run this first
+.venv/Scripts/python.exe -m unittest discover -s tests        # ~320 tests, fast; run this first
 .venv/Scripts/python.exe -m unittest tests.test_veredictos     # one module
 FLAC_VERIFIER_SIN_GUI=1 python -m unittest discover -s tests   # no desktop (skips Tk tests)
 python build.py                                                # package the .exe (slow)
@@ -80,5 +80,5 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
 
 ## Known doc drift (trust the code, not the doc)
 
-- The suite is **300 tests** and `ENGINE_VERSION = "9.8"`; `README.md` and
+- The suite is **320 tests** and `ENGINE_VERSION = "9.8"`; `README.md` and
   `CONTRIBUTING.md` agree. Keep the number you touch in sync.

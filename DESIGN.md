@@ -74,7 +74,7 @@ References to borrow principles from, not to copy:
 | `border.strong` | `#3A4852` | Focused/selected border |
 | `text.primary` | `#E9EFF2` | Headings, values |
 | `text.secondary` | `#A8B6BE` | Labels, body |
-| `text.tertiary` | `#74828B` | Captions, timestamps |
+| `text.tertiary` | `#87949D` | Captions, timestamps (4.64:1 on `bg.hover`) |
 | `accent` | `#63B7C2` | Primary action, selected state |
 | `accent.hover` | `#79C8D2` | Primary hover |
 | `accent.pressed` | `#4E9DA8` | Primary pressed |
@@ -95,24 +95,41 @@ References to borrow principles from, not to copy:
 | `danger` | `#E06C6C` | Destructive text/border |
 | `danger.bg` | `#2A1414` | Error banner background |
 
-### 5.2 Colour — light (phase 4)
+### 5.2 Colour — light
 
-| Token | Hex |
-|---|---|
-| `bg.canvas` | `#F4F6F7` |
-| `bg.surface` | `#FFFFFF` |
-| `bg.raised` | `#F9FAFB` |
-| `bg.hover` | `#EEF2F3` |
-| `border.subtle` | `#DCE3E6` |
-| `border.strong` | `#C3CFD4` |
-| `text.primary` | `#132028` |
-| `text.secondary` | `#53646D` |
-| `text.tertiary` | `#7C8B93` |
-| `accent` | `#2F7F89` |
-| `on.accent` | `#FFFFFF` |
+| Token | Hex | Use |
+|---|---|---|
+| `bg.canvas` | `#F4F6F7` | Window background |
+| `bg.surface` | `#FFFFFF` | Panels, cards, paper |
+| `bg.raised` | `#F9FAFB` | Inputs, menus, raised rows |
+| `bg.hover` | `#EEF2F3` | Row/button hover |
+| `border.subtle` | `#DCE3E6` | Default 1 px border |
+| `border.strong` | `#C3CFD4` | Focused/selected border |
+| `text.primary` | `#132028` | Headings, values |
+| `text.secondary` | `#53646D` | Labels, body |
+| `text.tertiary` | `#5F6F78` | Captions, timestamps (4.62:1 on `bg.hover`) |
+| `accent` | `#2F7F89` | Primary action, selected state |
+| `accent.hover` | `#29707A` | Primary hover (white text keeps 5.69:1) |
+| `accent.pressed` | `#235F68` | Primary pressed |
+| `on.accent` | `#FFFFFF` | Text/icon on accent |
+| `focus` | `#1D6F7A` | 2 px focus ring |
+| `knob` | `#FFFFFF` | Switch knob |
 
-Verdict backgrounds in light mode use a 10–12 % tint of the hue with a 30 %
-border; never a saturated fill.
+Verdict colours are derived from the semantic hues of 5.1 instead of copied, so
+the two palettes cannot drift apart:
+
+| Token | Derivation | Result |
+|---|---|---|
+| `ok` | hue mixed 45 % towards `text.primary` | `#376F55` |
+| `ok.bg` | hue at 12 % over `bg.surface` | `#ECF9F1` |
+| `ok.border` | hue at 30 % over `bg.surface` | `#D0F1DD` |
+| `warn` / `.bg` / `.border` | same rule | `#736643` / `#FCF7EC` / `#F8EBD0` |
+| `bad` / `.bg` / `.border` | same rule | `#704D4A` / `#FCF0EE` / `#F6DAD5` |
+| `unknown` / `.bg` / `.border` | same rule | `#505D65` / `#F3F4F6` / `#E1E5E7` |
+| `danger` / `.bg` | same rule | `#6F4247` / `#FBEDED` |
+
+Every text/surface and verdict pair reaches 4.5:1 in both modes; the tests
+compute it from the palette, so a new token cannot ship below that.
 
 ### 5.3 Typography
 
@@ -370,6 +387,10 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
 - No new runtime dependencies: use `customtkinter`, `Pillow`, stdlib.
 - Guard the UI at import time as today: if `customtkinter` is missing, the
   engine still works.
+- The theme is saved in `%APPDATA%\FLAC Verifier\settings.json` (atomic write,
+  home folder as fallback) and read once, before the window is built. The
+  interface resolves its colours during construction, so the saved mode applies
+  on the next start; the toggle says so and is disabled while an analysis runs.
 
 ## 12. Phases and acceptance criteria
 
@@ -395,11 +416,22 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
 - Collapsible activity log; PDF restyled with the same tokens.
 - Acceptance: PDF pages inspected; no overflow; build 11/11.
 
-### Phase 4 — Light theme and polish
+### Phase 4 — Light theme and polish (done in 2.4.0)
 
-- Light tokens, theme toggle persisted in a small config file.
-- Hover/focus/motion polish; final contrast audit.
-- Acceptance: both themes; all tests; manual visual pass.
+- Complete light palette: the core tokens of 5.2 plus the verdict text/tint/border
+  pairs derived from the dark hues, `focus` and the switch `knob`.
+- `text.tertiary` was darkened in both modes so the 11 px labels reach 4.5:1.
+- Sun/moon toggle in the main header (icon-only, tooltip, focus ring) that saves
+  the other mode in `%APPDATA%\FLAC Verifier\settings.json`, shows a dismissible
+  "restart to apply" notice and is disabled while an analysis runs. A live switch
+  is out of scope: the window builds every colour once and several widgets
+  (Tk labels, canvas, table) do not accept a `(light, dark)` tuple.
+- Tests: contrast of every text/surface and verdict pair in both palettes, the
+  preference file (default, round trip, malformed, unwritable), the toggle and
+  notice, a light window in every state, and a guard that `gui.py` contains no
+  hard-coded colour.
+- Acceptance: both themes build and read; 320 tests; build READY;
+  `comprobar_ejecutable` 11/11; screenshots at 100/125/150 % in both modes.
 
 ## 13. Guardrails
 
