@@ -328,7 +328,8 @@ def format_summary(events: Iterable[Event]) -> tuple[str, str]:
         color = "amarillo"
     else:
         color = "verde"
-    return color, f"{total} file(s): " + " · ".join(labels)
+    files = f"{total} file" + ("s" if total != 1 else "")
+    return color, f"{files}: " + " · ".join(labels)
 
 
 def format_depth(bits: Any) -> str:
@@ -891,7 +892,12 @@ if CTK_OK:
             self._eyebrow_full = ""
             self._headline_full = ""
             self._last_log_line = ""
+            # Bounded history of (timestamp, text, level) so a rebuild can put
+            # the log back exactly as it was, colours included.
+            self._log_history: deque[tuple[str, str, str]] = deque(
+                maxlen=MAX_LINES_LOG)
             self.activity_expanded = False
+            self._rebuilding = False
             self._hero_width = 0
             self._preview_width = 0
             self._spectrograms: dict[str, Any] = {}
@@ -1343,22 +1349,6 @@ if CTK_OK:
             self.theme_tooltip = _Tooltip(
                 self.btn_theme, "Switch to light theme"
                 if theme.MODE == "dark" else "Switch to dark theme")
-
-            # Inline, dismissible notice under the top bar (restart contract).
-            self.notice = ctk.CTkFrame(top, fg_color="transparent")
-            self.notice.grid(row=1, column=0, columnspan=4, sticky="ew",
-                             pady=(theme.SPACE["xs"], 0))
-            self.notice.grid_columnconfigure(0, weight=1)
-            self.label_notice = ctk.CTkLabel(self.notice, text="", anchor="w",
-                                             font=theme.font(12),
-                                             text_color=c("text.secondary"))
-            self.label_notice.grid(row=0, column=0, sticky="ew")
-            self.btn_dismiss_notice = self._button(
-                self.notice, "icon", "", self._hide_notice, icon="x",
-                width=22, height=22)
-            self.btn_dismiss_notice.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
-            self.dismiss_tooltip = _Tooltip(self.btn_dismiss_notice, "Dismiss")
-            self.notice.grid_remove()
 
             # Progress line: 4 px, no radius (DESIGN.md 7.9).
             self.barra = ctk.CTkProgressBar(panel, height=4, corner_radius=0,
@@ -2065,6 +2055,8 @@ if CTK_OK:
 
         def _apply_hero_layout(self) -> None:
             self._hero_layout_scheduled = False
+            if self._rebuilding:
+                return
             self._refit_hero_texts()
             width = self._usable_width(self.hero_left, 520) - 8
             self._reflow_facts(width)
@@ -2193,6 +2185,7 @@ if CTK_OK:
             self.log.delete("1.0", "end")
             self.log.configure(state="disabled")
             self._last_log_line = ""
+            self._log_history.clear()
             self.label_activity_preview.configure(text="No activity yet")
 
         def _refresh_activity_preview(self) -> None:
@@ -2310,6 +2303,7 @@ if CTK_OK:
             self.log.insert("end", f"{text}\n", label)
             self._trim_log()
             self.log.configure(state="disabled")
+            self._log_history.append((stamp, text, label))
             self._last_log_line = text
             self._refresh_activity_preview()
             if scroll:
@@ -2403,23 +2397,112 @@ if CTK_OK:
             self._update_reveal()
 
         def _toggle_theme(self) -> None:
-            """Saves the other mode; it applies the next time the window opens."""
-            if self.manager.active:
+            """Switches the whole window between dark and light, live.
+
+            Mid-run the button is disabled and this method refuses to build a
+            second time: the running analysis owns the widgets it is writing to.
+            """
+            if self.manager.active or self._rebuilding:
                 return
             target = "light" if theme.MODE == "dark" else "dark"
-            if theme.save_preference(target):
-                self._show_notice(f"{target.capitalize()} theme saved. "
-                                  "Restart FLAC Verifier to apply.")
-            else:
-                self._show_notice("Could not save the theme preference; "
-                                  "the current theme stays.", "warn")
+            saved = theme.save_preference(target)
+            self._rebuild_ui(target)
+            if not saved:
+                self._log("Could not save the theme preference; "
+                          "it will not be remembered.", "aviso")
 
-        def _show_notice(self, text: str, tone: str = "text.secondary") -> None:
-            self.label_notice.configure(text=text, text_color=c(tone))
-            self.notice.grid()
+        def _rebuild_ui(self, mode: str) -> None:
+            """Rebuilds every widget in `mode` without recreating the Tk root.
 
-        def _hide_notice(self) -> None:
-            self.notice.grid_remove()
+            The interface resolves its colours once, so switching live means
+            building it again. Everything the user can see is saved first and put
+            back afterwards: the source and analysis options, the results, the
+            selected track, the progress, the state labels, the log (text and
+            level) and whether the activity panel is open.
+            """
+            state = {
+                "path": self.var_path.get(),
+                "mode": self.var_mode.get(),
+                "seconds": self.seconds_slider.get(),
+                "pdf": bool(self.var_pdf.get()),
+                "parallel": bool(self.var_parallel.get()),
+                "workers": self.option_workers.get(),
+                "without_cache": bool(self.var_without_cache.get()),
+                "events": list(self.events),
+                "selected": self.selected_event,
+                "total": self.total,
+                "received": self.recibidos,
+                "pdf_path": self.pdf_path,
+                "activity": self.activity_expanded,
+                "problems_expanded": self._problems_expanded,
+                "log": list(self._log_history),
+                "barra": self.barra.get(),
+                "state_text": self.label_state.cget("text"),
+                "progress_text": self.label_progress.cget("text"),
+            }
+            self._rebuilding = True
+            try:
+                for child in list(self.winfo_children()):
+                    child.destroy()
+                self._icons.clear()
+                self._measures.clear()
+                self.table_rows.clear()
+                self._hero_width = 0
+                self._preview_width = 0
+                self._hero_layout_scheduled = False
+
+                theme.MODE = mode
+                ctk.set_appearance_mode(mode)
+                self.configure(fg_color=c("bg.canvas"))
+
+                self._build_controls()
+                self._build_telemetry()
+
+                self.var_path.set(state["path"])
+                self.var_mode.set(state["mode"])
+                self.option_workers.set(state["workers"])
+                self.var_pdf.set(state["pdf"])
+                self.var_parallel.set(state["parallel"])
+                self.var_without_cache.set(state["without_cache"])
+                self.seconds_slider.set(state["seconds"])
+                self._change_seconds(state["seconds"])
+                self._change_mode()
+                self._change_parallel()
+
+                self.events = deque(state["events"], maxlen=MAX_EVENTS_IN_MEMORY)
+                self.total = state["total"]
+                self.recibidos = state["received"]
+                self.pdf_path = state["pdf_path"]
+                self.selected_event = state["selected"]
+                self._problems_expanded = state["problems_expanded"]
+                for event in state["events"]:
+                    self._add_row(event)
+                for entry in self.table_rows:
+                    self._paint_row(entry)
+
+                self._render_hero()
+                self._update_state()
+                self.barra.set(state["barra"])
+                self.label_state.configure(text=state["state_text"])
+                self.label_progress.configure(text=state["progress_text"])
+                self._restore_log(state["log"])
+                self._set_activity(state["activity"])
+                self._register_dnd()
+                self._schedule_hero_layout()
+            finally:
+                self._rebuilding = False
+
+        def _restore_log(self, history: list[tuple[str, str, str]]) -> None:
+            """Replays the saved log lines, keeping their timestamp and level."""
+            self.log.configure(state="normal")
+            for stamp, text, label in history:
+                self.log.insert("end", f"{stamp}  ", "time")
+                self.log.insert("end", f"{text}\n", label)
+            self.log.configure(state="disabled")
+            if history:
+                self._last_log_line = history[-1][1]
+            self._refresh_activity_preview()
+            self._scroll_log()
 
         def _show_action(self, button: Any) -> None:
             """Only one primary action is visible: Analyze or Cancel."""
@@ -2476,11 +2559,16 @@ if CTK_OK:
         def _drain_queue(self) -> None:
             """Runs on the interface thread: here it is safe to touch widgets.
 
+            A theme rebuild destroys and recreates every widget, so a queued
+            event must not touch a half-built window.
+
             It processes a BOUNDED batch per tick: a huge backlog can no longer
             freeze the window, because Tk regains control between batches and the
             Cancel button stays responsive. It is rescheduled while the engine is
             alive, while the reader thread is still alive (it may not have queued
             the final `__fin__` yet) or while a full batch was just processed."""
+            if self._rebuilding:
+                return
             processed = 0
             results = 0
             try:

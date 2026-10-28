@@ -315,12 +315,19 @@ class TestResultRow(unittest.TestCase):
         self.assertEqual(errors, 1)
         self.assertEqual(total, 3)
 
+    def test_summary_pluralizes_the_file_count(self):
+        one = [dict(self.GENUINE, tipo="resultado")]
+        two = one + [{"tipo": "resultado", "archivo": "b.flac",
+                      "veredicto": "SUSPICIOUS"}]
+        self.assertTrue(gui.format_summary(one)[1].startswith("1 file: "))
+        self.assertTrue(gui.format_summary(two)[1].startswith("2 files: "))
+
     def test_summary_uses_the_same_counts(self):
         colour, text = gui.format_summary(
             [dict(self.GENUINE, tipo="resultado"),
              {"tipo": "resultado", "archivo": "b.flac", "veredicto": "SUSPICIOUS"}])
         self.assertEqual(colour, "naranja")
-        self.assertIn("2 file(s)", text)
+        self.assertIn("2 files:", text)
         self.assertIn("1 genuine", text)
         self.assertIn("1 suspicious", text)
 
@@ -758,7 +765,7 @@ class test_window(unittest.TestCase):
                                           "score": 0.2, "problemas": ["x"]})
         self.assertAlmostEqual(self.window.barra.get(), 1.0, places=6)
         self.window._process("fin", {"tipo": "__fin__", "codigo": 0})
-        self.assertIn("2 file(s)", self.window.label_summary.cget("text"))
+        self.assertIn("2 files:", self.window.label_summary.cget("text"))
         self.assertEqual(self.window.label_state.cget("text"), "Finished")
         registro = self.window.log.get("1.0", "end")
         self.assertIn("GENUINE LOSSLESS", registro)
@@ -851,7 +858,7 @@ class test_window(unittest.TestCase):
         self.assertIn("GENUINE LOSSLESS", registro)      # ok16
         self.assertIn("PROBABLE UPSCALE", registro)      # corte_16k
         self.assertIn("PDF report:", registro)
-        self.assertIn("2 file(s)", self.window.label_summary.cget("text"))
+        self.assertIn("2 files:", self.window.label_summary.cget("text"))
         # The results surface streamed one row per file and the log collapsed.
         self.assertEqual(len(self.window.table_rows), 2)
         self.assertEqual(sorted(row["values"]["tone"]
@@ -920,7 +927,7 @@ class test_window(unittest.TestCase):
         self.assertEqual(facts[3], ("MD5", "verified"))
         self.window._clear_selection()
         self.assertEqual(self.window.hero_number_caption.cget("text"), "FILES")
-        self.assertIn("1 file(s)", self.window.label_summary.cget("text"))
+        self.assertIn("1 file:", self.window.label_summary.cget("text"))
 
     def test_selected_row_shows_the_tint_and_the_accent_bar(self):
         events = [
@@ -1191,25 +1198,84 @@ class test_window(unittest.TestCase):
         self.assertEqual(button.cget("width"), 32)
         self.assertEqual(self.window.theme_tooltip.text, "Switch to light theme")
 
-    def test_theme_toggle_saves_and_announces_the_restart(self):
-        with tempfile.TemporaryDirectory() as folder,                 mock.patch.dict(os.environ, {"APPDATA": folder}):
+    def test_theme_toggle_switches_live_and_preserves_state(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.dict(os.environ, {"APPDATA": folder}):
+            self.addCleanup(setattr, theme, "MODE", "dark")
+            self.addCleanup(ctk.set_appearance_mode, "dark")
+            self.window.var_path.set("C:/Music/Album")
+            self.window.var_mode.set("seconds")
+            self.window.seconds_slider.set(42)
+            self.window.var_pdf.set(False)
+            self.window.var_parallel.set(False)
+            self.window.option_workers.set("8")
+            self.window.var_without_cache.set(True)
+            first = self._track(archivo="01 - intro.flac",
+                                veredicto="GENUINE LOSSLESS", score=0.9)
+            second = self._track(archivo="02 - cut.flac",
+                                 veredicto="SUSPICIOUS", score=0.3,
+                                 problemas=["cut at 16 kHz"])
+            for event in (first, second):
+                self.window._process("stdout", event)
+            self.window._select(second)
+            self.window._log("a custom line", "ok")
+            self.window._set_activity(True)
+            self.window.barra.set(0.5)
+            self.window.label_state.configure(text="Finished")
+            self.window.update_idletasks()
+
             self.window.btn_theme.invoke()
+            self.window.update_idletasks()
+
+            self.assertEqual(theme.MODE, "light")
+            self.assertEqual(self.window.cget("fg_color"),
+                             theme.color("bg.canvas", "light"))
+            self.assertEqual(self.window.hero.cget("fg_color"),
+                             theme.color("bg.surface", "light"))
+            self.assertEqual(self.window.table_rows[1]["bar"].cget("fg_color"),
+                             theme.color("accent", "light"))
+            self.assertEqual(len(self.window.events), 2)
+            self.assertEqual(len(self.window.table_rows), 2)
+            self.assertIs(self.window.selected_event, second)
+            self.assertEqual(self.window.hero_eyebrow.cget("text"),
+                             "02 - cut.flac")
+            self.assertIn("a custom line", self.window.log.get("1.0", "end"))
+            self.assertEqual(self.window.activity_panel.winfo_manager(), "grid")
+            self.assertEqual(self.window.var_path.get(), "C:/Music/Album")
+            self.assertEqual(self.window.var_mode.get(), "seconds")
+            self.assertAlmostEqual(self.window.seconds_slider.get(), 40.0,
+                                   places=3)
+            self.assertFalse(self.window.var_pdf.get())
+            self.assertFalse(self.window.var_parallel.get())
+            self.assertEqual(self.window.option_workers.get(), "8")
+            self.assertTrue(self.window.var_without_cache.get())
+            self.assertEqual(self.window.label_state.cget("text"), "Finished")
+            self.assertAlmostEqual(self.window.barra.get(), 0.5, places=3)
+            self.assertEqual(self.window.theme_tooltip.text,
+                             "Switch to dark theme")
             path = os.path.join(folder, "FLAC Verifier", "settings.json")
             with open(path, encoding="utf-8") as stream:
                 self.assertEqual(json.load(stream), {"theme": "light"})
-            self.assertEqual(self.window.label_notice.cget("text"),
-                             "Light theme saved. Restart FLAC Verifier to apply.")
-            self.assertEqual(self.window.notice.winfo_manager(), "grid")
-            # The open window keeps its colours: the notice says "restart".
+
+            self.window.btn_theme.invoke()
+            self.window.update_idletasks()
             self.assertEqual(theme.MODE, "dark")
-            self.window.btn_dismiss_notice.invoke()
-            self.assertFalse(self.window.notice.winfo_manager())
+            self.assertEqual(self.window.cget("fg_color"),
+                             theme.color("bg.canvas", "dark"))
+            self.assertEqual(self.window.theme_tooltip.text,
+                             "Switch to light theme")
+            self.assertEqual(len(self.window.table_rows), 2)
+            self.assertIs(self.window.selected_event, second)
 
     def test_theme_toggle_is_disabled_while_running(self):
         self.assertEqual(self.window.btn_theme.cget("state"), "normal")
         self.window.manager.process = FakeProcess(['{"tipo": "fin"}'])
         self.window._update_state()
         self.assertEqual(self.window.btn_theme.cget("state"), "disabled")
+        rows = list(self.window.table_rows)
+        self.window._toggle_theme()          # the guard also refuses directly
+        self.assertEqual(theme.MODE, "dark")
+        self.assertEqual(self.window.table_rows, rows)
         self.window.manager.process.returncode = 0
         self.window._update_state()
         self.assertEqual(self.window.btn_theme.cget("state"), "normal")
@@ -1233,7 +1299,13 @@ class test_light_window(unittest.TestCase):
         self.window = gui.FlacVerifierWindow()
         self.window.withdraw()
         self.window.update_idletasks()
-        self.addCleanup(self.window.destroy)
+        self.addCleanup(self._destroy_window)
+
+    def _destroy_window(self):
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
 
     def test_renders_every_surface(self):
         window = self.window
@@ -1305,15 +1377,35 @@ class test_light_window(unittest.TestCase):
             self.assertEqual(theme.load_preference(), "light")
             self.assertEqual(theme.MODE, "light")
 
-    def test_toggle_in_light_mode_proposes_dark(self):
-        with tempfile.TemporaryDirectory() as folder,                 mock.patch.dict(os.environ, {"APPDATA": folder}):
+    def test_a_saved_preference_builds_the_next_window_in_light(self):
+        self.window.destroy()
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.dict(os.environ, {"APPDATA": folder}):
+            self.assertTrue(theme.save_preference("light"))
+            theme.MODE = "dark"            # as a fresh process would start
+            self.assertEqual(theme.load_preference(), "light")
+            ctk.set_appearance_mode("light")
+            self.window = gui.FlacVerifierWindow()
+            self.window.withdraw()
+            self.window.update_idletasks()
+            self.assertEqual(self.window.cget("fg_color"),
+                             theme.color("bg.canvas", "light"))
+            self.assertEqual(self.window.theme_tooltip.text,
+                             "Switch to dark theme")
+
+    def test_toggle_in_light_mode_switches_to_dark(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.dict(os.environ, {"APPDATA": folder}):
             self.window.btn_theme.invoke()
+            self.window.update_idletasks()
+            self.assertEqual(theme.MODE, "dark")
+            self.assertEqual(self.window.cget("fg_color"),
+                             theme.color("bg.canvas", "dark"))
+            self.assertEqual(self.window.theme_tooltip.text,
+                             "Switch to light theme")
             path = os.path.join(folder, "FLAC Verifier", "settings.json")
             with open(path, encoding="utf-8") as stream:
                 self.assertEqual(json.load(stream), {"theme": "dark"})
-            self.assertEqual(self.window.label_notice.cget("text"),
-                             "Dark theme saved. Restart FLAC Verifier to apply.")
-
 
 class test_integration_with_cli(unittest.TestCase):
     """`verificar_flac.py --gui` has to open the GUI, not the menu."""
