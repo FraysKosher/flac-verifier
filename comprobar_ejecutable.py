@@ -235,7 +235,7 @@ def _utf8() -> None:
             pass
 
 
-class Comprobador:
+class Checker:
     def __init__(self, folder: str) -> None:
         self.folder = folder
         self.gui = os.path.join(folder, "FLAC_Verifier.exe")
@@ -287,7 +287,7 @@ class Comprobador:
         """
         volatile = ("ruta", "espectrograma", "desde_cache")
         return {e["archivo"]: {k: v for k, v in e.items() if k not in volatile}
-                for e in Comprobador.events(text)
+                for e in Checker.events(text)
                 if e.get("tipo") == "resultado" and e.get("archivo")}
 
     @staticmethod
@@ -547,25 +547,25 @@ def main() -> int:
     print(f"  executables: {args.folder}")
     print(f"  test album: {args.album}")
 
-    comprobador = Comprobador(args.folder)
+    checker = Checker(args.folder)
     try:
         _normalize_integrity_folder(args.folder)
-        comprobador.step_1_executables()
+        checker.step_1_executables()
         if os.path.isdir(args.album):
-            comprobador.step_2_series(args.album)
-            comprobador.step_3_parallel(args.album)
+            checker.step_2_series(args.album)
+            checker.step_3_parallel(args.album)
             if not args.quick:
-                comprobador.step_4_pdf(args.album)
-                comprobador.step_5_flag_internal(args.album)
-                comprobador.step_7_same_verdicts(args.album)
+                checker.step_4_pdf(args.album)
+                checker.step_5_flag_internal(args.album)
+                checker.step_7_same_verdicts(args.album)
         else:
-            comprobador.anotar("test album", False,
+            checker.anotar("test album", False,
                                f"not found: {args.album} — pass --album")
         if not args.quick:
-            comprobador.step_6_window()
+            checker.step_6_window()
     finally:
-        comprobador.close()
-    return comprobador.summary()
+        checker.close()
+    return checker.summary()
 
 
 if __name__ == "__main__":

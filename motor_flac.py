@@ -599,14 +599,14 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                                     f"({type(e).__name__}: {e})"}
 
     def in_order():
-        calculados = calculate_pending() if pendientes else None
+        calculated = calculate_pending() if pendientes else None
         batch = []
         retenidas = []
         for index, path, cached in plan:
             if cached is not None:
                 result = cached
             else:
-                result = next(calculados, None) if calculados is not None else None
+                result = next(calculated, None) if calculated is not None else None
                 if result is None:
                     result = {"archivo": os.path.basename(path), "ruta": path,
                                  "error": "could not get the analysis result"}

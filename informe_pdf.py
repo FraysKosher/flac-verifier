@@ -156,8 +156,8 @@ def _estilos():
     }
 
 
-def _table(payload, anchos, estilos, style_cells=None, repeat_rows=0):
-    table = Table(payload, colWidths=anchos, hAlign="LEFT", repeatRows=repeat_rows)
+def _table(payload, widths, estilos, style_cells=None, repeat_rows=0):
+    table = Table(payload, colWidths=widths, hAlign="LEFT", repeatRows=repeat_rows)
     comandos = [("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
@@ -237,8 +237,8 @@ def _technical_table(res, est):
         left = partes[i]
         right = partes[i + 1] if i + 1 < len(partes) else ["", ""]
         rows.append(left + right)
-    anchos = [34 * mm, 50 * mm, 34 * mm, 50 * mm]
-    return _table(rows, anchos, est,
+    widths = [34 * mm, 50 * mm, 34 * mm, 50 * mm]
+    return _table(rows, widths, est,
                   [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FAFAFA")),
                    ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#FAFAFA"))])

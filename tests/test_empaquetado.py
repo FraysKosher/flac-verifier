@@ -369,7 +369,7 @@ class test_comparison_with_source(unittest.TestCase):
             self._line(archivo="02.flac", veredicto="SUSPICIOUS"),
             '{"tipo": "fin"}',
         ])
-        cards = self.ce.Comprobador.cards(text)
+        cards = self.ce.Checker.cards(text)
         self.assertEqual(sorted(cards), ["01.flac", "02.flac"])
         self.assertEqual(cards["02.flac"]["veredicto"], "SUSPICIOUS")
 
@@ -377,9 +377,9 @@ class test_comparison_with_source(unittest.TestCase):
         text = self._line(archivo="01.flac", veredicto="GENUINE LOSSLESS",
                             ruta="C:/other/path.flac", espectrograma="C:/x.png",
                             desde_cache=True, md5="abc123")
-        card = self.ce.Comprobador.cards(text)["01.flac"]
-        for volatil in ("ruta", "espectrograma", "desde_cache"):
-            self.assertNotIn(volatil, card, f"{volatil} must not be compared")
+        card = self.ce.Checker.cards(text)["01.flac"]
+        for volatile in ("ruta", "espectrograma", "desde_cache"):
+            self.assertNotIn(volatile, card, f"{volatile} must not be compared")
         # …but the analysis itself does: that is what has to match.
         self.assertEqual(card["md5"], "abc123")
         self.assertEqual(card["veredicto"], "GENUINE LOSSLESS")
@@ -387,13 +387,13 @@ class test_comparison_with_source(unittest.TestCase):
     def test_lines_unreadable_no_knock_down_comparison(self):
         text = "\n".join(["{this is not json", "", "   ",
                            self._line(archivo="01.flac", veredicto="SUSPICIOUS")])
-        self.assertEqual(list(self.ce.Comprobador.cards(text)), ["01.flac"])
+        self.assertEqual(list(self.ce.Checker.cards(text)), ["01.flac"])
 
     def test_file_corrupt_counts_equal_two_sides(self):
         """The error of an unreadable FLAC also has to match."""
         text = json.dumps({"tipo": "resultado", "archivo": "06_corrupto.flac",
                             "error": "Could not read FLAC metadata"}, ensure_ascii=False)
-        card = self.ce.Comprobador.cards(text)["06_corrupto.flac"]
+        card = self.ce.Checker.cards(text)["06_corrupto.flac"]
         self.assertIn("error", card)
         self.assertNotIn("veredicto", card)
 

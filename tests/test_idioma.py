@@ -78,7 +78,13 @@ SPANISH_WORDS = re.compile(
     re.IGNORECASE)
 # Words spelled the same in English: no signal of the language.
 FALSE_POSITIVES = {"album", "compatible", "control", "pie", "solo", "dos", "pro",
-                    "sin"}   # `sin` is also numpy.sin, an English function name
+                    "sin", "volatile", "cached", "nonexistent", "anchor"}   # English
+                    # names that happen to contain a Spanish fragment
+
+# Word boundaries are right for prose, but an identifier such as `subcarpeta`
+# hides a Spanish word inside a longer token. The identifier guard searches
+# these fragments and keeps only matches of five characters or more.
+SPANISH_FRAGMENTS = re.compile(SPANISH_WORDS.pattern[3:-3], re.IGNORECASE)
 
 # JSON protocol keys: the public contract, never translated.
 JSON_KEYS = {
@@ -289,15 +295,15 @@ class TestIdioma(unittest.TestCase):
         """The traffic light depends on engine, GUI and PDF using the SAME strings."""
         import gui
         import informe_pdf
-        esperados = {"GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
+        expected = {"GENUINE LOSSLESS", "PROBABLY LOSSLESS", "SUSPICIOUS",
                      "PROBABLE UPSCALE", "indeterminate"}
-        self.assertEqual(set(gui.LABEL_VERDICT), esperados)
-        self.assertEqual(set(informe_pdf.STYLE_VERDICT), esperados)
+        self.assertEqual(set(gui.LABEL_VERDICT), expected)
+        self.assertEqual(set(informe_pdf.STYLE_VERDICT), expected)
         # The engine can only emit those labels. Only text literals are inspected,
         # so a comment or a docstring may still quote an old name on purpose.
         visible = {text.strip() for _, text in
                     chunks_visible(os.path.join(ROOT, "motor_flac.py"))}
-        for verdict in esperados:
+        for verdict in expected:
             with self.subTest(verdict=verdict):
                 self.assertIn(verdict, visible)
         for antiguo in ("LOSSLESS GENUINO", "PROBABLEMENTE LOSSLESS", "DUDOSO"):
@@ -363,7 +369,20 @@ class TestIdioma(unittest.TestCase):
                     low = chunk.lower()
                     if not low or low in FALSE_POSITIVES or low in allowed:
                         continue
-                    if SPANISH_WORDS.fullmatch(low):
+                    matched = None
+                    if len(low) >= 5:
+                        matched = next((match for match in SPANISH_FRAGMENTS.finditer(low)
+                                        if len(match.group(0)) >= 5), None)
+                    else:
+                        matched = SPANISH_WORDS.fullmatch(low)
+                    if not matched:
+                        for prefix in ("sub", "sobre", "anti", "pre"):
+                            rest = low[len(prefix):]
+                            if (low.startswith(prefix) and rest
+                                    and SPANISH_WORDS.fullmatch(rest)):
+                                matched = True
+                                break
+                    if matched:
                         problems.append(f"{name}:{node.lineno}: {candidate!r}")
                         break
         self.assertEqual(problems, [],

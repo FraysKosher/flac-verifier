@@ -94,7 +94,7 @@ def _time_step(duracion):
         return 10.0
     return 25.0
 
-def _time_axis(tiempos):
+def _time_axis(times):
     """Positions, duration and label for the X axis.
 
     The energy selector keeps blocks spread over the whole song, so the recovered
@@ -103,18 +103,18 @@ def _time_axis(tiempos):
     three median frame steps, or more than one second), the positions accumulate
     only the frames actually represented and the axis says so.
     """
-    tiempos = np.asarray(tiempos, dtype=np.float64).reshape(-1)
-    if tiempos.size < 2:
-        return tiempos - (tiempos[0] if tiempos.size else 0.0), 0.0, "Time (s)"
-    diferencias = np.diff(tiempos)
+    times = np.asarray(times, dtype=np.float64).reshape(-1)
+    if times.size < 2:
+        return times - (times[0] if times.size else 0.0), 0.0, "Time (s)"
+    diferencias = np.diff(times)
     positivas = diferencias[diferencias > 0]
     step_size = float(np.median(positivas)) if positivas.size else 0.0
     discontinuo = bool(step_size > 0.0 and np.any(
         (diferencias > 3.0 * step_size) | (diferencias > 1.0)))
     if discontinuo:
-        posiciones = np.arange(tiempos.size, dtype=np.float64) * step_size
+        posiciones = np.arange(times.size, dtype=np.float64) * step_size
         return posiciones, float(posiciones[-1]), "Selected active blocks (s)"
-    return tiempos - tiempos[0], float(max(0.0, tiempos[-1] - tiempos[0])), "Time (s)"
+    return times - times[0], float(max(0.0, times[-1] - times[0])), "Time (s)"
 
 
 def _draw_colorbar(lienzo, dibujo, x0, y0, width, height, db_min, db_max, source):
@@ -137,8 +137,8 @@ def _draw_legend(lienzo, dibujo, x1, y0, entradas, source):
     """Boxed upper-right legend with a dashed sample line per entry."""
     if not entradas:
         return
-    anchos = [dibujo.textbbox((0, 0), text, font=source)[2] for _, _, text in entradas]
-    width = max(anchos) + 70
+    widths = [dibujo.textbbox((0, 0), text, font=source)[2] for _, _, text in entradas]
+    width = max(widths) + 70
     height = 14 + 23 * len(entradas)
     x0 = x1 - width
     capa = Image.new("RGBA", lienzo.size, (0, 0, 0, 0))
@@ -214,11 +214,11 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
                     "Frequency (kHz)", axis_font, text_color)
 
     # X axis: real times, 25 s steps (finer for short clips)
-    tiempos = (np.asarray(times, dtype=np.float64).reshape(-1)
+    times = (np.asarray(times, dtype=np.float64).reshape(-1)
                if times is not None else np.array([]))
-    if tiempos.size != matriz.shape[1] or not np.all(np.isfinite(tiempos)):
-        tiempos = np.arange(matriz.shape[1], dtype=np.float64)
-    posiciones, duracion, time_label = _time_axis(tiempos)
+    if times.size != matriz.shape[1] or not np.all(np.isfinite(times)):
+        times = np.arange(matriz.shape[1], dtype=np.float64)
+    posiciones, duracion, time_label = _time_axis(times)
     step_size = _time_step(duracion)
     if duracion > 0.0:
         for value in np.arange(0.0, duracion + 1e-9, step_size):
@@ -277,11 +277,11 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, fre
         # Decimate before the transcendental step: log10 runs on far fewer cells
         # when the window has more frames than the PNG can show.
         mix_arr = np.asarray(mix, dtype=np.float32)
-        tiempos = np.asarray(times, dtype=np.float64).reshape(-1)
+        times = np.asarray(times, dtype=np.float64).reshape(-1)
         if mix_arr.shape[1] > MAX_FRAMES_PNG:
             step       = max(1, mix_arr.shape[1] // MAX_FRAMES_PNG)
             mix_arr = mix_arr[:, ::step]
-            tiempos    = tiempos[::step]
+            times    = times[::step]
 
         db = np.maximum(mix_arr, 1e-28)
         np.log10(db, out=db)
@@ -292,7 +292,7 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, fre
             db, samplerate, png_path, db_min=-80.0, db_max=0.0,
             title=f"Spectrogram — {os.path.basename(audio_path)}",
             ceiling_hz=ceiling_hz, frequency_cutoff=frequency_cutoff,
-            times=tiempos)
+            times=times)
         return png_path, None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
@@ -918,7 +918,7 @@ class PsychoacousticSTFTAccumulator:
     BAND_THRESHOLD_DBFS = -52.0
     START_SUBBAND_HZ = 13500.0
     WIDTH_SUBBAND_HZ = 600.0
-    N_SUBBANDAS = 10
+    N_SUBBANDS = 10
     FALL_GAP_DB = 22.0
     MIN_FRAMES_FC = 8
 
@@ -1013,18 +1013,18 @@ class PsychoacousticSTFTAccumulator:
             # MDCT holes: 10 x 600 Hz sub-bands in 13.5-19.5 kHz.
             if self.sr < 39000:
                 return                     # the band does not exist
-            subbandas = []
-            for i in range(self.N_SUBBANDAS):
+            subbands = []
+            for i in range(self.N_SUBBANDS):
                 lo = self.START_SUBBAND_HZ + i * self.WIDTH_SUBBAND_HZ
                 hi = lo + self.WIDTH_SUBBAND_HZ
                 mask = (freqs >= lo) & (freqs < hi)
                 if not np.any(mask):
                     return
-                subbandas.append(10.0 * np.log10(
+                subbands.append(10.0 * np.log10(
                     np.maximum(pot[:, mask].mean(axis=1), 1e-28)))
-            sb = np.column_stack(subbandas)
+            sb = np.column_stack(subbands)
             gap = np.zeros(sb.shape[0], dtype=bool)
-            for i in range(1, self.N_SUBBANDAS - 1):
+            for i in range(1, self.N_SUBBANDS - 1):
                 gap |= ((sb[:, i] < sb[:, i - 1] - self.FALL_GAP_DB)
                           & (sb[:, i] < sb[:, i + 1] - self.FALL_GAP_DB))
             self._frames_with_gap += int(np.count_nonzero(gap))

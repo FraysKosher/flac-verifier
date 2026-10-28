@@ -210,16 +210,16 @@ def format_summary(events: Iterable[Event]) -> tuple[str, str]:
     if total == 0:
         return "gris", "No results"
 
-    etiquetas = []
+    labels = []
     for key, name in (("GENUINE LOSSLESS", "genuine"),
                           ("PROBABLY LOSSLESS", "probable"),
                           ("SUSPICIOUS", "suspicious"),
                           ("PROBABLE UPSCALE", "upscale"),
                           ("indeterminate", "indeterminate")):
         if conteo.get(key):
-            etiquetas.append(f"{conteo[key]} {name}")
+            labels.append(f"{conteo[key]} {name}")
     if errors:
-        etiquetas.append(f"{errors} with error")
+        labels.append(f"{errors} with error")
 
     if errors or conteo.get("PROBABLE UPSCALE"):
         color = "rojo"
@@ -229,7 +229,7 @@ def format_summary(events: Iterable[Event]) -> tuple[str, str]:
         color = "amarillo"
     else:
         color = "verde"
-    return color, f"{total} file(s): " + " · ".join(etiquetas)
+    return color, f"{total} file(s): " + " · ".join(labels)
 
 
 def dnd_paths(payload: str) -> list[str]:
@@ -748,10 +748,10 @@ if CTK_OK:
             Cancel button stays responsive. It is rescheduled while the engine is
             alive, while the reader thread is still alive (it may not have queued
             the final `__fin__` yet) or while a full batch was just processed."""
-            procesados = 0
+            processed = 0
             results = 0
             try:
-                while (procesados < BATCH_DRAINED
+                while (processed < BATCH_DRAINED
                        and results < MAX_RESULTS_BY_TICK):
                     channel, event = self.message_queue.get_nowait()
                     is_result = (channel == "stdout"
@@ -764,7 +764,7 @@ if CTK_OK:
                     except Exception as e:      # one bad event cannot stall the UI
                         self._log(f"Could not process an engine event: "
                                   f"{type(e).__name__}: {e}", "error")
-                    procesados += 1
+                    processed += 1
                     if is_result:
                         results += 1
             except queue.Empty:
@@ -778,7 +778,7 @@ if CTK_OK:
                     return
             except Exception:
                 return
-            backlog = results >= MAX_RESULTS_BY_TICK or procesados >= BATCH_DRAINED
+            backlog = results >= MAX_RESULTS_BY_TICK or processed >= BATCH_DRAINED
             if backlog or self.manager.active or self.manager.active_thread:
                 self.after(ACTIVE_INTERVAL_MS if backlog else IDLE_INTERVAL_MS,
                            self._drain_queue)

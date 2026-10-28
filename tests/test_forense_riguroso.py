@@ -476,9 +476,9 @@ class test_forensic_rigorous(unittest.TestCase):
         sr = 176400
         n = 16384
         rng = np.random.default_rng(2026)
-        marcador = np.where(np.arange(n) % 2 == 0, 0x05, 0xFA).astype(np.int64)
+        marker = np.where(np.arange(n) % 2 == 0, 0x05, 0xFA).astype(np.int64)
         load = rng.integers(0, 1 << 16, size=n, dtype=np.int64)
-        crudo = (marcador << 16) | load
+        crudo = (marker << 16) | load
         crudo = np.where(crudo >= (1 << 23), crudo - (1 << 24), crudo)
         block = (crudo.astype(np.float64) / float(1 << 23)).reshape(-1, 1)
 
@@ -498,9 +498,9 @@ class test_forensic_rigorous(unittest.TestCase):
 
         def _crudo_stereo(skew_right):
             """Two-channel DoP stream, split in two blocks to test the join."""
-            def _channel(marcadores):
+            def _channel(markers):
                 load = rng.integers(0, 1 << 16, size=n, dtype=np.int64)
-                values = (marcadores << 16) | load
+                values = (markers << 16) | load
                 return np.where(values >= (1 << 23), values - (1 << 24), values)
 
             left = _channel(np.where(np.arange(n) % 2 == 0, 0x05, 0xFA))

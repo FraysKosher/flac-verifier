@@ -217,12 +217,12 @@ def evaluate_album_coherence(directory):
     analysis, _ = motor_flac.analyze_files(
         files, "center", None, False, workers=1, use_cache=False)
     results = list(analysis)
-    acustica = next((r for r in results
+    acoustic = next((r for r in results
                      if r.get("archivo") == "acoustic.flac"), None)
-    ok = bool(acustica
-              and acustica.get("coherencia_album")
-              and acustica.get("veredicto") == "PROBABLY LOSSLESS"
-              and motor_flac.ALBUM_COHERENCE_NOTE in (acustica.get("problemas") or []))
+    ok = bool(acoustic
+              and acoustic.get("coherencia_album")
+              and acoustic.get("veredicto") == "PROBABLY LOSSLESS"
+              and motor_flac.ALBUM_COHERENCE_NOTE in (acoustic.get("problemas") or []))
     return ok, results
 
 
@@ -352,10 +352,10 @@ def main():
     for f in errors:
         print("  MISS %-32s %-20s -> %s" % (f["clase"], f["archivo"], f["veredicto"]))
 
-    acustica = next((r for r in album if r.get("archivo") == "acoustic.flac"), {})
+    acoustic = next((r for r in album if r.get("archivo") == "acoustic.flac"), {})
     print("  Album coherence (batch): %s · acoustic=%s · coherencia_album=%s"
           % ("PASS" if coherence_ok else "FAIL",
-             acustica.get("veredicto"), acustica.get("coherencia_album")))
+             acoustic.get("veredicto"), acoustic.get("coherencia_album")))
 
     section = _section(tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
     with open(os.path.join(ROOT, "VALIDATION.md"), "w", encoding="utf-8",

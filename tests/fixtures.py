@@ -155,7 +155,7 @@ class Fixtures:
     def __getitem__(self, name):
         return self.paths[name]
 
-    def subcarpeta(self, name, files):
+    def subfolder(self, name, files):
         """Copies a subset of fixtures into a folder of its own (fast batches)."""
         destination = os.path.join(self.dir, name)
         os.makedirs(destination, exist_ok=True)

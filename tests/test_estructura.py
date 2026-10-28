@@ -129,7 +129,7 @@ class TestUTF8(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.folder = cls.fx.subcarpeta("cli_lote", ("ok16", "basura_magic"))
+        cls.folder = cls.fx.subfolder("cli_lote", ("ok16", "basura_magic"))
 
     @classmethod
     def tearDownClass(cls):

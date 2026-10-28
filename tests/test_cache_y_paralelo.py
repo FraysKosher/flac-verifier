@@ -48,7 +48,7 @@ class test_cache(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.folder = cls.fx.subcarpeta("cache", ("ok16", "ok24", "corte_16k"))
+        cls.folder = cls.fx.subfolder("cache", ("ok16", "ok24", "corte_16k"))
 
     @classmethod
     def tearDownClass(cls):
@@ -168,7 +168,7 @@ class TestParalelizacion(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.folder = cls.fx.subcarpeta(
+        cls.folder = cls.fx.subfolder(
             "paralelo", ("ok16", "ok24", "corte_16k", "master_cd_20k"))
 
     @classmethod
@@ -193,9 +193,9 @@ class TestParalelizacion(unittest.TestCase):
                 self.assertEqual(comparable(one), comparable(otro))
 
     def test_preserves_order_files(self):
-        esperados = sorted(f for f in os.listdir(self.folder) if f.endswith(".flac"))
+        expected = sorted(f for f in os.listdir(self.folder) if f.endswith(".flac"))
         results = self._results(self._engine("--workers", "4").stdout)
-        self.assertEqual([r["archivo"] for r in results], esperados)
+        self.assertEqual([r["archivo"] for r in results], expected)
         self.assertEqual([r["indice"] for r in results], [1, 2, 3, 4])
 
     def test_event_start_informs_processes(self):
@@ -210,7 +210,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertEqual(events[-1]["tipo"], "fin")
 
     def test_pdf_exits_equal_with_parallel(self):
-        probe = self.fx.subcarpeta("paralelo_pdf", ("ok16", "ok24", "corte_16k"))
+        probe = self.fx.subfolder("paralelo_pdf", ("ok16", "ok24", "corte_16k"))
         p = fx.run_engine(probe, extra=("--pdf", "--workers", "3"))
         events = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
         report = [e for e in events if e["tipo"] == "informe"]
@@ -222,7 +222,7 @@ class TestParalelizacion(unittest.TestCase):
         self.assertEqual(report[0]["desde_cache"], 0)      # first pass
 
     def test_file_broken_batch_no_knocks_down_parallel(self):
-        probe = self.fx.subcarpeta("paralelo_roto", ("ok16", "ok24", "basura_magic"))
+        probe = self.fx.subfolder("paralelo_roto", ("ok16", "ok24", "basura_magic"))
         p = fx.run_engine(probe, extra=("--workers", "3", "--no-cache"))
         results = self._results(p.stdout)
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -259,7 +259,7 @@ class TestParalelizacion(unittest.TestCase):
 
     def test_cache_avoids_start_processes(self):
         """With everything cached there is no work to spread: the pool is not needed."""
-        probe = self.fx.subcarpeta("cache_paralelo", ("ok16", "ok24", "corte_16k"))
+        probe = self.fx.subfolder("cache_paralelo", ("ok16", "ok24", "corte_16k"))
         files = [os.path.join(probe, f) for f in sorted(os.listdir(probe))]
         for path in files:                      # first pass: fills the cache
             engine.analyze_file_data(path, "center", None, False)
@@ -275,7 +275,7 @@ class TestStreamingProgresivo(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.folder = cls.fx.subcarpeta("streaming", ("ok16", "ok24", "ok16_mono"))
+        cls.folder = cls.fx.subfolder("streaming", ("ok16", "ok24", "ok16_mono"))
 
     @classmethod
     def tearDownClass(cls):
@@ -324,7 +324,7 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
         cls.fx.close()
 
     @staticmethod
-    def _acustica(path):
+    def _acoustic(path):
         sr = 44100
         x = fx.full_band_noise(sr=sr, dur=4.0, seed=7)
         y = signal.sosfilt(signal.butter(4, 15000.0, btype="low", fs=sr,
@@ -338,7 +338,7 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
         for index in range(cantidad):
             destination = os.path.join(folder, f"{index + 1:02d}_track.flac")
             if index == position_candidate:
-                self._acustica(destination)
+                self._acoustic(destination)
             else:
                 shutil.copy(self.fx["ok16"], destination)
         return folder
@@ -349,12 +349,12 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
                     for name in sorted(os.listdir(folder))]
         batch = list(engine.analyze_files(
             files, "center", None, False, workers=1, use_cache=True)[0])
-        rescatada = next(r for r in batch if r["archivo"].startswith("01_"))
-        self.assertTrue(rescatada.get("coherencia_album"))
-        self.assertEqual(rescatada["veredicto"], "PROBABLY LOSSLESS")
+        rescued = next(r for r in batch if r["archivo"].startswith("01_"))
+        self.assertTrue(rescued.get("coherencia_album"))
+        self.assertEqual(rescued["veredicto"], "PROBABLY LOSSLESS")
 
         alone = engine.analyze_file_data(
-            rescatada["ruta"], "center", None, False, use_cache=True)
+            rescued["ruta"], "center", None, False, use_cache=True)
         self.assertFalse(alone.get("coherencia_album"))
         self.assertIn(alone["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
 

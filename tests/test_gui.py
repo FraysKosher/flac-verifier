@@ -637,7 +637,7 @@ class test_window(unittest.TestCase):
 
     def test_stream_full_without_mainloop(self):
         """Starts the real engine: progress, log, card and PDF."""
-        album = self.fx.subcarpeta("gui_flujo", ("ok16", "corte_16k"))
+        album = self.fx.subfolder("gui_flujo", ("ok16", "corte_16k"))
         self.window.var_path.set(album)
         self.window.var_pdf.set(True)
         self.window.var_parallel.set(False)          # one process: shorter start-up
@@ -731,10 +731,10 @@ class test_logo(unittest.TestCase):
     def test_icon_is_multiresolution(self):
         from PIL import Image
         with Image.open(self.PATHS["icono"]) as icon:
-            tamanos = sorted(icon.info["sizes"])
-        self.assertGreaterEqual(len(tamanos), 6)
-        self.assertIn((16, 16), tamanos)          # taskbar
-        self.assertIn((256, 256), tamanos)        # high-density .exe
+            sizes = sorted(icon.info["sizes"])
+        self.assertGreaterEqual(len(sizes), 6)
+        self.assertIn((16, 16), sizes)          # taskbar
+        self.assertIn((256, 256), sizes)        # high-density .exe
 
     def test_drawing_respects_splash_proportions(self):
         """The five bars and their heights come from splashscreen.html."""
@@ -743,13 +743,13 @@ class test_logo(unittest.TestCase):
             lienzo = image.convert("RGBA")
             width, height = lienzo.size
             white = (255, 255, 255, 255)
-            columnas = []
+            columns = []
             for x in range(width):
                 ys = [y for y in range(height) if lienzo.getpixel((x, y)) == white]
-                columnas.append((min(ys), max(ys)) if ys else None)
+                columns.append((min(ys), max(ys)) if ys else None)
 
         grupos, current = [], None
-        for x, dato in enumerate(columnas):
+        for x, dato in enumerate(columns):
             if dato is None:
                 current = None
                 continue

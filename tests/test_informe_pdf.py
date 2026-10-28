@@ -38,14 +38,14 @@ def _a_ascii85(crudo):
                             ignorechars=b" \t\r\n\f\v")
 
 
-def _decodificar_stream(crudo, filtros):
+def _decodificar_stream(crudo, filters):
     """Applies the filters declared in the object (reportlab uses ASCII85+Flate)."""
     payload = crudo
-    if b"ASCII85Decode" in filtros:
+    if b"ASCII85Decode" in filters:
         payload = _a_ascii85(payload)
-    if b"FlateDecode" in filtros:
+    if b"FlateDecode" in filters:
         payload = zlib.decompress(payload)
-    elif not filtros:
+    elif not filters:
         for attempt in (lambda d: zlib.decompress(_a_ascii85(d)),
                         lambda d: zlib.decompress(d),
                         _a_ascii85):
@@ -67,9 +67,9 @@ def text_pdf(path):
             continue
         # the object dictionary is just before the word 'stream'
         header = payload[max(0, found.start() - 400) : found.start()]
-        filtros = b" ".join(re.findall(rb"/(ASCII85Decode|FlateDecode)", header))
+        filters = b" ".join(re.findall(rb"/(ASCII85Decode|FlateDecode)", header))
         try:
-            partes.append(_decodificar_stream(payload[start:end], filtros))
+            partes.append(_decodificar_stream(payload[start:end], filters))
         except Exception:
             continue                               # a stream that is not content
     return _desescapar(b"".join(partes)).decode("latin-1", "replace")
@@ -78,8 +78,8 @@ def text_pdf(path):
 def pages_pdf(path):
     """Number of pages, read from the PDF page tree."""
     payload = open(path, "rb").read()
-    cuentas = re.findall(rb"/Count\s+(\d+)", payload)
-    return max(int(c) for c in cuentas) if cuentas else 0
+    counts = re.findall(rb"/Count\s+(\d+)", payload)
+    return max(int(c) for c in counts) if counts else 0
 
 
 def _fitz_available():
@@ -103,7 +103,7 @@ class test_report_pdf(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fx = fx.Fixtures()
-        cls.album = cls.fx.subcarpeta(
+        cls.album = cls.fx.subfolder(
             "album", ("ok16", "ok24", "master_cd_20k", "corte_16k", "basura_magic"))
 
     @classmethod
@@ -268,13 +268,13 @@ class test_report_pdf(unittest.TestCase):
 
     def test_image_deleted_after_analysis_no_breaks_report(self):
         results = analyze_album(self.album, save_png=True)
-        borrados = 0
+        deleted = 0
         for result in results:
             path = (result.get("esp") or {}).get("espectrograma")
             if path and os.path.exists(path):
                 os.remove(path)
-                borrados += 1
-        self.assertGreater(borrados, 0)
+                deleted += 1
+        self.assertGreater(deleted, 0)
         report = pdf.generate(self.album, results)
         self.assertTrue(report["ok"], report.get("error"))
         self.assertIn("is no longer available", text_pdf(report["ruta"]))
@@ -295,7 +295,7 @@ class test_report_pdf(unittest.TestCase):
     def test_card_with_many_problems_no_overflows_page(self):
         """Before, 12 issues pushed the spectrogram onto the next page
         (the record went from 1 page to 2). The image shrinks so that it fits."""
-        clean = self.fx.subcarpeta("maqueta_larga", ("ok16",))
+        clean = self.fx.subfolder("maqueta_larga", ("ok16",))
         destination = os.path.join(clean, "informe_largo.pdf")
         report = pdf.generate(clean, [self._result_with_problems(12)], destination=destination)
         self.assertTrue(report["ok"], report.get("error"))
@@ -314,7 +314,7 @@ class test_report_pdf(unittest.TestCase):
         """The symptom that was fixed: a loose image at the top of the next page,
         far from its title."""
         import fitz
-        clean = self.fx.subcarpeta("maqueta_separa", ("ok16",))
+        clean = self.fx.subfolder("maqueta_separa", ("ok16",))
         for cuantos in (2, 6, 12, 20):
             with self.subTest(problems=cuantos):
                 destination = os.path.join(clean, f"informe_{cuantos}.pdf")
@@ -341,7 +341,7 @@ class test_report_pdf(unittest.TestCase):
 
     # ── error handling: it never aborts ─────────────────────────────────────
     def test_without_reportlab_warns_without_generate_nothing(self):
-        clean = self.fx.subcarpeta("album_sin_reportlab", ("ok16",))
+        clean = self.fx.subfolder("album_sin_reportlab", ("ok16",))
         original = pdf.REPORTLAB_OK
         pdf.REPORTLAB_OK = False
         try:
@@ -368,7 +368,7 @@ class test_report_pdf(unittest.TestCase):
 
     def test_failure_generator_no_aborts_analysis(self):
         """The engine turns any issue in the report into a notice."""
-        probe = self.fx.subcarpeta("album_roto", ("ok16",))
+        probe = self.fx.subfolder("album_roto", ("ok16",))
         # the report destination is a DIRECTORY: writing into it is bound to fail
         os.makedirs(os.path.join(probe, pdf.REPORT_NAME), exist_ok=True)
         environment = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
@@ -382,7 +382,7 @@ class test_report_pdf(unittest.TestCase):
 
     # ── integration with the CLIs ───────────────────────────────────────────
     def test_engine_emits_event_report_before_end(self):
-        probe = self.fx.subcarpeta("album_cli", ("ok16", "corte_16k"))
+        probe = self.fx.subfolder("album_cli", ("ok16", "corte_16k"))
         p = fx.run_engine(probe, extra=("--pdf",))
         events = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
         tipos = [e["tipo"] for e in events]
@@ -400,14 +400,14 @@ class test_report_pdf(unittest.TestCase):
                 self.assertIsNotNone(result["esp"].get("espectrograma"))
 
     def test_without_pdf_no_emits_event_report(self):
-        probe = self.fx.subcarpeta("album_sin_pdf", ("ok16",))
+        probe = self.fx.subfolder("album_sin_pdf", ("ok16",))
         p = fx.run_engine(probe)
         tipos = [json.loads(l)["tipo"] for l in p.stdout.splitlines() if l.strip()]
         self.assertNotIn("informe", tipos)
         self.assertFalse(os.path.exists(os.path.join(probe, pdf.REPORT_NAME)))
 
     def test_cli_interactive_also_generates_report(self):
-        probe = self.fx.subcarpeta("album_interactivo", ("ok16", "ok24"))
+        probe = self.fx.subfolder("album_interactivo", ("ok16", "ok24"))
         environment = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
         p = subprocess.run([sys.executable, fx.CLI], input=f"2\nn\ny\n{probe}\nn\n",
                            cwd=fx.ROOT, capture_output=True, text=True,
@@ -417,7 +417,7 @@ class test_report_pdf(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(probe, pdf.REPORT_NAME)))
 
     def test_pdf_png_are_combinable(self):
-        probe = self.fx.subcarpeta("album_combinado", ("ok16",))
+        probe = self.fx.subfolder("album_combinado", ("ok16",))
         p = fx.run_engine(probe, extra=("--png", "--pdf"))
         tipos = [json.loads(l)["tipo"] for l in p.stdout.splitlines() if l.strip()]
         self.assertEqual(p.returncode, 0, p.stderr)
