@@ -236,6 +236,95 @@ class test_format(unittest.TestCase):
         self.assertEqual(text, "No results")
 
 
+class TestResultRow(unittest.TestCase):
+    """The presentation of a protocol record: read, mapped, never recomputed."""
+
+    GENUINE = {
+        "tipo": "resultado", "archivo": "01.flac", "ruta": "C:/Music/01.flac",
+        "veredicto": "GENUINE LOSSLESS", "score": 0.9, "problemas": [],
+        "meta": {"bits_per_sample": 16, "sample_rate": 44100},
+        "md5": {"estado": "match"}, "dr": 12.0,
+    }
+
+    def test_maps_a_genuine_track(self):
+        row = gui.result_row(self.GENUINE)
+        self.assertEqual(row["file"], "01.flac")
+        self.assertEqual(row["path"], "C:/Music/01.flac")
+        self.assertEqual(row["label"], "OK")
+        self.assertEqual(row["tone"], "ok")
+        self.assertEqual(row["score"], 90)
+        self.assertEqual(row["depth"], "16 bit")
+        self.assertEqual(row["rate"], "44.1 kHz")
+        self.assertEqual(row["dr"], "12")
+        self.assertEqual(row["md5"], "verified")
+        self.assertEqual(row["md5_icon"], "check")
+        self.assertFalse(row["cached"])
+
+    def test_error_record_has_no_verdict_or_score(self):
+        row = gui.result_row({"tipo": "resultado", "archivo": "x.flac",
+                              "error": "invalid signature"})
+        self.assertEqual(row["label"], "ERROR")
+        self.assertEqual(row["tone"], "danger")
+        self.assertEqual(row["verdict"], "")
+        self.assertIsNone(row["score"])
+        self.assertEqual(row["error"], "invalid signature")
+
+    def test_missing_metadata_degrades_to_dashes(self):
+        row = gui.result_row({"tipo": "resultado", "archivo": "x.flac",
+                              "veredicto": "indeterminate", "score": 0.5})
+        self.assertEqual(row["label"], "?")
+        self.assertEqual(row["tone"], "unknown")
+        self.assertEqual(row["depth"], "—")
+        self.assertEqual(row["rate"], "—")
+        self.assertEqual(row["dr"], "—")
+        self.assertEqual(row["md5"], "—")
+        self.assertEqual(row["md5_icon"], "info")
+
+    def test_unknown_verdict_is_not_invented(self):
+        row = gui.result_row({"tipo": "resultado", "archivo": "x.flac",
+                              "veredicto": "NEW VERDICT", "score": 0})
+        self.assertEqual(row["label"], "NEW VERDICT")
+        self.assertEqual(row["tone"], "unknown")
+        self.assertEqual(row["score"], 0)
+
+    def test_cached_and_md5_states(self):
+        row = gui.result_row(dict(self.GENUINE, desde_cache=True,
+                                  md5={"estado": "unverifiable"}))
+        self.assertTrue(row["cached"])
+        self.assertEqual(row["md5"], "unverifiable")
+        self.assertEqual(row["md5_icon"], "info")
+
+    def test_format_helpers(self):
+        self.assertEqual(gui.format_depth(24), "24 bit")
+        self.assertEqual(gui.format_depth(None), "—")
+        self.assertEqual(gui.format_rate(44100), "44.1 kHz")
+        self.assertEqual(gui.format_rate(96000), "96 kHz")
+        self.assertEqual(gui.format_rate(0), "—")
+        self.assertEqual(gui.format_dr(12.0), "12")
+        self.assertEqual(gui.format_dr(15.25), "15.25")
+        self.assertEqual(gui.format_dr(None), "—")
+
+    def test_count_verdicts_ignores_non_results(self):
+        events = [{"tipo": "inicio", "total": 3},
+                  dict(self.GENUINE, tipo="resultado"),
+                  {"tipo": "resultado", "archivo": "b.flac",
+                   "veredicto": "SUSPICIOUS"},
+                  {"tipo": "resultado", "archivo": "c.flac", "error": "x"}]
+        counts, errors, total = gui.count_verdicts(events)
+        self.assertEqual(counts, {"GENUINE LOSSLESS": 1, "SUSPICIOUS": 1})
+        self.assertEqual(errors, 1)
+        self.assertEqual(total, 3)
+
+    def test_summary_uses_the_same_counts(self):
+        colour, text = gui.format_summary(
+            [dict(self.GENUINE, tipo="resultado"),
+             {"tipo": "resultado", "archivo": "b.flac", "veredicto": "SUSPICIOUS"}])
+        self.assertEqual(colour, "naranja")
+        self.assertIn("2 file(s)", text)
+        self.assertIn("1 genuine", text)
+        self.assertIn("1 suspicious", text)
+
+
 class TestDragAndDrop(unittest.TestCase):
 
     def test_paths_with_spaces_between_braces(self):
@@ -628,7 +717,7 @@ class test_window(unittest.TestCase):
                                           "score": 1.0, "problemas": []})
         self.assertEqual(self.window.recibidos, 1)
         self.assertAlmostEqual(self.window.barra.get(), 0.5, places=6)
-        self.assertIn("1 of 2", self.window.label_progress.cget("text"))
+        self.assertIn("1 / 2", self.window.label_progress.cget("text"))
         self.window._process("stdout", {"tipo": "resultado", "indice": 2, "total": 2,
                                           "archivo": "b.flac",
                                           "veredicto": "PROBABLE UPSCALE",
@@ -729,7 +818,175 @@ class test_window(unittest.TestCase):
         self.assertIn("PROBABLE UPSCALE", registro)      # corte_16k
         self.assertIn("PDF report:", registro)
         self.assertIn("2 file(s)", self.window.label_summary.cget("text"))
+        # The results surface streamed one row per file and the log collapsed.
+        self.assertEqual(len(self.window.table_rows), 2)
+        self.assertEqual(sorted(row["values"]["tone"]
+                                for row in self.window.table_rows), ["bad", "ok"])
+        self.assertEqual(self.window.activity_bar.winfo_manager(), "grid")
+        self.assertFalse(self.window.activity_panel.winfo_manager())
 
+
+    def test_empty_state_until_a_result_arrives(self):
+        """Idle and empty: the drop zone, not an empty table (DESIGN.md 7.11)."""
+        self.assertEqual(self.window.empty_state.winfo_manager(), "grid")
+        self.assertFalse(self.window.results.winfo_manager())
+        self.assertEqual(self.window.drop_zone.headline.cget("text"),
+                         "Drop a folder or a .flac file")
+        self.window._process("stdout", {"tipo": "resultado", "archivo": "a.flac",
+                                        "veredicto": "GENUINE LOSSLESS",
+                                        "score": 1.0, "problemas": []})
+        self.assertFalse(self.window.empty_state.winfo_manager())
+        self.assertEqual(self.window.results.winfo_manager(), "grid")
+
+    def test_table_streams_one_row_per_result(self):
+        """Each `resultado` becomes a 44 px row with the protocol values."""
+        for index in range(2):
+            self.window._process("stdout", {
+                "tipo": "resultado", "archivo": f"0{index + 1}.flac",
+                "ruta": f"C:/Music/0{index + 1}.flac",
+                "veredicto": "GENUINE LOSSLESS" if index == 0 else "SUSPICIOUS",
+                "score": 0.9 if index == 0 else 0.41, "problemas": [],
+                "meta": {"bits_per_sample": 16, "sample_rate": 44100},
+                "md5": {"estado": "match"}, "dr": 12.0})
+        self.assertEqual(len(self.window.table_rows), 2)
+        first, second = self.window.table_rows
+        self.assertEqual(first["cells"]["file"].cget("text"), "01.flac")
+        self.assertEqual(second["cells"]["file"].cget("text"), "02.flac")
+        self.assertEqual(first["cells"]["score"].cget("text"), "90")
+        self.assertEqual(second["cells"]["score"].cget("text"), "41")
+        self.assertEqual(first["cells"]["depth"].cget("text"), "16 bit")
+        self.assertEqual(first["cells"]["rate"].cget("text"), "44.1 kHz")
+        self.assertEqual(first["cells"]["dr"].cget("text"), "12")
+        self.assertIsNotNone(first["cells"]["md5"].cget("image"),
+                             "the MD5 column has no verification mark")
+        # The chip carries the short label and the tone of the verdict.
+        self.assertEqual(first["values"]["tone"], "ok")
+        self.assertEqual(second["values"]["tone"], "warn")
+
+    def test_selecting_a_row_updates_the_hero(self):
+        event = {"tipo": "resultado", "archivo": "01.flac", "ruta": "C:/Music/01.flac",
+                 "veredicto": "PROBABLY LOSSLESS", "score": 0.78, "problemas": [],
+                 "meta": {"bits_per_sample": 24, "sample_rate": 96000},
+                 "md5": {"estado": "match"}, "dr": 15.0}
+        self.window._process("stdout", event)
+        self.window._select(event)
+        self.assertEqual(self.window.hero_eyebrow.cget("text"), "01.flac")
+        self.assertEqual(self.window.hero_headline.cget("text"), "PROBABLY LOSSLESS")
+        self.assertEqual(self.window.hero_number.cget("text"), "78")
+        self.assertEqual(self.window.hero_number_caption.cget("text"), "SCORE")
+        facts = [(caption.cget("text"), value.cget("text"))
+                 for caption, value in self.window.fact_pairs]
+        self.assertEqual(facts[:3], [("DEPTH", "24 bit"), ("RATE", "96 kHz"),
+                                     ("DR", "15")])
+        self.assertEqual(facts[3], ("MD5", "verified"))
+        self.window._clear_selection()
+        self.assertEqual(self.window.hero_number_caption.cget("text"), "FILES")
+        self.assertIn("1 file(s)", self.window.label_summary.cget("text"))
+
+    def test_selected_row_shows_the_tint_and_the_accent_bar(self):
+        events = [
+            {"tipo": "resultado", "archivo": "a.flac", "veredicto": "GENUINE LOSSLESS",
+             "score": 1.0},
+            {"tipo": "resultado", "archivo": "b.flac", "veredicto": "SUSPICIOUS",
+             "score": 0.4},
+        ]
+        for event in events:
+            self.window._process("stdout", event)
+        self.window._select(events[0])
+        selected, other = self.window.table_rows
+        self.assertEqual(selected["bar"].cget("fg_color"), theme.color("accent"))
+        self.assertEqual(selected["frame"].cget("fg_color"),
+                         theme.mix(theme.color("accent"),
+                                   theme.color("bg.surface"), 0.08))
+        self.assertEqual(other["bar"].cget("fg_color"), theme.color("bg.surface"))
+        self.assertEqual(other["frame"].cget("fg_color"), theme.color("bg.surface"))
+
+    def test_album_hero_consolidates_the_verdicts(self):
+        """One verdict is shown as is; a mixed batch says so; errors weigh in."""
+        genuine = {"tipo": "resultado", "archivo": "a.flac",
+                   "veredicto": "GENUINE LOSSLESS", "score": 1.0}
+        suspicious = {"tipo": "resultado", "archivo": "b.flac",
+                      "veredicto": "SUSPICIOUS", "score": 0.4}
+        self.window._process("stdout", genuine)
+        self.assertEqual(self.window.hero_headline.cget("text"), "GENUINE LOSSLESS")
+        self.window._process("stdout", suspicious)
+        self.assertEqual(self.window.hero_headline.cget("text"), "MIXED RESULTS")
+        self.assertEqual(self.window.hero_number.cget("text"), "2")
+        self.window._process("stdout", {"tipo": "resultado", "archivo": "c.flac",
+                                        "error": "corrupt"})
+        self.assertEqual(self.window.hero_headline.cget("text"), "MIXED RESULTS")
+        self.assertEqual(self.window.hero_headline.cget("text_color"),
+                         theme.color("bad"))
+
+    def test_long_file_names_are_truncated(self):
+        event = {"tipo": "resultado", "archivo": "A" * 120 + ".flac",
+                 "veredicto": "GENUINE LOSSLESS", "score": 1.0}
+        self.window._process("stdout", event)
+        label = self.window.table_rows[0]["file_label"]
+        self.window._refit_file_name(label, types.SimpleNamespace(width=120))
+        self.assertTrue(label.cget("text").endswith("…"), label.cget("text"))
+        self.assertEqual(label.full_text, event["archivo"])
+        self.assertEqual(self.window._fit("short.flac", theme.font(13), 400),
+                         "short.flac")
+
+    def test_activity_starts_collapsed_and_toggles(self):
+        self.assertEqual(self.window.activity_bar.winfo_manager(), "grid")
+        self.assertFalse(self.window.activity_panel.winfo_manager())
+        self.window._toggle_activity()
+        self.assertFalse(self.window.activity_bar.winfo_manager())
+        self.assertEqual(self.window.activity_panel.winfo_manager(), "grid")
+        self.window._toggle_activity()
+        self.assertEqual(self.window.activity_bar.winfo_manager(), "grid")
+        self.assertFalse(self.window.activity_panel.winfo_manager())
+
+    def test_activity_clear_empties_the_log(self):
+        self.window._set_activity(True)
+        self.assertTrue(self.window.log.get("1.0", "end").strip())
+        self.window._clear_log()
+        self.assertEqual(self.window.log.get("1.0", "end").strip(), "")
+        self.assertEqual(self.window.label_activity_preview.cget("text"),
+                         "No activity yet")
+
+    def test_activity_autoscroll_follows_the_toggle(self):
+        self.assertTrue(self.window.var_autoscroll.get())
+        with mock.patch.object(self.window.log, "see") as see:
+            self.window.var_autoscroll.set(False)
+            self.window._log("not followed")
+            see.assert_not_called()
+            self.window.var_autoscroll.set(True)
+            self.window._log("followed")
+            see.assert_called_once_with("end")
+
+    def test_activity_preview_shows_the_last_line(self):
+        self.window._log("Engine warning: cache disabled", "aviso")
+        self.assertIn("Engine warning",
+                      self.window.label_activity_preview.cget("text"))
+
+    def test_drop_zone_is_keyboard_focusable(self):
+        zone = self.window.drop_zone
+        self.assertEqual(str(zone.tk.call(zone._w, "cget", "-takefocus")), "1")
+        self.assertTrue(zone.tk.call("bind", zone._w, "<Button-1>"))
+        self.assertTrue(zone.tk.call("bind", zone._w, "<Return>"))
+        self.assertEqual(zone.headline.cget("text"),
+                         "Drop a folder or a .flac file")
+        zone.set_active(True)
+        self.assertTrue(zone.active)
+        zone.set_active(False)
+        self.assertFalse(zone.active)
+
+    def test_hero_actions_follow_the_report_and_the_selection(self):
+        self.assertEqual(self.window.btn_open_pdf.cget("state"), "disabled")
+        self.assertEqual(self.window.btn_reveal.cget("state"), "disabled")
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, gui.REPORT_NAME)
+            with open(path, "wb") as report:
+                report.write(b"%PDF-1.4\n")
+            self.window._process("stdout", {"tipo": "informe", "ruta": path,
+                                            "paginas": 1, "total": 1})
+            self.assertEqual(self.window.btn_open_pdf.cget("state"), "normal")
+            self.window.var_path.set(folder)
+            self.window._update_state()
+            self.assertEqual(self.window.btn_reveal.cget("state"), "normal")
 
 class test_integration_with_cli(unittest.TestCase):
     """`verificar_flac.py --gui` has to open the GUI, not the menu."""
@@ -966,15 +1223,12 @@ class test_control_seconds(unittest.TestCase):
         self._set_mode("seconds")
         self.assertGreater(self._rail_height(), hidden,
                            "the rail did not make room for the seconds control")
-        # Analyze lives in the footer, below the flow and the summary chip, so it
-        # is always visible: it is not pushed down with the rest of the controls.
+        # Analyze lives in the footer, below the flow, so it is always visible:
+        # it is not pushed down with the rest of the controls.
         footer = self.window.btn_analyze.master
         self.assertIsNot(footer, self._rail())
-        self.assertIs(self.window.card.master, footer)
         self.assertGreater(int(footer.grid_info()["row"]),
                            int(self.window.check_cache.grid_info()["row"]))
-        self.assertGreater(int(self.window.btn_analyze.grid_info()["row"]),
-                           int(self.window.card.grid_info()["row"]))
         self.assertTrue(self.window.btn_analyze.winfo_manager())
 
     def test_hide_it_no_leaves_phantom_row(self):

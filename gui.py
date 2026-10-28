@@ -110,15 +110,63 @@ LABEL_VERDICT = {
     "PROBABLE UPSCALE":       "UPSCALE",
     "indeterminate":          "?",
 }
-# Batch summary -> design tokens (text, background, border) of the verdict chip.
-# Five legacy buckets, four verdict colours: "naranja" is part of the warn tone.
-SUMMARY_STYLES = {
-    "verde":    ("ok", "ok.bg", "ok.border"),
-    "amarillo": ("warn", "warn.bg", "warn.border"),
-    "naranja":  ("warn", "warn.bg", "warn.border"),
-    "rojo":     ("bad", "bad.bg", "bad.border"),
-    "gris":     ("unknown", "unknown.bg", "unknown.border"),
+# Batch summary -> design tone of the verdict chip. Five legacy buckets, four
+# verdict colours: "naranja" is part of the warn tone.
+SUMMARY_TONES = {
+    "verde": "ok",
+    "amarillo": "warn",
+    "naranja": "warn",
+    "rojo": "bad",
+    "gris": "unknown",
 }
+# Design tone -> (text token, background token, border token) of a chip (7.5).
+CHIP_STYLES = {
+    "ok": ("ok", "ok.bg", "ok.border"),
+    "warn": ("warn", "warn.bg", "warn.border"),
+    "bad": ("bad", "bad.bg", "bad.border"),
+    "unknown": ("unknown", "unknown.bg", "unknown.border"),
+    "danger": ("danger", "danger.bg", "danger"),
+}
+# Verdict of the protocol -> tone. Only maps labels; the verdict itself is never
+# computed here (test_estructura guards that rule).
+VERDICT_TONES = {
+    "GENUINE LOSSLESS": "ok",
+    "PROBABLY LOSSLESS": "warn",
+    "SUSPICIOUS": "warn",
+    "PROBABLE UPSCALE": "bad",
+    "indeterminate": "unknown",
+}
+# Order and short name of each verdict in the album summary and its chips.
+SUMMARY_NAMES = (
+    ("GENUINE LOSSLESS", "genuine"),
+    ("PROBABLY LOSSLESS", "probable"),
+    ("SUSPICIOUS", "suspicious"),
+    ("PROBABLE UPSCALE", "upscale"),
+    ("indeterminate", "indeterminate"),
+)
+# STREAMINFO MD5 state of the protocol -> short mark and icon.
+MD5_LABELS = {
+    "match": "verified",
+    "mismatch": "mismatch",
+    "absent": "absent",
+    "unverifiable": "unverifiable",
+}
+MD5_ICONS = {
+    "match": ("check", "ok"),
+    "mismatch": ("x", "bad"),
+    "absent": ("info", "unknown"),
+    "unverifiable": ("info", "unknown"),
+}
+# Table columns of DESIGN.md 7.7: name, weight, minimum width, anchor.
+TABLE_COLUMNS = (
+    ("file", 1, 140, "w"),
+    ("verdict", 0, 130, "w"),
+    ("score", 0, 60, "e"),
+    ("depth", 0, 70, "w"),
+    ("rate", 0, 78, "w"),
+    ("dr", 0, 44, "w"),
+    ("md5", 0, 48, "w"),
+)
 MODES = ["center", "full", "seconds"]
 WORKER_OPTIONS = ["Automatic", "1", "2", "4", "8"]
 
@@ -239,9 +287,12 @@ def format_result(event: Event) -> str:
     return text
 
 
-def format_summary(events: Iterable[Event]) -> tuple[str, str]:
-    """Final summary of the batch: (colour_key, text) for the status card."""
-    conteo: dict[str, int] = {}
+def count_verdicts(events: Iterable[Event]) -> tuple[dict[str, int], int, int]:
+    """(count by verdict, files with error, total files) of the result events.
+
+    The only numbers the album summary and the hero show: they are counted from
+    the protocol, never computed from the audio here."""
+    counts: dict[str, int] = {}
     errors = 0
     total = 0
     for event in events:
@@ -251,30 +302,92 @@ def format_summary(events: Iterable[Event]) -> tuple[str, str]:
         if event.get("error") or "veredicto" not in event:
             errors += 1
         else:
-            conteo[str(event["veredicto"])] = conteo.get(str(event["veredicto"]), 0) + 1
+            verdict = str(event["veredicto"])
+            counts[verdict] = counts.get(verdict, 0) + 1
+    return counts, errors, total
+
+
+def format_summary(events: Iterable[Event]) -> tuple[str, str]:
+    """Final summary of the batch: (colour_key, text) for the verdict hero."""
+    counts, errors, total = count_verdicts(events)
     if total == 0:
         return "gris", "No results"
 
     labels = []
-    for key, name in (("GENUINE LOSSLESS", "genuine"),
-                          ("PROBABLY LOSSLESS", "probable"),
-                          ("SUSPICIOUS", "suspicious"),
-                          ("PROBABLE UPSCALE", "upscale"),
-                          ("indeterminate", "indeterminate")):
-        if conteo.get(key):
-            labels.append(f"{conteo[key]} {name}")
+    for key, name in SUMMARY_NAMES:
+        if counts.get(key):
+            labels.append(f"{counts[key]} {name}")
     if errors:
         labels.append(f"{errors} with error")
 
-    if errors or conteo.get("PROBABLE UPSCALE"):
+    if errors or counts.get("PROBABLE UPSCALE"):
         color = "rojo"
-    elif conteo.get("SUSPICIOUS"):
+    elif counts.get("SUSPICIOUS"):
         color = "naranja"
-    elif conteo.get("PROBABLY LOSSLESS") or conteo.get("indeterminate"):
+    elif counts.get("PROBABLY LOSSLESS") or counts.get("indeterminate"):
         color = "amarillo"
     else:
         color = "verde"
     return color, f"{total} file(s): " + " · ".join(labels)
+
+
+def format_depth(bits: Any) -> str:
+    """Bit depth as the table and the hero show it."""
+    if isinstance(bits, (int, float)) and bits:
+        return f"{int(bits)} bit"
+    return "—"
+
+
+def format_rate(sample_rate: Any) -> str:
+    """Sample rate in kHz, without losing a non-integer rate."""
+    if not isinstance(sample_rate, (int, float)) or sample_rate <= 0:
+        return "—"
+    if int(sample_rate) % 1000 == 0:
+        return f"{int(sample_rate) // 1000} kHz"
+    return f"{sample_rate / 1000:.1f} kHz"
+
+
+def format_dr(dr: Any) -> str:
+    """Dynamic range as the engine reports it (one decimal, or a whole number)."""
+    if isinstance(dr, (int, float)):
+        return f"{dr:g}"
+    return "—"
+
+
+def result_row(event: Event) -> dict[str, Any]:
+    """Everything the table and the hero show for one `resultado` event.
+
+    It only reads the protocol: no measurement, score or verdict is recomputed
+    here (test_estructura guards that rule). A record from an older cache may
+    lack a field; it degrades to a dash instead of raising."""
+    meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+    md5 = event.get("md5") if isinstance(event.get("md5"), dict) else {}
+    md5_state = str(md5.get("estado") or "")
+    verdict = str(event.get("veredicto") or "")
+    failed = bool(event.get("error")) or not verdict
+    if failed:
+        label, tone = "ERROR", "danger"
+    else:
+        label = LABEL_VERDICT.get(verdict, verdict)
+        tone = VERDICT_TONES.get(verdict, "unknown")
+    score = event.get("score")
+    icon, icon_tone = MD5_ICONS.get(md5_state, ("info", "unknown"))
+    return {
+        "file": str(event.get("archivo") or "?"),
+        "path": str(event.get("ruta") or ""),
+        "verdict": "" if failed else verdict,
+        "label": label,
+        "tone": tone,
+        "score": round(float(score) * 100) if isinstance(score, (int, float)) else None,
+        "depth": format_depth(meta.get("bits_per_sample")),
+        "rate": format_rate(meta.get("sample_rate")),
+        "dr": format_dr(event.get("dr")),
+        "md5": MD5_LABELS.get(md5_state, "—"),
+        "md5_icon": icon,
+        "md5_tone": icon_tone,
+        "error": str(event.get("error") or ""),
+        "cached": bool(event.get("desde_cache")),
+    }
 
 
 def dnd_paths(payload: str) -> list[str]:
@@ -490,6 +603,174 @@ class _Tooltip:
             self._window = None
 
 
+class _DropZone(tkinter.Canvas):
+    """120 px drop target with a dashed border (DESIGN.md 7.3).
+
+    Tk has no dashed frame and CustomTkinter has no dashed border, so the border
+    is drawn on a canvas and redrawn on resize; the content is a child frame
+    placed in the middle. The whole area is clickable and reachable with the
+    keyboard, and it is the drop target of the window when tkinterdnd2 is
+    installed.
+    """
+
+    HEIGHT = 120
+    RADIUS = 12
+    DASH = (4, 4)
+
+    def __init__(self, master: Any, window: Any) -> None:
+        super().__init__(master, height=self.HEIGHT, bd=0, highlightthickness=2,
+                         highlightbackground=c("bg.canvas"),
+                         highlightcolor=c("focus"), cursor="hand2",
+                         background=c("bg.surface"))
+        self.window = window
+        self.active = False
+
+        self.content = ctk.CTkFrame(self, fg_color=c("bg.surface"), corner_radius=0)
+        self._icon_resting = window._icon("folder-plus", 24, c("text.secondary"))
+        self._icon_active = window._icon("folder-plus", 24, c("accent"))
+        self.icon_label = ctk.CTkLabel(self.content, text="",
+                                       image=self._icon_resting)
+        self.icon_label.grid(row=0, column=0, pady=(0, theme.SPACE["xs"]))
+        self.headline = ctk.CTkLabel(self.content,
+                                     text="Drop a folder or a .flac file",
+                                     font=theme.font(14, 600),
+                                     text_color=c("text.primary"))
+        self.headline.grid(row=1, column=0)
+        self.subline = ctk.CTkLabel(self.content,
+                                    text="or browse to pick an album folder",
+                                    font=theme.font(12),
+                                    text_color=c("text.secondary"))
+        self.subline.grid(row=2, column=0, pady=(theme.SPACE["2xs"], 0))
+        self._content_id = self.create_window(0, 0, window=self.content,
+                                              anchor="center")
+
+        tkinter.Canvas.configure(self, takefocus=True)
+        self.bind("<Configure>", self._on_configure)
+        for widget in (self, self.content, self.icon_label, self.headline,
+                       self.subline):
+            widget.bind("<Button-1>", self._browse)
+            widget.bind("<Return>", self._browse)
+            widget.bind("<space>", self._browse)
+
+    def _browse(self, _event: Any = None) -> str:
+        self.window._choose_folder()
+        return "break"
+
+    def _on_configure(self, event: Any) -> None:
+        self.coords(self._content_id, event.width / 2, event.height / 2)
+        self._draw_border(event.width, event.height)
+
+    def _draw_border(self, width: int, height: int) -> None:
+        self.delete("border")
+        inset, radius = 2, self.RADIUS
+        right, bottom = width - inset, height - inset
+        colour = c("accent") if self.active else c("border.strong")
+        draw = {"fill": colour, "dash": self.DASH, "width": 1, "tags": "border"}
+        self.create_line(inset + radius, inset, right - radius, inset, **draw)
+        self.create_line(inset + radius, bottom, right - radius, bottom, **draw)
+        self.create_line(inset, inset + radius, inset, bottom - radius, **draw)
+        self.create_line(right, inset + radius, right, bottom - radius, **draw)
+        corners = (
+            (inset, inset, inset + 2 * radius, inset + 2 * radius, 90),
+            (right - 2 * radius, inset, right, inset + 2 * radius, 0),
+            (right - 2 * radius, bottom - 2 * radius, right, bottom, 270),
+            (inset, bottom - 2 * radius, inset + 2 * radius, bottom, 180),
+        )
+        for left, top, corner_right, corner_bottom, start in corners:
+            self.create_arc(left, top, corner_right, corner_bottom, start=start,
+                            extent=90, style="arc", outline=colour,
+                            dash=self.DASH, width=1, tags="border")
+
+    def set_active(self, active: bool) -> None:
+        """Drag-over state: accent border and a 6 % accent tint (7.3)."""
+        self.active = bool(active)
+        tint = theme.mix(c("bg.surface"), c("accent"), 0.06) if self.active             else c("bg.surface")
+        self.configure(background=tint)
+        self.content.configure(fg_color=tint)
+        self.icon_label.configure(image=self._icon_active if self.active
+                                  else self._icon_resting)
+        self._draw_border(self.winfo_width(), self.winfo_height())
+
+    def register_drop(self) -> bool:
+        """Registers the whole zone as a drop target, if the library is there."""
+        if not DND_OK:
+            return False
+        try:
+            for target in (self, self.content, self.icon_label, self.headline,
+                           self.subline):
+                target.drop_target_register(DND_FILES)
+                target.dnd_bind("<<DropEnter>>", self._drag_enter)
+                target.dnd_bind("<<DropLeave>>", self._drag_leave)
+                target.dnd_bind("<<Drop>>", self._dropped)
+            return True
+        except Exception:
+            return False
+
+    def _drag_enter(self, event: Any = None) -> Any:
+        self.set_active(True)
+        return getattr(event, "action", None)
+
+    def _drag_leave(self, event: Any = None) -> Any:
+        self.set_active(False)
+        return getattr(event, "action", None)
+
+    def _dropped(self, event: Any) -> Any:
+        self.set_active(False)
+        self.window._drop(event)
+        return getattr(event, "action", None)
+
+
+class _TableScrollbar(tkinter.Canvas):
+    """Thin scrollbar for the results table (DESIGN.md 7.7).
+
+    CustomTkinter's own scrollbar redraws with an internal `update_idletasks()`
+    from its Configure handler, and inside a canvas whose height settles by a
+    pixel that recursion never ends (it locked the window during the first
+    streaming test). A canvas with a thumb is small, predictable and enough: the
+    table scrolls with the thumb, a click on the track and the mouse wheel.
+    """
+
+    WIDTH = 12
+    MINIMUM_THUMB = 24
+
+    def __init__(self, master: Any, command: Callable[..., Any],
+                 background: str) -> None:
+        super().__init__(master, width=self.WIDTH, bd=0, highlightthickness=0,
+                         background=background, cursor="arrow")
+        self.command = command
+        self.first = 0.0
+        self.last = 1.0
+        self.bind("<Configure>", lambda _event: self._draw())
+        self.bind("<Button-1>", self._jump)
+        self.bind("<B1-Motion>", self._jump)
+
+    def set(self, first: Any, last: Any) -> None:
+        """`yscrollcommand` callback: only stores the range and redraws."""
+        self.first, self.last = float(first), float(last)
+        self._draw()
+
+    def _draw(self) -> None:
+        self.delete("all")
+        height = self.winfo_height()
+        if height <= 1:
+            return
+        top = self.first * height
+        bottom = max(self.last * height, top + self.MINIMUM_THUMB)
+        bottom = min(bottom, height)
+        if bottom - top >= height - 2:
+            return                                  # nothing to scroll
+        self.create_rectangle(2, top + 1, self.WIDTH - 2, bottom - 1,
+                              fill=c("border.strong"), outline="")
+
+    def _jump(self, event: Any) -> str:
+        height = self.winfo_height()
+        if height > 1:
+            centre = event.y / height
+            span = self.last - self.first
+            self.command("moveto", max(0.0, min(1.0, centre - span / 2)))
+        return "break"
+
+
 if CTK_OK:
 
     class _BaseWindow(ctk.CTk, TkinterDnD.DnDWrapper if DND_OK else object):  # type: ignore[misc]
@@ -526,6 +807,17 @@ if CTK_OK:
             # CTkImage references must stay alive: a collected image disappears
             # from the button silently.
             self._icons: dict[tuple[str, int, str], Any] = {}
+            # Results surface: the selected row, its widgets and the text metrics
+            # used by the ellipsis.
+            self.selected_event: Event | None = None
+            self.table_rows: list[dict[str, Any]] = []
+            self._measures: dict[tuple[Any, ...], Any] = {}
+            self._eyebrow_full = ""
+            self._headline_full = ""
+            self._last_log_line = ""
+            self.activity_expanded = False
+            self._hero_width = 0
+            self._preview_width = 0
 
             self.grid_columnconfigure(0, weight=0, minsize=RAIL_WIDTH)
             self.grid_columnconfigure(1, weight=1)
@@ -534,6 +826,7 @@ if CTK_OK:
             self._build_controls()
             self._build_telemetry()
             self._load_identity()
+            self._render_hero()
             self._update_state()
             self.protocol("WM_DELETE_WINDOW", self._on_close)
             self._register_dnd()
@@ -596,7 +889,7 @@ if CTK_OK:
 
         def _button(self, parent: Any, variant: str, text: str, command: Any,
                     icon: str | None = None, icon_size: int = 16,
-                    width: int | None = None,
+                    width: int | None = None, height: int | None = None,
                     background: str | None = None) -> Any:
             """Button of DESIGN.md 7.1 with hover, pressed, focus and disabled.
 
@@ -615,7 +908,7 @@ if CTK_OK:
             image = self._icon(icon, icon_size, c(spec["text"])) if icon else None
             button = ctk.CTkButton(
                 parent, text=text, command=command, width=width or 140,
-                height=spec["height"], corner_radius=spec["radius"],
+                height=height or spec["height"], corner_radius=spec["radius"],
                 border_width=spec["border_width"], border_color=border,
                 fg_color=(c(spec["fill"]) if spec["fill"] != "transparent"
                           else "transparent"),
@@ -921,46 +1214,34 @@ if CTK_OK:
             self._ring_highlight(self.check_cache, c("bg.surface"))
             self._toggle_on_space(self.check_cache, self.var_without_cache)
 
-            # Pinned action bar: summary chip and the primary action.
+            # Pinned action bar: the primary action, always visible at the
+            # bottom of the rail (DESIGN.md 6).
             footer = ctk.CTkFrame(rail, fg_color="transparent")
             footer.grid(row=12, column=0, padx=theme.SPACE["lg"],
                         pady=(theme.SPACE["sm"], theme.SPACE["lg"]),
                         sticky="sew")
             footer.grid_columnconfigure(0, weight=1)
 
-            self.card = ctk.CTkFrame(footer, corner_radius=theme.RADIUS["lg"],
-                                     fg_color=c("unknown.bg"), border_width=1,
-                                     border_color=c("unknown.border"))
-            self.card.grid(row=0, column=0, sticky="ew",
-                           pady=(0, theme.SPACE["sm"]))
-            self.card.grid_columnconfigure(0, weight=1)
-            self.label_summary = ctk.CTkLabel(
-                self.card, text="Nothing analyzed yet", wraplength=272,
-                justify="left", anchor="w", font=theme.font(12),
-                text_color=c("unknown"))
-            self.label_summary.grid(row=0, column=0, padx=theme.SPACE["md"],
-                                    pady=theme.SPACE["sm"], sticky="ew")
-
             self.btn_analyze = self._button(footer, "primary", "Analyze",
                                             self._analyze, icon="play",
                                             icon_size=20)
-            self.btn_analyze.grid(row=1, column=0, sticky="ew")
+            self.btn_analyze.grid(row=0, column=0, sticky="ew")
             self.btn_cancel = self._button(footer, "danger", "Cancel",
                                            self._cancel, icon="stop")
-            self.btn_cancel.grid(row=1, column=0, sticky="ew")
+            self.btn_cancel.grid(row=0, column=0, sticky="ew")
             self.btn_cancel.grid_remove()
 
+        # ── results, hero, table and activity (DESIGN.md 6, 7.3, 7.7–7.11) ──
         def _build_telemetry(self) -> None:
             panel = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
             panel.grid(row=0, column=1, sticky="nsew")
             panel.grid_columnconfigure(0, weight=1)
-            panel.grid_rowconfigure(3, weight=1)
+            panel.grid_rowconfigure(2, weight=1)
 
-            # Top bar: state, count and the report action.
+            # Top bar: state and count.
             top = ctk.CTkFrame(panel, fg_color="transparent")
             top.grid(row=0, column=0, sticky="ew", padx=theme.SPACE["xl"],
                      pady=(theme.SPACE["md"], theme.SPACE["sm"]))
-            top.grid_columnconfigure(0, weight=1)
             top.grid_columnconfigure(2, weight=1)
             self.label_state = ctk.CTkLabel(top, text="Idle", anchor="w",
                                             font=theme.font(13, 600),
@@ -971,11 +1252,6 @@ if CTK_OK:
                                                text_color=c("text.tertiary"))
             self.label_progress.grid(row=0, column=1, sticky="w",
                                      padx=(theme.SPACE["sm"], 0))
-            self.btn_open_pdf = self._button(top, "secondary", "Open report",
-                                             self._open_pdf,
-                                             icon="external-link",
-                                             background=c("bg.canvas"))
-            self.btn_open_pdf.grid(row=0, column=3, sticky="e")
 
             # Progress line: 4 px, no radius (DESIGN.md 7.9).
             self.barra = ctk.CTkProgressBar(panel, height=4, corner_radius=0,
@@ -985,26 +1261,655 @@ if CTK_OK:
             self.barra.set(0)
             self.barra.grid(row=1, column=0, sticky="ew", padx=theme.SPACE["xl"])
 
-            activity = ctk.CTkLabel(panel, text="ACTIVITY", anchor="w",
-                                    font=theme.font(11, 600),
+            self.content = ctk.CTkFrame(panel, fg_color="transparent")
+            self.content.grid(row=2, column=0, sticky="nsew")
+            self.content.grid_columnconfigure(0, weight=1)
+            self.content.grid_rowconfigure(0, weight=1)
+            self._build_empty_state(self.content)
+            self._build_results(self.content)
+            self._build_activity(panel)
+
+        def _build_empty_state(self, parent: Any) -> None:
+            """Empty state: the drop zone of DESIGN.md 7.3 and 7.11."""
+            self.empty_state = ctk.CTkFrame(parent, fg_color="transparent")
+            self.empty_state.grid(row=0, column=0, sticky="nsew",
+                                  padx=theme.SPACE["xl"], pady=theme.SPACE["xs"])
+            self.empty_state.grid_columnconfigure(0, weight=1)
+            self.empty_state.grid_rowconfigure(0, weight=1)
+            self.empty_state.grid_rowconfigure(2, weight=1)
+            self.drop_zone = _DropZone(self.empty_state, self)
+            self.drop_zone.grid(row=1, column=0, sticky="ew")
+
+        def _build_results(self, parent: Any) -> None:
+            self.results = ctk.CTkFrame(parent, fg_color="transparent")
+            self.results.grid(row=0, column=0, sticky="nsew")
+            self.results.grid_columnconfigure(0, weight=1)
+            self.results.grid_rowconfigure(1, weight=1)
+            self._build_hero(self.results)
+            self._build_table(self.results)
+
+        def _build_hero(self, parent: Any) -> None:
+            """Verdict hero (DESIGN.md 7.8): the first thing the eye finds."""
+            self.hero = ctk.CTkFrame(parent, fg_color=c("bg.surface"),
+                                     corner_radius=theme.RADIUS["lg"],
+                                     border_width=1,
+                                     border_color=c("border.subtle"), height=136)
+            self.hero.grid(row=0, column=0, sticky="ew", padx=theme.SPACE["xl"],
+                           pady=(theme.SPACE["xs"], theme.SPACE["md"]))
+            self.hero.grid_columnconfigure(1, weight=1)
+
+            self.hero_bar = ctk.CTkFrame(self.hero, width=3, height=1,
+                                         corner_radius=0, fg_color=c("unknown"))
+            self.hero_bar.grid(row=0, column=0, rowspan=2, sticky="ns",
+                               padx=(theme.SPACE["md"], theme.SPACE["sm"]),
+                               pady=theme.SPACE["sm"])
+
+            left = ctk.CTkFrame(self.hero, fg_color="transparent")
+            left.grid(row=0, column=1, rowspan=2, sticky="nsew",
+                      pady=theme.SPACE["sm"])
+            left.grid_columnconfigure(0, weight=1)
+
+            # The eyebrow is the album summary (or the selected file name), so
+            # the label the tests know as `label_summary` keeps its text.
+            self.hero_eyebrow = ctk.CTkLabel(left, text="No results", anchor="w",
+                                             height=20, font=theme.font(13),
+                                             text_color=c("text.secondary"))
+            self.hero_eyebrow.grid(row=0, column=0, sticky="ew")
+            self.label_summary = self.hero_eyebrow
+
+            self.hero_headline = ctk.CTkLabel(left, text="NO RESULTS", anchor="w",
+                                              font=theme.font(28, 700),
+                                              text_color=c("text.primary"))
+            self.hero_headline.grid(row=1, column=0, sticky="ew")
+
+            self.hero_facts = ctk.CTkFrame(left, fg_color="transparent")
+            self.hero_facts.grid(row=2, column=0, sticky="w", pady=(6, 0))
+            self.fact_pairs = [self._fact_pair(self.hero_facts, column)
+                               for column in range(4)]
+
+            self.hero.bind("<Configure>", self._on_hero_configure)
+
+            right = ctk.CTkFrame(self.hero, fg_color="transparent")
+            right.grid(row=0, column=2, rowspan=2, sticky="ne",
+                       padx=(theme.SPACE["md"], theme.SPACE["lg"]),
+                       pady=theme.SPACE["sm"])
+            self.hero_number = ctk.CTkLabel(right, text="—", anchor="e",
+                                            font=theme.mono(40, 600),
+                                            text_color=c("text.primary"))
+            self.hero_number.grid(row=0, column=0, sticky="e")
+            self.hero_number_caption = ctk.CTkLabel(right, text="SCORE", anchor="e",
+                                                    height=15, font=theme.font(11, 600),
+                                                    text_color=c("text.tertiary"))
+            self.hero_number_caption.grid(row=1, column=0, sticky="e")
+            actions = ctk.CTkFrame(right, fg_color="transparent")
+            actions.grid(row=2, column=0, sticky="e", pady=(theme.SPACE["xs"], 0))
+            self.btn_open_pdf = self._button(actions, "secondary", "Open report",
+                                             self._open_pdf, icon="external-link",
+                                             background=c("bg.surface"))
+            self.btn_open_pdf.grid(row=0, column=0)
+            self.btn_reveal = self._button(actions, "ghost", "Reveal", self._reveal,
+                                           icon="folder",
+                                           background=c("bg.surface"))
+            self.btn_reveal.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
+
+        def _fact_pair(self, parent: Any, column: int) -> tuple[Any, Any]:
+            """One label/value pair of the fact row (12 px, DESIGN.md 7.8)."""
+            caption = ctk.CTkLabel(parent, text="", anchor="w", height=15,
+                                   font=theme.font(11, 600),
+                                   text_color=c("text.tertiary"))
+            caption.grid(row=0, column=column, sticky="w", padx=(0, theme.SPACE["lg"]))
+            value = ctk.CTkLabel(parent, text="", anchor="w", height=17,
+                                 font=theme.mono(12), text_color=c("text.primary"))
+            value.grid(row=1, column=column, sticky="w", padx=(0, theme.SPACE["lg"]))
+            return caption, value
+
+        def _build_table(self, parent: Any) -> None:
+            """Header and streaming rows (DESIGN.md 7.7)."""
+            self.table_panel = ctk.CTkFrame(parent, fg_color=c("bg.surface"),
+                                            corner_radius=theme.RADIUS["lg"],
+                                            border_width=1,
+                                            border_color=c("border.subtle"))
+            self.table_panel.grid(row=1, column=0, sticky="nsew",
+                                  padx=theme.SPACE["xl"],
+                                  pady=(0, theme.SPACE["md"]))
+            self.table_panel.grid_columnconfigure(0, weight=1)
+            self.table_panel.grid_rowconfigure(1, weight=1)
+
+            self.table_header = ctk.CTkFrame(self.table_panel, fg_color="transparent",
+                                             height=36, corner_radius=0)
+            self.table_header.grid(row=0, column=0, sticky="ew")
+            self.table_header.grid_rowconfigure(0, minsize=36)
+            self._configure_table_columns(self.table_header)
+            for index, (name, _, _, anchor) in enumerate(TABLE_COLUMNS, start=1):
+                left_pad = theme.SPACE["sm"] if name == "file" else theme.SPACE["xs"]
+                right_pad = theme.SPACE["sm"] if name == "md5" else theme.SPACE["xs"]
+                ctk.CTkLabel(self.table_header, text=name.upper(), anchor=anchor,
+                             font=theme.font(11, 600),
+                             text_color=c("text.tertiary")).grid(
+                    row=0, column=index, sticky="ew", padx=(left_pad, right_pad))
+
+            self.table_canvas = tkinter.Canvas(self.table_panel,
+                                               background=c("bg.surface"),
+                                               highlightthickness=0, bd=0)
+            self.table_canvas.grid(row=1, column=0, sticky="nsew")
+            self.table_scroll = _TableScrollbar(
+                self.table_panel, command=self.table_canvas.yview,
+                background=c("bg.surface"))
+            self.table_scroll.grid(row=1, column=1, sticky="ns")
+            self.table_canvas.configure(yscrollcommand=self.table_scroll.set)
+
+            self.table_body = ctk.CTkFrame(self.table_canvas,
+                                           fg_color=c("bg.surface"), corner_radius=0)
+            self._table_window = self.table_canvas.create_window(
+                (0, 0), window=self.table_body, anchor="nw")
+            self.table_body.bind("<Configure>", self._on_table_body)
+            self.table_canvas.bind("<Configure>", self._on_table_canvas)
+            self.table_canvas.bind("<MouseWheel>", self._on_table_wheel)
+            self.table_body.bind("<MouseWheel>", self._on_table_wheel)
+
+        def _configure_table_columns(self, frame: Any) -> None:
+            """Same column grid for the header and for every row, so they align."""
+            frame.grid_columnconfigure(0, weight=0, minsize=2)
+            for index, (_, weight, minsize, _) in enumerate(TABLE_COLUMNS, start=1):
+                frame.grid_columnconfigure(index, weight=weight, minsize=minsize)
+
+        # ── table rows ──────────────────────────────────────────────────────
+        def _add_row(self, event: Event) -> dict[str, Any]:
+            """One 44 px row, appended as the event arrives."""
+            follow = self._table_at_bottom()
+            values = result_row(event)
+            mono = theme.mono(12)
+            row = ctk.CTkFrame(self.table_body, fg_color=c("bg.surface"),
+                               corner_radius=0)
+            row.pack(fill="x")
+            # The row is 44 px: 43 for the content and 1 for the separator. The
+            # height comes from the grid rows, not from `pack_propagate` (which
+            # only governs packed children, not gridded ones).
+            row.grid_rowconfigure(0, minsize=43)
+            row.grid_rowconfigure(1, minsize=1)
+            self._configure_table_columns(row)
+
+            bar = ctk.CTkFrame(row, width=2, height=1, corner_radius=0,
+                               fg_color=c("bg.surface"))
+            bar.grid(row=0, column=0, sticky="ns")
+
+            plain: list[Any] = []
+            # A plain Tk label with width=1: its requested width does not depend
+            # on the file name, so a long name can never widen the column or
+            # feed a Configure loop; sticky="ew" stretches it to the cell and the
+            # ellipsis is applied on its own <Configure>.
+            file_label = tkinter.Label(row, text=values["file"], anchor="w",
+                                       width=1, bd=0, highlightthickness=0,
+                                       background=c("bg.surface"),
+                                       foreground=c("text.primary"),
+                                       font=self._scaled_font(theme.font(13)))
+            file_label.grid(row=0, column=1, sticky="ew",
+                            padx=(theme.SPACE["sm"], theme.SPACE["xs"]))
+            file_label.full_text = values["file"]
+            file_label.ui_font = theme.font(13)
+            file_label.tooltip = None
+            file_label.fitted_width = 0
+            file_label.bind("<Configure>",
+                            lambda configure, label=file_label:
+                            self._refit_file_name(label, configure))
+
+            chip = self._chip(row, values["label"], values["tone"])
+            chip.grid(row=0, column=2, sticky="w",
+                      padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
+
+            score_text = "—" if values["score"] is None else str(values["score"])
+            for column, key, text, anchor in (
+                    (3, "score", score_text, "e"),
+                    (4, "depth", values["depth"], "w"),
+                    (5, "rate", values["rate"], "w"),
+                    (6, "dr", values["dr"], "w")):
+                label = ctk.CTkLabel(row, text=text, anchor=anchor, font=mono,
+                                     fg_color=c("bg.surface"), corner_radius=0,
+                                     text_color=c("text.secondary"))
+                label.grid(row=0, column=column, sticky="ew",
+                           padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
+                plain.append(label)
+
+            if values["md5"] == "—":
+                mark = ctk.CTkLabel(row, text="—", font=mono,
+                                    fg_color=c("bg.surface"), corner_radius=0,
                                     text_color=c("text.tertiary"))
-            activity.grid(row=2, column=0, sticky="w", padx=theme.SPACE["xl"],
-                          pady=(theme.SPACE["md"], theme.SPACE["xs"]))
+            else:
+                mark = ctk.CTkLabel(row, text="", image=self._icon(
+                    values["md5_icon"], 16, c(values["md5_tone"])),
+                    fg_color=c("bg.surface"), corner_radius=0)
+                _Tooltip(mark, f"MD5 {values['md5']}")
+            mark.grid(row=0, column=7, sticky="w",
+                      padx=(theme.SPACE["xs"], theme.SPACE["sm"]))
+            plain.append(mark)
+
+            separator = ctk.CTkFrame(row, height=1, corner_radius=0,
+                                     fg_color=c("border.subtle"))
+            separator.grid(row=1, column=0, columnspan=len(TABLE_COLUMNS) + 1,
+                           sticky="ew")
+
+            entry = {"event": event, "values": values, "frame": row, "bar": bar,
+                     "cells": {"file": file_label, "verdict": chip,
+                               "score": plain[0], "depth": plain[1],
+                               "rate": plain[2], "dr": plain[3], "md5": mark},
+                     "file_label": file_label, "plain": plain, "hover": False}
+            self.table_rows.append(entry)
+            self._bind_row(row, entry)
+            self._paint_row(entry)
+            if follow:
+                self.after_idle(self._scroll_table_to_end)
+            return entry
+
+        def _bind_row(self, widget: Any, entry: dict[str, Any]) -> None:
+            """Click selects; hover paints; the wheel scrolls the table."""
+            widget.bind("<Button-1>", lambda _event: self._select(entry["event"]))
+            widget.bind("<Enter>", lambda _event: self._hover_row(entry, True))
+            widget.bind("<Leave>", lambda event: self._row_leave(entry, event))
+            widget.bind("<MouseWheel>", self._on_table_wheel)
+            for child in widget.winfo_children():
+                self._bind_row(child, entry)
+
+        def _hover_row(self, entry: dict[str, Any], hovering: bool) -> None:
+            entry["hover"] = hovering
+            self._paint_row(entry)
+
+        def _row_leave(self, entry: dict[str, Any], event: Any) -> None:
+            target = entry["frame"].winfo_containing(event.x_root, event.y_root)
+            if target is not None:
+                path = str(target)
+                if path == str(entry["frame"]) or path.startswith(str(entry["frame"]) + "."):
+                    return
+            self._hover_row(entry, False)
+
+        def _paint_row(self, entry: dict[str, Any]) -> None:
+            selected = entry["event"] is self.selected_event
+            if selected:
+                background = theme.mix(c("accent"), c("bg.surface"), 0.08)
+                bar = c("accent")
+            elif entry["hover"]:
+                background, bar = c("bg.hover"), c("bg.hover")
+            else:
+                background, bar = c("bg.surface"), c("bg.surface")
+            entry["frame"].configure(fg_color=background)
+            entry["bar"].configure(fg_color=bar)
+            entry["file_label"].configure(background=background)
+            for label in entry["plain"]:
+                label.configure(fg_color=background)
+
+        def _clear_table(self) -> None:
+            for entry in self.table_rows:
+                entry["frame"].destroy()
+            self.table_rows.clear()
+            self.table_canvas.yview_moveto(0.0)
+
+        def _select(self, event: Event) -> None:
+            self.selected_event = event
+            for entry in self.table_rows:
+                self._paint_row(entry)
+            self._render_hero()
+            self._update_reveal()
+
+        def _clear_selection(self) -> None:
+            self.selected_event = None
+            for entry in self.table_rows:
+                self._paint_row(entry)
+            self._render_hero()
+            self._update_reveal()
+
+        def _on_table_body(self, _event: Any = None) -> None:
+            self.table_canvas.configure(scrollregion=self.table_canvas.bbox("all"))
+
+        def _on_table_canvas(self, event: Any) -> None:
+            self.table_canvas.itemconfigure(self._table_window, width=event.width)
+            self._on_table_body()
+
+        def _on_table_wheel(self, event: Any) -> str:
+            if self.table_canvas.yview() != (0.0, 1.0):
+                step = -1 if getattr(event, "delta", 0) > 0 else 1
+                self.table_canvas.yview_scroll(step * 3, "units")
+            return "break"
+
+        def _table_at_bottom(self) -> bool:
+            try:
+                return self.table_canvas.yview()[1] >= 0.999
+            except Exception:
+                return True
+
+        def _scroll_table_to_end(self) -> None:
+            try:
+                self.table_canvas.update_idletasks()
+                self.table_canvas.yview_moveto(1.0)
+            except Exception:
+                pass
+
+        # ── chips ───────────────────────────────────────────────────────────
+        def _chip(self, parent: Any, text: str, tone: str) -> Any:
+            """24 px chip of DESIGN.md 7.5: dot + label, never colour alone."""
+            ink, background, border = CHIP_STYLES.get(tone, CHIP_STYLES["unknown"])
+            chip = ctk.CTkFrame(parent, fg_color=c(background),
+                                corner_radius=theme.RADIUS["sm"],
+                                border_width=1, border_color=c(border))
+            dot = ctk.CTkFrame(chip, width=6, height=6, corner_radius=3,
+                               fg_color=c(ink))
+            dot.grid(row=0, column=0, padx=(theme.SPACE["xs"], 6), pady=9)
+            ctk.CTkLabel(chip, text=text, font=theme.font(11, 600),
+                         text_color=c(ink)).grid(row=0, column=1,
+                                                 padx=(0, theme.SPACE["xs"]))
+            return chip
+
+        # ── hero content ────────────────────────────────────────────────────
+        def _render_hero(self) -> None:
+            if self.selected_event is not None:
+                self._render_file_hero(self.selected_event)
+            else:
+                self._render_album_hero()
+
+        def _render_album_hero(self) -> None:
+            counts, errors, total = count_verdicts(self.events)
+            cached = sum(1 for event in self.events if event.get("desde_cache"))
+            colour, text = format_summary(self.events)
+            kinds = [verdict for verdict in counts if counts[verdict]]
+            if total == 0:
+                headline = "ANALYZING" if self.manager.active else "NO RESULTS"
+                tone = "unknown"
+            elif errors == total:
+                headline, tone = "ERRORS", "danger"
+            elif not errors and len(kinds) == 1:
+                headline = kinds[0].upper()
+                tone = VERDICT_TONES.get(kinds[0], "unknown")
+            else:
+                headline, tone = "MIXED RESULTS", SUMMARY_TONES.get(colour, "unknown")
+            self._set_hero_headline(text, headline, tone)
+            self._set_hero_number(str(total), "FILES")
+            self._set_facts((("ERRORS", str(errors)),
+                             ("CACHED", str(cached)),
+                             ("VERDICTS", str(len(kinds)))))
+
+        def _render_file_hero(self, event: Event) -> None:
+            values = result_row(event)
+            self._set_hero_headline(
+                values["file"],
+                values["verdict"].upper() if values["verdict"] else "ERROR",
+                values["tone"])
+            self._set_hero_number(
+                "—" if values["score"] is None else str(values["score"]), "SCORE")
+            self._set_facts((("DEPTH", values["depth"]),
+                             ("RATE", values["rate"]),
+                             ("DR", values["dr"]),
+                             ("MD5", values["md5"])))
+
+        def _set_hero_headline(self, eyebrow: str, headline: str, tone: str) -> None:
+            ink = CHIP_STYLES.get(tone, CHIP_STYLES["unknown"])[0]
+            self._eyebrow_full = eyebrow
+            self._headline_full = headline
+            self.hero_eyebrow.configure(
+                text=self._fit(eyebrow, theme.font(13),
+                               self._usable_width(self.hero_eyebrow),
+                               from_left=self.selected_event is not None))
+            self.hero_headline.configure(
+                text=self._fit(headline, theme.font(28, 700),
+                               self._usable_width(self.hero_headline)),
+                text_color=c(ink))
+            self.hero_bar.configure(fg_color=c(ink))
+
+        def _set_hero_number(self, text: str, caption: str) -> None:
+            self.hero_number.configure(text=text)
+            self.hero_number_caption.configure(text=caption)
+
+        def _set_facts(self, pairs: tuple[tuple[str, str], ...]) -> None:
+            for index, (caption, value) in enumerate(self.fact_pairs):
+                if index < len(pairs):
+                    label, text = pairs[index]
+                    caption.configure(text=label)
+                    value.configure(text=text)
+                    caption.grid()
+                    value.grid()
+                else:
+                    caption.grid_remove()
+                    value.grid_remove()
+
+        def _usable_width(self, widget: Any, fallback: int = 320) -> int:
+            """Measured width, with a fallback while the window is not mapped yet."""
+            width = widget.winfo_width()
+            return width if width > 1 else fallback
+
+        def _on_hero_configure(self, event: Any) -> None:
+            """Refits the hero texts when the hero itself changes width.
+
+            Listening to the hero and not to the labels is what keeps this from
+            feeding back: truncating a label changes the label, not the width of
+            the hero, so no second Configure can bounce between two texts.
+            """
+            if event.width <= 40:
+                return
+            if abs(event.width - self._hero_width) < 2:
+                return
+            self._hero_width = event.width
+            self._refit_hero_texts()
+
+        def _refit_hero_texts(self) -> None:
+            self.hero_eyebrow.configure(
+                text=self._fit(getattr(self, "_eyebrow_full", ""),
+                               theme.font(13), self._usable_width(self.hero_eyebrow),
+                               from_left=self.selected_event is not None))
+            self.hero_headline.configure(
+                text=self._fit(getattr(self, "_headline_full", ""),
+                               theme.font(28, 700),
+                               self._usable_width(self.hero_headline)))
+
+        # ── activity log (DESIGN.md 7.10) ───────────────────────────────────
+        def _build_activity(self, parent: Any) -> None:
+            self.activity = ctk.CTkFrame(parent, fg_color=c("bg.surface"),
+                                         corner_radius=theme.RADIUS["lg"],
+                                         border_width=1,
+                                         border_color=c("border.subtle"))
+            self.activity.grid(row=3, column=0, sticky="ew",
+                               padx=theme.SPACE["xl"], pady=(0, theme.SPACE["lg"]))
+            self.activity.grid_columnconfigure(0, weight=1)
+
+            # Collapsed bar: 28 px with the last line and the chevron.
+            self.activity_bar = ctk.CTkFrame(self.activity, fg_color="transparent",
+                                             height=28, corner_radius=0,
+                                             cursor="hand2")
+            self.activity_bar.grid(row=0, column=0, sticky="ew")
+            self.activity_bar.grid_propagate(False)
+            self.activity_bar.bind("<Configure>", self._refit_activity_preview)
+            self.activity_bar.grid_columnconfigure(1, weight=1)
+            self.activity_title = ctk.CTkLabel(self.activity_bar, text="ACTIVITY",
+                                               font=theme.font(11, 600),
+                                               text_color=c("text.tertiary"))
+            self.activity_title.grid(row=0, column=0, padx=(theme.SPACE["md"],
+                                                           theme.SPACE["sm"]))
+            self.label_activity_preview = ctk.CTkLabel(
+                self.activity_bar, text="No activity yet", anchor="w",
+                font=theme.font(12), text_color=c("text.secondary"))
+            self.label_activity_preview.grid(row=0, column=1, sticky="ew")
+            self.btn_activity = self._button(self.activity_bar, "icon", "",
+                                             self._toggle_activity,
+                                             icon="chevron-right", height=24,
+                                             width=24)
+            self.btn_activity.grid(row=0, column=2, padx=(theme.SPACE["xs"],
+                                                          theme.SPACE["sm"]),
+                                   pady=2)
+            self.activity_tooltip = _Tooltip(self.btn_activity, "Expand activity")
+            for widget in (self.activity_bar, self.activity_title,
+                           self.label_activity_preview):
+                widget.bind("<Button-1>", lambda _event: self._toggle_activity())
+
+            # Expanded panel: toolbar (auto-scroll, clear) plus the log itself.
+            self.activity_panel = ctk.CTkFrame(self.activity,
+                                               fg_color="transparent")
+            self.activity_panel.grid(row=1, column=0, sticky="nsew")
+            self.activity_panel.grid_columnconfigure(0, weight=1)
+            toolbar = ctk.CTkFrame(self.activity_panel, fg_color="transparent",
+                                   height=36)
+            toolbar.grid(row=0, column=0, sticky="ew")
+            toolbar.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(toolbar, text="ACTIVITY", font=theme.font(11, 600),
+                         text_color=c("text.tertiary")).grid(
+                row=0, column=0, padx=(theme.SPACE["md"], theme.SPACE["sm"]))
+            self.var_autoscroll = ctk.BooleanVar(value=True)
+            self.switch_autoscroll = ctk.CTkSwitch(
+                toolbar, text="Auto-scroll", variable=self.var_autoscroll,
+                switch_width=36, switch_height=20,
+                corner_radius=theme.RADIUS["pill"],
+                fg_color=c("border.strong"), progress_color=c("accent"),
+                button_color=c("text.primary"),
+                button_hover_color=c("text.primary"),
+                text_color=c("text.secondary"), font=theme.font(12))
+            self.switch_autoscroll.grid(row=0, column=1, sticky="w")
+            self._ring_highlight(self.switch_autoscroll, c("bg.surface"))
+            self._toggle_on_space(self.switch_autoscroll, self.var_autoscroll)
+            self.btn_clear_log = self._button(toolbar, "ghost", "Clear",
+                                              self._clear_log, icon="trash",
+                                              height=28,
+                                              background=c("bg.surface"))
+            self.btn_clear_log.grid(row=0, column=2, padx=(theme.SPACE["xs"], 0))
+            self.btn_activity_close = self._button(
+                toolbar, "icon", "", self._toggle_activity,
+                icon="chevron-down", height=24, width=24,
+                background=c("bg.surface"))
+            self.btn_activity_close.grid(row=0, column=3,
+                                         padx=(theme.SPACE["xs"],
+                                               theme.SPACE["sm"]))
 
             self.log = ctk.CTkTextbox(
-                panel, wrap="word", font=theme.mono(12),
-                corner_radius=theme.RADIUS["lg"], border_width=1,
-                border_color=c("border.subtle"), fg_color=c("bg.surface"),
+                self.activity_panel, wrap="word", font=theme.mono(12), height=140,
+                corner_radius=theme.RADIUS["md"], border_width=1,
+                border_color=c("border.subtle"), fg_color=c("bg.canvas"),
                 text_color=c("text.secondary"),
                 scrollbar_button_color=c("border.subtle"),
                 scrollbar_button_hover_color=c("border.strong"))
-            self.log.grid(row=3, column=0, sticky="nsew", padx=theme.SPACE["xl"],
-                          pady=(0, theme.SPACE["xl"]))
+            self.log.grid(row=1, column=0, sticky="nsew",
+                          padx=theme.SPACE["sm"], pady=(0, theme.SPACE["sm"]))
             self.log.configure(state="disabled")
             # Tag colours are configured ONCE here; _log only reuses them.
             self.log.tag_config("time", foreground=c("text.tertiary"))
             for level, token in LOG_TAGS.items():
                 self.log.tag_config(level, foreground=c(token))
+            self._set_activity(False)
+
+        def _set_activity(self, expanded: bool) -> None:
+            self.activity_expanded = bool(expanded)
+            if expanded:
+                self.activity_bar.grid_remove()
+                self.activity_panel.grid()
+                self.activity_tooltip.text = "Collapse activity"
+            else:
+                self.activity_panel.grid_remove()
+                self.activity_bar.grid()
+                self.activity_tooltip.text = "Expand activity"
+
+        def _toggle_activity(self) -> None:
+            self._set_activity(not self.activity_expanded)
+
+        def _clear_log(self) -> None:
+            self.log.configure(state="normal")
+            self.log.delete("1.0", "end")
+            self.log.configure(state="disabled")
+            self._last_log_line = ""
+            self.label_activity_preview.configure(text="No activity yet")
+
+        def _refresh_activity_preview(self) -> None:
+            text = self._last_log_line or "No activity yet"
+            self.label_activity_preview.configure(
+                text=self._fit(text, theme.font(12),
+                               self._usable_width(self.label_activity_preview, 300)))
+
+        def _refit_activity_preview(self, event: Any) -> None:
+            if event.width <= 20 or abs(event.width - self._preview_width) < 2:
+                return
+            self._preview_width = event.width
+            self._refresh_activity_preview()
+
+        def _scroll_log(self) -> None:
+            if self.var_autoscroll.get():
+                try:
+                    self.log.see("end")
+                except Exception:
+                    pass
+
+        # ── text fitting ────────────────────────────────────────────────────
+        def _measure_font(self, font: Any) -> Any:
+            scaling = ctk.ScalingTracker.get_widget_scaling(self)
+            key = (font.cget("family"), int(font.cget("size")),
+                   str(font.cget("weight")), scaling)
+            measure = self._measures.get(key)
+            if measure is None:
+                family, size, style = font.create_scaled_tuple(scaling)
+                measure = tkinter.font.Font(root=self, family=family, size=size,
+                                            weight=("bold" if "bold" in style
+                                                    else "normal"))
+                self._measures[key] = measure
+            return measure
+
+        def _scaled_font(self, font: Any) -> tuple[Any, ...]:
+            """Tk font tuple at the current scaling, for plain Tk widgets."""
+            return font.create_scaled_tuple(ctk.ScalingTracker.get_widget_scaling(self))
+
+        def _fit(self, text: str, font: Any, pixels: int,
+                 from_left: bool = False) -> str:
+            """Truncates with an ellipsis so a row or the hero never overflows."""
+            if not text or pixels <= 0:
+                return text
+            measure = self._measure_font(font)
+            if measure.measure(text) <= pixels:
+                return text
+            ellipsis = "…"
+            if measure.measure(ellipsis) > pixels:
+                return ""
+            if from_left:
+                start = 0
+                while start < len(text) and measure.measure(ellipsis + text[start:]) > pixels:
+                    start += 1
+                return ellipsis + text[start:]
+            end = len(text)
+            while end > 0 and measure.measure(text[:end] + ellipsis) > pixels:
+                end -= 1
+            return text[:end] + ellipsis
+
+        def _refit_file_name(self, label: Any, event: Any) -> None:
+            """Truncates with an ellipsis inside the file cell of one row."""
+            if event.width <= 8:            # not mapped yet: keep the whole name
+                return
+            if abs(event.width - label.fitted_width) < 2:
+                return
+            label.fitted_width = event.width
+            shown = self._fit(label.full_text, label.ui_font, event.width - 4)
+            label.configure(text=shown)
+            if shown != label.full_text and label.tooltip is None:
+                label.tooltip = _Tooltip(label, label.full_text)
+
+        # ── hero actions ────────────────────────────────────────────────────
+        def _reveal_target(self) -> str:
+            if self.selected_event is not None:
+                path = str(self.selected_event.get("ruta") or "")
+                if path:
+                    return path
+            return self.var_path.get().strip().strip('"')
+
+        def _update_reveal(self) -> None:
+            target = self._reveal_target()
+            self._set_enabled(self.btn_reveal, bool(target and os.path.exists(target)))
+
+        def _reveal(self) -> None:
+            target = self._reveal_target()
+            if not target or not os.path.exists(target):
+                self._alert("Nothing to reveal",
+                            "Analyze an album or select a file first.")
+                return
+            folder = target if os.path.isdir(target) else os.path.dirname(target)
+            if not open_file(folder):
+                self._alert("Could not open the folder",
+                            f"Open it manually:\n{folder}", error=True)
+
+        def _set_results_visible(self, visible: bool) -> None:
+            if visible:
+                self.empty_state.grid_remove()
+                self.results.grid()
+            else:
+                self.results.grid_remove()
+                self.empty_state.grid()
 
         # ── view helpers ────────────────────────────────────────────────────
         def _log(self, text: str, label: str = "info",
@@ -1016,8 +1921,10 @@ if CTK_OK:
             self.log.insert("end", f"{text}\n", label)
             self._trim_log()
             self.log.configure(state="disabled")
+            self._last_log_line = text
+            self._refresh_activity_preview()
             if scroll:
-                self.log.see("end")
+                self._scroll_log()
 
         def _trim_log(self) -> None:
             """Keeps the text box bounded: drops the oldest lines past the limit."""
@@ -1029,14 +1936,17 @@ if CTK_OK:
                 pass
 
         def _register_dnd(self) -> bool:
+            """The drop zone and the path entry both accept a dropped folder."""
+            zone = (self.drop_zone.register_drop()
+                    if hasattr(self, "drop_zone") else False)
             if not DND_OK:
-                return False
+                return zone
             try:
                 self.input.drop_target_register(DND_FILES)
                 self.input.dnd_bind("<<Drop>>", self._drop)
                 return True
             except Exception:
-                return False
+                return zone
 
         def _drop(self, event: Any) -> None:
             paths = dnd_paths(getattr(event, "data", ""))
@@ -1098,6 +2008,9 @@ if CTK_OK:
                 self._change_parallel()
             there_is_pdf = bool(self.pdf_path and os.path.exists(self.pdf_path))
             self._set_enabled(self.btn_open_pdf, there_is_pdf)
+            # Empty state until there is something to show (DESIGN.md 7.11).
+            self._set_results_visible(active or bool(self.events))
+            self._update_reveal()
 
         def _show_action(self, button: Any) -> None:
             """Only one primary action is visible: Analyze or Cancel."""
@@ -1106,12 +2019,6 @@ if CTK_OK:
                     candidate.grid()
                 else:
                     candidate.grid_remove()
-
-        def _show_summary(self, color: str, text: str) -> None:
-            tone, background, border = SUMMARY_STYLES.get(color,
-                                                         SUMMARY_STYLES["gris"])
-            self.card.configure(fg_color=c(background), border_color=c(border))
-            self.label_summary.configure(text=text, text_color=c(tone))
 
         # ── analysis lifecycle ──────────────────────────────────────────────
         def _analyze(self) -> None:
@@ -1130,7 +2037,9 @@ if CTK_OK:
             self.barra.set(0)
             self.label_progress.configure(text="")
             self.label_state.configure(text="Analyzing…")
-            self._show_summary("gris", "Analyzing…")
+            self.selected_event = None
+            self._clear_table()
+            self._render_hero()
             try:
                 command = self.manager.start(
                     path, mode=self.var_mode.get(),
@@ -1144,6 +2053,7 @@ if CTK_OK:
                 return
             self._log("Running: " + " ".join(command[1:]))
             self._update_state()
+            self._render_hero()
             self.after(100, self._drain_queue)
 
         def _cancel(self) -> None:
@@ -1202,7 +2112,7 @@ if CTK_OK:
             if not self.total:
                 return
             self.barra.set(min(1.0, self.recibidos / self.total))
-            self.label_progress.configure(text=f"{self.recibidos} of {self.total}")
+            self.label_progress.configure(text=f"{self.recibidos} / {self.total}")
 
         def _process(self, channel: str, event: Event,
                       update_progress: bool = True) -> None:
@@ -1215,10 +2125,11 @@ if CTK_OK:
                 self._log(f"Analyzing {self.total} file(s) · "
                           f"{event.get('workers', '?')} process(es)"
                           + ("" if event.get("cache", True) else " · no cache"))
-                self.label_progress.configure(text=f"0 of {self.total}")
+                self.label_progress.configure(text=f"0 / {self.total}")
             elif kind == "resultado":
                 self.events.append(event)
                 self.recibidos += 1
+                self._set_results_visible(True)
                 label = "ok"
                 if event.get("error"):
                     label = "error"
@@ -1227,11 +2138,13 @@ if CTK_OK:
                 self._log(format_result(event), label, scroll=False)
                 for evidence_item in event.get("evidencias_forenses") or []:
                     self._log(f"    evidence: {evidence_item}", "info", scroll=False)
+                # A row per file, as the event arrives (DESIGN.md 7.7).
+                self._add_row(event)
                 # One layout/scroll per result block, not once per evidence line.
-                try:
-                    self.log.see("end")
-                except Exception:
-                    pass
+                self._scroll_log()
+                if self.selected_event is None:
+                    self._render_hero()
+                    self._update_reveal()
                 if update_progress:
                     self._update_progress()
             elif kind == "informe":
@@ -1268,8 +2181,10 @@ if CTK_OK:
             else:
                 self.label_state.configure(text="Finished")
                 self._log("Analysis finished.", "ok")
-            self._show_summary(color, text)
+            self._render_hero()
+            self._set_activity(False)
             self._update_state()
+            self._log("Activity collapsed; open it to review the batch.", "info")
 
         def _open_pdf(self) -> None:
             if not self.pdf_path or not os.path.exists(self.pdf_path):
