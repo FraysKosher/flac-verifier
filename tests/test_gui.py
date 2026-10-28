@@ -869,6 +869,11 @@ class test_window(unittest.TestCase):
                  "meta": {"bits_per_sample": 24, "sample_rate": 96000},
                  "md5": {"estado": "match"}, "dr": 15.0}
         self.window._process("stdout", event)
+        # CTkFrame binds its own canvas, so the click is checked on the file
+        # cell, which is one of the widgets the row wires to `_select`.
+        cell = self.window.table_rows[0]["cells"]["file"]
+        self.assertTrue(cell.tk.call("bind", cell._w, "<Button-1>"),
+                        "the row is not clickable")
         self.window._select(event)
         self.assertEqual(self.window.hero_eyebrow.cget("text"), "01.flac")
         self.assertEqual(self.window.hero_headline.cget("text"), "PROBABLY LOSSLESS")
