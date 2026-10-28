@@ -44,12 +44,12 @@ import sys
 import tempfile
 import time
 
-AQUI = os.path.dirname(os.path.abspath(__file__))
-DIST = os.path.join(AQUI, "dist", "FLAC_Verifier")
-ENGINE_SOURCE = os.path.join(AQUI, "motor_flac.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+DIST = os.path.join(HERE, "dist", "FLAC_Verifier")
+ENGINE_SOURCE = os.path.join(HERE, "motor_flac.py")
 # The test album of the audit lives two folders above (next to the
 # project, not inside it).
-ALBUM_TEST = os.path.join(os.path.dirname(os.path.dirname(AQUI)),
+ALBUM_TEST = os.path.join(os.path.dirname(os.path.dirname(HERE)),
                             "_audit_flac", "_demo_album")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 LIMIT = 300
@@ -257,7 +257,7 @@ class Checker:
             try:
                 process = subprocess.run(command, stdout=output,
                                          stderr=subprocess.STDOUT, timeout=limit,
-                                         creationflags=NO_WINDOW, cwd=AQUI)
+                                         creationflags=NO_WINDOW, cwd=HERE)
                 code = process.returncode
             except subprocess.TimeoutExpired:
                 return None, f"TIMED OUT ({limit} s)"

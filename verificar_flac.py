@@ -38,7 +38,7 @@ except Exception:                        # main.py unavailable: the CLI still wo
     VERSION = "unknown"
 
 EXIT_CMDS = {"exit", "q", "quit", "0"}
-AFIRMATIVOS = ("y", "yes")
+AFFIRMATIVE = ("y", "yes")
 
 # Canonical engine verdicts -> presentation.
 # They are compared by EXACT EQUALITY against motor_flac.calculate_score, so there
@@ -176,11 +176,11 @@ def request_spectrogram():
     if not engine.PIL_OK:
         return False
     resp = input('\nSave a PNG spectrogram per track? (y/N): ').strip().lower()
-    return resp in AFIRMATIVOS
+    return resp in AFFIRMATIVE
 
 def ask_report():
     resp = input("Generate the album PDF report when finished? (y/N): ").strip().lower()
-    return resp in AFIRMATIVOS
+    return resp in AFFIRMATIVE
 
 # ─── EXECUTION ───────────────────────────────────────────────────────────────
 
@@ -304,11 +304,11 @@ def main(argv=None):
             execute_analysis(path, mode, seconds, save_png, save_pdf)
             print()
             otra = input("Analyze another folder? (y/N): ").strip().lower()
-            if otra not in AFIRMATIVOS:
+            if otra not in AFFIRMATIVE:
                 print('\nExiting. Goodbye!')
                 break
             change = input("Change analysis mode? (y/N): ").strip().lower()
-            if change in AFIRMATIVOS:
+            if change in AFFIRMATIVE:
                 mode, seconds = ask_mode()
                 save_png    = request_spectrogram()
                 save_pdf    = ask_report()

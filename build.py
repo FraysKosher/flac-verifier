@@ -24,10 +24,10 @@ import subprocess
 import sys
 import time
 
-AQUI = os.path.dirname(os.path.abspath(__file__))
-SPEC = os.path.join(AQUI, "flac_verifier.spec")
-DIST = os.path.join(AQUI, "dist")
-BUILD = os.path.join(AQUI, "build")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SPEC = os.path.join(HERE, "flac_verifier.spec")
+DIST = os.path.join(HERE, "dist")
+BUILD = os.path.join(HERE, "build")
 FOLDER = os.path.join(DIST, "FLAC_Verifier")
 EXE_GUI = os.path.join(FOLDER, "FLAC_Verifier.exe")
 EXE_ENGINE = os.path.join(FOLDER, "flac_motor.exe")
@@ -93,10 +93,10 @@ def clean() -> None:
             shutil.rmtree(folder, ignore_errors=True)
             print(f"  removed {os.path.basename(folder)}/")
     for resto in ("__pycache__",):
-        path = os.path.join(AQUI, resto)
+        path = os.path.join(HERE, resto)
         if os.path.isdir(path):
             shutil.rmtree(path, ignore_errors=True)
-    if not os.path.exists(os.path.join(AQUI, "Logo", "icono_app.ico")):
+    if not os.path.exists(os.path.join(HERE, "Logo", "icono_app.ico")):
         print("  warning: Logo/icono_app.ico is missing; building with the default icon")
 
 
@@ -136,7 +136,7 @@ def compile_binary() -> float:
                "--distpath", DIST, "--workpath", BUILD]
     print("  " + " ".join(command[2:]))
     start = time.perf_counter()
-    result = subprocess.run(command, cwd=AQUI)
+    result = subprocess.run(command, cwd=HERE)
     if result.returncode != 0:
         raise SystemExit("The build failed. Check the PyInstaller message above.")
     normalize_integrity_windows(FOLDER)

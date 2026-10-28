@@ -354,3 +354,9 @@ esp
 liberar
 llamada
 llamadas
+
+aqui
+colores
+afirmativo
+afirmativos
+semilla

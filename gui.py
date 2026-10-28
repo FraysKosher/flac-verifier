@@ -107,7 +107,7 @@ LABEL_VERDICT = {
     "PROBABLE UPSCALE":       "UPSCALE",
     "indeterminate":          "?",
 }
-COLORES = {
+COLORS = {
     "verde":    ("#E3F4E7", "#14632C"),
     "amarillo": ("#FBF3D5", "#8A6D00"),
     "naranja":  ("#FDE8D5", "#A85B00"),
@@ -125,7 +125,7 @@ IDLE_INTERVAL_MS = 100      # gentle polling while the engine works quietly
 MAX_EVENTS_IN_MEMORY = 5000  # result events kept on screen / for the final summary
 MAX_LINES_LOG = 3000          # log lines kept in the text box
 MAX_QUEUE = 5000                # bounded queue: backpressure instead of unbounded growth
-COLORES_LOG = {"error": "#E06C6C", "aviso": "#E0A96C", "ok": "#7FD18A", "info": "#9AA4B2"}
+LOG_COLORS = {"error": "#E06C6C", "aviso": "#E0A96C", "ok": "#7FD18A", "info": "#9AA4B2"}
 
 
 # ─── LOGIC (usable without a window) ─────────────────────────────────────────
@@ -594,7 +594,7 @@ if CTK_OK:
             self.log.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 10))
             self.log.configure(state="disabled")
             # Tag colours are configured ONCE here; _log only reuses them.
-            for label, color in COLORES_LOG.items():
+            for label, color in LOG_COLORS.items():
                 self.log.tag_config(label, foreground=color)
 
             acciones = ctk.CTkFrame(panel, fg_color="transparent")
@@ -695,7 +695,7 @@ if CTK_OK:
             self.btn_open_pdf.configure(state="normal" if there_is_pdf else "disabled")
 
         def _show_summary(self, color: str, text: str) -> None:
-            background, tinta = COLORES.get(color, COLORES["gris"])
+            background, tinta = COLORS.get(color, COLORS["gris"])
             self.card.configure(fg_color=background)
             self.label_summary.configure(text=text, text_color=tinta)
 

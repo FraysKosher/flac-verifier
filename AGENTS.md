@@ -67,7 +67,10 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
   parameters and attributes. The only Spanish names left are the **JSON protocol keys**
   (`tipo`, `veredicto`, `archivo`, `coherencia_album`, `esp`, `bdi`, …), the reportlab
   style names and a few argparse destinations; they are the public contract and must not
-  be renamed. Spanish **prose** anywhere is not allowed; `tests/test_idioma.py` enforces it.
+  be renamed. `VERSION_MOTOR` and `VERSION_ESQUEMA_CACHE` are also kept by explicit
+  exception (declared in `PUBLIC_CONSTANTS` in `tests/test_idioma.py`): they are public
+  module attributes used by the cache and the tests, so both name and value stay.
+  Spanish **prose** anywhere is not allowed; `tests/test_idioma.py` enforces it.
 - Honest wording over marketing: if a change removes a documented limitation, justify it.
 
 ## Git
