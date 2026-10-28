@@ -31,10 +31,12 @@ import subprocess
 import sys
 import threading
 import time
+import tkinter
 from collections import deque
 from typing import Any, Callable, Iterable
 
 import informe_pdf
+import theme
 
 try:
     import customtkinter as ctk
@@ -97,7 +99,8 @@ LOGO_FOLDER = os.path.join(DIRECTORY, "Logo")
 LOGO_ICON   = os.path.join(LOGO_FOLDER, "icono_app.ico")           # window and .exe
 LOGO_ICONPHOTO = os.path.join(LOGO_FOLDER, "logo_flac_verifier_128.png")  # outside Windows
 LOGO_BRAND   = os.path.join(LOGO_FOLDER, "logo_flac_verifier.png")  # header and README
-BRAND_COLOR  = "#4f98a3"          # the teal of the splash
+ICON_FOLDER  = os.path.join(LOGO_FOLDER, "icons")                 # line icons (DESIGN.md 8)
+ICON_SIZES   = (16, 20, 24)                                       # the sizes shipped on disk
 
 # Short labels for the log, and colours per verdict (the same as in the PDF).
 LABEL_VERDICT = {
@@ -107,12 +110,14 @@ LABEL_VERDICT = {
     "PROBABLE UPSCALE":       "UPSCALE",
     "indeterminate":          "?",
 }
-COLORS = {
-    "verde":    ("#E3F4E7", "#14632C"),
-    "amarillo": ("#FBF3D5", "#8A6D00"),
-    "naranja":  ("#FDE8D5", "#A85B00"),
-    "rojo":     ("#FBE0E0", "#A11616"),
-    "gris":     ("#EDEDED", "#444444"),
+# Batch summary -> design tokens (text, background, border) of the verdict chip.
+# Five legacy buckets, four verdict colours: "naranja" is part of the warn tone.
+SUMMARY_STYLES = {
+    "verde":    ("ok", "ok.bg", "ok.border"),
+    "amarillo": ("warn", "warn.bg", "warn.border"),
+    "naranja":  ("warn", "warn.bg", "warn.border"),
+    "rojo":     ("bad", "bad.bg", "bad.border"),
+    "gris":     ("unknown", "unknown.bg", "unknown.border"),
 }
 MODES = ["center", "full", "seconds"]
 WORKER_OPTIONS = ["Automatic", "1", "2", "4", "8"]
@@ -125,7 +130,47 @@ IDLE_INTERVAL_MS = 100      # gentle polling while the engine works quietly
 MAX_EVENTS_IN_MEMORY = 5000  # result events kept on screen / for the final summary
 MAX_LINES_LOG = 3000          # log lines kept in the text box
 MAX_QUEUE = 5000                # bounded queue: backpressure instead of unbounded growth
-LOG_COLORS = {"error": "#E06C6C", "aviso": "#E0A96C", "ok": "#7FD18A", "info": "#9AA4B2"}
+# Log level -> design token used to paint the line (DESIGN.md 7.10).
+LOG_TAGS = {"info": "text.secondary", "ok": "ok", "warn": "warn", "error": "bad"}
+
+
+# ─── PRESENTATION CONSTANTS ────────────────────────────────────────────
+
+RAIL_WIDTH = 340
+WINDOW_GEOMETRY = "1180x760"
+WINDOW_MINIMUM = (1024, 680)
+
+
+def c(token: str) -> str:
+    """Colour of a design token, so the widget code reads as the design brief."""
+    return theme.color(token)
+
+
+# Button variants of DESIGN.md 7.1. `border` is None when the variant has no
+# visible border: the border band is still reserved (same colour as the fill or
+# as the surface behind it) so the 2 px focus ring never moves the layout.
+BUTTON_VARIANTS = {
+    "primary":   {"height": 44, "radius": 10, "fill": "accent",
+                  "hover": "accent.hover", "pressed": "accent.pressed",
+                  "text": "on.accent", "border": None, "border_width": 2,
+                  "size": 14, "weight": 600},
+    "secondary": {"height": 40, "radius": 8, "fill": "bg.raised",
+                  "hover": "bg.hover", "pressed": "border.strong",
+                  "text": "text.primary", "border": "border.subtle",
+                  "border_width": 1, "size": 13, "weight": 500},
+    "ghost":     {"height": 36, "radius": 8, "fill": "transparent",
+                  "hover": "bg.hover", "pressed": "bg.raised",
+                  "text": "text.secondary", "border": None, "border_width": 2,
+                  "size": 13, "weight": 500},
+    "danger":    {"height": 40, "radius": 8, "fill": "transparent",
+                  "hover": "danger.bg", "pressed": "danger.bg",
+                  "text": "danger", "border": "danger", "border_width": 1,
+                  "size": 13, "weight": 600},
+    "icon":      {"height": 32, "radius": 8, "fill": "transparent",
+                  "hover": "bg.hover", "pressed": "bg.raised",
+                  "text": "text.secondary", "border": None, "border_width": 2,
+                  "size": 13, "weight": 500},
+}
 
 
 # ─── LOGIC (usable without a window) ─────────────────────────────────────────
@@ -387,6 +432,64 @@ class ProcessManager:
 
 # ─── WINDOW ─────────────────────────────────────────────────────────────────
 
+class _Tooltip:
+    """Delayed tooltip for icon-only buttons (DESIGN.md 7.1: 300 ms).
+
+    A tooltip is also the accessible name of an icon button: without it the
+    button carries no text at all."""
+
+    DELAY_MS = 300
+
+    def __init__(self, widget: Any, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self._after: str | None = None
+        self._window: Any = None
+        widget.bind("<Enter>", self._schedule)
+        widget.bind("<Leave>", self._hide)
+        widget.bind("<ButtonPress-1>", self._hide)
+
+    def _schedule(self, _event: Any = None) -> None:
+        self._cancel()
+        self._after = self.widget.after(self.DELAY_MS, self._show)
+
+    def _cancel(self) -> None:
+        if self._after is not None:
+            try:
+                self.widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+    def _show(self) -> None:
+        self._after = None
+        try:
+            x = self.widget.winfo_rootx()
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            self._window = tkinter.Toplevel(self.widget)
+            self._window.wm_overrideredirect(True)
+            self._window.wm_geometry(f"+{x}+{y}")
+            label = tkinter.Label(self._window, text=self.text,
+                                  background=c("bg.raised"),
+                                  foreground=c("text.secondary"),
+                                  font=theme.font(12), padx=theme.SPACE["xs"],
+                                  pady=theme.SPACE["2xs"], borderwidth=0,
+                                  highlightthickness=1,
+                                  highlightbackground=c("border.subtle"))
+            label.pack()
+        except Exception:
+            self._window = None
+
+    def _hide(self, _event: Any = None) -> None:
+        self._cancel()
+        if self._window is not None:
+            try:
+                self._window.destroy()
+            except Exception:
+                pass
+            self._window = None
+
+
 if CTK_OK:
 
     class _BaseWindow(ctk.CTk, TkinterDnD.DnDWrapper if DND_OK else object):  # type: ignore[misc]
@@ -404,10 +507,14 @@ if CTK_OK:
         """Main window: controls on the left, telemetry on the right."""
 
         def __init__(self, initial_path: str | None = None, engine: str | None = None) -> None:
-            super().__init__()
+            super().__init__(fg_color=c("bg.canvas"))
+            # Resolve the families after the Tk root exists: Windows 10 has no
+            # Segoe UI Variable and falls back to Segoe UI.
+            theme.resolve_fonts(self)
             self.title("FLAC VERIFIER — FLAC authenticity verification")
-            self.geometry("1120x740")
-            self.minsize(980, 640)
+            self.geometry(WINDOW_GEOMETRY)
+            self.minsize(*WINDOW_MINIMUM)
+            self.configure(fg_color=c("bg.canvas"))
 
             self.message_queue: "queue.Queue[Message]" = queue.Queue(maxsize=MAX_QUEUE)
             self.manager = ProcessManager(self.message_queue, engine=engine)
@@ -416,8 +523,11 @@ if CTK_OK:
             self.total = 0
             self.recibidos = 0
             self.pdf_path: str | None = None
+            # CTkImage references must stay alive: a collected image disappears
+            # from the button silently.
+            self._icons: dict[tuple[str, int, str], Any] = {}
 
-            self.grid_columnconfigure(0, weight=0)
+            self.grid_columnconfigure(0, weight=0, minsize=RAIL_WIDTH)
             self.grid_columnconfigure(1, weight=1)
             self.grid_rowconfigure(0, weight=1)
 
@@ -439,6 +549,180 @@ if CTK_OK:
                 self._log("Project icon not found "
                           "(Logo/icono_app.ico); the window uses the default icon.",
                           "aviso")
+            if not os.path.isdir(ICON_FOLDER):
+                self._log("Icon set not found (Logo/icons); the buttons show text only.",
+                          "aviso")
+
+        # ── presentation helpers ────────────────────────────────────────────
+        def _icon(self, name: str, size: int = 16, color: str | None = None) -> Any:
+            """Line icon from Logo/icons, tinted, or None when the asset is missing.
+
+            The PNGs carry a white stroke, so one file per size serves every
+            colour; tinting keeps the icons in the palette without shipping a
+            copy per token."""
+            tint = color or c("text.secondary")
+            key = (name, size, tint)
+            if key in self._icons:
+                return self._icons[key]
+            image = None
+            path = os.path.join(ICON_FOLDER, f"{name}_{size}.png")
+            if not os.path.exists(path):
+                # CTkImage scales anyway, so an unlisted size borrows the closest
+                # asset instead of silently losing the icon.
+                closest = min(ICON_SIZES, key=lambda value: abs(value - size))
+                path = os.path.join(ICON_FOLDER, f"{name}_{closest}.png")
+            if os.path.exists(path):
+                try:
+                    from PIL import Image
+                    with Image.open(path) as source:
+                        alpha = source.convert("RGBA").getchannel("A")
+                    coloured = Image.new("RGBA", alpha.size, tint)
+                    coloured.putalpha(alpha)
+                    image = ctk.CTkImage(light_image=coloured, dark_image=coloured,
+                                         size=(size, size))
+                except Exception:
+                    image = None
+            self._icons[key] = image
+            return image
+
+        def _section_label(self, parent: Any, text: str, row: int) -> Any:
+            """11 px uppercase section label (DESIGN.md 5.3)."""
+            label = ctk.CTkLabel(parent, text=text.upper(), anchor="w",
+                                 font=theme.font(11, 600),
+                                 text_color=c("text.tertiary"))
+            label.grid(row=row, column=0, padx=theme.SPACE["lg"],
+                       pady=(theme.SPACE["sm"], theme.SPACE["xs"]), sticky="ew")
+            return label
+
+        def _button(self, parent: Any, variant: str, text: str, command: Any,
+                    icon: str | None = None, icon_size: int = 16,
+                    width: int | None = None,
+                    background: str | None = None) -> Any:
+            """Button of DESIGN.md 7.1 with hover, pressed, focus and disabled.
+
+            Tk has no shadows and CustomTkinter has no per-widget opacity, so the
+            states are colours: the fill changes for hover/press, the reserved
+            border band turns into the 2 px focus ring, and the disabled fill is
+            the normal fill blended with the surface at 35 %."""
+            spec = BUTTON_VARIANTS[variant]
+            behind = background or c("bg.surface")
+            if spec["border"]:
+                border = c(spec["border"])
+            elif spec["fill"] != "transparent":
+                border = c(spec["fill"])
+            else:
+                border = behind
+            image = self._icon(icon, icon_size, c(spec["text"])) if icon else None
+            button = ctk.CTkButton(
+                parent, text=text, command=command, width=width or 140,
+                height=spec["height"], corner_radius=spec["radius"],
+                border_width=spec["border_width"], border_color=border,
+                fg_color=(c(spec["fill"]) if spec["fill"] != "transparent"
+                          else "transparent"),
+                hover_color=c(spec["hover"]), text_color=c(spec["text"]),
+                text_color_disabled=c("text.tertiary"),
+                font=theme.font(spec["size"], spec["weight"]),
+                image=image, compound="left", cursor="hand2")
+            button.ui_spec = {
+                "spec": spec, "parent": behind, "border": border, "focused": False,
+                "states": {"normal": c(spec["fill"]) if spec["fill"] != "transparent"
+                                       else "transparent",
+                           "hover": c(spec["hover"]),
+                           "pressed": c(spec["pressed"])},
+            }
+            # takefocus is not an option CustomTkinter forwards, so it is set on
+            # the underlying Tk frame directly.
+            tkinter.Frame.configure(button, takefocus=True)
+            button.bind("<ButtonPress-1>",
+                        lambda _event: self._paint(button, "pressed"), add=True)
+            button.bind("<ButtonRelease-1>",
+                        lambda _event: self._paint(button, "hover"), add=True)
+            button.bind("<Leave>",
+                        lambda _event: self._paint(button, "normal"), add=True)
+            # Focus and keys live on the frame, not on the canvas that
+            # CustomTkinter uses for its own bindings.
+            tkinter.Frame.bind(button, "<FocusIn>",
+                               lambda _event: self._focus_ring(button, True))
+            tkinter.Frame.bind(button, "<FocusOut>",
+                               lambda _event: self._focus_ring(button, False))
+            tkinter.Frame.bind(button, "<Return>",
+                               lambda _event: self._activate(button))
+            tkinter.Frame.bind(button, "<space>",
+                               lambda _event: self._activate(button))
+            return button
+
+        def _paint(self, button: Any, state: str) -> None:
+            """Repaints a button for one of its states, if it is enabled."""
+            if button.cget("state") == "disabled":
+                return
+            ui = button.ui_spec
+            colour = ui["states"][state]
+            button.configure(fg_color=colour)
+            if ui["spec"]["border"] is None and ui["spec"]["fill"] != "transparent":
+                button.configure(border_color=c("focus") if ui["focused"] else colour)
+
+        def _focus_ring(self, button: Any, focused: bool) -> None:
+            ui = button.ui_spec
+            ui["focused"] = focused
+            if focused:
+                button.configure(border_width=2, border_color=c("focus"))
+            else:
+                button.configure(border_width=ui["spec"]["border_width"],
+                                 border_color=ui["border"])
+
+        def _activate(self, button: Any) -> str:
+            """Enter/Space on a focused button (DESIGN.md 9)."""
+            if button.cget("state") != "disabled":
+                command = button.cget("command")
+                if command is not None:
+                    command()
+            return "break"
+
+        def _ring_border(self, widget: Any, width: int, token: str) -> None:
+            """Focus ring for controls whose border is drawn inside the canvas.
+
+            The entry and the slider paint their border on the canvas, so a
+            thicker border changes neither the widget nor the layout."""
+            widget.bind("<FocusIn>",
+                        lambda _event: widget.configure(border_width=2,
+                                                        border_color=c("focus")))
+            widget.bind("<FocusOut>",
+                        lambda _event: widget.configure(border_width=width,
+                                                        border_color=c(token)))
+
+        def _ring_highlight(self, widget: Any, background: str) -> None:
+            """Focus ring for controls with no border of their own.
+
+            Tk draws it in the frame's highlight band, which is always two pixels
+            thick (invisible over the surface) so that focusing never shifts the
+            layout; `highlightcolor` switches it to the focus colour on its own."""
+            tkinter.Frame.configure(widget, takefocus=True, highlightthickness=2,
+                                    highlightbackground=background,
+                                    highlightcolor=c("focus"))
+
+        def _toggle_on_space(self, widget: Any, variable: Any,
+                             command: Callable[[], Any] | None = None) -> None:
+            def toggle(_event: Any) -> str:
+                variable.set(0 if variable.get() else 1)
+                if command is not None:
+                    command()
+                return "break"
+            tkinter.Frame.bind(widget, "<space>", toggle)
+
+        def _set_enabled(self, button: Any, enabled: bool) -> None:
+            """Enabled/disabled state, including the 35 % disabled fill."""
+            ui = button.ui_spec
+            if enabled:
+                button.configure(state="normal")
+                self._paint(button, "normal")
+                return
+            self._paint(button, "normal")
+            button.configure(state="disabled")
+            if ui["spec"]["fill"] != "transparent":
+                dimmed = theme.mix(ui["states"]["normal"], ui["parent"], 0.35)
+                button.configure(fg_color=dimmed)
+                if ui["spec"]["border"] is None:
+                    button.configure(border_color=dimmed)
 
         # ── widget construction ─────────────────────────────────────────────
         def _brand_image(self, side: int) -> Any:
@@ -446,13 +730,15 @@ if CTK_OK:
             if not os.path.exists(LOGO_BRAND):
                 return None
             try:
-                from PIL import Image as ImagenPIL
-                with ImagenPIL.open(LOGO_BRAND) as original:
-                    recorte = original.convert("RGBA").copy()
-                return ctk.CTkImage(light_image=recorte, dark_image=recorte,
+                from PIL import Image
+                with Image.open(LOGO_BRAND) as original:
+                    mark = original.convert("RGBA").copy()
+                return ctk.CTkImage(light_image=mark, dark_image=mark,
                                     size=(side, side))
-            except Exception as e:
-                self._log(f"Could not load the logo: {type(e).__name__}: {e}", "aviso")
+            except Exception as error:
+                if hasattr(self, "log"):
+                    self._log(f"Could not load the logo: "
+                              f"{type(error).__name__}: {error}", "aviso")
                 return None
 
         def _load_identity(self) -> None:
@@ -470,9 +756,8 @@ if CTK_OK:
                     self.icon_loaded = False
             if not self.icon_loaded and os.path.exists(LOGO_ICONPHOTO):
                 try:
-                    import tkinter
-                    # Keep a reference: if the PhotoImage is collected by the GC
-                    # the window icon silently disappears (only on non-Windows).
+                    # Keep a reference: if the PhotoImage is collected by the
+                    # GC the window icon silently disappears (only on non-Windows).
                     self._icon_window = tkinter.PhotoImage(file=LOGO_ICONPHOTO)
                     self.iconphoto(True, self._icon_window)
                     self.icon_loaded = True
@@ -480,140 +765,255 @@ if CTK_OK:
                     self.icon_loaded = False
 
         def _build_controls(self) -> None:
-            panel = ctk.CTkFrame(self, width=330, corner_radius=0)
-            panel.grid(row=0, column=0, sticky="nsw")
-            panel.grid_propagate(False)
-            panel.grid_columnconfigure(0, weight=1)
+            rail = ctk.CTkFrame(self, width=RAIL_WIDTH, corner_radius=0,
+                                fg_color=c("bg.surface"))
+            rail.grid(row=0, column=0, sticky="nsw")
+            rail.grid_propagate(False)
+            rail.grid_columnconfigure(0, weight=1)
+            # The spacer row is what pins the action bar to the bottom of the rail.
+            rail.grid_rowconfigure(11, weight=1)
 
-            # Header: the logo mark next to the name, as in the splash
-            header = ctk.CTkFrame(panel, fg_color="transparent")
-            header.grid(row=0, column=0, padx=16, pady=(18, 14), sticky="ew")
-            brand = self._brand_image(46)
+            # Header: logo mark, wordmark and caption (DESIGN.md 6).
+            header = ctk.CTkFrame(rail, fg_color="transparent")
+            header.grid(row=0, column=0, padx=theme.SPACE["lg"],
+                        pady=(theme.SPACE["lg"], theme.SPACE["md"]), sticky="ew")
+            brand = self._brand_image(32)
             text_column = 1 if brand is not None else 0
             if brand is not None:
                 ctk.CTkLabel(header, text="", image=brand).grid(
-                    row=0, column=0, rowspan=2, padx=(0, 12))
-            ctk.CTkLabel(header, text="FLAC VERIFIER",
-                         font=ctk.CTkFont(size=21, weight="bold")).grid(
+                    row=0, column=0, rowspan=2, padx=(0, theme.SPACE["sm"]))
+            ctk.CTkLabel(header, text="FLAC VERIFIER", anchor="w",
+                         font=theme.font(16, 600),
+                         text_color=c("text.primary")).grid(
                 row=0, column=text_column, sticky="w")
-            ctk.CTkLabel(header, text="FAKE LOSSLESS DETECTION",
-                         font=ctk.CTkFont(size=9), text_color=BRAND_COLOR).grid(
+            ctk.CTkLabel(header, text="FAKE LOSSLESS DETECTION", anchor="w",
+                         font=theme.font(10, 600),
+                         text_color=c("text.tertiary")).grid(
                 row=1, column=text_column, sticky="w")
 
-            ctk.CTkLabel(panel, text="Folder or .flac file",
-                         font=ctk.CTkFont(size=12, weight="bold")).grid(
-                row=1, column=0, padx=16, pady=(4, 2), sticky="w")
-            self.var_path = ctk.StringVar(value="")
-            self.input = ctk.CTkEntry(panel, textvariable=self.var_path,
-                                        placeholder_text="C:/Music/Album")
-            self.input.grid(row=2, column=0, padx=16, sticky="ew")
-            self.btn_browse = ctk.CTkButton(panel, text="📂  Browse folder…",
-                                              height=36, command=self._choose_folder)
-            self.btn_browse.grid(row=3, column=0, padx=16, pady=(6, 14), sticky="ew")
+            # SOURCE
+            self._section_label(rail, "Source", row=1)
+            source_row = ctk.CTkFrame(rail, fg_color="transparent")
+            source_row.grid(row=2, column=0, padx=theme.SPACE["lg"], sticky="ew")
+            source_row.grid_columnconfigure(0, weight=1)
 
-            ctk.CTkLabel(panel, text="Spectral mode",
-                         font=ctk.CTkFont(size=12, weight="bold")).grid(
-                row=4, column=0, padx=16, pady=(4, 2), sticky="w")
+            self.var_path = ctk.StringVar(value="")
+            self.input = ctk.CTkEntry(
+                source_row, textvariable=self.var_path, height=40,
+                corner_radius=theme.RADIUS["md"], border_width=1,
+                border_color=c("border.subtle"), fg_color=c("bg.raised"),
+                text_color=c("text.primary"), placeholder_text="C:/Music/Album",
+                placeholder_text_color=c("text.tertiary"), font=theme.font(13))
+            self.input.grid(row=0, column=0, sticky="ew")
+            self._ring_border(self.input, 1, "border.subtle")
+
+            self.btn_folder = self._button(source_row, "icon", "", self._choose_folder,
+                                           icon="folder", icon_size=20, width=32)
+            self.btn_folder.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
+            self.folder_tooltip = _Tooltip(self.btn_folder, "Browse folder")
+
+            self.btn_browse = self._button(rail, "secondary", "Browse folder",
+                                           self._choose_folder, icon="folder")
+            self.btn_browse.grid(row=3, column=0, padx=theme.SPACE["lg"],
+                                 pady=(theme.SPACE["xs"], theme.SPACE["md"]),
+                                 sticky="ew")
+
+            # ANALYSIS
+            self._section_label(rail, "Analysis", row=4)
             self.var_mode = ctk.StringVar(value="center")
-            self.option_mode = ctk.CTkOptionMenu(panel, values=MODES,
-                                                 variable=self.var_mode,
-                                                 command=lambda _: self._change_mode())
-            self.option_mode.grid(row=5, column=0, padx=16, sticky="ew")
+            self.option_mode = ctk.CTkOptionMenu(
+                rail, values=MODES, variable=self.var_mode,
+                command=lambda _: self._change_mode(), height=40,
+                corner_radius=theme.RADIUS["md"], fg_color=c("bg.raised"),
+                button_color=c("bg.raised"), button_hover_color=c("bg.hover"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"),
+                dropdown_fg_color=c("bg.raised"),
+                dropdown_hover_color=c("bg.hover"),
+                dropdown_text_color=c("text.primary"), font=theme.font(13),
+                dropdown_font=theme.font(13), anchor="w")
+            self.option_mode.grid(row=5, column=0, padx=theme.SPACE["lg"],
+                                  sticky="ew")
+            self._ring_highlight(self.option_mode, c("bg.surface"))
 
             # The seconds only make sense in "seconds" mode: the control is
             # removed from the grid (not disabled) so that it leaves no gap and
             # the controls below move up.
-            self.seconds_row = ctk.CTkFrame(panel, fg_color="transparent")
-            self.seconds_row.grid(row=6, column=0, padx=16, pady=(8, 0), sticky="ew")
+            self.seconds_row = ctk.CTkFrame(rail, fg_color="transparent")
+            self.seconds_row.grid(row=6, column=0, padx=theme.SPACE["lg"],
+                                  pady=(theme.SPACE["xs"], 0), sticky="ew")
             self.seconds_row.grid_columnconfigure(0, weight=1)
-            self.label_seconds = ctk.CTkLabel(self.seconds_row, text="Seconds: 15")
+            self.label_seconds = ctk.CTkLabel(self.seconds_row, text="Seconds: 15",
+                                              anchor="w", font=theme.font(12),
+                                              text_color=c("text.secondary"))
             self.label_seconds.grid(row=0, column=0, sticky="w")
-            self.seconds_slider = ctk.CTkSlider(self.seconds_row, from_=5, to=120,
-                                                 number_of_steps=23,
-                                                 command=self._change_seconds)
+            self.seconds_slider = ctk.CTkSlider(
+                self.seconds_row, from_=5, to=120, number_of_steps=23,
+                command=self._change_seconds, height=16, corner_radius=8,
+                button_length=14, button_corner_radius=7,
+                fg_color=c("border.subtle"), progress_color=c("accent"),
+                button_color=c("accent"), button_hover_color=c("accent.hover"),
+                border_width=2, border_color=c("border.subtle"))
             self.seconds_slider.set(15)
-            self.seconds_slider.grid(row=1, column=0, sticky="ew")
+            self.seconds_slider.grid(row=1, column=0, sticky="ew",
+                                     pady=(theme.SPACE["2xs"], 0))
+            self._ring_border(self.seconds_slider, 2, "border.subtle")
 
             self.var_pdf = ctk.BooleanVar(value=True)
-            self.check_pdf = ctk.CTkCheckBox(panel, text="Generate PDF report",
-                                             variable=self.var_pdf)
-            self.check_pdf.grid(row=7, column=0, padx=16, pady=(14, 6), sticky="w")
+            self.check_pdf = ctk.CTkCheckBox(
+                rail, text="Generate PDF report", variable=self.var_pdf,
+                checkbox_width=18, checkbox_height=18,
+                corner_radius=theme.RADIUS["xs"], border_width=1,
+                border_color=c("border.strong"), fg_color=c("accent"),
+                hover_color=c("accent.hover"), checkmark_color=c("on.accent"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"), font=theme.font(13))
+            self.check_pdf.grid(row=7, column=0, padx=theme.SPACE["lg"],
+                                pady=(theme.SPACE["sm"], theme.SPACE["xs"]),
+                                sticky="w")
+            self._ring_highlight(self.check_pdf, c("bg.surface"))
+            self._toggle_on_space(self.check_pdf, self.var_pdf)
 
             self.var_parallel = ctk.BooleanVar(value=True)
-            self.parallel_switch = ctk.CTkSwitch(panel, text="Parallel processing",
-                                                 variable=self.var_parallel,
-                                                 command=self._change_parallel)
-            self.parallel_switch.grid(row=8, column=0, padx=16, pady=(6, 2), sticky="w")
-            self.option_workers = ctk.CTkOptionMenu(panel, values=WORKER_OPTIONS,
-                                                    width=150)
+            self.parallel_switch = ctk.CTkSwitch(
+                rail, text="Parallel processing", variable=self.var_parallel,
+                command=self._change_parallel, switch_width=36,
+                switch_height=20, corner_radius=theme.RADIUS["pill"],
+                fg_color=c("border.strong"), progress_color=c("accent"),
+                button_color=c("text.primary"),
+                button_hover_color=c("text.primary"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"), font=theme.font(13))
+            self.parallel_switch.grid(row=8, column=0, padx=theme.SPACE["lg"],
+                                      pady=(theme.SPACE["xs"], theme.SPACE["2xs"]),
+                                      sticky="w")
+            self._ring_highlight(self.parallel_switch, c("bg.surface"))
+            self._toggle_on_space(self.parallel_switch, self.var_parallel,
+                                  self._change_parallel)
+
+            self.option_workers = ctk.CTkOptionMenu(
+                rail, values=WORKER_OPTIONS, width=150, height=40,
+                corner_radius=theme.RADIUS["md"], fg_color=c("bg.raised"),
+                button_color=c("bg.raised"), button_hover_color=c("bg.hover"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"),
+                dropdown_fg_color=c("bg.raised"),
+                dropdown_hover_color=c("bg.hover"),
+                dropdown_text_color=c("text.primary"), font=theme.font(13),
+                dropdown_font=theme.font(13), anchor="w")
             self.option_workers.set(WORKER_OPTIONS[0])
-            self.option_workers.grid(row=9, column=0, padx=16, pady=(2, 6), sticky="w")
+            self.option_workers.grid(row=9, column=0, padx=theme.SPACE["lg"],
+                                     pady=(theme.SPACE["2xs"], theme.SPACE["xs"]),
+                                     sticky="w")
+            self._ring_highlight(self.option_workers, c("bg.surface"))
 
             self.var_without_cache = ctk.BooleanVar(value=False)
-            self.check_cache = ctk.CTkCheckBox(panel, text="Ignore cache",
-                                               variable=self.var_without_cache)
-            self.check_cache.grid(row=10, column=0, padx=16, pady=(6, 14), sticky="w")
+            self.check_cache = ctk.CTkCheckBox(
+                rail, text="Ignore cache", variable=self.var_without_cache,
+                checkbox_width=18, checkbox_height=18,
+                corner_radius=theme.RADIUS["xs"], border_width=1,
+                border_color=c("border.strong"), fg_color=c("accent"),
+                hover_color=c("accent.hover"), checkmark_color=c("on.accent"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"), font=theme.font(13))
+            self.check_cache.grid(row=10, column=0, padx=theme.SPACE["lg"],
+                                  pady=(theme.SPACE["xs"], 0), sticky="w")
+            self._ring_highlight(self.check_cache, c("bg.surface"))
+            self._toggle_on_space(self.check_cache, self.var_without_cache)
 
-            self.btn_analyze = ctk.CTkButton(panel, text="▶  Analyze", height=44,
-                                              font=ctk.CTkFont(size=15, weight="bold"),
-                                              command=self._analyze)
-            self.btn_analyze.grid(row=11, column=0, padx=16, sticky="ew")
-            self.btn_cancel = ctk.CTkButton(panel, text="■  Cancel", height=36,
-                                              fg_color="#8B1A1A",
-                                              hover_color="#A11616",
-                                              command=self._cancel)
-            self.btn_cancel.grid(row=12, column=0, padx=16, pady=(6, 14), sticky="ew")
+            # Pinned action bar: summary chip and the primary action.
+            footer = ctk.CTkFrame(rail, fg_color="transparent")
+            footer.grid(row=12, column=0, padx=theme.SPACE["lg"],
+                        pady=(theme.SPACE["sm"], theme.SPACE["lg"]),
+                        sticky="sew")
+            footer.grid_columnconfigure(0, weight=1)
 
-            self.card = ctk.CTkFrame(panel, corner_radius=10)
-            self.card.grid(row=13, column=0, padx=16, pady=(0, 8), sticky="ew")
-            self.label_summary = ctk.CTkLabel(self.card, text="Nothing analyzed yet",
-                                            wraplength=280, justify="left")
-            self.label_summary.pack(padx=12, pady=10)
+            self.card = ctk.CTkFrame(footer, corner_radius=theme.RADIUS["lg"],
+                                     fg_color=c("unknown.bg"), border_width=1,
+                                     border_color=c("unknown.border"))
+            self.card.grid(row=0, column=0, sticky="ew",
+                           pady=(0, theme.SPACE["sm"]))
+            self.card.grid_columnconfigure(0, weight=1)
+            self.label_summary = ctk.CTkLabel(
+                self.card, text="Nothing analyzed yet", wraplength=272,
+                justify="left", anchor="w", font=theme.font(12),
+                text_color=c("unknown"))
+            self.label_summary.grid(row=0, column=0, padx=theme.SPACE["md"],
+                                    pady=theme.SPACE["sm"], sticky="ew")
+
+            self.btn_analyze = self._button(footer, "primary", "Analyze",
+                                            self._analyze, icon="play",
+                                            icon_size=20)
+            self.btn_analyze.grid(row=1, column=0, sticky="ew")
+            self.btn_cancel = self._button(footer, "danger", "Cancel",
+                                           self._cancel, icon="stop")
+            self.btn_cancel.grid(row=1, column=0, sticky="ew")
+            self.btn_cancel.grid_remove()
 
         def _build_telemetry(self) -> None:
             panel = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-            panel.grid(row=0, column=1, sticky="nsew", padx=(0, 0))
+            panel.grid(row=0, column=1, sticky="nsew")
             panel.grid_columnconfigure(0, weight=1)
             panel.grid_rowconfigure(3, weight=1)
 
-            header = ctk.CTkFrame(panel, fg_color="transparent")
-            header.grid(row=0, column=0, sticky="ew", padx=16, pady=(18, 6))
-            header.grid_columnconfigure(0, weight=1)
-            self.label_state = ctk.CTkLabel(header, text="Idle",
-                                           font=ctk.CTkFont(size=14, weight="bold"))
+            # Top bar: state, count and the report action.
+            top = ctk.CTkFrame(panel, fg_color="transparent")
+            top.grid(row=0, column=0, sticky="ew", padx=theme.SPACE["xl"],
+                     pady=(theme.SPACE["md"], theme.SPACE["sm"]))
+            top.grid_columnconfigure(0, weight=1)
+            top.grid_columnconfigure(2, weight=1)
+            self.label_state = ctk.CTkLabel(top, text="Idle", anchor="w",
+                                            font=theme.font(13, 600),
+                                            text_color=c("text.primary"))
             self.label_state.grid(row=0, column=0, sticky="w")
-            self.label_progress = ctk.CTkLabel(header, text="")
-            self.label_progress.grid(row=0, column=1, sticky="e")
+            self.label_progress = ctk.CTkLabel(top, text="", anchor="w",
+                                               font=theme.mono(12),
+                                               text_color=c("text.tertiary"))
+            self.label_progress.grid(row=0, column=1, sticky="w",
+                                     padx=(theme.SPACE["sm"], 0))
+            self.btn_open_pdf = self._button(top, "secondary", "Open report",
+                                             self._open_pdf,
+                                             icon="external-link",
+                                             background=c("bg.canvas"))
+            self.btn_open_pdf.grid(row=0, column=3, sticky="e")
 
-            self.barra = ctk.CTkProgressBar(panel, height=14)
+            # Progress line: 4 px, no radius (DESIGN.md 7.9).
+            self.barra = ctk.CTkProgressBar(panel, height=4, corner_radius=0,
+                                            border_width=0,
+                                            fg_color=c("bg.raised"),
+                                            progress_color=c("accent"))
             self.barra.set(0)
-            self.barra.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
+            self.barra.grid(row=1, column=0, sticky="ew", padx=theme.SPACE["xl"])
 
-            self.log = ctk.CTkTextbox(panel, wrap="word",
-                                      font=ctk.CTkFont(family="Consolas", size=12))
-            self.log.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 10))
+            activity = ctk.CTkLabel(panel, text="ACTIVITY", anchor="w",
+                                    font=theme.font(11, 600),
+                                    text_color=c("text.tertiary"))
+            activity.grid(row=2, column=0, sticky="w", padx=theme.SPACE["xl"],
+                          pady=(theme.SPACE["md"], theme.SPACE["xs"]))
+
+            self.log = ctk.CTkTextbox(
+                panel, wrap="word", font=theme.mono(12),
+                corner_radius=theme.RADIUS["lg"], border_width=1,
+                border_color=c("border.subtle"), fg_color=c("bg.surface"),
+                text_color=c("text.secondary"),
+                scrollbar_button_color=c("border.subtle"),
+                scrollbar_button_hover_color=c("border.strong"))
+            self.log.grid(row=3, column=0, sticky="nsew", padx=theme.SPACE["xl"],
+                          pady=(0, theme.SPACE["xl"]))
             self.log.configure(state="disabled")
             # Tag colours are configured ONCE here; _log only reuses them.
-            for label, color in LOG_COLORS.items():
-                self.log.tag_config(label, foreground=color)
-
-            acciones = ctk.CTkFrame(panel, fg_color="transparent")
-            acciones.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 16))
-            acciones.grid_columnconfigure(0, weight=1)
-            self.btn_open_pdf = ctk.CTkButton(acciones, text="📄  Open PDF report",
-                                               height=38, command=self._open_pdf)
-            self.btn_open_pdf.grid(row=0, column=0, sticky="w")
+            self.log.tag_config("time", foreground=c("text.tertiary"))
+            for level, token in LOG_TAGS.items():
+                self.log.tag_config(level, foreground=c(token))
 
         # ── view helpers ────────────────────────────────────────────────────
         def _log(self, text: str, label: str = "info",
                  scroll: bool = True) -> None:
-            brand = time.strftime("%H:%M:%S")
+            """One log line: timestamp in tertiary, text in the level colour."""
+            stamp = time.strftime("%H:%M:%S")
             self.log.configure(state="normal")
-            self.log.insert("end", f"[{brand}] {text}\n")
-            try:                                     # colouring if the widget supports it
-                self.log.tag_add(label, "end-2l", "end-1c")
-            except Exception:
-                pass
+            self.log.insert("end", f"{stamp}  ", "time")
+            self.log.insert("end", f"{text}\n", label)
             self._trim_log()
             self.log.configure(state="disabled")
             if scroll:
@@ -662,8 +1062,10 @@ if CTK_OK:
             ready to come back."""
             if self.var_mode.get() == "seconds":
                 self.seconds_row.grid()
-                self.seconds_row.grid_configure(row=6, column=0, padx=16,
-                                                  pady=(8, 0), sticky="ew")
+                self.seconds_row.grid_configure(row=6, column=0,
+                                                padx=theme.SPACE["lg"],
+                                                pady=(theme.SPACE["xs"], 0),
+                                                sticky="ew")
             else:
                 self.seconds_row.grid_remove()
 
@@ -681,23 +1083,35 @@ if CTK_OK:
             return int(chosen) if chosen.isdigit() else 0   # 0 = automatic
 
         def _update_state(self) -> None:
+            """Paints the idle/running state: Analyze becomes Cancel."""
             active = self.manager.active
-            self.btn_analyze.configure(state="disabled" if active else "normal")
-            self.btn_cancel.configure(state="normal" if active else "disabled")
+            self._set_enabled(self.btn_analyze, not active)
+            self._set_enabled(self.btn_cancel, active)
+            self._show_action(self.btn_cancel if active else self.btn_analyze)
             for widget in (self.input, self.btn_browse, self.option_mode,
                            self.check_pdf, self.parallel_switch, self.check_cache,
                            self.seconds_slider):
                 widget.configure(state="disabled" if active else "normal")
+            self._set_enabled(self.btn_folder, not active)
             if not active:
                 self._change_mode()
                 self._change_parallel()
             there_is_pdf = bool(self.pdf_path and os.path.exists(self.pdf_path))
-            self.btn_open_pdf.configure(state="normal" if there_is_pdf else "disabled")
+            self._set_enabled(self.btn_open_pdf, there_is_pdf)
+
+        def _show_action(self, button: Any) -> None:
+            """Only one primary action is visible: Analyze or Cancel."""
+            for candidate in (self.btn_analyze, self.btn_cancel):
+                if candidate is button:
+                    candidate.grid()
+                else:
+                    candidate.grid_remove()
 
         def _show_summary(self, color: str, text: str) -> None:
-            background, tinta = COLORS.get(color, COLORS["gris"])
-            self.card.configure(fg_color=background)
-            self.label_summary.configure(text=text, text_color=tinta)
+            tone, background, border = SUMMARY_STYLES.get(color,
+                                                         SUMMARY_STYLES["gris"])
+            self.card.configure(fg_color=c(background), border_color=c(border))
+            self.label_summary.configure(text=text, text_color=c(tone))
 
         # ── analysis lifecycle ──────────────────────────────────────────────
         def _analyze(self) -> None:
@@ -886,7 +1300,7 @@ if CTK_OK:
 def main(initial_path: str | None = None) -> int:
     """Entry point of the graphical interface."""
     if not CTK_OK:
-        print("⚠️  customtkinter is not installed, so there is no graphical interface.")
+        print("customtkinter is not installed, so there is no graphical interface.")
         print("   Install it with:  pip install customtkinter")
         print("   Meanwhile you can use the CLI:  python verificar_flac.py")
         return 1

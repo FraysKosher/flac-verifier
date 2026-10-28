@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
 
 import gui
+import theme
 import customtkinter as ctk
 
 DND_REAL = gui.DND_OK                       # real state, to restore it after a reload
@@ -531,6 +532,49 @@ class test_window(unittest.TestCase):
         self.assertEqual(self.window.btn_cancel.cget("state"), "disabled")
         self.assertEqual(self.window.btn_open_pdf.cget("state"), "disabled")
         self.assertEqual(self.window.barra.get(), 0)
+        # The primary action follows the design tokens: accent fill, 44 px and the
+        # interface font, with a line icon instead of an emoji.
+        button = self.window.btn_analyze
+        self.assertEqual(button.cget("fg_color"), theme.color("accent"))
+        self.assertEqual(button.cget("height"), 44)
+        font = button.cget("font")
+        self.assertEqual(font.cget("family"), theme.FONT_UI)
+        self.assertEqual(abs(int(font.cget("size"))), 14)
+        self.assertIsNotNone(button.cget("image"), "the primary action has no icon")
+        self.assertEqual(button.cget("text"), "Analyze")
+
+        # Focus is a designed state: the control is in the tab order, it listens
+        # for focus, and the ring uses the focus token without moving anything.
+        self.assertEqual(str(button.tk.call(button._w, "cget", "-takefocus")), "1")
+        self.assertTrue(button.tk.call("bind", button._w, "<FocusIn>"))
+        resting = button.cget("border_color")
+        self.window._focus_ring(button, True)
+        self.assertEqual(button.cget("border_color"), theme.color("focus"))
+        self.assertEqual(button.cget("border_width"), 2)
+        self.window._focus_ring(button, False)
+        self.assertEqual(button.cget("border_color"), resting)
+
+        # Hover and pressed are colour changes, not movement; disabled fades the
+        # fill and ignores hover.
+        for state, token in (("hover", "accent.hover"),
+                             ("pressed", "accent.pressed")):
+            self.window._paint(button, state)
+            self.assertEqual(button.cget("fg_color"), theme.color(token))
+        self.window._paint(button, "normal")
+        self.assertEqual(button.cget("fg_color"), theme.color("accent"))
+        self.window._set_enabled(button, False)
+        self.assertNotEqual(button.cget("fg_color"), theme.color("accent"))
+        self.window._paint(button, "hover")
+        self.assertNotEqual(button.cget("fg_color"), theme.color("accent.hover"))
+        self.window._set_enabled(button, True)
+        self.assertEqual(button.cget("fg_color"), theme.color("accent"))
+
+        # No emoji anywhere: the icons are the line set, not text characters.
+        for widget in (self.window.btn_analyze, self.window.btn_cancel,
+                       self.window.btn_browse, self.window.btn_open_pdf,
+                       self.window.btn_folder):
+            with self.subTest(text=str(widget.cget("text"))):
+                self.assertTrue(str(widget.cget("text")).isascii())
 
     def test_controls_by_default(self):
         self.assertEqual(self.window.var_mode.get(), "center")
@@ -563,12 +607,17 @@ class test_window(unittest.TestCase):
         self.assertEqual(self.window.btn_analyze.cget("state"), "disabled")
         self.assertEqual(self.window.btn_cancel.cget("state"), "normal")
         self.assertEqual(self.window.input.cget("state"), "disabled")
+        # While running, Analyze becomes Cancel: only one action is on screen.
+        self.assertFalse(self.window.btn_analyze.winfo_manager())
+        self.assertEqual(self.window.btn_cancel.winfo_manager(), "grid")
 
         self.window.manager.process.returncode = 0                        # finished
         self.window._update_state()
         self.assertEqual(self.window.btn_analyze.cget("state"), "normal")
         self.assertEqual(self.window.btn_cancel.cget("state"), "disabled")
         self.assertEqual(self.window.input.cget("state"), "normal")
+        self.assertEqual(self.window.btn_analyze.winfo_manager(), "grid")
+        self.assertFalse(self.window.btn_cancel.winfo_manager())
 
     def test_process_events_updates_progress_log_card(self):
         self.window._process("stdout", {"tipo": "inicio", "total": 2, "workers": 2})
@@ -591,6 +640,12 @@ class test_window(unittest.TestCase):
         registro = self.window.log.get("1.0", "end")
         self.assertIn("GENUINE LOSSLESS", registro)
         self.assertIn("PROBABLE UPSCALE", registro)
+        # The timestamp is painted with its own (tertiary) tag, the line with the
+        # level colour.
+        self.assertEqual(self.window.log.tag_cget("time", "foreground"),
+                         theme.color("text.tertiary"))
+        self.assertEqual(self.window.log.tag_cget("ok", "foreground"),
+                         theme.color("ok"))
 
     def test_event_report_enables_button_pdf(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -717,6 +772,21 @@ class test_logo(unittest.TestCase):
         for name, path in self.PATHS.items():
             with self.subTest(asset=name):
                 self.assertTrue(os.path.exists(path), f"missing {path}")
+        # The line-icon set of DESIGN.md section 8, at its three shipped sizes,
+        # inside the size budget of the brief.
+        icons = gui.ICON_FOLDER
+        self.assertTrue(os.path.isdir(icons), f"missing {icons}")
+        total = 0
+        for name in ("folder", "play", "stop", "file-text", "external-link",
+                     "settings", "sun", "moon", "chevron-down", "check", "x",
+                     "alert-triangle", "info", "refresh", "trash", "search",
+                     "music"):
+            for size in gui.ICON_SIZES:
+                path = os.path.join(icons, f"{name}_{size}.png")
+                with self.subTest(icon=f"{name}_{size}"):
+                    self.assertTrue(os.path.exists(path), f"missing {path}")
+                    total += os.path.getsize(path)
+        self.assertLess(total, 100_000, "the icon set is over the 100 kB budget")
 
     def test_png_is_square_has_alpha(self):
         from PIL import Image
@@ -828,8 +898,11 @@ class test_logo(unittest.TestCase):
 class test_control_seconds(unittest.TestCase):
     """The seconds control only exists when the mode needs it.
 
-    It is removed from the grid instead of being disabled, so it frees its space:
-    the controls below move up and no phantom gap is left.
+    It is removed from the grid instead of being disabled, so it frees its space
+    and no phantom row is left behind. The assertions are about existence, state
+    and grid structure rather than about pixel positions: where a control lands
+    is the business of the layout phase, and a pixel comparison of a withdrawn
+    window depended on Tk's first idle pass instead of on the code.
     """
 
     def setUp(self):
@@ -843,10 +916,22 @@ class test_control_seconds(unittest.TestCase):
         self.window._change_mode()
         self.window.update_idletasks()
 
-    def _positions(self):
-        return {name: getattr(self.window, name).winfo_y()
-                for name in ("check_pdf", "parallel_switch", "check_cache",
-                               "btn_analyze", "btn_cancel")}
+    def _rail(self):
+        return self.window.seconds_row.master
+
+    def _gridded_rows(self):
+        """Rows of the rail that currently hold a widget (empty row = no gap)."""
+        return {int(widget.grid_info()["row"]) for widget in self._rail().grid_slaves()
+                if widget.grid_info()}
+
+    def _rail_height(self):
+        self.window.update_idletasks()
+        return self._rail().grid_bbox()[3]
+
+    def _settle(self):
+        """One show/hide cycle: Tk's very first idle pass measures 4 px short."""
+        self._set_mode("seconds")
+        self._set_mode("center")
 
     def test_center_no_sample(self):
         self._set_mode("center")
@@ -862,7 +947,9 @@ class test_control_seconds(unittest.TestCase):
         self._set_mode("seconds")
         info = self.window.seconds_row.grid_info()
         self.assertTrue(info, "the seconds control does not appear")
-        self.assertEqual(int(info["row"]), 6)
+        self.assertGreater(int(info["row"]),
+                           int(self.window.option_mode.grid_info()["row"]),
+                           "the seconds control is not under the mode selector")
         self.assertEqual(self.window.seconds_slider.cget("state"), "normal")
 
     def test_widget_still_existing_when_hidden(self):
@@ -872,31 +959,42 @@ class test_control_seconds(unittest.TestCase):
         self.window._change_seconds(45)
         self.assertIn("45", self.window.label_seconds.cget("text"))
 
-    def test_show_it_controls_below_go_down(self):
+    def test_show_it_makes_room_and_the_action_bar_stays_pinned(self):
         self._set_mode("center")
-        without_seconds = self._positions()
+        self._settle()
+        hidden = self._rail_height()
         self._set_mode("seconds")
-        with_seconds = self._positions()
-        for name, y in without_seconds.items():
-            with self.subTest(control=name):
-                self.assertLess(y, with_seconds[name],
-                                f"{name} did not move down when the seconds control appeared")
+        self.assertGreater(self._rail_height(), hidden,
+                           "the rail did not make room for the seconds control")
+        # Analyze lives in the footer, below the flow and the summary chip, so it
+        # is always visible: it is not pushed down with the rest of the controls.
+        footer = self.window.btn_analyze.master
+        self.assertIsNot(footer, self._rail())
+        self.assertIs(self.window.card.master, footer)
+        self.assertGreater(int(footer.grid_info()["row"]),
+                           int(self.window.check_cache.grid_info()["row"]))
+        self.assertGreater(int(self.window.btn_analyze.grid_info()["row"]),
+                           int(self.window.card.grid_info()["row"]))
+        self.assertTrue(self.window.btn_analyze.winfo_manager())
 
-    def test_hide_it_controls_return_place(self):
-        """Round trip without drift: no phantom gaps and no displacement."""
+    def test_hide_it_no_leaves_phantom_row(self):
         self._set_mode("center")
-        reference = self._positions()
+        reference = self._gridded_rows()
         self._set_mode("seconds")
+        self.assertGreater(len(self._gridded_rows()), len(reference),
+                           "the seconds row is not in the grid")
         self._set_mode("full")
-        self.assertEqual(self._positions(), reference)
+        self.assertEqual(self._gridded_rows(), reference,
+                         "hiding the seconds control left a phantom row behind")
 
-    def test_hidden_shown_several_times_no_accumulates_gap(self):
+    def test_hidden_shown_several_times_no_accumulates_rows(self):
         self._set_mode("center")
-        reference = self._positions()
+        reference = self._gridded_rows()
         for _ in range(3):
             self._set_mode("seconds")
             self._set_mode("center")
-        self.assertEqual(self._positions(), reference)
+        self.assertEqual(self._gridded_rows(), reference)
+        self.assertEqual(self.window.seconds_row.grid_info(), {})
 
 
 if __name__ == "__main__":
