@@ -2619,8 +2619,11 @@ if CTK_OK:
                 return
             if kind == "inicio":
                 self.total = int(event.get("total") or 0)
-                self._log(f"Analyzing {self.total} file(s) · "
-                          f"{event.get('workers', '?')} process(es)"
+                files = f"{self.total} file" + ("" if self.total == 1 else "s")
+                workers = event.get("workers", "?")
+                processes = ("process" if str(workers) == "1"
+                             else "processes")
+                self._log(f"Analyzing {files} · {workers} {processes}"
                           + ("" if event.get("cache", True) else " · no cache"))
                 self.label_progress.configure(text=f"0 / {self.total}")
             elif kind == "resultado":
