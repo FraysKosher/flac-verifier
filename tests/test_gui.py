@@ -1407,6 +1407,90 @@ class test_light_window(unittest.TestCase):
             with open(path, encoding="utf-8") as stream:
                 self.assertEqual(json.load(stream), {"theme": "dark"})
 
+@unittest.skipUnless(VISUAL, "customtkinter and a display are required")
+class test_live_swap(unittest.TestCase):
+    """The theme swap must build offscreen and only then replace the old shell.
+
+    A withdrawn window cannot tell whether a shell is mapped, so this class shows
+    its own window for the duration of the test.
+    """
+
+    def setUp(self):
+        self.addCleanup(setattr, theme, "MODE", "dark")
+        self.addCleanup(ctk.set_appearance_mode, "dark")
+        theme.MODE = "dark"
+        ctk.set_appearance_mode("dark")
+        self.window = gui.FlacVerifierWindow()
+        self.window.geometry("1180x760+0+0")
+        self.window.deiconify()
+        self.window.update()
+        self.addCleanup(self._destroy_window)
+
+    def _destroy_window(self):
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
+
+    def test_the_new_shell_is_built_offscreen_and_swapped_complete(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.dict(os.environ, {"APPDATA": folder}):
+            first = {"tipo": "resultado", "archivo": "01 - intro.flac",
+                     "veredicto": "GENUINE LOSSLESS", "score": 0.9,
+                     "problemas": [], "meta": {"bits_per_sample": 16,
+                                               "sample_rate": 44100},
+                     "md5": {"estado": "match"}, "dr": 12.0,
+                     "bdi": {"aplica": False}, "esp": {"corte_detectado": False}}
+            second = dict(first, archivo="02 - cut.flac",
+                          veredicto="SUSPICIOUS", score=0.3,
+                          problemas=["cut at 16 kHz"])
+            for event in (first, second):
+                self.window._process("stdout", event)
+            self.window._select(second)
+            self.window.update()
+            old_shell = self.window.shell
+            old_headline = self.window.hero_headline
+            self.assertTrue(old_shell.winfo_ismapped())
+
+            observed = {}
+            original = self.window._build_telemetry
+
+            def spy(parent):
+                original(parent)
+                observed.update({
+                    "parent": parent,
+                    "parent_mapped": parent.winfo_ismapped(),
+                    "old_mapped": old_shell.winfo_ismapped(),
+                    "old_headline": old_headline.cget("text"),
+                    "new_headline": self.window.hero_headline.cget("text"),
+                })
+
+            self.window._build_telemetry = spy
+            try:
+                self.window.btn_theme.invoke()
+            finally:
+                self.window._build_telemetry = original
+            self.window.update()
+
+            self.assertIsNot(observed["parent"], old_shell)
+            self.assertFalse(observed["parent_mapped"],
+                             "the new shell was mapped before it was complete")
+            self.assertTrue(observed["old_mapped"],
+                            "the old shell disappeared while the new one was built")
+            self.assertEqual(observed["old_headline"], "SUSPICIOUS")
+            # The new hero still carries its construction default, but it is not
+            # mapped: that text is laid out offscreen and never painted.
+            self.assertEqual(observed["new_headline"], "NO RESULTS")
+            self.assertEqual(old_shell.winfo_exists(), 0,
+                             "the old shell was not destroyed after the swap")
+            self.assertIs(self.window.shell, observed["parent"])
+            self.assertTrue(self.window.shell.winfo_ismapped())
+            self.assertEqual(self.window.hero_headline.cget("text"), "SUSPICIOUS")
+            self.assertIs(self.window.selected_event, second)
+            self.assertEqual(len(self.window.events), 2)
+            self.assertEqual(len(self.window.table_rows), 2)
+
+
 class test_integration_with_cli(unittest.TestCase):
     """`verificar_flac.py --gui` has to open the GUI, not the menu."""
 

@@ -904,12 +904,16 @@ if CTK_OK:
             self._spectrogram_path_value = ""
             self._hero_layout_scheduled = False
 
-            self.grid_columnconfigure(0, weight=0, minsize=RAIL_WIDTH)
-            self.grid_columnconfigure(1, weight=1)
+            self.grid_columnconfigure(0, weight=1)
             self.grid_rowconfigure(0, weight=1)
+            # One container holds the two columns: a theme switch builds a new
+            # shell offscreen and swaps it in, so the intermediate state is
+            # never painted (see _rebuild_ui).
+            self.shell = self._new_shell()
+            self.shell.grid(row=0, column=0, sticky="nsew")
 
-            self._build_controls()
-            self._build_telemetry()
+            self._build_controls(self.shell)
+            self._build_telemetry(self.shell)
             self._load_identity()
             self._render_hero()
             self._update_state()
@@ -1143,8 +1147,16 @@ if CTK_OK:
                 except Exception:
                     self.icon_loaded = False
 
-        def _build_controls(self) -> None:
-            rail = ctk.CTkFrame(self, width=RAIL_WIDTH, corner_radius=0,
+        def _new_shell(self) -> Any:
+            """Container of the rail and the main column, ready to be swapped."""
+            shell = ctk.CTkFrame(self, fg_color="transparent")
+            shell.grid_columnconfigure(0, weight=0, minsize=RAIL_WIDTH)
+            shell.grid_columnconfigure(1, weight=1)
+            shell.grid_rowconfigure(0, weight=1)
+            return shell
+
+        def _build_controls(self, parent: Any) -> None:
+            rail = ctk.CTkFrame(parent, width=RAIL_WIDTH, corner_radius=0,
                                 fg_color=c("bg.surface"))
             rail.grid(row=0, column=0, sticky="nsw")
             rail.grid_propagate(False)
@@ -1318,8 +1330,8 @@ if CTK_OK:
             self.btn_cancel.grid_remove()
 
         # ── results, hero, table and activity (DESIGN.md 6, 7.3, 7.7–7.11) ──
-        def _build_telemetry(self) -> None:
-            panel = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        def _build_telemetry(self, parent: Any) -> None:
+            panel = ctk.CTkFrame(parent, corner_radius=0, fg_color="transparent")
             panel.grid(row=0, column=1, sticky="nsew")
             panel.grid_columnconfigure(0, weight=1)
             panel.grid_rowconfigure(2, weight=1)
@@ -2411,12 +2423,57 @@ if CTK_OK:
                 self._log("Could not save the theme preference; "
                           "it will not be remembered.", "aviso")
 
+        def _set_appearance(self, mode: str) -> None:
+            """Applies the appearance mode without hiding or redrawing the window.
+
+            Two CustomTkinter behaviours are avoided here. `set_appearance_mode`
+            withdraws the window on Windows to recolour the title bar (the
+            hide/show is the flash), and it notifies every existing widget, which
+            redraws the old window in the middle of the switch. Only the widgets
+            built after this point need the new mode, so the tracker is updated
+            in place and the title bar is recoloured directly.
+            """
+            previous = self._deactivate_windows_window_header_manipulation
+            self._deactivate_windows_window_header_manipulation = True
+            try:
+                tracker = getattr(ctk, "AppearanceModeTracker", None)
+                if tracker is None:                 # older CustomTkinter
+                    ctk.set_appearance_mode(mode)
+                else:
+                    tracker.appearance_mode_set_by = "user"
+                    tracker.appearance_mode = 1 if mode == "dark" else 0
+            finally:
+                self._deactivate_windows_window_header_manipulation = previous
+            self._apply_titlebar(mode)
+
+        def _apply_titlebar(self, mode: str) -> None:
+            """Recolours the Windows title bar in place, without hide/show."""
+            if not sys.platform.startswith("win"):
+                return
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                value = ctypes.c_int(1 if mode == "dark" else 0)
+                for attribute in (20, 19):      # DWMWA_USE_IMMERSIVE_DARK_MODE
+                    if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                            hwnd, attribute, ctypes.byref(value),
+                            ctypes.sizeof(value)) == 0:
+                        break
+                # SWP_FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                                  0x0020 | 0x0002 | 0x0001 | 0x0004)
+            except Exception:
+                pass
+
         def _rebuild_ui(self, mode: str) -> None:
             """Rebuilds every widget in `mode` without recreating the Tk root.
 
             The interface resolves its colours once, so switching live means
-            building it again. Everything the user can see is saved first and put
-            back afterwards: the source and analysis options, the results, the
+            building it again. The new shell is built and restored out of the
+            grid and swapped in only when it is complete: destroying the old
+            widgets first used to paint the intermediate empty state for a few
+            frames. Everything the user can see is saved first and put back
+            afterwards: the source and analysis options, the results, the
             selected track, the progress, the state labels, the log (text and
             level) and whether the activity panel is open.
             """
@@ -2442,8 +2499,6 @@ if CTK_OK:
             }
             self._rebuilding = True
             try:
-                for child in list(self.winfo_children()):
-                    child.destroy()
                 self._icons.clear()
                 self._measures.clear()
                 self.table_rows.clear()
@@ -2452,11 +2507,14 @@ if CTK_OK:
                 self._hero_layout_scheduled = False
 
                 theme.MODE = mode
-                ctk.set_appearance_mode(mode)
+                self._set_appearance(mode)
                 self.configure(fg_color=c("bg.canvas"))
 
-                self._build_controls()
-                self._build_telemetry()
+                # Build offscreen: nothing here is gridded, so Tk has nothing to
+                # paint even if an idle pass runs while the widgets are created.
+                new_shell = self._new_shell()
+                self._build_controls(new_shell)
+                self._build_telemetry(new_shell)
 
                 self.var_path.set(state["path"])
                 self.var_mode.set(state["mode"])
@@ -2487,6 +2545,22 @@ if CTK_OK:
                 self.label_progress.configure(text=state["progress_text"])
                 self._restore_log(state["log"])
                 self._set_activity(state["activity"])
+
+                # Atomic swap: the new shell (already complete: results,
+                # selection, log and options restored) enters the grid on top of
+                # the old one, Tk lays it out and paints it, and only then the
+                # old shell goes away. Without this layout step the window shows
+                # its background for a few frames while the new one is measured.
+                old_shell = self.shell
+                new_shell.grid(row=0, column=0, sticky="nsew")
+                self.shell = new_shell
+                # The old shell stays on top and visible while Tk lays out and
+                # paints the new one underneath; then it is removed and the new
+                # one is already drawn.
+                old_shell.lift()
+                self.update_idletasks()
+                old_shell.destroy()
+
                 self._register_dnd()
                 self._schedule_hero_layout()
             finally:
