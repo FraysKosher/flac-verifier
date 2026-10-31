@@ -5,7 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.4.0] - 2026-10-31
+
+### Added
+
+- A results surface in the GUI: a verdict hero, a per-track table with the
+  verdict, score, bit depth, sample rate, dynamic range and MD5, row selection
+  and a track detail inspector.
+- The detail inspector shows the spectrogram thumbnail, the full text of every
+  detected issue, the evidence (cut-off, LSB usage, clipping and MD5) and the
+  actions to open the report or reveal the file.
+- Light and dark themes with a live in-place switch; the preference is stored
+  in `%APPDATA%\FLAC Verifier\settings.json` and applied on the next start.
+- A start-screen screenshot in `README.md`.
 
 ### Changed
 
@@ -19,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CACHE_SCHEMA_VERSION`. Their values (`"9.8"` and `"2.3.0"`) and the cache
   schema are unchanged, so existing caches remain valid; external code that
   imports the previous names must update.
+- The GUI and the PDF report share the design tokens in `theme.py`; the report
+  keeps the same data and page budget with a new visual layer.
+
+### Fixed
+
+- The small text of the PDF report (table labels, headers and footer) now meets
+  the 4.5:1 contrast target.
+- The PDF explains why a spectrogram is missing and no longer says "No issues
+  detected" for a file that could not be analysed.
+- The theme switch recolours the window in place, without rebuilding it, and
+  preserves the album, selection, scroll, auto-scroll, focus and log.
+- The batch start line pluralises files and processes correctly.
 
 ## [2.3.0] - 2026-10-24
 

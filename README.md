@@ -5,11 +5,11 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.3.0](https://img.shields.io/badge/version-2.3.0-blue)](CHANGELOG.md)
+[![Version: 2.4.0](https://img.shields.io/badge/version-2.4.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests: 325](https://img.shields.io/badge/tests-325-brightgreen)](README.md#tests)
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the version history (current: **2.3.0**).
+See [`CHANGELOG.md`](CHANGELOG.md) for the version history (current: **2.4.0**).
 
 A tool for deciding whether a FLAC file is **genuinely lossless** or fake
 lossless: a transcode from a lossy format (MP3, AAC…) or a bit-depth upgrade
@@ -24,9 +24,13 @@ a decision, **it says so** instead of inventing a verdict.
 > engine's JSON protocol, the command-line flags, the code comments, the
 > docstrings and all the documentation are in English, because the project is
 > shared with the international audiophile community. `tests/test_idioma.py`
-> enforces it. Internal identifiers (variable and function names, JSON protocol
-> keys) keep their original names, as renaming them would break every consumer of
-> the protocol.
+> enforces it. All Python identifiers are English; the only Spanish names left
+> are the JSON protocol keys, the reportlab style names and a few argparse
+> destinations, which are the public contract and are never renamed.
+
+<p align="center">
+  <img src="docs/screenshots/start.png" alt="FLAC Verifier start screen" width="900">
+</p>
 
 ```
 FLAC VERIFIER/
@@ -34,6 +38,7 @@ FLAC VERIFIER/
 ├── motor_flac.py         analysis engine + CLI with the JSON protocol
 ├── verificar_flac.py     command-line interface (presentation layer)
 ├── gui.py                graphical interface (CustomTkinter, optional)
+├── theme.py              design tokens shared by the GUI and the PDF
 ├── informe_pdf.py        per-album PDF report (optional dependency: reportlab)
 ├── flac_verifier.spec    PyInstaller recipe for the .exe
 ├── version_info.txt      executable version resources
@@ -56,7 +61,7 @@ Analysing an album is spread across **processes** (up to 8) and keeps a
 ## Installation
 
 Prebuilt Windows release:
-[FLAC Verifier 2.3.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.3.0).
+[FLAC Verifier 2.4.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.4.0).
 
 From source:
 
@@ -69,10 +74,10 @@ pip install -r requirements.txt
 The release ZIP includes a SHA-256 checksum. On Windows:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.3.0-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.4.0-win64.zip -Algorithm SHA256
 ```
 
-Compare the output with `SHA256SUMS_2.3.0.txt` from the same release. A matching
+Compare the output with `SHA256SUMS_2.4.0.txt` from the same release. A matching
 hash means the ZIP arrived intact; a mismatch means it was corrupted or replaced,
 so download it again from the official release page.
 
@@ -226,7 +231,7 @@ dist/FLAC_Verifier/
 
 The whole folder is copied or compressed into a ZIP: **the `.exe` alone does not
 work**, it needs its `_internal/` next to it. That is about **157 MiB (164 MB)**
-on disk and **67 MiB (70 MB)** in `FLAC_Verifier_2.3.0-win64.zip`, because it
+on disk and **67 MiB (70 MB)** in `FLAC_Verifier_2.4.0-win64.zip`, because it
 includes NumPy, SciPy and the Python interpreter; the current spec no longer
 bundles matplotlib, so it is smaller. The first launch takes a few seconds (that is normal: there is
 nothing to unpack in `%TEMP%`, which is exactly the reason for using folder mode
