@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import tkinter
 import types
 import unittest
 from unittest import mock
@@ -993,6 +994,16 @@ class test_window(unittest.TestCase):
         self.assertEqual(self.window.label_activity_preview.cget("text"),
                          "No activity yet")
 
+    def test_log_warn_level_uses_the_amber_tag(self):
+        """`_log(..., "aviso")` must paint with the warn token, not default."""
+        self.window._clear_log()
+        self.window._log("amber line", "aviso")
+        ranges = self.window.log.tag_ranges("warn")
+        self.assertTrue(ranges, "the warn tag painted nothing")
+        self.assertEqual(self.window.log.tag_cget("warn", "foreground"),
+                         theme.color("warn"))
+        self.assertEqual(self.window.log.get(*ranges).strip(), "amber line")
+
     def test_activity_autoscroll_follows_the_toggle(self):
         self.assertTrue(self.window.var_autoscroll.get())
         with mock.patch.object(self.window.log, "see") as see:
@@ -1409,10 +1420,10 @@ class test_light_window(unittest.TestCase):
 
 @unittest.skipUnless(VISUAL, "customtkinter and a display are required")
 class test_live_swap(unittest.TestCase):
-    """The theme swap must build offscreen and only then replace the old shell.
+    """The theme toggle recolours the window in place; no widget is rebuilt.
 
-    A withdrawn window cannot tell whether a shell is mapped, so this class shows
-    its own window for the duration of the test.
+    A withdrawn window cannot tell whether a shell is mapped or keep a scroll
+    position, so this class shows its own window for the duration of the test.
     """
 
     def setUp(self):
@@ -1432,63 +1443,113 @@ class test_live_swap(unittest.TestCase):
         except Exception:
             pass
 
-    def test_the_new_shell_is_built_offscreen_and_swapped_complete(self):
+    def _tracks(self, count=12):
+        items = []
+        for index in range(1, count + 1):
+            verdict = "SUSPICIOUS" if index == 6 else "GENUINE LOSSLESS"
+            items.append({
+                "tipo": "resultado", "archivo": f"{index:02d} - track.flac",
+                "ruta": f"C:/Music/{index:02d}.flac", "veredicto": verdict,
+                "score": 0.9 - index / 100, "problemas": [],
+                "meta": {"bits_per_sample": 16, "sample_rate": 44100},
+                "md5": {"estado": "match"}, "dr": 10.0 + index / 10,
+                "bdi": {"aplica": False}, "esp": {"corte_detectado": False},
+            })
+        return items
+
+    def test_toggle_rethemes_in_place_and_preserves_state(self):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch.dict(os.environ, {"APPDATA": folder}):
-            first = {"tipo": "resultado", "archivo": "01 - intro.flac",
-                     "veredicto": "GENUINE LOSSLESS", "score": 0.9,
-                     "problemas": [], "meta": {"bits_per_sample": 16,
-                                               "sample_rate": 44100},
-                     "md5": {"estado": "match"}, "dr": 12.0,
-                     "bdi": {"aplica": False}, "esp": {"corte_detectado": False}}
-            second = dict(first, archivo="02 - cut.flac",
-                          veredicto="SUSPICIOUS", score=0.3,
-                          problemas=["cut at 16 kHz"])
-            for event in (first, second):
-                self.window._process("stdout", event)
-            self.window._select(second)
+            items = self._tracks()
+            for item in items:
+                self.window._process("stdout", item)
+            selected = items[5]
+            self.window._select(selected)
+            self.window._log("a custom line", "info")
+            self.window._set_activity(True)
+            self.window.var_autoscroll.set(False)
             self.window.update()
-            old_shell = self.window.shell
-            old_headline = self.window.hero_headline
-            self.assertTrue(old_shell.winfo_ismapped())
+            self.window.table_canvas.yview_moveto(0.4)
+            self.window.update()
+            before_view = self.window.table_canvas.yview()
+            tkinter.Frame.focus_force(self.window.btn_theme)
+            self.window.update()
+            focused = self.window.focus_get()
 
-            observed = {}
-            original = self.window._build_telemetry
+            shell = self.window.shell
+            button = self.window.btn_theme
+            headline = self.window.hero_headline
+            row = self.window.table_rows[0]["frame"]
+            chip = self.window.table_rows[0]["cells"]["verdict"]
+            log = self.window.log
 
-            def spy(parent):
-                original(parent)
-                observed.update({
-                    "parent": parent,
-                    "parent_mapped": parent.winfo_ismapped(),
-                    "old_mapped": old_shell.winfo_ismapped(),
-                    "old_headline": old_headline.cget("text"),
-                    "new_headline": self.window.hero_headline.cget("text"),
-                })
-
-            self.window._build_telemetry = spy
-            try:
-                self.window.btn_theme.invoke()
-            finally:
-                self.window._build_telemetry = original
+            self.window.btn_theme.invoke()
             self.window.update()
 
-            self.assertIsNot(observed["parent"], old_shell)
-            self.assertFalse(observed["parent_mapped"],
-                             "the new shell was mapped before it was complete")
-            self.assertTrue(observed["old_mapped"],
-                            "the old shell disappeared while the new one was built")
-            self.assertEqual(observed["old_headline"], "SUSPICIOUS")
-            # The new hero still carries its construction default, but it is not
-            # mapped: that text is laid out offscreen and never painted.
-            self.assertEqual(observed["new_headline"], "NO RESULTS")
-            self.assertEqual(old_shell.winfo_exists(), 0,
-                             "the old shell was not destroyed after the swap")
-            self.assertIs(self.window.shell, observed["parent"])
-            self.assertTrue(self.window.shell.winfo_ismapped())
-            self.assertEqual(self.window.hero_headline.cget("text"), "SUSPICIOUS")
-            self.assertIs(self.window.selected_event, second)
-            self.assertEqual(len(self.window.events), 2)
-            self.assertEqual(len(self.window.table_rows), 2)
+            # Same widgets: nothing was destroyed or recreated.
+            self.assertIs(self.window.shell, shell)
+            self.assertIs(self.window.btn_theme, button)
+            self.assertIs(self.window.hero_headline, headline)
+            self.assertIs(self.window.table_rows[0]["frame"], row)
+            self.assertIs(self.window.table_rows[0]["cells"]["verdict"], chip)
+            self.assertIs(self.window.log, log)
+            self.assertFalse(hasattr(gui.FlacVerifierWindow, "_rebuild_ui"),
+                             "the rebuild path should not exist any more")
+
+            # Colours resolved from the light palette.
+            self.assertEqual(theme.MODE, "light")
+            self.assertEqual(self.window.cget("fg_color"),
+                             theme.color("bg.canvas", "light"))
+            self.assertEqual(self.window.hero.cget("fg_color"),
+                             theme.color("bg.surface", "light"))
+            self.assertEqual(self.window.btn_analyze.cget("fg_color"),
+                             theme.color("accent", "light"))
+            self.assertEqual(self.window.label_state.cget("text_color"),
+                             theme.color("text.primary", "light"))
+            self.assertEqual(
+                self.window.table_rows[0]["file_label"].cget("background"),
+                theme.color("bg.surface", "light"))
+            self.assertEqual(
+                self.window.table_rows[0]["file_label"].cget("foreground"),
+                theme.color("text.primary", "light"))
+            self.assertEqual(chip.cget("fg_color"),
+                             theme.color("ok.bg", "light"))
+            self.assertEqual(self.window.log.cget("fg_color"),
+                             theme.color("bg.canvas", "light"))
+            self.assertEqual(self.window.log.tag_cget("time", "foreground"),
+                             theme.color("text.tertiary", "light"))
+            self.assertEqual(self.window.theme_tooltip.text,
+                             "Switch to dark theme")
+            self.assertIsNotNone(self.window.btn_theme.cget("image"))
+
+            # Everything the user had is still there.
+            self.assertIs(self.window.selected_event, selected)
+            self.assertEqual(self.window.hero_eyebrow.cget("text"),
+                             "06 - track.flac")
+            self.assertIn("a custom line", self.window.log.get("1.0", "end"))
+            self.assertEqual(self.window.activity_panel.winfo_manager(), "grid")
+            self.assertFalse(self.window.var_autoscroll.get())
+            after_view = self.window.table_canvas.yview()
+            self.assertAlmostEqual(after_view[0], before_view[0], places=3)
+            self.assertAlmostEqual(after_view[1], before_view[1], places=3)
+            if focused is not None:
+                self.assertIs(self.window.focus_get(), focused,
+                              "the retheme stole the keyboard focus")
+
+    def test_a_300_row_table_rethemes_in_a_bounded_time(self):
+        """Not a speed race: the real number is printed so it can be tracked."""
+        self.window.withdraw()
+        template = self._tracks(1)[0]
+        for index in range(300):
+            self.window._add_row(dict(template, archivo=f"{index:03d}.flac"))
+        self.window.update_idletasks()
+        start = time.perf_counter()
+        self.window._retheme("light")
+        elapsed = (time.perf_counter() - start) * 1000
+        self.window._retheme("dark")
+        print(f"\n300-row retheme: {elapsed:.0f} ms", flush=True)
+        self.assertLess(elapsed, 15000,
+                        "the in-place retheme is pathologically slow")
 
 
 class test_integration_with_cli(unittest.TestCase):

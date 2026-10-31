@@ -189,9 +189,87 @@ WINDOW_GEOMETRY = "1180x760"
 WINDOW_MINIMUM = (1024, 680)
 
 
+class _TokenColor(str):
+    """A colour string that remembers the design token that produced it.
+
+    CustomTkinter stores the same string object it is given, so after building a
+    widget it is possible to ask it which token paints a property and replace
+    that colour in place when the theme changes, without a registry of every
+    widget and every property.
+    """
+
+    token = ""
+
+
 def c(token: str) -> str:
     """Colour of a design token, so the widget code reads as the design brief."""
-    return theme.color(token)
+    value = _TokenColor(theme.color(token))
+    value.token = token
+    return value
+
+
+# Colour properties of CustomTkinter widgets. When one of them holds a
+# `_TokenColor`, the retheme can resolve it again for the new mode.
+COLOUR_PROPERTIES = (
+    "fg_color", "hover_color", "border_color", "text_color",
+    "text_color_disabled", "button_color", "button_hover_color",
+    "progress_color", "checkmark_color", "dropdown_fg_color",
+    "dropdown_hover_color", "dropdown_text_color", "scrollbar_button_color",
+    "scrollbar_button_hover_color", "placeholder_text_color",
+)
+
+
+def freeze_redraw(window: Any) -> list[int]:
+    """Stops the window from painting while the colours change (Windows only).
+
+    Returns the handles that were frozen, empty off Windows or on failure. Tk
+    draws every widget on the toplevel window, but the children are enumerated
+    as well so an embedded native child is covered too."""
+    if not sys.platform.startswith("win"):
+        return []
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        handles = [int(window.winfo_id())]
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                       ctypes.c_void_p)
+
+        def collect(hwnd, _param):
+            handles.append(int(hwnd or 0))
+            return True
+
+        callback = enum_proc(collect)
+        user32.EnumChildWindows(ctypes.c_void_p(handles[0]), callback, None)
+        send = user32.SendMessageW
+        send.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
+                         ctypes.c_void_p]
+        for hwnd in handles:
+            send(ctypes.c_void_p(hwnd), 0x000B, None, None)      # WM_SETREDRAW off
+        return handles
+    except Exception:
+        return []
+
+
+def thaw_redraw(window: Any, handles: list[int]) -> None:
+    """Lets the frozen window paint again in one pass (Windows only)."""
+    if not handles:
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        send = user32.SendMessageW
+        send.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
+                         ctypes.c_void_p]
+        for hwnd in handles:
+            send(ctypes.c_void_p(hwnd), 0x000B, ctypes.c_void_p(1), None)
+        redraw = user32.RedrawWindow
+        redraw.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                           ctypes.c_uint]
+        # RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW
+        redraw(ctypes.c_void_p(handles[0]), None, None,
+               0x0004 | 0x0001 | 0x0080 | 0x0100)
+    except Exception:
+        pass
 
 
 # Button variants of DESIGN.md 7.1. `border` is None when the variant has no
@@ -750,10 +828,20 @@ class _DropZone(tkinter.Canvas):
                             extent=90, style="arc", outline=colour,
                             dash=self.DASH, width=1, tags="border")
 
+    def retheme(self) -> None:
+        """Re-resolves the canvas colours and its icons for the current mode."""
+        tkinter.Canvas.configure(self, highlightbackground=c("bg.canvas"),
+                                 highlightcolor=c("focus"))
+        self._icon_resting = self.window._icon("folder-plus", 24,
+                                               c("text.secondary"))
+        self._icon_active = self.window._icon("folder-plus", 24, c("accent"))
+        self.set_active(self.active)
+
     def set_active(self, active: bool) -> None:
         """Drag-over state: accent border and a 6 % accent tint (7.3)."""
         self.active = bool(active)
-        tint = theme.mix(c("bg.surface"), c("accent"), 0.06) if self.active             else c("bg.surface")
+        tint = (theme.mix(c("bg.surface"), c("accent"), 0.06) if self.active
+                else c("bg.surface"))
         self.configure(background=tint)
         self.content.configure(fg_color=tint)
         self.icon_label.configure(image=self._icon_active if self.active
@@ -816,6 +904,11 @@ class _TableScrollbar(tkinter.Canvas):
     def set(self, first: Any, last: Any) -> None:
         """`yscrollcommand` callback: only stores the range and redraws."""
         self.first, self.last = float(first), float(last)
+        self._draw()
+
+    def retheme(self) -> None:
+        """Background and thumb after a palette change."""
+        self.configure(background=c("bg.surface"))
         self._draw()
 
     def _draw(self) -> None:
@@ -892,23 +985,22 @@ if CTK_OK:
             self._eyebrow_full = ""
             self._headline_full = ""
             self._last_log_line = ""
-            # Bounded history of (timestamp, text, level) so a rebuild can put
-            # the log back exactly as it was, colours included.
-            self._log_history: deque[tuple[str, str, str]] = deque(
-                maxlen=MAX_LINES_LOG)
             self.activity_expanded = False
-            self._rebuilding = False
+            self._retheming = False
             self._hero_width = 0
             self._preview_width = 0
+            # (widget, background token) of every frame focus ring.
+            self._focus_rings: list[tuple[Any, str]] = []
+            self._buttons: list[Any] = []
+            self._scroll_scheduled = False
             self._spectrograms: dict[str, Any] = {}
             self._spectrogram_path_value = ""
             self._hero_layout_scheduled = False
 
             self.grid_columnconfigure(0, weight=1)
             self.grid_rowconfigure(0, weight=1)
-            # One container holds the two columns: a theme switch builds a new
-            # shell offscreen and swaps it in, so the intermediate state is
-            # never painted (see _rebuild_ui).
+            # One container holds the two columns. The theme switch recolours the
+            # widgets in place (see _retheme); nothing is rebuilt.
             self.shell = self._new_shell()
             self.shell.grid(row=0, column=0, sticky="nsew")
 
@@ -988,13 +1080,15 @@ if CTK_OK:
             border band turns into the 2 px focus ring, and the disabled fill is
             the normal fill blended with the surface at 35 %."""
             spec = BUTTON_VARIANTS[variant]
-            behind = background or c("bg.surface")
+            # The tokens are kept in `ui_spec`, not the resolved hex values: a
+            # retheme repaints the same button from the new palette.
+            behind = background or "bg.surface"
             if spec["border"]:
                 border = c(spec["border"])
             elif spec["fill"] != "transparent":
                 border = c(spec["fill"])
             else:
-                border = behind
+                border = c(behind)
             image = self._icon(icon, icon_size, c(spec["text"])) if icon else None
             button = ctk.CTkButton(
                 parent, text=text, command=command, width=width or 140,
@@ -1006,12 +1100,15 @@ if CTK_OK:
                 text_color_disabled=c("text.tertiary"),
                 font=theme.font(spec["size"], spec["weight"]),
                 image=image, compound="left", cursor="hand2")
+            self._buttons.append(button)
             button.ui_spec = {
-                "spec": spec, "parent": behind, "border": border, "focused": False,
-                "states": {"normal": c(spec["fill"]) if spec["fill"] != "transparent"
+                "spec": spec, "parent": behind, "border": spec["border"],
+                "focused": False,
+                "states": {"normal": spec["fill"] if spec["fill"] != "transparent"
                                        else "transparent",
-                           "hover": c(spec["hover"]),
-                           "pressed": c(spec["pressed"])},
+                           "hover": spec["hover"],
+                           "pressed": spec["pressed"]},
+                "icon": (icon, icon_size, spec["text"]) if icon else None,
             }
             # takefocus is not an option CustomTkinter forwards, so it is set on
             # the underlying Tk frame directly.
@@ -1039,7 +1136,8 @@ if CTK_OK:
             if button.cget("state") == "disabled":
                 return
             ui = button.ui_spec
-            colour = ui["states"][state]
+            token = ui["states"][state]
+            colour = "transparent" if token == "transparent" else c(token)
             button.configure(fg_color=colour)
             if ui["spec"]["border"] is None and ui["spec"]["fill"] != "transparent":
                 button.configure(border_color=c("focus") if ui["focused"] else colour)
@@ -1050,8 +1148,14 @@ if CTK_OK:
             if focused:
                 button.configure(border_width=2, border_color=c("focus"))
             else:
+                if ui["border"]:
+                    border = c(ui["border"])
+                elif ui["states"]["normal"] != "transparent":
+                    border = c(ui["states"]["normal"])
+                else:
+                    border = c(ui["parent"])
                 button.configure(border_width=ui["spec"]["border_width"],
-                                 border_color=ui["border"])
+                                 border_color=border)
 
         def _activate(self, button: Any) -> str:
             """Enter/Space on a focused button (DESIGN.md 9)."""
@@ -1079,8 +1183,9 @@ if CTK_OK:
             Tk draws it in the frame's highlight band, which is always two pixels
             thick (invisible over the surface) so that focusing never shifts the
             layout; `highlightcolor` switches it to the focus colour on its own."""
+            self._focus_rings.append((widget, background))
             tkinter.Frame.configure(widget, takefocus=True, highlightthickness=2,
-                                    highlightbackground=background,
+                                    highlightbackground=c(background),
                                     highlightcolor=c("focus"))
 
         def _toggle_on_space(self, widget: Any, variable: Any,
@@ -1102,7 +1207,7 @@ if CTK_OK:
             self._paint(button, "normal")
             button.configure(state="disabled")
             if ui["spec"]["fill"] != "transparent":
-                dimmed = theme.mix(ui["states"]["normal"], ui["parent"], 0.35)
+                dimmed = theme.mix(c(ui["states"]["normal"]), c(ui["parent"]), 0.35)
                 button.configure(fg_color=dimmed)
                 if ui["spec"]["border"] is None:
                     button.configure(border_color=dimmed)
@@ -1225,7 +1330,7 @@ if CTK_OK:
                 dropdown_font=theme.font(13), anchor="w")
             self.option_mode.grid(row=5, column=0, padx=theme.SPACE["lg"],
                                   sticky="ew")
-            self._ring_highlight(self.option_mode, c("bg.surface"))
+            self._ring_highlight(self.option_mode, "bg.surface")
 
             # The seconds only make sense in "seconds" mode: the control is
             # removed from the grid (not disabled) so that it leaves no gap and
@@ -1262,7 +1367,7 @@ if CTK_OK:
             self.check_pdf.grid(row=7, column=0, padx=theme.SPACE["lg"],
                                 pady=(theme.SPACE["sm"], theme.SPACE["xs"]),
                                 sticky="w")
-            self._ring_highlight(self.check_pdf, c("bg.surface"))
+            self._ring_highlight(self.check_pdf, "bg.surface")
             self._toggle_on_space(self.check_pdf, self.var_pdf)
 
             self.var_parallel = ctk.BooleanVar(value=True)
@@ -1278,7 +1383,7 @@ if CTK_OK:
             self.parallel_switch.grid(row=8, column=0, padx=theme.SPACE["lg"],
                                       pady=(theme.SPACE["xs"], theme.SPACE["2xs"]),
                                       sticky="w")
-            self._ring_highlight(self.parallel_switch, c("bg.surface"))
+            self._ring_highlight(self.parallel_switch, "bg.surface")
             self._toggle_on_space(self.parallel_switch, self.var_parallel,
                                   self._change_parallel)
 
@@ -1296,7 +1401,7 @@ if CTK_OK:
             self.option_workers.grid(row=9, column=0, padx=theme.SPACE["lg"],
                                      pady=(theme.SPACE["2xs"], theme.SPACE["xs"]),
                                      sticky="w")
-            self._ring_highlight(self.option_workers, c("bg.surface"))
+            self._ring_highlight(self.option_workers, "bg.surface")
 
             self.var_without_cache = ctk.BooleanVar(value=False)
             self.check_cache = ctk.CTkCheckBox(
@@ -1309,7 +1414,7 @@ if CTK_OK:
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
             self.check_cache.grid(row=10, column=0, padx=theme.SPACE["lg"],
                                   pady=(theme.SPACE["xs"], 0), sticky="w")
-            self._ring_highlight(self.check_cache, c("bg.surface"))
+            self._ring_highlight(self.check_cache, "bg.surface")
             self._toggle_on_space(self.check_cache, self.var_without_cache)
 
             # Pinned action bar: the primary action, always visible at the
@@ -1352,8 +1457,8 @@ if CTK_OK:
                                      padx=(theme.SPACE["sm"], 0))
 
             # Theme button: the icon shows what the click will switch to. The
-            # change is saved here and applied on the next start, because this
-            # window builds every colour once (see theme.py).
+            # window is recoloured in place and the choice is saved for the next
+            # start (see _retheme).
             self.btn_theme = self._button(
                 top, "icon", "", self._toggle_theme,
                 icon="sun" if theme.MODE == "dark" else "moon", width=32)
@@ -1495,9 +1600,12 @@ if CTK_OK:
                 self.spectrogram_frame, fg_color="transparent")
             self.spectrogram_placeholder.grid(row=0, column=0, sticky="nsew")
             self.spectrogram_placeholder.grid_columnconfigure(0, weight=1)
-            ctk.CTkLabel(self.spectrogram_placeholder, text="",
-                         image=self._icon("music", 24, c("text.tertiary"))).grid(
-                row=0, column=0, pady=(theme.SPACE["sm"], theme.SPACE["2xs"]))
+            self.spectrogram_icon = ctk.CTkLabel(
+                self.spectrogram_placeholder, text="",
+                image=self._icon("music", 24, c("text.tertiary")))
+            self.spectrogram_icon.grid(row=0, column=0,
+                                       pady=(theme.SPACE["sm"], theme.SPACE["2xs"]))
+            self._placeholder_icon_spec = ("music", 24, "text.tertiary")
             self.spectrogram_note = ctk.CTkLabel(
                 self.spectrogram_placeholder, text="No spectrogram",
                 font=theme.font(12), text_color=c("text.secondary"))
@@ -1518,11 +1626,11 @@ if CTK_OK:
             actions.grid(row=2, column=0, sticky="se", pady=(theme.SPACE["xs"], 0))
             self.btn_open_pdf = self._button(actions, "secondary", "Open report",
                                              self._open_pdf, icon="external-link",
-                                             background=c("bg.surface"))
+                                             background="bg.surface")
             self.btn_open_pdf.grid(row=0, column=0)
             self.btn_reveal = self._button(actions, "ghost", "Reveal", self._reveal,
                                            icon="folder",
-                                           background=c("bg.surface"))
+                                           background="bg.surface")
             self.btn_reveal.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
 
             self.hero.bind("<Configure>", self._on_hero_configure)
@@ -1656,13 +1764,15 @@ if CTK_OK:
                            padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
                 plain.append(label)
 
+            icon_spec = None
             if values["md5"] == "—":
                 mark = ctk.CTkLabel(row, text="—", font=mono,
                                     fg_color=c("bg.surface"), corner_radius=0,
                                     text_color=c("text.tertiary"))
             else:
+                icon_spec = (values["md5_icon"], 16, values["md5_tone"])
                 mark = ctk.CTkLabel(row, text="", image=self._icon(
-                    values["md5_icon"], 16, c(values["md5_tone"])),
+                    icon_spec[0], icon_spec[1], c(icon_spec[2])),
                     fg_color=c("bg.surface"), corner_radius=0)
                 _Tooltip(mark, f"MD5 {values['md5']}")
             mark.grid(row=0, column=7, sticky="w",
@@ -1678,12 +1788,13 @@ if CTK_OK:
                      "cells": {"file": file_label, "verdict": chip,
                                "score": plain[0], "depth": plain[1],
                                "rate": plain[2], "dr": plain[3], "md5": mark},
-                     "file_label": file_label, "plain": plain, "hover": False}
+                     "file_label": file_label, "plain": plain,
+                     "icon_spec": icon_spec, "hover": False}
             self.table_rows.append(entry)
             self._bind_row(row, entry)
             self._paint_row(entry)
             if follow:
-                self.after_idle(self._scroll_table_to_end)
+                self._schedule_table_scroll()
             return entry
 
         def _bind_row(self, widget: Any, entry: dict[str, Any]) -> None:
@@ -1718,7 +1829,8 @@ if CTK_OK:
                 background, bar = c("bg.surface"), c("bg.surface")
             entry["frame"].configure(fg_color=background)
             entry["bar"].configure(fg_color=bar)
-            entry["file_label"].configure(background=background)
+            entry["file_label"].configure(background=background,
+                                          foreground=c("text.primary"))
             for label in entry["plain"]:
                 label.configure(fg_color=background)
 
@@ -1771,9 +1883,22 @@ if CTK_OK:
             except Exception:
                 return True
 
+        def _schedule_table_scroll(self) -> None:
+            """One pending scroll per batch, never one per row.
+
+            Each `_add_row` used to schedule its own idle callback, and the
+            callback called `update_idletasks` from inside an idle task: with
+            three hundred rows that nested recursively and the window appeared
+            to hang."""
+            if self._scroll_scheduled:
+                return
+            self._scroll_scheduled = True
+            self.after_idle(self._scroll_table_to_end)
+
         def _scroll_table_to_end(self) -> None:
+            self._scroll_scheduled = False
             try:
-                self.table_canvas.update_idletasks()
+                self._on_table_body()
                 self.table_canvas.yview_moveto(1.0)
             except Exception:
                 pass
@@ -2067,7 +2192,7 @@ if CTK_OK:
 
         def _apply_hero_layout(self) -> None:
             self._hero_layout_scheduled = False
-            if self._rebuilding:
+            if self._retheming:
                 return
             self._refit_hero_texts()
             width = self._usable_width(self.hero_left, 520) - 8
@@ -2147,17 +2272,17 @@ if CTK_OK:
                 button_hover_color=c("knob"),
                 text_color=c("text.secondary"), font=theme.font(12))
             self.switch_autoscroll.grid(row=0, column=1, sticky="w")
-            self._ring_highlight(self.switch_autoscroll, c("bg.surface"))
+            self._ring_highlight(self.switch_autoscroll, "bg.surface")
             self._toggle_on_space(self.switch_autoscroll, self.var_autoscroll)
             self.btn_clear_log = self._button(toolbar, "ghost", "Clear",
                                               self._clear_log, icon="trash",
                                               height=28,
-                                              background=c("bg.surface"))
+                                              background="bg.surface")
             self.btn_clear_log.grid(row=0, column=2, padx=(theme.SPACE["xs"], 0))
             self.btn_activity_close = self._button(
                 toolbar, "icon", "", self._toggle_activity,
                 icon="chevron-down", height=24, width=24,
-                background=c("bg.surface"))
+                background="bg.surface")
             self.btn_activity_close.grid(row=0, column=3,
                                          padx=(theme.SPACE["xs"],
                                                theme.SPACE["sm"]))
@@ -2197,7 +2322,6 @@ if CTK_OK:
             self.log.delete("1.0", "end")
             self.log.configure(state="disabled")
             self._last_log_line = ""
-            self._log_history.clear()
             self.label_activity_preview.configure(text="No activity yet")
 
         def _refresh_activity_preview(self) -> None:
@@ -2310,12 +2434,15 @@ if CTK_OK:
                  scroll: bool = True) -> None:
             """One log line: timestamp in tertiary, text in the level colour."""
             stamp = time.strftime("%H:%M:%S")
+            # "aviso" is the label the engine callbacks still pass; the tag is
+            # "warn", and without this normalisation those lines were painted in
+            # the default colour instead of amber.
+            label = "warn" if label == "aviso" else label
             self.log.configure(state="normal")
             self.log.insert("end", f"{stamp}  ", "time")
             self.log.insert("end", f"{text}\n", label)
             self._trim_log()
             self.log.configure(state="disabled")
-            self._log_history.append((stamp, text, label))
             self._last_log_line = text
             self._refresh_activity_preview()
             if scroll:
@@ -2409,29 +2536,24 @@ if CTK_OK:
             self._update_reveal()
 
         def _toggle_theme(self) -> None:
-            """Switches the whole window between dark and light, live.
-
-            Mid-run the button is disabled and this method refuses to build a
-            second time: the running analysis owns the widgets it is writing to.
-            """
-            if self.manager.active or self._rebuilding:
+            """Switches the window between dark and light, live and in place."""
+            if self.manager.active or self._retheming:
                 return
             target = "light" if theme.MODE == "dark" else "dark"
             saved = theme.save_preference(target)
-            self._rebuild_ui(target)
+            self._retheme(target)
             if not saved:
                 self._log("Could not save the theme preference; "
                           "it will not be remembered.", "aviso")
 
         def _set_appearance(self, mode: str) -> None:
-            """Applies the appearance mode without hiding or redrawing the window.
+            """Updates the appearance mode without hiding or redrawing the window.
 
-            Two CustomTkinter behaviours are avoided here. `set_appearance_mode`
-            withdraws the window on Windows to recolour the title bar (the
-            hide/show is the flash), and it notifies every existing widget, which
-            redraws the old window in the middle of the switch. Only the widgets
-            built after this point need the new mode, so the tracker is updated
-            in place and the title bar is recoloured directly.
+            On Windows `ctk.set_appearance_mode` withdraws the window to recolour
+            the title bar (the hide/show is the theme flash) and notifies every
+            existing widget (a redraw in the middle of the switch). The tracker is
+            updated in place and the title bar is recoloured at the end of the
+            retheme.
             """
             previous = self._deactivate_windows_window_header_manipulation
             self._deactivate_windows_window_header_manipulation = True
@@ -2444,7 +2566,6 @@ if CTK_OK:
                     tracker.appearance_mode = 1 if mode == "dark" else 0
             finally:
                 self._deactivate_windows_window_header_manipulation = previous
-            self._apply_titlebar(mode)
 
         def _apply_titlebar(self, mode: str) -> None:
             """Recolours the Windows title bar in place, without hide/show."""
@@ -2465,118 +2586,174 @@ if CTK_OK:
             except Exception:
                 pass
 
-        def _rebuild_ui(self, mode: str) -> None:
-            """Rebuilds every widget in `mode` without recreating the Tk root.
+        def _retheme(self, mode: str) -> None:
+            """Recolours every widget in place, without destroying a single one.
 
-            The interface resolves its colours once, so switching live means
-            building it again. The new shell is built and restored out of the
-            grid and swapped in only when it is complete: destroying the old
-            widgets first used to paint the intermediate empty state for a few
-            frames. Everything the user can see is saved first and put back
-            afterwards: the source and analysis options, the results, the
-            selected track, the progress, the state labels, the log (text and
-            level) and whether the activity panel is open.
+            Each CustomTkinter colour was given as a `_TokenColor`, so the
+            widget itself remembers which token paints each property and the new
+            value can be resolved from the new palette. Painting is frozen while
+            the colours change and the whole window is redrawn once at the end,
+            so the user sees the old theme and then the new one, never a mix. The
+            plain Tk labels, canvases and text tags are recoloured explicitly.
             """
-            state = {
-                "path": self.var_path.get(),
-                "mode": self.var_mode.get(),
-                "seconds": self.seconds_slider.get(),
-                "pdf": bool(self.var_pdf.get()),
-                "parallel": bool(self.var_parallel.get()),
-                "workers": self.option_workers.get(),
-                "without_cache": bool(self.var_without_cache.get()),
-                "events": list(self.events),
-                "selected": self.selected_event,
-                "total": self.total,
-                "received": self.recibidos,
-                "pdf_path": self.pdf_path,
-                "activity": self.activity_expanded,
-                "problems_expanded": self._problems_expanded,
-                "log": list(self._log_history),
-                "barra": self.barra.get(),
-                "state_text": self.label_state.cget("text"),
-                "progress_text": self.label_progress.cget("text"),
-            }
-            self._rebuilding = True
+            if self._retheming:
+                return
+            self._retheming = True
+            focused = self.focus_get()
+            # The client area is covered by a snapshot for the duration of the
+            # switch. It is a separate window, so the compositor shows either the
+            # old snapshot or the already-painted new window, never a half-updated
+            # surface (the tearing a screen capture can catch while the window is
+            # being repainted).
+            overlay = self._theme_overlay()
+            frozen = freeze_redraw(self)
             try:
-                self._icons.clear()
-                self._measures.clear()
-                self.table_rows.clear()
-                self._hero_width = 0
-                self._preview_width = 0
-                self._hero_layout_scheduled = False
-
                 theme.MODE = mode
                 self._set_appearance(mode)
+                self._icons.clear()
+                # The toggle is the same button: its icon and tooltip must show
+                # the mode a click will switch to.
+                name = "sun" if mode == "dark" else "moon"
+                self.btn_theme.ui_spec["icon"] = (name, 16, "text.secondary")
+                self.theme_tooltip.text = ("Switch to light theme" if mode == "dark"
+                                           else "Switch to dark theme")
                 self.configure(fg_color=c("bg.canvas"))
 
-                # Build offscreen: nothing here is gridded, so Tk has nothing to
-                # paint even if an idle pass runs while the widgets are created.
-                new_shell = self._new_shell()
-                self._build_controls(new_shell)
-                self._build_telemetry(new_shell)
+                # Plain Tk surfaces first: the CTk widgets painted over them
+                # re-detect their background colour from the new values.
+                self.table_canvas.configure(background=c("bg.surface"))
+                self.drop_zone.retheme()
+                self.table_scroll.retheme()
 
-                self.var_path.set(state["path"])
-                self.var_mode.set(state["mode"])
-                self.option_workers.set(state["workers"])
-                self.var_pdf.set(state["pdf"])
-                self.var_parallel.set(state["parallel"])
-                self.var_without_cache.set(state["without_cache"])
-                self.seconds_slider.set(state["seconds"])
-                self._change_seconds(state["seconds"])
-                self._change_mode()
-                self._change_parallel()
-
-                self.events = deque(state["events"], maxlen=MAX_EVENTS_IN_MEMORY)
-                self.total = state["total"]
-                self.recibidos = state["received"]
-                self.pdf_path = state["pdf_path"]
-                self.selected_event = state["selected"]
-                self._problems_expanded = state["problems_expanded"]
-                for event in state["events"]:
-                    self._add_row(event)
+                self._recolour_widget(self.shell)
+                for widget, background in self._focus_rings:
+                    tkinter.Frame.configure(widget,
+                                            highlightbackground=c(background),
+                                            highlightcolor=c("focus"))
                 for entry in self.table_rows:
                     self._paint_row(entry)
-
-                self._render_hero()
-                self._update_state()
-                self.barra.set(state["barra"])
-                self.label_state.configure(text=state["state_text"])
-                self.label_progress.configure(text=state["progress_text"])
-                self._restore_log(state["log"])
-                self._set_activity(state["activity"])
-
-                # Atomic swap: the new shell (already complete: results,
-                # selection, log and options restored) enters the grid on top of
-                # the old one, Tk lays it out and paints it, and only then the
-                # old shell goes away. Without this layout step the window shows
-                # its background for a few frames while the new one is measured.
-                old_shell = self.shell
-                new_shell.grid(row=0, column=0, sticky="nsew")
-                self.shell = new_shell
-                # The old shell stays on top and visible while Tk lays out and
-                # paints the new one underneath; then it is removed and the new
-                # one is already drawn.
-                old_shell.lift()
+                    self._refresh_row_icon(entry)
+                if self._placeholder_icon_spec:
+                    name, size, token = self._placeholder_icon_spec
+                    self.spectrogram_icon.configure(
+                        image=self._icon(name, size, c(token)))
+                for level, token in LOG_TAGS.items():
+                    self.log.tag_config(level, foreground=c(token))
+                self.log.tag_config("time", foreground=c("text.tertiary"))
+                # Enabled buttons already carry the new colours; the disabled
+                # ones have a blended fill that has to be mixed again.
+                for button in self._buttons:
+                    if button.cget("state") == "disabled":
+                        self._set_enabled(button, False)
                 self.update_idletasks()
-                old_shell.destroy()
-
-                self._register_dnd()
-                self._schedule_hero_layout()
             finally:
-                self._rebuilding = False
+                thaw_redraw(self, frozen)
+                self._retheming = False
+            # The title bar is recoloured after the redraw and before the
+            # snapshot goes away, so the frame and the client change together.
+            self._apply_titlebar(mode)
+            self._drop_theme_overlay(overlay, focused)
 
-        def _restore_log(self, history: list[tuple[str, str, str]]) -> None:
-            """Replays the saved log lines, keeping their timestamp and level."""
-            self.log.configure(state="normal")
-            for stamp, text, label in history:
-                self.log.insert("end", f"{stamp}  ", "time")
-                self.log.insert("end", f"{text}\n", label)
-            self.log.configure(state="disabled")
-            if history:
-                self._last_log_line = history[-1][1]
-            self._refresh_activity_preview()
-            self._scroll_log()
+        def _theme_overlay(self) -> Any:
+            """A snapshot of the client area that hides the recolouring.
+
+            A screen grab of the current (old) theme is shown in a borderless
+            topmost Toplevel exactly over the client area. The window is
+            recoloured underneath; when the overlay disappears the compositor
+            reveals the new window in one step."""
+            if not sys.platform.startswith("win"):
+                return None
+            if not self.winfo_ismapped():
+                return None
+            try:
+                from PIL import ImageGrab, ImageTk
+                x, y = self.winfo_rootx(), self.winfo_rooty()
+                width, height = self.winfo_width(), self.winfo_height()
+                if width <= 1 or height <= 1:
+                    return None
+                snapshot = ImageGrab.grab(bbox=(x, y, x + width, y + height))
+                overlay = tkinter.Toplevel(self)
+                overlay.overrideredirect(True)
+                overlay.attributes("-topmost", True)
+                overlay.geometry(f"{width}x{height}+{x}+{y}")
+                photo = ImageTk.PhotoImage(snapshot)
+                label = tkinter.Label(overlay, image=photo, bd=0,
+                                      highlightthickness=0)
+                label.pack()
+                overlay.deiconify()
+                overlay.lift()
+                overlay.update()
+                self.update_idletasks()
+                return (overlay, photo)
+            except Exception:
+                return None
+
+        def _drop_theme_overlay(self, overlay: Any, focused: Any) -> None:
+            """Removes the snapshot and gives the focus back to its widget."""
+            if overlay is not None:
+                try:
+                    overlay[0].destroy()
+                except Exception:
+                    pass
+            if focused is not None:
+                try:
+                    focused.tk.call("focus", "-force", focused._w)
+                except Exception:
+                    pass
+
+        def _recolour_widget(self, widget: Any) -> None:
+            """Resolves every stored `_TokenColor` of a widget and its children.
+
+            All the properties of one widget are configured in a single call: a
+            few CustomTkinter widgets run `update_idletasks` inside their draw,
+            and one call per property multiplied that cost by five."""
+            updates: dict[str, Any] = {}
+            # Plain Tk children (a CustomTkinter canvas or label) do not accept
+            # tokens: asking them for sixteen colour options raises sixteen Tcl
+            # errors per widget, so they are skipped as a block.
+            if hasattr(widget, "_apply_appearance_mode"):
+                for prop in COLOUR_PROPERTIES:
+                    try:
+                        value = widget.cget(prop)
+                    except Exception:
+                        continue
+                    if (isinstance(value, _TokenColor)
+                            and str(value) != theme.color(value.token)):
+                        updates[prop] = c(value.token)
+                try:
+                    # Transparent frames store the colour of their master when
+                    # they are created; re-detecting picks the new one.
+                    widget.cget("bg_color")
+                    updates["bg_color"] = "transparent"
+                except Exception:
+                    pass
+            if updates:
+                try:
+                    widget.configure(**updates)
+                except Exception:
+                    for prop, value in updates.items():
+                        try:
+                            widget.configure(**{prop: value})
+                        except Exception:
+                            pass
+            if getattr(widget, "ui_spec", None) is not None:
+                self._refresh_button_image(widget)
+            for child in widget.winfo_children():
+                self._recolour_widget(child)
+
+        def _refresh_button_image(self, button: Any) -> None:
+            spec = getattr(button, "ui_spec", None)
+            if not spec or not spec.get("icon"):
+                return
+            name, size, token = spec["icon"]
+            button.configure(image=self._icon(name, size, c(token)))
+
+        def _refresh_row_icon(self, entry: dict[str, Any]) -> None:
+            spec = entry.get("icon_spec")
+            if spec:
+                name, size, token = spec
+                entry["cells"]["md5"].configure(image=self._icon(name, size,
+                                                                c(token)))
 
         def _show_action(self, button: Any) -> None:
             """Only one primary action is visible: Analyze or Cancel."""
@@ -2641,7 +2818,7 @@ if CTK_OK:
             Cancel button stays responsive. It is rescheduled while the engine is
             alive, while the reader thread is still alive (it may not have queued
             the final `__fin__` yet) or while a full batch was just processed."""
-            if self._rebuilding:
+            if self._retheming:
                 return
             processed = 0
             results = 0

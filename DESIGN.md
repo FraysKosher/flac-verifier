@@ -389,15 +389,17 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
   engine still works.
 - The theme is saved in `%APPDATA%\FLAC Verifier\settings.json` (atomic write,
   home folder as fallback) and read once, before the first window is built.
-- The toggle switches live: the window is one cell that holds a `shell` with the
-  two columns. `_rebuild_ui(mode)` builds a complete second shell offscreen,
-  restores the source and analysis options, the results, the selected track, the
-  progress, the state labels, the log (text and level) and the activity state,
-  and swaps it in atomically: the old shell stays visible until the new one is
-  laid out and painted, so the empty state is never flashed. The Tk root is not
-  recreated and the window is never hidden (CustomTkinter's title-bar
-  manipulation is bypassed and the bar recoloured in place). It is disabled while
-  an analysis runs, and the preference is saved on every click.
+- The toggle switches live **in place**: `_retheme(mode)` recolours every widget
+  without destroying or recreating any of them. Each colour was given as a
+  `_TokenColor`, so the widget remembers its token and the new value is resolved
+  from the new palette; plain Tk labels, canvases and text tags are recoloured
+  explicitly. While the colours change the window painting is frozen
+  (`WM_SETREDRAW(0)` on the client and its children, Windows) and a snapshot of
+  the old client area covers the window in a borderless topmost Toplevel; a
+  single `RedrawWindow` paints the complete new surface, the title bar is
+  recoloured with DWM, and the snapshot is removed. Nothing is hidden with
+  `withdraw`. The button is disabled while an analysis runs and the preference is
+  saved on every click.
 
 ## 12. Phases and acceptance criteria
 
@@ -429,17 +431,18 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
   pairs derived from the dark hues, `focus` and the switch `knob`.
 - `text.tertiary` was darkened in both modes so the 11 px labels reach 4.5:1.
 - Sun/moon toggle in the main header (icon-only, tooltip, focus ring) that
-  switches the window live through `_rebuild_ui(mode)`: every widget is built
-  again with the new palette in a new shell, preserving the album, the results,
-  the selection, the log and the activity state, without restarting the process
-  and without flashing the empty state: the old shell stays visible until the new
-  one is complete and painted. It is disabled while an analysis runs and saves
-  the choice in `%APPDATA%\FLAC Verifier\settings.json`.
+  recolours the window live through `_retheme(mode)`: the same widgets keep
+  their identity and their state (album, results, selection, scroll, log,
+  activity, focus), the painting is frozen during the recolour and the window is
+  redrawn once, so there is no hybrid or empty frame. It is disabled while an
+  analysis runs and saves the choice in
+  `%APPDATA%\FLAC Verifier\settings.json`.
 - Tests: contrast of every text/surface and verdict pair in both palettes, the
-  preference file (default, round trip, malformed, unwritable), the live toggle
-  with events, selection, log and activity preserved, a light window in every
-  state, and a guard that `gui.py` contains no hard-coded colour.
-- Acceptance: both themes build and read; 323 tests; build READY;
+  preference file (default, round trip, malformed, unwritable), the in-place
+  toggle with widget identity, scroll, focus, results and log preserved, a
+  300-row retheme timing, a light window in every state, and a guard that
+  `gui.py` contains no hard-coded colour.
+- Acceptance: both themes build and read; 325 tests; build READY;
   `comprobar_ejecutable` 11/11; screenshots at 100/125/150 % in both modes.
 
 ## 13. Guardrails

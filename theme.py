@@ -121,9 +121,9 @@ def color(token: str, mode: str | None = None) -> str:
 # ─── Persisted preference ───────────────────────────────────────────────────
 # One JSON file with the chosen mode. Reading or writing it never raises: an
 # unreadable, malformed or unwritable file simply leaves the dark theme in
-# place. The window reads it once, before any widget exists, and applies it on
-# the next start: this interface builds every colour once, so a live switch is
-# not part of 2.4.0.
+# place. The window reads it before the first widget exists, so the first paint
+# is already correct; the theme button rewrites it and recolours the window in
+# place.
 
 SETTINGS_FOLDER = "FLAC Verifier"
 SETTINGS_FILE = "settings.json"
