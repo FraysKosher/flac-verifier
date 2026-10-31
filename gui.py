@@ -2652,7 +2652,24 @@ if CTK_OK:
             # The title bar is recoloured after the redraw and before the
             # snapshot goes away, so the frame and the client change together.
             self._apply_titlebar(mode)
+            self._flush_composition()
             self._drop_theme_overlay(overlay, focused)
+
+        def _flush_composition(self) -> None:
+            """Waits for the compositor to show the fully painted new frame.
+
+            Without this the overlay can be removed while the window below is
+            still being composed, and a screen capture catches a single frame
+            with half of the old surface and half of the new one. `DwmFlush`
+            makes the removal happen only after the new frame is on screen.
+            """
+            if not sys.platform.startswith("win"):
+                return
+            try:
+                import ctypes
+                ctypes.windll.dwmapi.DwmFlush()
+            except Exception:
+                pass
 
         def _theme_overlay(self) -> Any:
             """A snapshot of the client area that hides the recolouring.
