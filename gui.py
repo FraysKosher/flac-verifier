@@ -986,6 +986,7 @@ if CTK_OK:
             self._eyebrow_full = ""
             self._headline_full = ""
             self._last_log_line = ""
+            self._log_entries: list[tuple[str, str, str, Event | None]] = []
             self.activity_expanded = False
             self._retheming = False
             self._hero_width = 0
@@ -1918,6 +1919,8 @@ if CTK_OK:
             self.after_idle(self._scroll_table_to_end)
 
         def _scroll_table_to_end(self) -> None:
+            if not self._scroll_scheduled:
+                return
             self._scroll_scheduled = False
             try:
                 self._on_table_body()
@@ -2343,6 +2346,7 @@ if CTK_OK:
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             self.log.configure(state="disabled")
+            self._log_entries.clear()
             self._last_log_line = ""
             self.label_activity_preview.configure(text="No activity yet")
 
@@ -2461,13 +2465,17 @@ if CTK_OK:
 
         # ── view helpers ────────────────────────────────────────────────────
         def _log(self, text: str, label: str = "info",
-                 scroll: bool = True) -> None:
+                 scroll: bool = True,
+                 result_event: Event | None = None) -> None:
             """One log line: timestamp in tertiary, text in the level colour."""
             stamp = time.strftime("%H:%M:%S")
             # "aviso" is the label the engine callbacks still pass; the tag is
             # "warn", and without this normalisation those lines were painted in
             # the default colour instead of amber.
             label = "warn" if label == "aviso" else label
+            self._log_entries.append((stamp, text, label, result_event))
+            if len(self._log_entries) > MAX_LINES_LOG:
+                del self._log_entries[:-MAX_LINES_LOG]
             self.log.configure(state="normal")
             self.log.insert("end", f"{stamp}  ", "time")
             self.log.insert("end", f"{text}\n", label)
@@ -2477,6 +2485,55 @@ if CTK_OK:
             self._refresh_activity_preview()
             if scroll:
                 self._scroll_log()
+
+        def _order_batch_results(self) -> None:
+            """Ensures `self.events` and the activity log list tracks in album order."""
+            if len(self.table_rows) <= 1:
+                return
+            ordered_events = [row["event"] for row in self.table_rows]
+            if list(self.events) != ordered_events:
+                self.events.clear()
+                self.events.extend(ordered_events)
+
+            seen_order: list[int] = []
+            blocks: dict[int, list[tuple[str, str, str, Event | None]]] = {}
+            for entry in self._log_entries:
+                ev = entry[3]
+                if ev is not None:
+                    ev_id = id(ev)
+                    if ev_id not in blocks:
+                        seen_order.append(ev_id)
+                        blocks[ev_id] = []
+                    blocks[ev_id].append(entry)
+
+            target_order = [id(ev) for ev in ordered_events if id(ev) in blocks]
+            if len(target_order) <= 1 or seen_order == target_order:
+                return
+
+            ordered_result_lines: list[tuple[str, str, str, Event | None]] = []
+            for ev_id in target_order:
+                ordered_result_lines.extend(blocks[ev_id])
+
+            rebuilt: list[tuple[str, str, str, Event | None]] = []
+            inserted = False
+            for entry in self._log_entries:
+                if entry[3] is not None:
+                    if not inserted:
+                        rebuilt.extend(ordered_result_lines)
+                        inserted = True
+                else:
+                    rebuilt.append(entry)
+
+            self._log_entries = rebuilt[-MAX_LINES_LOG:]
+            self.log.configure(state="normal")
+            self.log.delete("1.0", "end")
+            for stamp, line_text, tag_label, _ in self._log_entries:
+                self.log.insert("end", f"{stamp}  ", "time")
+                self.log.insert("end", f"{line_text}\n", tag_label)
+            self.log.configure(state="disabled")
+            if self._log_entries:
+                self._last_log_line = self._log_entries[-1][1]
+                self._refresh_activity_preview()
 
         def _trim_log(self) -> None:
             """Keeps the text box bounded: drops the oldest lines past the limit."""
@@ -2825,6 +2882,10 @@ if CTK_OK:
                 return
 
             self.events.clear()
+            self._log_entries = [
+                (stamp, text, label, None)
+                for stamp, text, label, _ in self._log_entries
+            ]
             self.total = 0
             self.recibidos = 0
             self.pdf_path = None
@@ -2924,6 +2985,10 @@ if CTK_OK:
                 self._log(f"motor: {event.get('mensaje', '').strip()}", "aviso")
                 return
             if kind == "inicio":
+                self._log_entries = [
+                    (stamp, text, label, None)
+                    for stamp, text, label, _ in self._log_entries
+                ]
                 self.total = int(event.get("total") or 0)
                 files = f"{self.total} file" + ("" if self.total == 1 else "s")
                 workers = event.get("workers", "?")
@@ -2941,9 +3006,11 @@ if CTK_OK:
                     label = "error"
                 elif event.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE"):
                     label = "aviso"
-                self._log(format_result(event), label, scroll=False)
+                self._log(format_result(event), label, scroll=False,
+                          result_event=event)
                 for evidence_item in event.get("evidencias_forenses") or []:
-                    self._log(f"    evidence: {evidence_item}", "info", scroll=False)
+                    self._log(f"    evidence: {evidence_item}", "info",
+                              scroll=False, result_event=event)
                 # A row per file, as the event arrives (DESIGN.md 7.7).
                 self._add_row(event)
                 # One layout/scroll per result block, not once per evidence line.
@@ -2954,6 +3021,7 @@ if CTK_OK:
                 if update_progress:
                     self._update_progress()
             elif kind == "informe":
+                self._order_batch_results()
                 self.pdf_path = event.get("ruta")
                 self._log(f"PDF report: {self.pdf_path} "
                           f"({event.get('paginas', '?')} pages)", "ok")
@@ -2974,6 +3042,7 @@ if CTK_OK:
                 self._log(f"Problem reading the output: {event.get('mensaje')}", "aviso")
 
         def _finish(self, event: Event) -> None:
+            self._order_batch_results()
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
             if event.get("cancelado"):
@@ -2993,7 +3062,9 @@ if CTK_OK:
             self._render_hero()
             self._set_activity(False)
             self._update_state()
+            self._scroll_scheduled = False
             self._on_table_body()
+            self.table_canvas.yview_moveto(0.0)
             self._log("Activity collapsed; open it to review the batch.", "info")
 
         def _open_pdf(self) -> None:

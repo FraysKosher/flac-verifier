@@ -388,11 +388,26 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
                                  save_png=False, save_pdf=False)
         sections = [sec for sec in output.getvalue().split("📄 ") if sec.strip()][1:]
         self.assertEqual(len(sections), 5)
+        self.assertEqual([sec.splitlines()[0].strip() for sec in sections],
+                         [f"{i:02d}_track.flac" for i in range(1, 6)])
         retained_sec = next(sec for sec in sections if "02_" in sec.splitlines()[0])
         self.assertIn("PROBABLY LOSSLESS", retained_sec)
         for sec in sections:
             if "02_" not in sec.splitlines()[0]:
                 self.assertIn("GENUINE LOSSLESS", sec)
+
+        sample_names = [
+            "1 - First.flac", "10 - Tenth.flac", "100 - Hundredth.flac",
+            "136 - Last.flac", "14 - Fourteenth.flac", "2 - Second.flac",
+        ]
+        self.assertEqual(
+            sorted(sample_names, key=engine.natural_sort_key),
+            [
+                "1 - First.flac", "2 - Second.flac", "10 - Tenth.flac",
+                "14 - Fourteenth.flac", "100 - Hundredth.flac",
+                "136 - Last.flac",
+            ],
+        )
 
 
 class test_renderer(unittest.TestCase):

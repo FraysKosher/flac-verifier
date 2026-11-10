@@ -779,9 +779,13 @@ class test_window(unittest.TestCase):
         self.window._process("fin", {"tipo": "__fin__", "codigo": 0})
         self.assertIn("3 files:", self.window.label_summary.cget("text"))
         self.assertEqual(self.window.label_state.cget("text"), "Finished")
+        self.assertEqual([e["archivo"] for e in self.window.events],
+                         ["a.flac", "b.flac", "c.flac"])
         registro = self.window.log.get("1.0", "end")
         self.assertIn("GENUINE LOSSLESS", registro)
         self.assertIn("PROBABLE UPSCALE", registro)
+        self.assertLess(registro.index("a.flac"), registro.index("b.flac"))
+        self.assertLess(registro.index("b.flac"), registro.index("c.flac"))
         # The timestamp is painted with its own (tertiary) tag, the line with the
         # level colour.
         self.assertEqual(self.window.log.tag_cget("time", "foreground"),

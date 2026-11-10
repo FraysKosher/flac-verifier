@@ -3,6 +3,7 @@ import heapq
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -739,6 +740,18 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
 #   { tipo: "inicio"|"resultado"|"informe"|"aviso"|"fin"|"error" }
 # (_sanitize and _json_line live above, next to the cache, which also uses them.)
 
+def natural_sort_key(path_or_name: str) -> tuple:
+    """Natural sort key so numbered tracks ('1', '2', ..., '10', ..., '100')
+    appear in numeric order rather than ASCII lexicographical order."""
+    name = os.path.basename(str(path_or_name))
+    parts = [
+        (0, int(token), "") if token.isdigit() else (1, 0, token.casefold())
+        for token in re.split(r"(\d+)", name)
+        if token
+    ]
+    return (parts, name.casefold(), name)
+
+
 def generate_pdf_report(analyzed_path, results, mode=None):
     """Generates the PDF report and is unable to abort anything.
 
@@ -805,7 +818,7 @@ def main_cli(argv: "list[str] | None" = None) -> int:
     elif os.path.isdir(path):
         files = [
             os.path.join(path, f)
-            for f in sorted(os.listdir(path))
+            for f in sorted(os.listdir(path), key=natural_sort_key)
             if f.lower().endswith(".flac")
         ]
     else:

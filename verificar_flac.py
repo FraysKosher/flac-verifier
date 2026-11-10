@@ -208,7 +208,8 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
     if os.path.isfile(path) and path.lower().endswith(".flac"):
         files = [path]
     elif is_folder:
-        files = [os.path.join(path, f) for f in sorted(os.listdir(path))
+        files = [os.path.join(path, f)
+                    for f in sorted(os.listdir(path), key=engine.natural_sort_key)
                     if f.lower().endswith(".flac")]
         if not files:
             print("  No .flac files found in that folder.")
@@ -230,20 +231,35 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
     verdicts   = Counter()
     results = []
     failures     = 0
-    for index, result in enumerate(analysis):
-        original_index = result.get("indice_original", index)
-        if not isinstance(original_index, int) or not (0 <= original_index < len(files)):
-            original_index = min(index, len(files) - 1)
-        file_path = result.get("ruta") or files[original_index]
+    pending_by_index = {}
+    next_index = 0
+
+    def _emit_track(file_path, result):
+        nonlocal failures
         res = analyze_file(file_path, mode, seconds, save_png, result)
         if res is None:
             failures += 1
-            continue
+            return
         results.append(res)
         if res.get("veredicto"):
             verdicts[res["veredicto"]] += 1
         else:
             failures += 1
+
+    for index, result in enumerate(analysis):
+        original_index = result.get("indice_original", index)
+        if not isinstance(original_index, int) or not (0 <= original_index < len(files)):
+            original_index = min(index, len(files) - 1)
+        file_path = result.get("ruta") or files[original_index]
+        pending_by_index[original_index] = (file_path, result)
+        while next_index in pending_by_index:
+            queued_path, queued_res = pending_by_index.pop(next_index)
+            _emit_track(queued_path, queued_res)
+            next_index += 1
+
+    for original_index in sorted(pending_by_index):
+        queued_path, queued_res = pending_by_index[original_index]
+        _emit_track(queued_path, queued_res)
 
     if is_folder:
         print(f"\n{'═'*60}")
