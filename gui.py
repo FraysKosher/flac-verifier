@@ -1693,7 +1693,7 @@ if CTK_OK:
             self.table_scroll.grid(row=1, column=1, sticky="ns")
             self.table_canvas.configure(yscrollcommand=self.table_scroll.set)
 
-            self.table_body = ctk.CTkFrame(self.table_canvas,
+            self.table_body = ctk.CTkFrame(self.table_canvas, height=1,
                                            fg_color=c("bg.surface"), corner_radius=0)
             self._table_window = self.table_canvas.create_window(
                 (0, 0), window=self.table_body, anchor="nw")
@@ -1714,8 +1714,8 @@ if CTK_OK:
             follow = self._table_at_bottom()
             values = result_row(event)
             mono = theme.mono(12)
-            row = ctk.CTkFrame(self.table_body, fg_color=c("bg.surface"),
-                               corner_radius=0)
+            row = ctk.CTkFrame(self.table_body, height=44,
+                               fg_color=c("bg.surface"), corner_radius=0)
             insert_pos: int | None = None
             original_index = event.get("indice_original")
             if isinstance(original_index, int):
@@ -1881,7 +1881,13 @@ if CTK_OK:
             self._update_reveal()
 
         def _on_table_body(self, _event: Any = None) -> None:
-            self.table_canvas.configure(scrollregion=self.table_canvas.bbox("all"))
+            req_height = self.table_body.winfo_reqheight()
+            if req_height > 1 and self.table_body.winfo_height() > req_height:
+                tkinter.Frame.configure(self.table_body, height=req_height)
+            bbox = self.table_canvas.bbox("all")
+            if bbox and req_height > 1:
+                bbox = (bbox[0], bbox[1], bbox[2], min(bbox[3], req_height))
+            self.table_canvas.configure(scrollregion=bbox)
 
         def _on_table_canvas(self, event: Any) -> None:
             self.table_canvas.itemconfigure(self._table_window, width=event.width)
@@ -2987,6 +2993,7 @@ if CTK_OK:
             self._render_hero()
             self._set_activity(False)
             self._update_state()
+            self._on_table_body()
             self._log("Activity collapsed; open it to review the batch.", "info")
 
         def _open_pdf(self) -> None:

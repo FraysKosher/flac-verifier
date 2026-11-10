@@ -923,6 +923,17 @@ class test_window(unittest.TestCase):
         # The chip carries the short label and the tone of the verdict.
         self.assertEqual(first["values"]["tone"], "ok")
         self.assertEqual(second["values"]["tone"], "warn")
+        self.assertEqual(first["frame"].cget("height"), 44)
+        for index in range(2, 6):
+            self.window._process("stdout", {
+                "tipo": "resultado", "archivo": f"0{index + 1}.flac",
+                "ruta": f"C:/Music/0{index + 1}.flac",
+                "veredicto": "GENUINE LOSSLESS", "score": 0.9, "problemas": [],
+                "meta": {"bits_per_sample": 16, "sample_rate": 44100},
+                "md5": {"estado": "match"}, "dr": 12.0})
+        self.window.update_idletasks()
+        self.assertEqual(self.window.table_body.winfo_height(),
+                         self.window.table_body.winfo_reqheight())
 
     def test_selecting_a_row_updates_the_hero(self):
         event = {"tipo": "resultado", "archivo": "01.flac", "ruta": "C:/Music/01.flac",
