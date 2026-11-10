@@ -386,10 +386,30 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
                         if np.any(mask_after) else -140.0)
     jump_db = level_before_db - level_after_db
 
+    # 48 kHz -> 96/192 kHz upscale: the passband reaches 22.5 kHz intact and
+    # collapses across the 24.0 kHz Nyquist into the ultrasonic void.
+    mask_pre_24k = (freqs >= 19500.0) & (freqs <= 22500.0)
+    mask_post_24k = ((freqs >= 25000.0)
+                     & (freqs <= min(38000.0, sample_rate * 0.44)))
+    level_pre24_db = (float(np.median(curva[mask_pre_24k]))
+                      if np.any(mask_pre_24k) else -120.0)
+    level_post24_db = (float(np.median(curva[mask_post_24k]))
+                       if np.any(mask_post_24k) else -140.0)
+    jump_24k_db = level_pre24_db - level_post24_db
+    muro_24k = (
+        slope_24k < -20.0
+        and slope_22k > -12.0
+        and slope_24k < slope_base * 2.0
+        and jump_24k_db > 22.0
+    )
+    if muro_24k:
+        jump_db = max(jump_db, jump_24k_db)
+
     muro_brickwall = (
         (worse_slope < -28.0 and worse_slope < slope_base * 2.1
          and jump_db > 15.0)
         or (jump_db > 21.0 and level_after_db < -125.0)
+        or muro_24k
     )
 
     # DSD64/128 to PCM: rising noise-shaping ramp between 24 and 40 kHz. It is
@@ -704,6 +724,17 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
             cond    = ((before - after) > 25.0) & (after < -45.0)
             if np.any(cond):
                 cutoff_hz = float(fr[int(np.argmax(cond)) + step_size])
+            else:
+                step_med = max(1, n_pr // 14)
+                if n_pr > 2 * step_med:
+                    inv_med = 1.0 / step_med
+                    bef_m = (cs[step_med : n_pr - step_med] - cs[0 : n_pr - 2 * step_med]) * inv_med
+                    aft_m = (cs[2 * step_med : n_pr] - cs[step_med : n_pr - step_med]) * inv_med
+                    cond_m = ((bef_m - aft_m) > 18.5) & (aft_m < -42.0) & (bef_m > -52.0)
+                    if np.any(cond_m):
+                        cand_hz = float(fr[int(np.argmax(cond_m)) + step_med])
+                        if _gradient_edge_db_khz(freqs, power_db_n, cand_hz, samplerate / 2.0) > 38.0:
+                            cutoff_hz = cand_hz
 
     # Block 5: the distance to Nyquist decides whether the step is a codec
     # signature or a mastering filter. A legitimate anti-alias filter lives right
@@ -832,6 +863,9 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "corr_env_excitador":       0.0,
         "muesca_excitador_db":      0.0,
         "sospecha_excitador_armonico": False,
+        "caida_modulacion_20k_db":  0.0,
+        "brecha_modulacion_20k_db": 0.0,
+        "modulacion_psicoacustica_20k": False,
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }
@@ -989,8 +1023,13 @@ class PsychoacousticSTFTAccumulator:
         self._e_sfb21 = []
         self._env_8_14 = []
         self._env_16_20 = []
+        # Upper-band psychoacoustic modulation (16.0-19.5 kHz vs 20.2-21.8 kHz)
+        # and frame-level Mid/Side stereo collapse in 13.5-16.5 kHz.
+        self._e_16_195 = []
+        self._e_202_218 = []
+        self._ms_excess = []
 
-    def add(self, power, freqs, window):
+    def add(self, power, freqs, window, power_mid=None, power_side=None):
         """Consumes the (frames, bins) power of one selected block."""
         if self._error or power.shape[0] == 0:
             return
@@ -1007,10 +1046,29 @@ class PsychoacousticSTFTAccumulator:
 
             band = (power[:, sl_band].mean(axis=1, dtype=np.float64)
                     / gain)
+            # Upper-band modulation (16.0-19.5 kHz vs 20.2-21.8 kHz) uses a
+            # -78 dBFS gate so quieter passages where a full-band codec starves
+            # its top scalefactor band are also captured.
+            if 41000 <= self.sr <= 48000:
+                mod_mask = band > 10.0 ** (-78.0 / 10.0)
+                if np.any(mod_mask):
+                    sl_16_195, ok_16_195 = _freq_slice(freqs, 16000.0, 19500.0, True)
+                    hi_20 = min(21800.0, self.sr * 0.495)
+                    sl_202_218, ok_202_218 = _freq_slice(freqs, 20200.0, hi_20, True)
+                    if ok_16_195 and ok_202_218:
+                        bp_m = power if np.all(mod_mask) else power[mod_mask]
+                        e_16 = 10.0 * np.log10(np.maximum(
+                            bp_m[:, sl_16_195], _FLOOR_F32)).mean(axis=1, dtype=np.float64)
+                        e_20 = 10.0 * np.log10(np.maximum(
+                            bp_m[:, sl_202_218], _FLOOR_F32)).mean(axis=1, dtype=np.float64)
+                        self._e_16_195.extend(e_16.tolist())
+                        self._e_202_218.extend(e_20.tolist())
+
             active_mask = band > 10.0 ** (self.BAND_THRESHOLD_DBFS / 10.0)
             if not np.any(active_mask):
                 return
-            block_power = power if np.all(active_mask) else power[active_mask]
+            all_active = bool(np.all(active_mask))
+            block_power = power if all_active else power[active_mask]
             self._frames += int(block_power.shape[0])
             self._freqs = freqs
             block_sum = block_power.sum(axis=0, dtype=np.float64)
@@ -1039,11 +1097,36 @@ class PsychoacousticSTFTAccumulator:
                     self._env_8_14.extend(db_8_14.tolist())
                     self._env_16_20.extend(db_16_20.tolist())
 
+            # Frame-level Mid/Side stereo collapse in 13.5-16.5 kHz vs 2-8 kHz.
+            if power_side is not None and self.sr >= 41000:
+                sl_ms_lo, ok_ms_lo = _freq_slice(freqs, 2000.0, 8000.0, True)
+                sl_ms_hi, ok_ms_hi = _freq_slice(freqs, 13500.0, 16500.0, True)
+                if ok_ms_lo and ok_ms_hi:
+                    ps_act = power_side if all_active else power_side[active_mask]
+                    if power_mid is not None:
+                        pm_act = power_mid if all_active else power_mid[active_mask]
+                    else:
+                        pm_act = np.maximum(block_power - ps_act, _FLOOR_F32)
+                    m_lo = 10.0 * np.log10(np.maximum(
+                        pm_act[:, sl_ms_lo].mean(axis=1, dtype=np.float64), 1e-28))
+                    s_lo = 10.0 * np.log10(np.maximum(
+                        ps_act[:, sl_ms_lo].mean(axis=1, dtype=np.float64), 1e-28))
+                    m_hi = 10.0 * np.log10(np.maximum(
+                        pm_act[:, sl_ms_hi].mean(axis=1, dtype=np.float64), 1e-28))
+                    s_hi = 10.0 * np.log10(np.maximum(
+                        ps_act[:, sl_ms_hi].mean(axis=1, dtype=np.float64), 1e-28))
+                    valid_ms = (m_hi > (ref_db.astype(np.float64) - 35.0)) & ((m_lo - s_lo) < 20.0)
+                    if np.any(valid_ms):
+                        excess = (m_hi[valid_ms] - s_hi[valid_ms]) - (m_lo[valid_ms] - s_lo[valid_ms])
+                        self._ms_excess.extend(excess.tolist())
+
             # A cut-off is only meaningful when the frame also has energy in
             # 10-14 kHz; otherwise a voice/guitar frame with no cymbals looks
             # like a codec cutting and its on/off nature fakes jitter.
+            # Cap the upper bound at 22.05 kHz so natural ultrasonic decay in
+            # 96/192 kHz Hi-Res recordings is not mistaken for codec jitter.
             sl_presence, ok_presence = _freq_slice(freqs, 10000.0, 14000.0, True)
-            sl_hf, ok_hf = _freq_slice(freqs, 11000.0, None)
+            sl_hf, ok_hf = _freq_slice(freqs, 11000.0, min(22050.0, self.sr * 0.49), True)
             if ok_presence and ok_hf:
                 presence_db = 10.0 * np.log10(np.maximum(
                     block_power[:, sl_presence].mean(axis=1), _FLOOR_F32))
@@ -1177,6 +1260,42 @@ class PsychoacousticSTFTAccumulator:
             notch_db = max(0.0, jump_band, prof_notch)
             exciter_suspicion = bool(corr_env > 0.92 and notch_db >= 15.0)
 
+        # Upper-band psychoacoustic modulation (16.0-19.5 kHz vs 20.2-21.8 kHz):
+        # high-bitrate codecs (MP3 V0/320, AAC 256/320, Vorbis Q6/Q9, Opus, WMA)
+        # dynamically starve or quantize the >20 kHz band frame-by-frame, which
+        # creates a wide P95-P05 spread in the 16-19.5 -> 20.2-21.8 kHz drop, or
+        # combines a deep >48 dB drop with cut-off jitter. Static LTI filters
+        # have near-zero modulation spread across active frames.
+        drp_med = 0.0
+        drp_iqr = 0.0
+        psycho_mod_20k = False
+        if len(self._e_16_195) >= 16 and 41000 <= self.sr <= 48000:
+            arr_16 = np.asarray(self._e_16_195, dtype=np.float64)
+            arr_20 = np.asarray(self._e_202_218, dtype=np.float64)
+            if np.all(np.isfinite(arr_16)) and np.all(np.isfinite(arr_20)):
+                drp = arr_16 - arr_20
+                drp_med = float(np.median(drp))
+                drp_iqr = float(np.percentile(drp, 95) - np.percentile(drp, 5))
+                top_iqr = float(np.percentile(arr_20, 95) - np.percentile(arr_20, 5))
+                psycho_mod_20k = bool(
+                    (drp_iqr >= 10.0 and top_iqr >= 5.0 and drp_med >= 32.0)
+                    or (drp_iqr >= 30.0 and top_iqr >= 30.0)
+                    or (drp_med >= 48.0 and drp_iqr >= 12.0 and iqr > 550.0)
+                )
+
+        # Dynamic frame-by-frame Mid/Side stereo collapse in 13.5-16.5 kHz:
+        # LAME/AAC Joint Stereo switches between LR and MS per frame, so the
+        # 95th percentile of the M/S excess is high and its frame spread is wide.
+        self._ms_p95_db = 0.0
+        self._ms_dynamic_collapse = False
+        if len(self._ms_excess) >= 16:
+            arr_ms = np.asarray(self._ms_excess, dtype=np.float64)
+            if np.all(np.isfinite(arr_ms)):
+                ms_p95 = float(np.percentile(arr_ms, 95))
+                ms_iqr = float(np.percentile(arr_ms, 90) - np.percentile(arr_ms, 10))
+                self._ms_p95_db = ms_p95
+                self._ms_dynamic_collapse = bool(ms_p95 > 12.0 and ms_iqr > 5.0)
+
         return {
             "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
             "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
@@ -1193,6 +1312,11 @@ class PsychoacousticSTFTAccumulator:
             "muesca_excitador_db":      (round(notch_db, 2)
                                          if math.isfinite(notch_db) else 0.0),
             "sospecha_excitador_armonico": exciter_suspicion,
+            "caida_modulacion_20k_db":  (round(drp_med, 2)
+                                         if math.isfinite(drp_med) else 0.0),
+            "brecha_modulacion_20k_db": (round(drp_iqr, 2)
+                                         if math.isfinite(drp_iqr) else 0.0),
+            "modulacion_psicoacustica_20k": psycho_mod_20k,
         }
 
 class _SpectralAccumulator:
@@ -1339,7 +1463,8 @@ class _SpectralAccumulator:
                 sum_r = sum_l
                 sum_total = sum_l
 
-            self._psycho.add(power_total, freqs, window)
+            self._psycho.add(power_total, freqs, window,
+                             power_side=power_side if self.is_stereo else None)
 
             n_frames = power_total.shape[0]
             if self.save_png:
@@ -1370,6 +1495,12 @@ class _SpectralAccumulator:
                                     power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
         spectrum.update(self._psycho.result())
+        if (getattr(self._psycho, "_ms_dynamic_collapse", False)
+                and not spectrum.get("es_dual_mono")):
+            spectrum["sospecha_joint_stereo"] = True
+            ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
+            if math.isfinite(ms_p95) and ms_p95 > spectrum.get("caida_side_agudos_db", 0.0):
+                spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
         if self.save_png and png_power:
             png_path, error = self._renderer(
                 freqs, np.concatenate(png_times),

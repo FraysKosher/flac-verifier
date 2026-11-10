@@ -74,6 +74,7 @@ def calculate_score(meta, spectrum, bdi):
                 bdi.get("lsbs") == "active"
                 and not forensic_bdi.get("es_padded_16_en_24")
                 and not forensic_bdi.get("es_24bit_escalado_en_peine")
+                and not forensic_bdi.get("es_16bit_dither_en_24")
             )
         )
         without_signatures_lossy = (
@@ -83,6 +84,7 @@ def calculate_score(meta, spectrum, bdi):
             and not spectrum.get("clipping_reconstruccion_lossy")
             and not spectrum.get("islas_mdct_sfb21")
             and not spectrum.get("sospecha_excitador_armonico")
+            and not spectrum.get("modulacion_psicoacustica_20k")
             and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
             and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
         )
@@ -225,6 +227,13 @@ def calculate_score(meta, spectrum, bdi):
                      f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch): "
                      f"adversarial bandwidth extension",
                      0.30, blocks_max_verdict=True)
+        if (spectrum.get("modulacion_psicoacustica_20k")
+                and not (spectrum.get("sospecha_corte_opus_20k") and iqr > 550.0)):
+            penalizes(f"upper-band psychoacoustic modulation above 20 kHz "
+                     f"(median drop {spectrum.get('caida_modulacion_20k_db', 0.0):.1f} dB, "
+                     f"P95-P05 spread {spectrum.get('brecha_modulacion_20k_db', 0.0):.1f} dB): "
+                     f"frame-adaptive lossy codec signature",
+                     0.30, blocks_max_verdict=True)
 
         # Vector 5: libopus fullband cliff at 20.00 kHz. In isolation it is
         # indistinguishable from a mastering anti-alias low-pass, so it is scored
@@ -236,6 +245,7 @@ def calculate_score(meta, spectrum, bdi):
                 spectrum.get("sospecha_joint_stereo")
                 or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
                 or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
+                or spectrum.get("modulacion_psicoacustica_20k")
             )
             if corroborado:
                 penalizes(f"20.00 kHz cliff of "
@@ -282,11 +292,13 @@ def calculate_score(meta, spectrum, bdi):
                     bdi.get("lsbs") == "active"
                     and not forensic.get("es_padded_16_en_24")
                     and not forensic.get("es_24bit_escalado_en_peine")
+                    and not forensic.get("es_16bit_dither_en_24")
                 )
                 without_codec_nor_brickwall = (
                     category == "no_cutoff"
                     and not spectrum.get("sospecha_joint_stereo")
                     and not spectrum.get("sospecha_corte_opus_20k")
+                    and not spectrum.get("modulacion_psicoacustica_20k")
                     and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
                     and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
                     and (spectrum.get("gradiente_borde_db_khz") or 0.0) < 35.0
@@ -338,6 +350,11 @@ def calculate_score(meta, spectrum, bdi):
                 comb_detail = f"global lattice step {step_size} integers"
             penalizes(f"24-bit container with a quantisation comb in the 8 LSBs "
                      f"({comb_detail}): a 16-bit source scaled into 24 bits", 0.40)
+        if forensic.get("es_16bit_dither_en_24"):
+            occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
+            penalizes(f"24-bit container with a 16-bit grid and boundary micro-dither "
+                     f"(interior LSB8 occupancy {occ:.2f}%): "
+                     f"16-bit source with synthetic dither in the lowest bits", 0.40)
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
     # resultado["md5"] (verify_md5), and an MD5 that does not match is a hard error.
@@ -374,7 +391,7 @@ def _deserves_album_coherence(result):
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
                   "sospecha_joint_stereo", "sospecha_corte_opus_20k",
                   "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
-                  "sospecha_excitador_armonico"):
+                  "sospecha_excitador_armonico", "modulacion_psicoacustica_20k"):
         if spectrum.get(key):
             return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
@@ -382,6 +399,7 @@ def _deserves_album_coherence(result):
     forensic = bdi.get("forense_bits") or {}
     if (forensic.get("es_padded_16_en_24")
             or forensic.get("es_24bit_escalado_en_peine")
+            or forensic.get("es_16bit_dither_en_24")
             or bdi.get("lsbs") == "empty"):
         return False
     permitidos = ("spectral ceiling", "partial hi-res content",
@@ -512,6 +530,10 @@ def forensic_evidence(result):
         evidence.append(f"Harmonic exciter / SBR signature: "
                           f"r = {spectrum.get('corr_env_excitador', 0.0):.2f}, "
                           f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch")
+    if spectrum.get("modulacion_psicoacustica_20k"):
+        evidence.append(f"Upper-band psychoacoustic modulation (>20 kHz): "
+                          f"{spectrum.get('caida_modulacion_20k_db', 0.0):.1f} dB median drop, "
+                          f"{spectrum.get('brecha_modulacion_20k_db', 0.0):.1f} dB P95-P05 spread")
     forensic = bdi.get("forense_bits") or {}
     if forensic.get("es_padded_16_en_24"):
         evidence.append("16-bit content zero-padded into a 24-bit container")
@@ -525,6 +547,10 @@ def forensic_evidence(result):
         else:
             evidence.append(f"24-bit quantisation comb: global lattice step "
                               f"{step_size} integers")
+    if forensic.get("es_16bit_dither_en_24"):
+        occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
+        evidence.append(f"16-bit grid with boundary micro-dither in 24-bit "
+                          f"(interior LSB8 occupancy {occ:.2f}%)")
     if (result.get("md5") or {}).get("estado") == "match":
         evidence.append("STREAMINFO MD5 verified (match)")
     if result.get("coherencia_album"):

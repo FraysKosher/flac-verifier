@@ -1322,6 +1322,116 @@ class test_forensic_rigorous(unittest.TestCase):
             self.assertLess(res["esp"]["techo_rel_nyquist"], 0.88)
             self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS", name)
 
+    def test_22_16bit_with_boundary_micro_dither_in_24(self):
+        """A 16-bit source in 24-bit with +-2 LSB micro-dither is caught by interior LSB8 occupancy."""
+        sr = 44100
+        n = sr * 5
+        rng = np.random.default_rng(2201)
+        raw = rng.standard_normal((n, 2))
+        b, a = signal.butter(2, 16000.0 / (sr * 0.5), btype="low")
+        sig = signal.lfilter(b, a, raw, axis=0)
+        sig /= np.max(np.abs(sig)) * 1.15
+
+        grid16_i24 = np.round(sig * 32767.0).astype(np.int32) * 256
+        micro_dither = rng.integers(-2, 3, size=grid16_i24.shape, dtype=np.int32)
+        forged_i24 = np.clip(grid16_i24 + micro_dither, -8388608, 8388607)
+
+        path_fake = self.base_path / "falso_16bit_micro_dither_en_24.flac"
+        sf.write(path_fake, forged_i24 << 8, sr, subtype="PCM_24")
+        res_fake = motor_flac.analyze_file_data(str(path_fake), use_cache=False)
+        fb_fake = res_fake["bdi"]["forense_bits"]
+
+        self.assertIs(fb_fake["es_padded_16_en_24"], False)
+        self.assertLess(fb_fake["lsb8_ocupacion_interior"], 0.05)
+        self.assertIs(fb_fake["es_16bit_dither_en_24"], True)
+        self.assertNotEqual(res_fake["veredicto"], "GENUINE LOSSLESS")
+        self.assertIn("boundary micro-dither", " ".join(res_fake["problemas"]))
+
+        true24_i24 = np.clip(np.round(sig * 8388607.0).astype(np.int32), -8388608, 8388607)
+        path_ok = self.base_path / "control_24bit_real.flac"
+        sf.write(path_ok, true24_i24 << 8, sr, subtype="PCM_24")
+        res_ok = motor_flac.analyze_file_data(str(path_ok), use_cache=False)
+        fb_ok = res_ok["bdi"]["forense_bits"]
+
+        self.assertGreater(fb_ok["lsb8_ocupacion_interior"], 0.80)
+        self.assertIs(fb_ok["es_16bit_dither_en_24"], False)
+        self.assertEqual(res_ok["veredicto"], "GENUINE LOSSLESS")
+
+    def test_23_upscale_48k_to_96k_brickwall_24k(self):
+        """A 48 kHz master upsampled to 96 kHz has a brickwall at 24.0 kHz and is caught."""
+        sr_src = 48000
+        sr_dst = 96000
+        n_src = sr_src * 5
+        rng = np.random.default_rng(2301)
+        src = rng.standard_normal((n_src, 2))
+        b, a = signal.butter(2, 18000.0 / (sr_src * 0.5), btype="low")
+        src = signal.lfilter(b, a, src, axis=0)
+        src /= np.max(np.abs(src)) * 1.15
+
+        upscaled = signal.resample_poly(src, 2, 1, axis=0)
+        dither = (rng.random(upscaled.shape) - rng.random(upscaled.shape)) / 8388608.0
+        upscaled = np.clip(upscaled + dither, -0.99, 0.99)
+
+        path = self.base_path / "falso_48k_a_96k_brickwall_24k.flac"
+        sf.write(path, upscaled, sr_dst, subtype="PCM_24")
+        res = motor_flac.analyze_file_data(str(path), use_cache=False)
+
+        self.assertGreaterEqual(res["esp"]["techo_hz"], 22050)
+        self.assertIs(res["esp"]["muro_brickwall_nyquist"], True)
+        self.assertNotEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    def test_24_hires_ultrasonic_transients_no_false_jitter(self):
+        """A genuine 96 kHz master with natural ultrasonic decay does not trigger cut-off jitter."""
+        sr = 96000
+        n = sr * 6
+        t = np.arange(n) / float(sr)
+        rng = np.random.default_rng(2401)
+        white = rng.standard_normal((n, 2))
+        sos_body = signal.butter(3, 18000.0, btype="low", fs=sr, output="sos")
+        body = signal.sosfilt(sos_body, white, axis=0)
+        sos_ultra = signal.butter(2, [18000.0, 42000.0], btype="band", fs=sr, output="sos")
+        ultra = signal.sosfilt(sos_ultra, rng.standard_normal((n, 2)), axis=0)
+        burst_env = (0.15 + 0.85 * (np.sin(2.0 * np.pi * 1.7 * t) ** 4))[:, None]
+        mix = body + 0.12 * ultra * burst_env
+        mix /= np.max(np.abs(mix)) * 1.15
+
+        path = self.base_path / "genuino_96k_transitorios_ultrasonicos.flac"
+        sf.write(path, mix, sr, subtype="PCM_24")
+        res = motor_flac.analyze_file_data(str(path), use_cache=False)
+
+        self.assertLessEqual(res["esp"]["iqr_corte_hz"], 550.0)
+        self.assertEqual(res["veredicto"], "GENUINE LOSSLESS")
+
+    def test_25_upper_band_psychoacoustic_modulation_20k(self):
+        """Frame-adaptive starvation above 20 kHz is caught while a static LTI filter is spared."""
+        sr = 44100
+        n = sr * 6
+        t = np.arange(n) / float(sr)
+        rng = np.random.default_rng(2501)
+        white = rng.standard_normal((n, 2))
+        sos_lo = signal.ellip(10, 0.2, 85.0, 19800.0, btype="low", fs=sr, output="sos")
+        base_band = signal.sosfilt(sos_lo, white, axis=0)
+        sos_hi = signal.butter(4, [20100.0, 21800.0], btype="band", fs=sr, output="sos")
+        top_band = signal.sosfilt(sos_hi, rng.standard_normal((n, 2)), axis=0)
+
+        gate = (np.sin(2.0 * np.pi * 2.3 * t) > 0.35).astype(np.float64)[:, None]
+        modulated = base_band * 0.25 + top_band * (0.22 * gate + 0.0002 * (1.0 - gate))
+        modulated /= np.max(np.abs(modulated)) * 1.10
+
+        path_mod = self.base_path / "falso_modulacion_psicoacustica_20k.flac"
+        sf.write(path_mod, modulated, sr, subtype="PCM_16")
+        res_mod = motor_flac.analyze_file_data(str(path_mod), use_cache=False)
+
+        self.assertIs(res_mod["esp"]["modulacion_psicoacustica_20k"], True)
+        self.assertGreaterEqual(res_mod["esp"]["brecha_modulacion_20k_db"], 10.0)
+        self.assertNotEqual(res_mod["veredicto"], "GENUINE LOSSLESS")
+
+        static_lti = base_band / (np.max(np.abs(base_band)) * 1.10)
+        path_lti = self.base_path / "control_lti_estatico_19k8.flac"
+        sf.write(path_lti, static_lti, sr, subtype="PCM_16")
+        res_lti = motor_flac.analyze_file_data(str(path_lti), use_cache=False)
+        self.assertIs(res_lti["esp"]["modulacion_psicoacustica_20k"], False)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -453,6 +453,7 @@ class ForensicBitsAccumulator:
                 "p10": 1.0,
                 "entropia": None,
                 "cajones": n_unique,
+                "ocupacion_interior_lsb8": 1.0,
             }
         offset_int = int(offset)
         if offset_int == 0 and bitmap.size >= 65536:
@@ -468,6 +469,7 @@ class ForensicBitsAccumulator:
         bins = int(np.count_nonzero(hist_mod))
         p = hist_mod[hist_mod > 0] / float(n_unique)
         entropy = float(-np.sum(p * np.log2(p)))
+        inner_ratio = float(np.sum(hist_mod[16:240]) / float(n_unique))
 
         diffs = np.diff(raw_indices)
         np.minimum(diffs, 1025, out=diffs)
@@ -480,6 +482,7 @@ class ForensicBitsAccumulator:
                 "p10": 1.0,
                 "entropia": entropy,
                 "cajones": bins,
+                "ocupacion_interior_lsb8": inner_ratio,
             }
         cdf = np.cumsum(counts)
         pos10 = (n_local - 1) * 0.10
@@ -504,6 +507,7 @@ class ForensicBitsAccumulator:
             "p10": p10,
             "entropia": entropy,
             "cajones": bins,
+            "ocupacion_interior_lsb8": inner_ratio,
         }
 
     def result(self):
@@ -520,6 +524,8 @@ class ForensicBitsAccumulator:
         r_low = self._evaluate_bitmap(self._bitmap_low, self.low_int,
                                       self._samples_low)
 
+        dithered_16_in_24 = False
+        inner_rep = 1.0
         if not padded:
             r_reb1 = self._evaluate_bitmap(self._bitmap_reb1, SLICE_1_BASE,
                                            self._samples_reb1)
@@ -545,14 +551,18 @@ class ForensicBitsAccumulator:
                 rep = r_low
             entropy_rep = rep["entropia"]
             ocupados_rep = rep["cajones"]
+            inner_rep = r_glob["ocupacion_interior_lsb8"] if r_glob["evaluado"] else rep["ocupacion_interior_lsb8"]
             if comb:
                 step_grid = rep["p10"]
             else:
                 step_grid = r_glob["p10"] if r_glob["evaluado"] else rep["p10"]
+                if r_glob["evaluado"] and r_glob["cajones"] >= 3 and inner_rep < 0.05:
+                    dithered_16_in_24 = True
         else:
             comb = False
             entropy_rep = r_low["entropia"]
             ocupados_rep = r_low["cajones"]
+            inner_rep = 0.0
             step_grid = 1.0
 
         dop_pares = int(self._dop_pares)
@@ -566,6 +576,8 @@ class ForensicBitsAccumulator:
             "trailing_zeros_lsb":         int(zeros),
             "lsb8_entropia_bits":         round(entropy_rep, 3) if entropy_rep is not None else None,
             "lsb8_cajones_ocupados":      ocupados_rep,
+            "lsb8_ocupacion_interior":    round(inner_rep, 4),
+            "es_16bit_dither_en_24":      dithered_16_in_24,
             "muestras_pasaje_bajo":       int(self._samples_low),
             "paso_reticula_mediano":      round(step_grid, 2),
             "es_24bit_escalado_en_peine": comb,

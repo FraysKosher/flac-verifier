@@ -73,7 +73,14 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "9.8"
+ENGINE_VERSION = "10.0"
+# 10.0: Phase 9/10 forensic suite: 24-bit LSB8 interior occupancy audit
+#       (catches 16-bit + boundary micro-dither in 24-bit), 24.0 kHz DAT/broadcast
+#       Nyquist brickwall detector for 96/192 kHz containers, 22.05 kHz upper cap
+#       on instantaneous cut-off jitter (prevents false jitter penalties on
+#       genuine 24/96 and 24/192 ultrasonic masters), multi-scale spectral step
+#       detector, frame-level dynamic Mid/Side stereo collapse, and upper-band
+#       psychoacoustic modulation (>20 kHz) for high-bitrate lossy codecs.
 # 9.8: Phase 8 detectors (24-bit lattice, DSD/Scarlet/DSD128, sfb21 islands, exciter, acoustic centroid).
 #      Album coherence now also covers the Phase 8D acoustic exemption: a
 #      low-centroid acoustic track that already reached PROBABLY LOSSLESS on its

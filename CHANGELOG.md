@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-09
+
+### Added
+
+- Raised `ENGINE_VERSION` to `"10.0"` with the Phase 9/10 forensic detection
+  suite across `_motor_bits.py`, `_motor_espectral.py` and `_motor_veredicto.py`:
+  - **24-bit LSB8 interior occupancy audit (`lsb8_ocupacion_interior`,
+    `es_16bit_dither_en_24`)**: detects 16-bit sources packaged inside 24-bit
+    containers with $\pm 1\dots 3\text{ LSB}_{24}$ boundary micro-dither where
+    interior modulo-256 bins (`[16..239]`) have $< 5\%$ occupancy.
+  - **24.0 kHz DAT/broadcast Nyquist brickwall detector**: extends
+    `muro_brickwall_nyquist` in `_diagnose_hires_authenticity` to catch
+    `48 kHz -> 96/192 kHz` upscales whose passband exceeds the 22.05 kHz CD
+    limit and drops at 24.0 kHz.
+  - **Upper-band psychoacoustic modulation detector (`caida_modulacion_20k_db`,
+    `brecha_modulacion_20k_db`, `modulacion_psicoacustica_20k`)**: measures
+    frame-by-frame log-spectral drop between `16.0–19.5 kHz` and
+    `20.2–21.8 kHz`, catching high-bitrate lossy codecs (`LAME V0/320`,
+    `AAC-LC 256/320`, `Vorbis Q6/Q9`, `Opus 128->44.1k`, `WMA 192`) while
+    sparing static LTI mastering filters.
+  - **Dynamic frame-by-frame Mid/Side stereo collapse**: tracks 95th-percentile
+    Mid/Side high-frequency excess (`13.5–16.5 kHz` vs `2–8 kHz`) across active
+    frames in `PsychoacousticSTFTAccumulator`.
+  - **Multi-scale spectral step detector**: adds a medium-window (`n_pr // 14`)
+    step pass in `_spectral_metrics` guarded by active passband energy
+    (`bef_m > -52.0 dB`) and transition-band gradient (`> 38.0 dB/kHz`).
+  - Added 4 deterministic forensic unit tests (`test_22` to `test_25`) in
+    `tests/test_forense_riguroso.py` (suite is now 329 tests).
+
+### Fixed
+
+- Capped the upper bound of the instantaneous cut-off slice in
+  `PsychoacousticSTFTAccumulator.add` at `min(22050.0, sr * 0.49)` so natural
+  ultrasonic decay in genuine `24/96` and `24/192` masters does not trigger a
+  false `iqr_corte_hz > 550 Hz` jitter penalty.
+
 ## [2.5.0] - 2026-11-09
 
 ### Changed
