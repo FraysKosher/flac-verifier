@@ -347,17 +347,24 @@ class _BlockAnalysis:
             renderer=_save_spectrogram)
 
     def add(self, block, offset):
-        self._integrity_and_clipping(block)
-        self._dynamic_range(block)
+        q_int = None
+        if self.bits == 24 and (self._md5 is not None
+                                or self._forensic_bits is not None):
+            q_int = np.clip(
+                np.rint(np.asarray(block, dtype=np.float64) * 8388608.0),
+                -8388608.0, 8388607.0).astype("<i4")
+        self._integrity_and_clipping(block, q_int=q_int)
+        mono = self._dynamic_range(block)
         self._sample_bits(block, offset)
         if self._forensic_bits is not None:
-            self._forensic_bits.add(block)
-        self._spectrum_acc.add(block, offset)
+            self._forensic_bits.add(block, q_int=q_int)
+        self._spectrum_acc.add(block, offset, mono=mono)
 
     # ── per block ────────────────────────────────────────────────────────────
-    def _integrity_and_clipping(self, block):
+    def _integrity_and_clipping(self, block, q_int=None):
         if self._md5 is not None:
-            self._md5.update(_pcm_bytes(block, self.bits, self._md5_width))
+            self._md5.update(_pcm_bytes(block, self.bits, self._md5_width,
+                                        q_int=q_int))
         if block.ndim > 1:
             n_ch = block.shape[1]
             if n_ch == 2:
@@ -389,6 +396,7 @@ class _BlockAnalysis:
                 mono = block.mean(axis=1)
         else:
             mono = block
+        block_mono = mono
         if mono.size:
             # max(|mono|) without materialising a full np.abs(mono) temporary.
             peak = max(float(np.max(mono)), -float(np.min(mono)))
@@ -402,6 +410,7 @@ class _BlockAnalysis:
             self._dr_sumsq.extend(np.einsum("ij,ij->i", full, full).tolist())
             mono = mono[n * self._dr_block :]
         self._dr_slope = mono
+        return block_mono
 
     def _sample_bits(self, block, offset):
         # Bits <= 16 never reach the LSB test (analyze_bit_depth returns
@@ -599,6 +608,14 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                                     f"({type(e).__name__}: {e})"}
 
     def in_order():
+        """Two-phase result stream:
+        1. Immediate phase: tracks that cannot be rescued by album coherence
+           are yielded as soon as their individual analysis finishes.
+        2. Deferred coherence phase: tracks held in `retenidas` are yielded
+           after `apply_album_coherence(batch)` evaluates the complete album.
+        Consumers that associate results with input paths or display them in
+        album order must read `result["ruta"]` and `result["indice_original"]`
+        rather than assuming positional zip order."""
         calculated = calculate_pending() if pendientes else None
         batch = []
         retenidas = []
@@ -725,7 +742,18 @@ def generate_pdf_report(analyzed_path, results, mode=None):
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": f"could not load the report generator ({type(e).__name__}: {e})"}
-    return informe_pdf.generate(analyzed_path, results, mode=mode)
+    ordered = [
+        item[1] for item in sorted(
+            enumerate(results),
+            key=lambda item: (
+                item[1].get("indice_original", item[0])
+                if isinstance(item[1], dict)
+                and isinstance(item[1].get("indice_original"), int)
+                else item[0]
+            ),
+        )
+    ]
+    return informe_pdf.generate(analyzed_path, ordered, mode=mode)
 
 def main_cli(argv: "list[str] | None" = None) -> int:
     """Engine CLI. Returns the exit code (0 = OK).

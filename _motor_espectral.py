@@ -55,18 +55,27 @@ def _create_lut_inferno_256():
     return lut
 
 _LUT_SPECTROGRAM = _create_lut_inferno_256()
+_FONT_CACHE = {}
 
 def _source_png(font_size=14):
     """TrueType font with support for the em dash; bitmap fallback otherwise."""
+    cached = _FONT_CACHE.get(font_size)
+    if cached is not None:
+        return cached
+    loaded = None
     for name in ("arial.ttf", "segoeui.ttf", "DejaVuSans.ttf"):
         try:
-            return ImageFont.truetype(name, font_size)
+            loaded = ImageFont.truetype(name, font_size)
+            break
         except OSError:
             continue
-    try:
-        return ImageFont.load_default(size=font_size)
-    except TypeError:                  # very old Pillow: no size parameter
-        return ImageFont.load_default()
+    if loaded is None:
+        try:
+            loaded = ImageFont.load_default(size=font_size)
+        except TypeError:                  # very old Pillow: no size parameter
+            loaded = ImageFont.load_default()
+    _FONT_CACHE[font_size] = loaded
+    return loaded
 
 def _text_vertical(canvas, xy, text, source, color):
     """Draws rotated (90 CCW) text for the axis/colorbar labels."""
@@ -141,12 +150,12 @@ def _draw_legend(canvas, drawing, x1, y0, entries, source):
     width = max(widths) + 70
     height = 14 + 23 * len(entries)
     x0 = x1 - width
-    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    lapiz = ImageDraw.Draw(layer)
-    lapiz.rounded_rectangle([x0, y0, x1, y0 + height], radius=5,
-                            fill=(15, 15, 22, 215), outline=(140, 140, 160, 255),
-                            width=1)
-    canvas.alpha_composite(layer)
+    layer = Image.new("RGBA", (width + 2, height + 2), (0, 0, 0, 0))
+    pen = ImageDraw.Draw(layer)
+    pen.rounded_rectangle([0, 0, width, height], radius=5,
+                          fill=(15, 15, 22, 215), outline=(140, 140, 160, 255),
+                          width=1)
+    canvas.alpha_composite(layer, (x0, y0))
     for index, (color, _, text) in enumerate(entries):
         y = y0 + 12 + index * 23
         _line_dashed(drawing, x0 + 10, x0 + 48, y, color, jump=8, gap=5)
@@ -854,19 +863,22 @@ def _needed_active_blocks(samplerate):
     long. With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
     return max(1, int(math.ceil(SPECTRO_SECONDS * float(samplerate) / FRAMES_BY_BLOCK)))
 
-def _activity_score(block, last_sample=None):
+def _activity_score(block, last_sample=None, mono=None):
     """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
     cheap high-frequency/transient indicator: it is large on cymbals and attacks
     and almost zero on a sustained bass line. The last sample of the previous
     block is carried over so the difference is not lost at the boundary."""
-    if block.ndim > 1:
-        n_ch = block.shape[1]
-        if n_ch == 1:
-            mono = block[:, 0]
+    if mono is None:
+        if block.ndim > 1:
+            n_ch = block.shape[1]
+            if n_ch == 1:
+                mono = block[:, 0]
+            elif n_ch == 2:
+                mono = (block[:, 0] + block[:, 1]) * 0.5
+            else:
+                mono = block.mean(axis=1)
         else:
-            mono = block.mean(axis=1)
-    else:
-        mono = block
+            mono = block
     if mono.size == 0:
         return -math.inf, 0.0
 
@@ -877,30 +889,72 @@ def _activity_score(block, last_sample=None):
         rms_db = -math.inf
 
     if last_sample is None:
-        diferencias = np.diff(mono)
+        diffs = np.diff(mono)
+        if diffs.size:
+            e_diff = float(np.dot(diffs, diffs) / diffs.size)
+        else:
+            e_diff = 0.0
     else:
-        diferencias = np.diff(np.concatenate(([last_sample], mono)))
-    if diferencias.size:
-        e_diff = float(np.dot(diferencias, diferencias) / diferencias.size)
-    else:
-        e_diff = 0.0
+        diffs = np.diff(mono)
+        first_diff = float(mono[0]) - float(last_sample)
+        total_sq = first_diff * first_diff + (float(np.dot(diffs, diffs)) if diffs.size else 0.0)
+        e_diff = float(total_sq / mono.size)
     return rms_db, e_diff
 
-def _stft_complex(channel, nperseg, hop, window, scale):
+def _stft_complex(channel, nperseg, hop, window, scale, frame_buf=None):
     """float32 STFT with sliding_window_view: no copies beyond the windowed
     frames, and the result stays in single precision (half the RAM of float64)."""
-    x = np.asarray(channel, dtype=np.float32)
-    marcos = np.lib.stride_tricks.sliding_window_view(x, nperseg)[::hop]
-    marcos = marcos * window
-    spectrum = np.fft.rfft(marcos, axis=1)
+    x = np.ascontiguousarray(channel, dtype=np.float32)
+    frames = np.lib.stride_tricks.sliding_window_view(x, nperseg)[::hop]
+    if frame_buf is not None and frame_buf.shape == frames.shape:
+        np.multiply(frames, window, out=frame_buf)
+        spectrum = np.fft.rfft(frame_buf, axis=1)
+    else:
+        frames = frames * window
+        spectrum = np.fft.rfft(frames, axis=1)
     spectrum *= scale
     return spectrum
 
-def _power_from_fft(spectrum):
+_FLOOR_F32 = np.float32(1e-28)
+
+def _power_from_fft(spectrum, out=None, tmp=None):
     """|Z|^2 without np.sqrt, with the same 1e-28 floor used for the dB scale."""
+    if out is not None and tmp is not None and out.shape == spectrum.shape:
+        np.multiply(spectrum.real, spectrum.real, out=out)
+        np.multiply(spectrum.imag, spectrum.imag, out=tmp)
+        np.add(out, tmp, out=out)
+        np.maximum(out, _FLOOR_F32, out=out)
+        return out
     power = spectrum.real ** 2 + spectrum.imag ** 2
-    np.maximum(power, 1e-28, out=power)
+    np.maximum(power, _FLOOR_F32, out=power)
     return power
+
+
+def _freq_slice(freqs, lo, hi=None, hi_inclusive=True):
+    """Contiguous slice on a sorted frequency vector (avoids 2D boolean copies)."""
+    i0 = int(np.searchsorted(freqs, lo, side="left"))
+    if hi is None:
+        i1 = int(freqs.size)
+    else:
+        i1 = int(np.searchsorted(freqs, hi, side="right" if hi_inclusive else "left"))
+    return slice(i0, i1), (i1 > i0)
+
+
+def _exact_linear_threshold(thr):
+    """Exact float32 linear power threshold equivalent to `10*log10(max(p, 1e-28)) > thr`."""
+    thr_lin = (10.0 ** (thr.astype(np.float64) / 10.0)).astype(np.float32)
+    for _ in range(16):
+        too_high = (10.0 * np.log10(np.maximum(thr_lin, 1e-28))) > thr
+        if not np.any(too_high):
+            break
+        thr_lin = np.where(too_high, np.nextafter(thr_lin, np.float32(0.0)), thr_lin)
+    for _ in range(16):
+        nxt = np.nextafter(thr_lin, np.float32(np.inf))
+        too_low = (10.0 * np.log10(np.maximum(nxt, 1e-28))) <= thr
+        if not np.any(too_low):
+            break
+        thr_lin = np.where(too_low, nxt, thr_lin)
+    return thr_lin
 
 class PsychoacousticSTFTAccumulator:
     """Vector 2: temporal jitter of the cut-off and MDCT spectral holes.
@@ -947,68 +1001,65 @@ class PsychoacousticSTFTAccumulator:
                 return
             # Mean bin power of unit-variance white noise with this window/FFT.
             gain = _white_noise_gain(n, window)
-            mask_band = (freqs >= 4000.0) & (freqs <= 11000.0)
-            if not np.any(mask_band) or gain <= 0.0:
+            sl_band, has_band = _freq_slice(freqs, 4000.0, 11000.0, True)
+            if not has_band or gain <= 0.0:
                 return
 
-            band = (power[:, mask_band].mean(axis=1, dtype=np.float64)
-                     / gain)
+            band = (power[:, sl_band].mean(axis=1, dtype=np.float64)
+                    / gain)
             active_mask = band > 10.0 ** (self.BAND_THRESHOLD_DBFS / 10.0)
             if not np.any(active_mask):
                 return
-            block_power = power[active_mask]
+            block_power = power if np.all(active_mask) else power[active_mask]
             self._frames += int(block_power.shape[0])
             self._freqs = freqs
-            sum = block_power.sum(axis=0, dtype=np.float64)
-            self._sum_power = (sum if self._sum_power is None
-                              else self._sum_power + sum)
+            block_sum = block_power.sum(axis=0, dtype=np.float64)
+            self._sum_power = (block_sum if self._sum_power is None
+                               else self._sum_power + block_sum)
 
             # Instantaneous cut-off: last bin above -60 dB relative to the
             # frame's 4-11 kHz mean power. Referencing the frame peak made a
             # strong bass sweep the reference and produced fake cut-off jitter.
-            power_db = 10.0 * np.log10(np.maximum(block_power, 1e-28))
             ref_db = 10.0 * np.log10(np.maximum(
-                block_power[:, mask_band].mean(axis=1), np.float32(1e-28)))
+                block_power[:, sl_band].mean(axis=1), _FLOOR_F32))
 
             # sfb21 islands and the exciter envelopes. Both are referenced to the
             # 4-11 kHz band of the SAME frame: a 1-8 kHz reference would follow a
             # strong bass line and make a continuous high band look intermittent.
             if self.sr >= 41000:
-                mask_8_14 = (freqs >= 8000.0) & (freqs <= 14000.0)
-                mask_sfb21 = (freqs >= 16000.0) & (freqs <= 20500.0)
-                if np.any(mask_8_14) and np.any(mask_sfb21):
+                sl_8_14, ok_8_14 = _freq_slice(freqs, 8000.0, 14000.0, True)
+                sl_sfb21, ok_sfb21 = _freq_slice(freqs, 16000.0, 20500.0, True)
+                if ok_8_14 and ok_sfb21:
                     db_8_14 = 10.0 * np.log10(np.maximum(
-                        block_power[:, mask_8_14].mean(axis=1, dtype=np.float64), 1e-28))
+                        block_power[:, sl_8_14].mean(axis=1, dtype=np.float64), 1e-28))
                     db_16_20 = 10.0 * np.log10(np.maximum(
-                        block_power[:, mask_sfb21].mean(axis=1, dtype=np.float64), 1e-28))
+                        block_power[:, sl_sfb21].mean(axis=1, dtype=np.float64), 1e-28))
                     e_sfb21 = db_16_20 - ref_db.astype(np.float64)
                     self._e_sfb21.extend(e_sfb21.tolist())
                     self._env_8_14.extend(db_8_14.tolist())
                     self._env_16_20.extend(db_16_20.tolist())
-            threshold = (ref_db - np.float32(60.0))[:, None]
-            over = power_db > threshold
 
             # A cut-off is only meaningful when the frame also has energy in
             # 10-14 kHz; otherwise a voice/guitar frame with no cymbals looks
             # like a codec cutting and its on/off nature fakes jitter.
-            mask_presence = (freqs >= 10000.0) & (freqs <= 14000.0)
-            mask_hf = freqs >= 11000.0
-            if not np.any(mask_presence) or not np.any(mask_hf):
-                # Low sample rates (Nyquist <= 12 kHz) have no 10-14 kHz band
-                # or no bins above 11 kHz: no measurable cut-off.
-                active_presence = np.zeros(block_power.shape[0], dtype=bool)
-                with_cutoff = np.empty(0, dtype=int)
-            else:
+            sl_presence, ok_presence = _freq_slice(freqs, 10000.0, 14000.0, True)
+            sl_hf, ok_hf = _freq_slice(freqs, 11000.0, None)
+            if ok_presence and ok_hf:
                 presence_db = 10.0 * np.log10(np.maximum(
-                    block_power[:, mask_presence].mean(axis=1), np.float32(1e-28)))
-                active_presence = presence_db > (ref_db - np.float32(25.0))
-                over_hf = over[:, mask_hf]
-                with_cutoff = np.flatnonzero(active_presence
-                                           & np.any(over_hf, axis=1))
-            if with_cutoff.size:
-                last = (over_hf.shape[1] - 1
-                          - np.argmax(over_hf[with_cutoff, ::-1], axis=1))
-                self._fc.extend(freqs[mask_hf][last].tolist())
+                    block_power[:, sl_presence].mean(axis=1), _FLOOR_F32))
+                idx_pres = np.flatnonzero(presence_db > (ref_db - np.float32(25.0)))
+                if idx_pres.size:
+                    all_pres = idx_pres.size == block_power.shape[0]
+                    bp_hf = block_power[:, sl_hf] if all_pres else block_power[idx_pres, sl_hf]
+                    thr_hf = (ref_db if all_pres else ref_db[idx_pres]) - np.float32(60.0)
+                    thr_lin = _exact_linear_threshold(thr_hf)
+                    over_hf = bp_hf > thr_lin[:, None]
+                    has_over = np.any(over_hf, axis=1)
+                    if np.any(has_over):
+                        over_valid = over_hf if np.all(has_over) else over_hf[has_over]
+                        last = (over_valid.shape[1] - 1
+                                - np.argmax(over_valid[:, ::-1], axis=1))
+                        self._fc.extend(freqs[sl_hf][last].tolist())
 
             # MDCT holes: 10 x 600 Hz sub-bands in 13.5-19.5 kHz.
             if self.sr < 39000:
@@ -1017,16 +1068,17 @@ class PsychoacousticSTFTAccumulator:
             for i in range(self.N_SUBBANDS):
                 lo = self.START_SUBBAND_HZ + i * self.WIDTH_SUBBAND_HZ
                 hi = lo + self.WIDTH_SUBBAND_HZ
-                mask = (freqs >= lo) & (freqs < hi)
-                if not np.any(mask):
+                sl_sb, ok_sb = _freq_slice(freqs, lo, hi, False)
+                if not ok_sb:
                     return
                 subbands.append(10.0 * np.log10(
-                    np.maximum(block_power[:, mask].mean(axis=1), 1e-28)))
+                    np.maximum(block_power[:, sl_sb].mean(axis=1), 1e-28)))
             sb = np.column_stack(subbands)
-            gap = np.zeros(sb.shape[0], dtype=bool)
-            for i in range(1, self.N_SUBBANDS - 1):
-                gap |= ((sb[:, i] < sb[:, i - 1] - self.FALL_GAP_DB)
-                          & (sb[:, i] < sb[:, i + 1] - self.FALL_GAP_DB))
+            gap = np.any(
+                (sb[:, 1:-1] < sb[:, :-2] - self.FALL_GAP_DB)
+                & (sb[:, 1:-1] < sb[:, 2:] - self.FALL_GAP_DB),
+                axis=1,
+            )
             self._frames_with_gap += int(np.count_nonzero(gap))
         except Exception as e:             # never abort the analysis of a file
             self._error = str(e)
@@ -1164,11 +1216,11 @@ class _SpectralAccumulator:
         self._error = None
         self._psycho = PsychoacousticSTFTAccumulator(self.sr)
 
-    def add(self, block, start=0):
+    def add(self, block, start=0, mono=None):
         if self._error or block.shape[0] == 0:
             return
         try:
-            rms_db, e_diff = _activity_score(block, self._last)
+            rms_db, e_diff = _activity_score(block, self._last, mono=mono)
             if block.ndim > 1:
                 self._last = float(np.mean(block[-1]))
                 if self.is_stereo is None:
@@ -1177,20 +1229,26 @@ class _SpectralAccumulator:
                 self._last = float(block[-1])
                 self.is_stereo = False
 
-            audio = np.asarray(block, dtype=np.float32)
             index = self._index
             self._index += 1
-            input = (e_diff, -index, index, int(start), audio)
+            needs_backup = self._backup is None or rms_db > self._backup[0]
+            above_gate = rms_db > ACTIVE_RMS_THRESHOLD_DB
+            needs_heap = above_gate and (
+                len(self._seleccion) < self._k
+                or (e_diff, -index) > self._seleccion[0][:2]
+            )
+            if not needs_backup and not needs_heap:
+                return
 
-            if self._backup is None or rms_db > self._backup[0]:
+            audio = np.asarray(block, dtype=np.float32)
+            if needs_backup:
                 self._backup = (rms_db, -index, index, int(start), audio)
-
-            if rms_db <= ACTIVE_RMS_THRESHOLD_DB:
-                return                    # silence: never a candidate
-            if len(self._seleccion) < self._k:
-                heapq.heappush(self._seleccion, input)
-            elif input[:2] > self._seleccion[0][:2]:
-                heapq.heapreplace(self._seleccion, input)
+            if needs_heap:
+                entry = (e_diff, -index, index, int(start), audio)
+                if len(self._seleccion) < self._k:
+                    heapq.heappush(self._seleccion, entry)
+                else:
+                    heapq.heapreplace(self._seleccion, entry)
         except Exception as e:            # never abort the analysis of the file
             self._error = str(e)
 
@@ -1200,9 +1258,9 @@ class _SpectralAccumulator:
         chosen = self._seleccion or ([self._backup] if self._backup else [])
         if not chosen:
             return {"error": "could not analyze the spectrum"}
-        chosen = sorted(chosen, key=lambda input: input[2])   # chronological
+        chosen = sorted(chosen, key=lambda item: item[2])   # chronological
 
-        lengths = [len(input[4]) for input in chosen]
+        lengths = [len(item[4]) for item in chosen]
         total_samples = sum(lengths)
         nperseg = max(256, min(4096, total_samples // 8))
         nperseg = min(nperseg, max(lengths))
@@ -1231,41 +1289,53 @@ class _SpectralAccumulator:
         frames = 0
         frames_global = 0
         png_power, png_times, png_n = [], [], 0
+        frame_buf = buf_a = buf_b = buf_tmp = None
+        medium = np.float32(0.5)
 
         for _, _, _, start, audio in chosen:
             if len(audio) < nperseg:
                 continue                  # a very short trailing block
-            zl = _stft_complex(audio[:, 0], nperseg, hop, window, scale)
-            power_l = _power_from_fft(zl)
+            n_frames_blk = (len(audio) - nperseg) // hop + 1
+            if frame_buf is None or frame_buf.shape != (n_frames_blk, nperseg):
+                frame_buf = np.empty((n_frames_blk, nperseg), dtype=np.float32)
+            zl = _stft_complex(audio[:, 0], nperseg, hop, window, scale,
+                               frame_buf=frame_buf)
+            if buf_a is None or buf_a.shape != zl.shape:
+                buf_a = np.empty(zl.shape, dtype=np.float32)
+                buf_b = np.empty(zl.shape, dtype=np.float32)
+                buf_tmp = np.empty(zl.shape, dtype=np.float32)
+            power_l = _power_from_fft(zl, out=buf_a, tmp=buf_tmp)
+            cur_sum_l = power_l.sum(axis=0, dtype=np.float32)
+            sum_l = cur_sum_l if sum_l is None else sum_l + cur_sum_l
+
             if self.is_stereo:
-                zr = _stft_complex(audio[:, 1], nperseg, hop, window, scale)
-                power_r = _power_from_fft(zr)
-                medium = np.float32(0.5)
+                zr = _stft_complex(audio[:, 1], nperseg, hop, window, scale,
+                                   frame_buf=frame_buf)
+                power_r = _power_from_fft(zr, out=buf_a, tmp=buf_tmp)
+                cur_sum_r = power_r.sum(axis=0, dtype=np.float32)
+                sum_r = cur_sum_r if sum_r is None else sum_r + cur_sum_r
+
                 zm = (zl + zr) * medium
                 zs = (zl - zr) * medium
-                power_mid = _power_from_fft(zm)
-                power_side = _power_from_fft(zs)
-                power_total = power_mid + power_side
-                del zr, zm, zs
-            else:
-                power_r = power_l
-                power_total = power_l
-            del zl
+                del zl, zr
 
-            sum_l = (power_l.sum(axis=0, dtype=np.float32) if sum_l is None
-                      else sum_l + power_l.sum(axis=0, dtype=np.float32))
-            if self.is_stereo:
-                sum_r = (power_r.sum(axis=0, dtype=np.float32) if sum_r is None
-                          else sum_r + power_r.sum(axis=0, dtype=np.float32))
-                sum_total = (power_total.sum(axis=0, dtype=np.float32)
-                              if sum_total is None
-                              else sum_total + power_total.sum(axis=0, dtype=np.float32))
-                sum_mid = (power_mid.sum(axis=0, dtype=np.float32) if sum_mid is None
-                            else sum_mid + power_mid.sum(axis=0, dtype=np.float32))
-                sum_side = (power_side.sum(axis=0, dtype=np.float32)
-                             if sum_side is None
-                             else sum_side + power_side.sum(axis=0, dtype=np.float32))
+                power_mid = _power_from_fft(zm, out=buf_a, tmp=buf_tmp)
+                del zm
+                cur_sum_mid = power_mid.sum(axis=0, dtype=np.float32)
+                sum_mid = cur_sum_mid if sum_mid is None else sum_mid + cur_sum_mid
+
+                power_side = _power_from_fft(zs, out=buf_b, tmp=buf_tmp)
+                del zs
+                cur_sum_side = power_side.sum(axis=0, dtype=np.float32)
+                sum_side = cur_sum_side if sum_side is None else sum_side + cur_sum_side
+
+                np.add(power_mid, power_side, out=power_mid)
+                power_total = power_mid
+                cur_sum_total = power_total.sum(axis=0, dtype=np.float32)
+                sum_total = cur_sum_total if sum_total is None else sum_total + cur_sum_total
             else:
+                del zl
+                power_total = power_l
                 sum_r = sum_l
                 sum_total = sum_l
 
@@ -1285,9 +1355,6 @@ class _SpectralAccumulator:
                         png_n += idx.size
             frames_global += n_frames
             frames += n_frames
-            del power_l, power_r, power_total
-            if self.is_stereo:
-                del power_mid, power_side
 
         if frames == 0 or sum_l is None:
             return {"error": "could not analyze the spectrum"}

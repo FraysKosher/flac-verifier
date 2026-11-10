@@ -48,18 +48,23 @@ _WIDTH_BY_BITS = {8: 1, 16: 2, 24: 3, 32: 4}
 
 _DTYPE_BY_WIDTH = {1: "<i1", 2: "<i2", 4: "<i4"}
 
-def _pcm_bytes(block, bits_per_sample, width):
+_DEBRUIJN_TABLE = np.zeros(32, dtype=np.int64)
+for _bit_i in range(32):
+    _DEBRUIJN_TABLE[((1 << _bit_i) * 0x077CB531 & 0xFFFFFFFF) >> 27] = _bit_i
+
+
+def _pcm_bytes(block, bits_per_sample, width, q_int=None):
     """Little-endian interleaved PCM of a block, exactly as the format hashes it.
 
     float64 -> exact integer: the soundfile conversion is m / 2**(bits-1)."""
     scale = float(1 << (bits_per_sample - 1))
     dt = _DTYPE_BY_WIDTH.get(width)
     if dt is not None:
-        return np.rint(block * scale).astype(dt).tobytes()
+        return np.ascontiguousarray(np.rint(block * scale).astype(dt))
     # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
     # little-endian layout the old <i8 path produced, at half the memory.
-    q = np.rint(block * scale).astype("<i4")
-    return q.view(np.uint8).reshape(-1, 4)[:, :width].tobytes()
+    q = q_int if q_int is not None else np.rint(block * scale).astype("<i4")
+    return np.ascontiguousarray(q.view(np.uint8).reshape(-1, 4)[:, :width])
 
 def _md5_pcm(data, bits_per_sample, frames_by_block=1 << 20):
     """MD5 of the decoded PCM of a whole array. None if it is not verifiable."""
@@ -128,19 +133,34 @@ def analyze_bit_depth(data, meta, include_forensic=True):
 
         # 1) Are the samples on the 16-bit grid? (the classic upscale test)
         upscaled = active_mask * 32768.0
-        fraction = float(np.mean(np.abs(upscaled - np.round(upscaled)) < 0.05))
+        fraction = float(np.mean(np.abs(upscaled - np.rint(upscaled)) < 0.05))
 
         # 2) Effective resolution: declared bits minus the mode of trailing zeros
         #    of the integer samples (16 bits inside 24 -> 8 zeros -> 16 bits).
-        q = np.round(active_mask * float(1 << (bits - 1))).astype(np.int64)
-        q = q[q != 0]
-        if q.size:
-            pow2     = np.abs(q) & -np.abs(q)                  # 2^(trailing zeros)
-            zeros   = np.log2(pow2).round().astype(np.int64)
-            mode    = int(np.bincount(zeros).argmax())
-            effective = max(1, bits - mode)
+        if bits <= 32:
+            q = np.rint(active_mask * float(1 << (bits - 1))).astype(np.int32)
+            if not np.all(q):
+                q = q[q != 0]
+            if q.size:
+                pow2 = (q & -q).view(np.uint32)
+                idx = (pow2 * np.uint32(0x077CB531)) >> np.uint32(27)
+                counts_idx = np.bincount(idx, minlength=32)
+                counts_zeros = np.empty(32, dtype=np.int64)
+                counts_zeros[_DEBRUIJN_TABLE] = counts_idx
+                mode = int(counts_zeros.argmax())
+                effective = max(1, bits - mode)
+            else:
+                effective = bits
         else:
-            effective = bits
+            q = np.rint(active_mask * float(1 << (bits - 1))).astype(np.int64)
+            q = q[q != 0]
+            if q.size:
+                pow2 = np.abs(q) & -np.abs(q)
+                zeros = np.log2(pow2).round().astype(np.int64)
+                mode = int(np.bincount(zeros).argmax())
+                effective = max(1, bits - mode)
+            else:
+                effective = bits
 
         pct = f"{fraction * 100:.1f}%"
         if fraction > 0.97:
@@ -339,10 +359,10 @@ class ForensicBitsAccumulator:
         self.low_width = max(1, self.high_int - self.low_int + 1)
 
         if self.bits == 24:
-            self._bitmap_low = np.zeros(self.low_width, dtype=bool)
-            self._bitmap_reb1 = np.zeros(SLICE_WIDTH, dtype=bool)
-            self._bitmap_reb2 = np.zeros(SLICE_WIDTH, dtype=bool)
             self._bitmap_global = np.zeros(int(self.max_val) + 1, dtype=bool)
+            self._bitmap_low = self._bitmap_global[self.low_int : self.high_int + 1]
+            self._bitmap_reb1 = self._bitmap_global[SLICE_1_BASE : SLICE_1_BASE + SLICE_WIDTH]
+            self._bitmap_reb2 = self._bitmap_global[SLICE_2_BASE : SLICE_2_BASE + SLICE_WIDTH]
         else:
             self._bitmap_low = None
             self._bitmap_reb1 = None
@@ -376,43 +396,41 @@ class ForensicBitsAccumulator:
             tops = np.vstack((self._dop_last[None, :], tops))
         if tops.shape[0] >= 2:
             previous = tops[:-1, :]
-            next = tops[1:, :]
-            valid = (((previous == 0x05) & (next == 0xFA))
-                       | ((previous == 0xFA) & (next == 0x05))
-                       | ((previous == 0x06) & (next == 0xF9))
-                       | ((previous == 0xF9) & (next == 0x06)))
+            following = tops[1:, :]
+            valid = (((previous == 0x05) & (following == 0xFA))
+                       | ((previous == 0xFA) & (following == 0x05))
+                       | ((previous == 0x06) & (following == 0xF9))
+                       | ((previous == 0xF9) & (following == 0x06)))
             self._dop_pares += int(valid.size)
             self._dop_valid += int(np.count_nonzero(valid))
         self._dop_last = tops[-1, :].copy()
 
-    def add(self, block):
+    def add(self, block, q_int=None):
         if self.bits != 24 or block.shape[0] == 0:
             return
-        q = np.rint(np.asarray(block, dtype=np.float64) * self.max_val)
-        q = np.clip(q, -self.max_val, self.max_val - 1.0).astype(np.int64)
+        if q_int is None:
+            q = np.rint(np.asarray(block, dtype=np.float64) * self.max_val)
+            q = np.clip(q, -self.max_val, self.max_val - 1.0).astype(np.int32)
+        else:
+            q = q_int
         self._samples += int(q.size)
         absq = np.abs(q).ravel()
-        self._or |= int(np.bitwise_or.reduce(absq))
+        if (self._or & 1) == 0:
+            self._or |= int(np.bitwise_or.reduce(absq))
 
-        mask_b = (absq >= self.low_int) & (absq <= self.high_int)
-        if np.any(mask_b):
-            self._bitmap_low[absq[mask_b] - self.low_int] = True
-            self._samples_low += int(np.count_nonzero(mask_b))
+        self._bitmap_global[absq] = True
+        self._bitmap_global[0] = False
 
-        mask_1 = (absq >= SLICE_1_BASE) & (absq < SLICE_1_BASE + SLICE_WIDTH)
-        if np.any(mask_1):
-            self._bitmap_reb1[absq[mask_1] - SLICE_1_BASE] = True
-            self._samples_reb1 += int(np.count_nonzero(mask_1))
-
-        mask_2 = (absq >= SLICE_2_BASE) & (absq < SLICE_2_BASE + SLICE_WIDTH)
-        if np.any(mask_2):
-            self._bitmap_reb2[absq[mask_2] - SLICE_2_BASE] = True
-            self._samples_reb2 += int(np.count_nonzero(mask_2))
-
-        active = absq[absq > 0]
-        if active.size:
-            self._bitmap_global[active] = True
-            self._samples_active += int(active.size)
+        self._samples_low += int(np.count_nonzero(
+            (absq >= self.low_int) & (absq <= self.high_int)))
+        if self._samples_reb1 < 2048:
+            self._samples_reb1 += int(np.count_nonzero(
+                (absq >= SLICE_1_BASE) & (absq < SLICE_1_BASE + SLICE_WIDTH)))
+        if self._samples_reb2 < 2048:
+            self._samples_reb2 += int(np.count_nonzero(
+                (absq >= SLICE_2_BASE) & (absq < SLICE_2_BASE + SLICE_WIDTH)))
+        if self._samples_active < 2048:
+            self._samples_active += int(np.count_nonzero(absq))
 
         if self.bits == 24 and self.sr >= 176400:
             self._follow_dop(q)
@@ -426,8 +444,8 @@ class ForensicBitsAccumulator:
         being mistaken for a comb. The comb test is `p10 > 16`, the distance
         that separates the 16-bit grid (256 x gain integers) from dither that
         visits neighbouring levels."""
-        levels_unique = np.flatnonzero(bitmap) + int(offset)
-        n_unique = int(levels_unique.size)
+        raw_indices = np.flatnonzero(bitmap)
+        n_unique = int(raw_indices.size)
         if n_samples < 2048 or n_unique < 64:
             return {
                 "evaluado": False,
@@ -436,14 +454,26 @@ class ForensicBitsAccumulator:
                 "entropia": None,
                 "cajones": n_unique,
             }
-        hist_mod = np.bincount((levels_unique & 0xFF).astype(np.uint8), minlength=256)
+        offset_int = int(offset)
+        if offset_int == 0 and bitmap.size >= 65536:
+            n256 = (bitmap.size // 256) * 256
+            hist_mod = bitmap[:n256].reshape(-1, 256).sum(axis=0, dtype=np.int64)
+            if n256 < bitmap.size:
+                rem = np.flatnonzero(bitmap[n256:]) + n256
+                for idx_rem in rem:
+                    hist_mod[idx_rem & 0xFF] += 1
+        else:
+            levels_unique = raw_indices + offset_int if offset_int else raw_indices
+            hist_mod = np.bincount((levels_unique & 0xFF).astype(np.uint8), minlength=256)
         bins = int(np.count_nonzero(hist_mod))
         p = hist_mod[hist_mod > 0] / float(n_unique)
         entropy = float(-np.sum(p * np.log2(p)))
 
-        diffs = np.diff(levels_unique)
-        diffs_locales = diffs[diffs <= 1024]
-        if diffs_locales.size < 32:
+        diffs = np.diff(raw_indices)
+        np.minimum(diffs, 1025, out=diffs)
+        counts = np.bincount(diffs, minlength=1026)[:1025]
+        n_local = int(counts.sum())
+        if n_local < 32:
             return {
                 "evaluado": False,
                 "es_peine": False,
@@ -451,9 +481,22 @@ class ForensicBitsAccumulator:
                 "entropia": entropy,
                 "cajones": bins,
             }
-        p10 = float(np.percentile(diffs_locales, 10))
-        med = float(np.median(diffs_locales))
-        frac = float(np.mean(np.abs(diffs_locales - med) <= 2.0))
+        cdf = np.cumsum(counts)
+        pos10 = (n_local - 1) * 0.10
+        lo10, hi10 = int(np.floor(pos10)), int(np.ceil(pos10))
+        v_lo10 = int(np.searchsorted(cdf, lo10 + 1))
+        v_hi10 = int(np.searchsorted(cdf, hi10 + 1))
+        p10 = float(v_lo10 + (v_hi10 - v_lo10) * (pos10 - lo10))
+
+        pos50 = (n_local - 1) * 0.50
+        lo50, hi50 = int(np.floor(pos50)), int(np.ceil(pos50))
+        v_lo50 = int(np.searchsorted(cdf, lo50 + 1))
+        v_hi50 = int(np.searchsorted(cdf, hi50 + 1))
+        med = float(v_lo50 + (v_hi50 - v_lo50) * (pos50 - lo50))
+
+        vals = np.arange(1025, dtype=np.float64)
+        in_band = int(counts[np.abs(vals - med) <= 2.0].sum())
+        frac = float(in_band / n_local)
         is_comb = bool(p10 > 16.0 and frac >= 0.70)
         return {
             "evaluado": True,
@@ -476,14 +519,14 @@ class ForensicBitsAccumulator:
 
         r_low = self._evaluate_bitmap(self._bitmap_low, self.low_int,
                                       self._samples_low)
-        r_reb1 = self._evaluate_bitmap(self._bitmap_reb1, SLICE_1_BASE,
-                                      self._samples_reb1)
-        r_reb2 = self._evaluate_bitmap(self._bitmap_reb2, SLICE_2_BASE,
-                                      self._samples_reb2)
-        r_glob = self._evaluate_bitmap(self._bitmap_global, 0, self._samples_active)
-        windows = (r_low, r_reb1, r_reb2, r_glob)
 
         if not padded:
+            r_reb1 = self._evaluate_bitmap(self._bitmap_reb1, SLICE_1_BASE,
+                                           self._samples_reb1)
+            r_reb2 = self._evaluate_bitmap(self._bitmap_reb2, SLICE_2_BASE,
+                                           self._samples_reb2)
+            r_glob = self._evaluate_bitmap(self._bitmap_global, 0, self._samples_active)
+            windows = (r_low, r_reb1, r_reb2, r_glob)
             comb = any(r["es_peine"] for r in windows)
             # Representative window: the first one that saw the comb, otherwise
             # the first one that could be measured at all (the low window if
