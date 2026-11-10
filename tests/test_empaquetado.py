@@ -32,7 +32,8 @@ VERSION_INFO = os.path.join(ROOT, "version_info.txt")
 class test_point_input(unittest.TestCase):
 
     def test_freeze_support_is_first_block_main(self):
-        source = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as f:
+            source = f.read()
         block = source.split('if __name__ == "__main__":', 1)
         self.assertEqual(len(block), 2, "main.py has no __main__ block")
         body = [line.strip() for line in block[1].splitlines()
@@ -44,7 +45,8 @@ class test_point_input(unittest.TestCase):
 
     def test_multiprocessing_no_imports_inside_function(self):
         """Importing it late would work, but it must not be conditional on the args."""
-        source = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as f:
+            source = f.read()
         self.assertRegex(source, r"(?m)^import multiprocessing$")
 
     def test_version_help(self):
@@ -136,7 +138,8 @@ class test_executable_engine(unittest.TestCase):
         ui.assert_called_once_with(None)
 
     def test_name_engine_matches_with_spec(self):
-        spec = open(SPEC, encoding="utf-8").read()
+        with open(SPEC, encoding="utf-8") as f:
+            spec = f.read()
         self.assertIn(f'NOMBRE_MOTOR = "{main.ENGINE_EXE_NAME[:-4]}"', spec)
         self.assertEqual(gui.ENGINE_EXE_NAME, main.ENGINE_EXE_NAME)
         self.assertEqual(main.ENGINE_EXE_NAME, "flac_motor.exe")
@@ -243,7 +246,8 @@ class TestSpecification(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.source = open(SPEC, encoding="utf-8").read()
+        with open(SPEC, encoding="utf-8") as f:
+            cls.source = f.read()
 
     def test_exists_is_executable_as_python(self):
         compile(self.source, SPEC, "exec")      # valid syntax
@@ -312,9 +316,10 @@ class TestSpecification(unittest.TestCase):
         espacio = {name: node for name in
                    ("VSVersionInfo", "FixedFileInfo", "StringFileInfo",
                     "StringTable", "StringStruct", "VarFileInfo", "VarStruct")}
-        exec(open(VERSION_INFO, encoding="utf-8").read(), espacio)   # pyinstaller runs it
+        with open(VERSION_INFO, encoding="utf-8") as f:
+            text = f.read()
+        exec(text, espacio)   # pyinstaller runs it
         self.assertIn("VSVersionInfo", espacio)
-        text = open(VERSION_INFO, encoding="utf-8").read()
         # The Windows resources must announce the same version as the program, and
         # the check reads it from the one place that defines it instead of repeating
         # the literal: the tag, the release and the executable drifted apart once
@@ -327,16 +332,19 @@ class TestSpecification(unittest.TestCase):
 
     def test_builder_announces_version_program(self):
         """The build banner takes the version from `main.py`, not from its own copy."""
-        source = open(os.path.join(ROOT, "build.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "build.py"), encoding="utf-8") as f:
+            source = f.read()
         self.assertIn("project_version()", source)
         self.assertNotRegex(source, r"BUILDING FLAC VERIFIER \d")
 
     def test_builder_exists_is_python_valid(self):
-        compile(open(os.path.join(ROOT, "build.py"), encoding="utf-8").read(),
-                "build.py", "exec")
+        with open(os.path.join(ROOT, "build.py"), encoding="utf-8") as f:
+            source = f.read()
+        compile(source, "build.py", "exec")
 
     def test_builder_clean_verifies(self):
-        source = open(os.path.join(ROOT, "build.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "build.py"), encoding="utf-8") as f:
+            source = f.read()
         for expected in ("shutil.rmtree", "PyInstaller", "--noconfirm",
                          "FLAC_Verifier.exe", "flac_motor.exe", "--version"):
             with self.subTest(expected=expected):
@@ -402,24 +410,29 @@ class test_renderer_without_matplotlib(unittest.TestCase):
     """The spectrogram is a NumPy + Pillow raster: matplotlib is not packaged."""
 
     def test_engine_no_imports_matplotlib(self):
-        source = open(os.path.join(ROOT, "motor_flac.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "motor_flac.py"), encoding="utf-8") as f:
+            source = f.read()
         self.assertNotIn("import matplotlib", source)
         self.assertNotIn("matplotlib.use", source)
 
     def test_engine_uses_pillow_lut(self):
-        source = open(os.path.join(ROOT, "motor_flac.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "motor_flac.py"), encoding="utf-8") as f:
+            source = f.read()
         self.assertIn("from PIL import Image", source)
         self.assertIn("_LUT_SPECTROGRAM", source)
         self.assertIn("Image.fromarray(", source)
 
     def test_spec_excludes_matplotlib(self):
-        source = open(SPEC, encoding="utf-8").read()
+        with open(SPEC, encoding="utf-8") as f:
+            source = f.read()
         block = source.split("excludes=[", 1)[1]
         self.assertIn('"matplotlib"', block)
         self.assertNotIn('collect_data_files("matplotlib")', source)
 
     def test_spec_collects_pillow(self):
-        self.assertIn('"PIL"', open(SPEC, encoding="utf-8").read())
+        with open(SPEC, encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn('"PIL"', source)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

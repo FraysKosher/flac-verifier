@@ -377,6 +377,23 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
         self.assertEqual([r["indice_original"] for r in enviados],
                          [0, 1, 2, 3, 4])
 
+        # CLI must also pair each header with its own result when a track is
+        # held back for album coherence and yielded at the end of the batch.
+        import io
+        import contextlib
+        import verificar_flac as cli
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cli.execute_analysis(folder, mode="center", seconds=None,
+                                 save_png=False, save_pdf=False)
+        sections = [sec for sec in output.getvalue().split("📄 ") if sec.strip()][1:]
+        self.assertEqual(len(sections), 5)
+        retained_sec = next(sec for sec in sections if "02_" in sec.splitlines()[0])
+        self.assertIn("PROBABLY LOSSLESS", retained_sec)
+        for sec in sections:
+            if "02_" not in sec.splitlines()[0]:
+                self.assertIn("GENUINE LOSSLESS", sec)
+
 
 class test_renderer(unittest.TestCase):
 
@@ -391,7 +408,8 @@ class test_renderer(unittest.TestCase):
     def test_spectrogram_paints_with_pillow(self):
         """The PNG comes from the 256-colour NumPy LUT and Image.fromarray:
         no figure object, no Agg canvas, no matplotlib import."""
-        source = open(fx.ENGINE, encoding="utf-8").read()
+        with open(fx.ENGINE, encoding="utf-8") as f:
+            source = f.read()
         self.assertIn("_LUT_SPECTROGRAM", source)
         self.assertIn("Image.fromarray(", source)
         self.assertIn("render_spectrogram_fast", source)

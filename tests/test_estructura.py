@@ -64,7 +64,8 @@ class TestThinLayer(unittest.TestCase):
                    os.path.join(fx.ROOT, "_motor_cache.py"))
         for path in modules:
             with self.subTest(modulo=os.path.basename(path)):
-                source = open(path, encoding="utf-8").read()
+                with open(path, encoding="utf-8") as f:
+                    source = f.read()
                 self.assertNotRegex(source, r"(?m)^\s*(?:import|from)\s+reportlab")
 
     def test_report_no_uses_reportlab_import(self):
@@ -72,7 +73,8 @@ class TestThinLayer(unittest.TestCase):
         imported: using a reportlab name there (mm, A4, colors…) broke the import
         when the library is missing, and with it the warning about the missing
         dependency."""
-        source = open(os.path.join(fx.ROOT, "informe_pdf.py"), encoding="utf-8").read()
+        with open(os.path.join(fx.ROOT, "informe_pdf.py"), encoding="utf-8") as f:
+            source = f.read()
         for line in source.splitlines():
             if line.lstrip().startswith("def "):
                 with self.subTest(firma=line.strip()[:70]):

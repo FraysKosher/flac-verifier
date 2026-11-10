@@ -968,8 +968,9 @@ if CTK_OK:
 
             self.message_queue: "queue.Queue[Message]" = queue.Queue(maxsize=MAX_QUEUE)
             self.manager = ProcessManager(self.message_queue, engine=engine)
+            self.run_state = "idle"
             # Bounded: a very long batch must not grow the window's memory forever.
-            self.events: "deque[Evento]" = deque(maxlen=MAX_EVENTS_IN_MEMORY)
+            self.events: "deque[Event]" = deque(maxlen=MAX_EVENTS_IN_MEMORY)
             self.total = 0
             self.recibidos = 0
             self.pdf_path: str | None = None
@@ -1715,7 +1716,19 @@ if CTK_OK:
             mono = theme.mono(12)
             row = ctk.CTkFrame(self.table_body, fg_color=c("bg.surface"),
                                corner_radius=0)
-            row.pack(fill="x")
+            insert_pos: int | None = None
+            original_index = event.get("indice_original")
+            if isinstance(original_index, int):
+                for idx, existing in enumerate(self.table_rows):
+                    existing_index = existing["event"].get("indice_original")
+                    if (isinstance(existing_index, int)
+                            and existing_index > original_index):
+                        insert_pos = idx
+                        break
+            if insert_pos is not None:
+                row.pack(fill="x", before=self.table_rows[insert_pos]["frame"])
+            else:
+                row.pack(fill="x")
             # The row is 44 px: 43 for the content and 1 for the separator. The
             # height comes from the grid rows, not from `pack_propagate` (which
             # only governs packed children, not gridded ones).
@@ -1790,7 +1803,10 @@ if CTK_OK:
                                "rate": plain[2], "dr": plain[3], "md5": mark},
                      "file_label": file_label, "plain": plain,
                      "icon_spec": icon_spec, "hover": False}
-            self.table_rows.append(entry)
+            if insert_pos is not None:
+                self.table_rows.insert(insert_pos, entry)
+            else:
+                self.table_rows.append(entry)
             self._bind_row(row, entry)
             self._paint_row(entry)
             if follow:
@@ -1931,7 +1947,7 @@ if CTK_OK:
             colour, text = format_summary(self.events)
             kinds = [verdict for verdict in counts if counts[verdict]]
             if total == 0:
-                headline = "ANALYZING" if self.manager.active else "NO RESULTS"
+                headline = "ANALYZING" if self._is_busy() else "NO RESULTS"
                 tone = "unknown"
             elif errors == total:
                 headline, tone = "ERRORS", "danger"
@@ -2377,14 +2393,22 @@ if CTK_OK:
             if measure.measure(ellipsis) > pixels:
                 return ""
             if from_left:
-                start = 0
-                while start < len(text) and measure.measure(ellipsis + text[start:]) > pixels:
-                    start += 1
-                return ellipsis + text[start:]
-            end = len(text)
-            while end > 0 and measure.measure(text[:end] + ellipsis) > pixels:
-                end -= 1
-            return text[:end] + ellipsis
+                low, high = 0, len(text)
+                while low < high:
+                    mid = (low + high) // 2
+                    if measure.measure(ellipsis + text[mid:]) > pixels:
+                        low = mid + 1
+                    else:
+                        high = mid
+                return ellipsis + text[low:]
+            low, high = 0, len(text)
+            while low < high:
+                mid = (low + high + 1) // 2
+                if measure.measure(text[:mid] + ellipsis) > pixels:
+                    high = mid - 1
+                else:
+                    low = mid
+            return text[:low] + ellipsis
 
         def _refit_file_name(self, label: Any, event: Any) -> None:
             """Truncates with an ellipsis inside the file cell of one row."""
@@ -2514,9 +2538,13 @@ if CTK_OK:
             chosen = self.option_workers.get()
             return int(chosen) if chosen.isdigit() else 0   # 0 = automatic
 
+        def _is_busy(self) -> bool:
+            """True while an analysis batch is active or draining its final events."""
+            return self.manager.active or self.run_state == "running"
+
         def _update_state(self) -> None:
             """Paints the idle/running state: Analyze becomes Cancel."""
-            active = self.manager.active
+            active = self._is_busy()
             self._set_enabled(self.btn_analyze, not active)
             self._set_enabled(self.btn_cancel, active)
             self._show_action(self.btn_cancel if active else self.btn_analyze)
@@ -2537,7 +2565,7 @@ if CTK_OK:
 
         def _toggle_theme(self) -> None:
             """Switches the window between dark and light, live and in place."""
-            if self.manager.active or self._retheming:
+            if self._is_busy() or self._retheming:
                 return
             target = "light" if theme.MODE == "dark" else "dark"
             saved = theme.save_preference(target)
@@ -2798,6 +2826,7 @@ if CTK_OK:
             self.label_progress.configure(text="")
             self.label_state.configure(text="Analyzing…")
             self.selected_event = None
+            self.run_state = "running"
             self._clear_table()
             self._render_hero()
             try:
@@ -2807,9 +2836,11 @@ if CTK_OK:
                     pdf=bool(self.var_pdf.get()), workers=self._workers(),
                     without_cache=bool(self.var_without_cache.get()))
             except Exception as e:
+                self.run_state = "error"
                 self._log(f"Could not start the analysis: {e}", "error")
                 self._alert("Could not start the engine", str(e), error=True)
                 self._update_state()
+                self._render_hero()
                 return
             self._log("Running: " + " ".join(command[1:]))
             self._update_state()
@@ -2821,6 +2852,7 @@ if CTK_OK:
                 return
             self._log("Cancelling the analysis and its child processes…", "aviso")
             self.manager.cancel()
+            self.run_state = "cancelled"
             self.label_state.configure(text="Cancelled")
             self._update_state()
 
@@ -2939,14 +2971,17 @@ if CTK_OK:
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
             if event.get("cancelado"):
+                self.run_state = "cancelled"
                 self.label_state.configure(text="Cancelled")
                 self._log("Analysis cancelled.", "aviso")
             elif event.get("codigo") not in (0, None):
+                self.run_state = "error"
                 self.label_state.configure(text=f"Finished with code {event['codigo']}")
                 self._log(f"The engine finished with code {event['codigo']}.", "error")
                 self._alert("The engine finished with an error",
                              f"Exit code: {event['codigo']}", error=True)
             else:
+                self.run_state = "finished"
                 self.label_state.configure(text="Finished")
                 self._log("Analysis finished.", "ok")
             self._render_hero()
@@ -2978,6 +3013,18 @@ if CTK_OK:
                 self.manager.cancel()
                 self.manager.wait(duration=3.0)
             self.destroy()
+
+        def destroy(self) -> None:
+            """Cancels pending Tcl `after` callbacks before tearing down the window."""
+            try:
+                for after_id in self.tk.call("after", "info"):
+                    try:
+                        self.tk.call("after", "cancel", after_id)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            super().destroy()
 
 
 def main(initial_path: str | None = None) -> int:

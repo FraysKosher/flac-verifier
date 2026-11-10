@@ -58,7 +58,8 @@ def _decode_stream(raw, filters):
 
 def text_pdf(path):
     """Text contained in the PDF streams, honouring their filters."""
-    payload = open(path, "rb").read()
+    with open(path, "rb") as f:
+        payload = f.read()
     partes = []
     for found in re.finditer(rb"stream\r?\n", payload):
         start = found.end()
@@ -77,7 +78,8 @@ def text_pdf(path):
 
 def pages_pdf(path):
     """Number of pages, read from the PDF page tree."""
-    payload = open(path, "rb").read()
+    with open(path, "rb") as f:
+        payload = f.read()
     counts = re.findall(rb"/Count\s+(\d+)", payload)
     return max(int(c) for c in counts) if counts else 0
 
@@ -129,7 +131,8 @@ class test_report_pdf(unittest.TestCase):
         self.assertTrue(report["ok"], report.get("error"))
         self.assertEqual(os.path.dirname(report["ruta"]), os.path.abspath(self.album))
         self.assertEqual(os.path.basename(report["ruta"]), pdf.REPORT_NAME)
-        payload = open(report["ruta"], "rb").read()
+        with open(report["ruta"], "rb") as f:
+            payload = f.read()
         self.assertTrue(payload.startswith(b"%PDF"))
         self.assertGreater(len(payload), 20 * 1024, "the PDF is suspiciously small")
 

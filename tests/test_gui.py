@@ -751,22 +751,33 @@ class test_window(unittest.TestCase):
         self.assertFalse(self.window.btn_cancel.winfo_manager())
 
     def test_process_events_updates_progress_log_card(self):
-        self.window._process("stdout", {"tipo": "inicio", "total": 2, "workers": 2})
-        self.assertEqual(self.window.total, 2)
-        self.window._process("stdout", {"tipo": "resultado", "indice": 1, "total": 2,
+        self.window._process("stdout", {"tipo": "inicio", "total": 3, "workers": 2})
+        self.assertEqual(self.window.total, 3)
+        self.window._process("stdout", {"tipo": "resultado", "indice": 1, "total": 3,
+                                          "indice_original": 0,
                                           "archivo": "a.flac",
                                           "veredicto": "GENUINE LOSSLESS",
                                           "score": 1.0, "problemas": []})
         self.assertEqual(self.window.recibidos, 1)
-        self.assertAlmostEqual(self.window.barra.get(), 0.5, places=6)
-        self.assertIn("1 / 2", self.window.label_progress.cget("text"))
-        self.window._process("stdout", {"tipo": "resultado", "indice": 2, "total": 2,
-                                          "archivo": "b.flac",
+        self.assertAlmostEqual(self.window.barra.get(), 1 / 3, places=6)
+        self.assertIn("1 / 3", self.window.label_progress.cget("text"))
+        self.window._process("stdout", {"tipo": "resultado", "indice": 2, "total": 3,
+                                          "indice_original": 2,
+                                          "archivo": "c.flac",
                                           "veredicto": "PROBABLE UPSCALE",
                                           "score": 0.2, "problemas": ["x"]})
+        # Held-back album-coherence track (indice_original=1) arrives last and
+        # must be inserted in original track order between a.flac and c.flac.
+        self.window._process("stdout", {"tipo": "resultado", "indice": 3, "total": 3,
+                                          "indice_original": 1,
+                                          "archivo": "b.flac",
+                                          "veredicto": "PROBABLY LOSSLESS",
+                                          "score": 0.72, "problemas": []})
+        self.assertEqual([r["values"]["file"] for r in self.window.table_rows],
+                         ["a.flac", "b.flac", "c.flac"])
         self.assertAlmostEqual(self.window.barra.get(), 1.0, places=6)
         self.window._process("fin", {"tipo": "__fin__", "codigo": 0})
-        self.assertIn("2 files:", self.window.label_summary.cget("text"))
+        self.assertIn("3 files:", self.window.label_summary.cget("text"))
         self.assertEqual(self.window.label_state.cget("text"), "Finished")
         registro = self.window.log.get("1.0", "end")
         self.assertIn("GENUINE LOSSLESS", registro)
@@ -783,10 +794,18 @@ class test_window(unittest.TestCase):
             path = os.path.join(folder, gui.REPORT_NAME)
             with open(path, "wb") as f:
                 f.write(b"%PDF-1.4\n")
+            # Simulate the draining window where the OS process has exited
+            # before `__fin__` is processed: `informe` must not unlock Analyze
+            # until `__fin__` arrives.
+            self.window.run_state = "running"
             self.window._process("stdout", {"tipo": "informe", "ruta": path,
                                               "paginas": 3, "total": 1})
             self.assertEqual(self.window.pdf_path, path)
             self.assertEqual(self.window.btn_open_pdf.cget("state"), "normal")
+            self.assertEqual(self.window.btn_analyze.cget("state"), "disabled")
+            self.window._process("fin", {"tipo": "__fin__", "codigo": 0})
+            self.assertEqual(self.window.run_state, "finished")
+            self.assertEqual(self.window.btn_analyze.cget("state"), "normal")
             os.remove(path)
             self.window._update_state()
             self.assertEqual(self.window.btn_open_pdf.cget("state"), "disabled")
@@ -1672,7 +1691,8 @@ class test_logo(unittest.TestCase):
         self.assertGreater(min(y for _, y in pixeles), height * 0.5)
 
     def test_svg_carries_same_design(self):
-        svg = open(self.PATHS["svg"], encoding="utf-8").read()
+        with open(self.PATHS["svg"], encoding="utf-8") as f:
+            svg = f.read()
         self.assertEqual(svg.count("<rect"), 1 + len(self.ALTURAS_SPLASH))  # background + bars
         self.assertEqual(svg.count("<polyline"), 1)
         for color in ("#0f0f0d", "#ffffff", "#4f98a3"):
@@ -1681,7 +1701,8 @@ class test_logo(unittest.TestCase):
 
     def test_readme_uses_logo_exists(self):
         import re
-        readme = open(os.path.join(gui.DIRECTORY, "README.md"), encoding="utf-8").read()
+        with open(os.path.join(gui.DIRECTORY, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
         referencias = re.findall(r"Logo/[\w.\-]+", readme)
         self.assertTrue(referencias, "the README shows no logo")
         for reference in set(referencias):
@@ -1689,7 +1710,8 @@ class test_logo(unittest.TestCase):
                 self.assertTrue(os.path.exists(os.path.join(gui.DIRECTORY, reference)))
 
     def test_readme_documents_assets(self):
-        readme = open(os.path.join(gui.DIRECTORY, "README.md"), encoding="utf-8").read()
+        with open(os.path.join(gui.DIRECTORY, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
         for name in ("logo_flac_verifier.png", "icono_app.ico",
                        "logo_flac_verifier.svg", "generar_logo.py"):
             with self.subTest(asset=name):

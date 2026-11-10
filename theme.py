@@ -130,7 +130,7 @@ SETTINGS_FILE = "settings.json"
 
 
 def settings_path() -> str:
-    """`%APPDATA%\FLAC Verifier\settings.json`, with the home folder as fallback."""
+    r"""`%APPDATA%\FLAC Verifier\settings.json`, with the home folder as fallback."""
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     return os.path.join(base, SETTINGS_FOLDER, SETTINGS_FILE)
 

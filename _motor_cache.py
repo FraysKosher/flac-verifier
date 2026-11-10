@@ -54,22 +54,22 @@ def read_cache(path, meta, mode, seconds, requires_png, version, schema,
     try:
         with open(_normalize_path_fs(_cache_path(path, mode, seconds)),
                   encoding="utf-8") as f:
-            input = json.load(f)
+            cached_entry = json.load(f)
     except (OSError, ValueError):
         return None                    # no cache, or an unreadable entry
 
-    if input.get("identidad") != _identity(path, meta):
+    if cached_entry.get("identidad") != _identity(path, meta):
         return None
-    if input.get("clave") != _analysis_key(mode, seconds, version, schema):
+    if cached_entry.get("clave") != _analysis_key(mode, seconds, version, schema):
         return None
-    result = input.get("resultado")
+    result = cached_entry.get("resultado")
     if not isinstance(result, dict):
         return None
 
     if requires_png:
         # The PNG must exist and match the current parameters.
         png_path = (result.get("esp") or {}).get("espectrograma")
-        if input.get("render") != render or not png_path:
+        if cached_entry.get("render") != render or not png_path:
             return None
         if not os.path.exists(png_path) or os.path.getsize(png_path) == 0:
             return None

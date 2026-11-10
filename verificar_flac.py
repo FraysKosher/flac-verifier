@@ -230,7 +230,11 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
     verdicts   = Counter()
     results = []
     failures     = 0
-    for file_path, result in zip(files, analysis):
+    for index, result in enumerate(analysis):
+        original_index = result.get("indice_original", index)
+        if not isinstance(original_index, int) or not (0 <= original_index < len(files)):
+            original_index = min(index, len(files) - 1)
+        file_path = result.get("ruta") or files[original_index]
         res = analyze_file(file_path, mode, seconds, save_png, result)
         if res is None:
             failures += 1
@@ -252,6 +256,10 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
             print(f"📊 Spectrograms in: {os.path.join(path, '_spectrograms')}")
 
     if save_pdf:
+        # Sort by original track index so held-back coherence tracks appear
+        # in album order inside the PDF report.
+        results.sort(key=lambda r: r.get("indice_original", 0)
+                     if isinstance(r.get("indice_original"), int) else 0)
         # A failed PDF write is reported; the analysis is never aborted.
         report = engine.generate_pdf_report(path, results, mode=mode)
         if report.get("ok"):

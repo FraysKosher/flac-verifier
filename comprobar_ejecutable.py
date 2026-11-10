@@ -266,16 +266,16 @@ class Checker:
 
     @staticmethod
     def events(text: str) -> list[dict]:
-        list = []
+        entries = []
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                list.append(json.loads(line))
+                entries.append(json.loads(line))
             except ValueError:
                 continue
-        return list
+        return entries
 
     @staticmethod
     def cards(text: str) -> dict[str, dict]:
