@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-11-09
+
+### Changed
+
+- Vectorised the hot paths in `_motor_bits.py`, `_motor_espectral.py` and
+  `motor_flac.py` (31 % faster on 24-bit/96 kHz tracks and 34 % faster with PNG
+  rendering, with 100 % identical numerical outputs and verdicts):
+  - Shared `<i4` quantisation per 24-bit block between STREAMINFO MD5 and
+    `ForensicBitsAccumulator`, and passed C-contiguous buffers directly to
+    `md5.update()`.
+  - Made `_bitmap_low`, `_bitmap_reb1` and `_bitmap_reb2` slice views into
+    `_bitmap_global` for a single scatter write per block, and replaced two
+    full-array `np.partition` passes in `_evaluate_bitmap` with a 1,025-bin
+    `np.bincount` histogram.
+  - Replaced `np.log2` + a $2^{21}$-bin `np.bincount` in `analyze_bit_depth`
+    with a 32-bit De Bruijn shift and a 32-bin histogram.
+  - Replaced boolean-mask 2D copies in `PsychoacousticSTFTAccumulator.add` with
+    contiguous index slices, an IEEE-754 ULP-exact linear threshold on the
+    high-frequency band, vectorized MDCT sub-band gap checks and L2-hot STFT
+    buffer reuse.
+  - Added TrueType font caching, bounded RGBA legend compositing in
+    `_draw_legend`, and $O(\log N)$ binary-search text truncation in
+    `gui.FlacVerifierWindow._fit`.
+
+### Fixed
+
+- Fixed a track-header mismatch in `verificar_flac.execute_analysis` when a
+  track was held back in `retenidas` for album-coherence evaluation and yielded
+  at the end of the batch; `generate_pdf_report` also restores original album
+  order via `indice_original`.
+- Inserted deferred album-coherence rows in `gui.FlacVerifierWindow._add_row`
+  at their `indice_original` position instead of appending them at the bottom
+  of the table.
+- Added an explicit `run_state` lifecycle (`idle`, `running`, `finished`,
+  `cancelled`, `error`) in `FlacVerifierWindow` so an `informe` event arriving
+  while draining the queue after subprocess exit cannot unlock controls before
+  `__fin__`.
+- Cancelled pending Tcl `after` callbacks on window teardown in
+  `FlacVerifierWindow.destroy`.
+
 ## [2.4.0] - 2026-10-31
 
 ### Added
