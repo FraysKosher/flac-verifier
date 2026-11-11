@@ -61,7 +61,7 @@ Analysing an album is spread across **processes** (up to 8) and keeps a
 ## Installation
 
 Prebuilt Windows release:
-[FLAC Verifier 2.5.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.5.0).
+[FLAC Verifier 2.6.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.6.0).
 
 From source:
 
@@ -74,10 +74,10 @@ pip install -r requirements.txt
 The release ZIP includes a SHA-256 checksum. On Windows:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.5.0-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.6.0-win64.zip -Algorithm SHA256
 ```
 
-Compare the output with `SHA256SUMS_2.5.0.txt` from the same release. A matching
+Compare the output with `SHA256SUMS_2.6.0.txt` from the same release. A matching
 hash means the ZIP arrived intact; a mismatch means it was corrupted or replaced,
 so download it again from the official release page.
 
@@ -231,7 +231,7 @@ dist/FLAC_Verifier/
 
 The whole folder is copied or compressed into a ZIP: **the `.exe` alone does not
 work**, it needs its `_internal/` next to it. That is about **157 MiB (164 MB)**
-on disk and **67 MiB (70 MB)** in `FLAC_Verifier_2.5.0-win64.zip`, because it
+on disk and **67 MiB (70 MB)** in `FLAC_Verifier_2.6.0-win64.zip`, because it
 includes NumPy, SciPy and the Python interpreter; the current spec no longer
 bundles matplotlib, so it is smaller. The first launch takes a few seconds (that is normal: there is
 nothing to unpack in `%TEMP%`, which is exactly the reason for using folder mode
@@ -491,7 +491,7 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `bdi.lsbs` | `empty` · `partial` · `active` · `indeterminate` |
 | `bdi.resolucion_efectiva_bits` | Bits actually used (16 inside a 24-bit container → `16`) |
 | `bdi.fraccion_16bit_grid` | % of samples aligned with the 16-bit grid |
-| `bdi.forense_bits` | Native-integer audit (24-bit only): `es_padded_16_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `muestras_pasaje_bajo`, `paso_reticula_mediano`, `es_24bit_escalado_en_peine`, `es_flujo_dop`, `dop_pares_inspeccionados`, `dop_ratio` |
+| `bdi.forense_bits` | Native-integer audit (24-bit only): `es_padded_16_en_24`, `es_16bit_dither_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `lsb8_ocupacion_interior`, `muestras_pasaje_bajo`, `paso_reticula_mediano`, `es_24bit_escalado_en_peine`, `es_flujo_dop`, `dop_pares_inspeccionados`, `dop_ratio` |
 | `esp.techo_hz` | Highest frequency with energy above −60 dB |
 | `esp.techo_rel_nyquist` | That ceiling as a fraction of Nyquist |
 | `esp.clase_corte` | `no_cutoff` · `near_nyquist_cutoff` (≥ 88 % of Nyquist) · `far_cutoff` (< 88 %) |
@@ -520,6 +520,8 @@ No file can abort the batch: an unreadable file produces its own `resultado` wit
 | `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
 | `esp.ratio_apagado_sfb21` | Fraction of high-energy frames whose sfb21 band is switched off |
 | `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
+| `esp.caida_modulacion_20k_db` / `brecha_modulacion_20k_db` | Median drop and P90–P10 modulation gap between 16.0–19.5 kHz and 20.2–21.8 kHz across active frames |
+| `esp.modulacion_psicoacustica_20k` | `true` when the 20.2–21.8 kHz band exhibits both a deep drop and dynamic psychoacoustic modulation |
 | `esp.corr_env_excitador` | Correlation between the 8–14 kHz envelope and the high band |
 | `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
 | `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / SBR signature |
@@ -595,10 +597,11 @@ verdict — see the note after the table):
 | Cut-off jitter | 0.20 | IQR > 550 Hz (frame-adaptive codec; does not block) |
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
 | sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
+| Upper-band 20 kHz modulation | 0.30 | Frame-level drop and psychoacoustic modulation in 20.2–21.8 kHz (blocks) |
 | Harmonic exciter / SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
 | Opus 20 kHz cliff | 0.20 | 20.00 kHz cliff with other codec evidence (does not block) |
 | Gibbs clipping | 0.25 | 1–2 sample clipping events with a band limit < 20.5 kHz (does not block) |
-| 16-in-24 padding | 0.40 | Every sample has trailing zero bits (blocks) |
+| 16-in-24 padding / micro-dither | 0.40 | Trailing zero bits or interior modulo-256 occupancy < 5 % (blocks) |
 | 24-bit quantisation comb | 0.40 | Global lattice step in the 8 LSBs (blocks) |
 | Brickwall / aliasing | 0.40 | Hi-Res cliff at 22.05/24 kHz or mirrored 23–29 kHz (blocks) |
 
@@ -864,7 +867,7 @@ is not on the `PATH`).
 | `test_md5.py` | MD5 verified at 8/16/24 bits; `mismatch` is a hard error; the MD5 does not score |
 | `test_veredictos.py` | Silence guard; CD master with no accusation; real MP3 (128/320 kbps) does not pass; bit depth only penalises; hi-res with a 30 kHz roll-off is not penalised, and the CD-to-96-kHz upscale is penalised |
 | `test_rendimiento.py` | The streaming path gives the same as the array path (oracle); vectorisation identical to the naive loop; runs that cross blocks and that end with the file |
-| `test_forense_riguroso.py` | The Phase 8 detectors: 24-bit lattice, DSD/Scarlet/DSD128 profiles, sfb21 islands, harmonic exciter, acoustic centroid, 8D.1 fail-closed and album coherence |
+| `test_forense_riguroso.py` | The Phase 8–10 detectors: 24-bit lattice and 16-in-24 micro-dither, DSD/Scarlet/DSD128 profiles, 24 kHz DAT brickwall, sfb21 islands, upper-band 20 kHz psychoacoustic modulation, harmonic exciter, acoustic centroid, 8D.1 fail-closed and album coherence |
 | `test_cache_y_paralelo.py` | The cache reuses and gives the same, and is invalidated by date, size, MD5, mode or engine version; the parallel path matches the sequential one and preserves order; with no processes it degrades to serial; the PNG is drawn with `imshow` |
 | `test_informe_pdf.py` | The PDF is generated where it should be, has one page per song plus cover and summary, contains the expected text (its content is really read back), embeds the spectrograms, works without them, no record overflows its page and no PDF failure aborts the analysis |
 | `test_theme.py` | Both palettes: the same token names, every token resolving, 4.5:1 contrast for every text/surface and verdict pair in dark and light, the saved preference (default, round trip, malformed JSON, wrong shape, unwritable folder, invalid mode) and a scan that fails if `gui.py` contains a hard-coded hex colour |

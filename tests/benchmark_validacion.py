@@ -360,7 +360,7 @@ def main():
     section = _section(tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
     with open(os.path.join(ROOT, "VALIDATION.md"), "w", encoding="utf-8",
               newline="\n") as f:
-        f.write("# FLAC VERIFIER 2.3.0 — Validation (2026-10-24)\n\n" + section + "\n")
+        f.write("# FLAC VERIFIER 2.6.0 — Validation (2026-11-10)\n\n" + section + "\n")
     update_document(os.path.join(ROOT, "README.md"), section)
     update_document(os.path.join(ROOT, "COMPARISON.md"), section)
 

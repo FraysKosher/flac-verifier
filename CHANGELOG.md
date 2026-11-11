@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.6.0] - 2026-11-09
+## [2.6.0] - 2026-11-10
 
 ### Added
 
@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`bef_m > -52.0 dB`) and transition-band gradient (`> 38.0 dB/kHz`).
   - Added 4 deterministic forensic unit tests (`test_22` to `test_25`) in
     `tests/test_forense_riguroso.py` (suite is now 329 tests).
+- **Natural numeric track ordering (`natural_sort_key`)**: folder discovery in
+  `motor_flac.py` and `verificar_flac.py` sorts numbered filenames in natural
+  numeric order (`1, 2, ..., 9, 10, ..., 100, ...`) rather than ASCII order,
+  and both the CLI and the GUI `ACTIVITY` console reorder deferred
+  album-coherence tracks into sequential album order on batch completion.
 
 ### Fixed
 
@@ -40,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PsychoacousticSTFTAccumulator.add` at `min(22050.0, sr * 0.49)` so natural
   ultrasonic decay in genuine `24/96` and `24/192` masters does not trigger a
   false `iqr_corte_hz > 550 Hz` jitter penalty.
+- Fixed a blank results table in `gui.py` after large batches caused by
+  `CTkFrame`'s default 200 px height inflating `table_canvas` `scrollregion`
+  before `grid` geometry propagation, and scrolled the table to the top when a
+  batch finishes.
 
 ## [2.5.0] - 2026-11-09
 
