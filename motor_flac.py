@@ -56,6 +56,7 @@ from _motor_espectral import (
     _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
+    _detect_lapped_codec_grid,
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
@@ -74,7 +75,12 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "10.0"
+ENGINE_VERSION = "11.0"
+# 11.0: Phase 11 orthogonal lapped transform inversion: sample-aligned
+#       quantization lattice detection for MDCT-1024 (Vorbis / AAC with
+#       128-sample block-switching subgrids), PQMF-576 (MP3 32-band polyphase
+#       filterbank + 18-point MDCT), and CELT-960 (Opus 20 ms low-overlap MDCT
+#       stopband TDAC boundary cancellation with 1 - 0.85*z^-1 pre-emphasis).
 # 10.0: Phase 9/10 forensic suite: 24-bit LSB8 interior occupancy audit
 #       (catches 16-bit + boundary micro-dither in 24-bit), 24.0 kHz DAT/broadcast
 #       Nyquist brickwall detector for 96/192 kHz containers, 22.05 kHz upper cap

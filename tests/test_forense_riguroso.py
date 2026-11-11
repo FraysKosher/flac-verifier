@@ -1432,6 +1432,135 @@ class test_forensic_rigorous(unittest.TestCase):
         res_lti = motor_flac.analyze_file_data(str(path_lti), use_cache=False)
         self.assertIs(res_lti["esp"]["modulacion_psicoacustica_20k"], False)
 
+    @staticmethod
+    def _imdct_overlap_add(coeffs, window):
+        """Exact TDAC synthesis inverse of `_motor_espectral._fast_mdct_f32`."""
+        from scipy import fft as _sp_fft
+        n_frames, n = coeffs.shape
+        n2 = n // 2
+        two_n = 2 * n
+        u = _sp_fft.dct(coeffs.astype(np.float32), type=4, axis=-1, norm="ortho", workers=1)
+        y = np.empty((n_frames, two_n), dtype=np.float32)
+        y[:, :n2] = u[:, n2:]
+        y[:, n2:n] = -u[:, -1 : n2 - 1 : -1]
+        y[:, n : n + n2] = -u[:, n2 - 1 :: -1]
+        y[:, n + n2 :] = -u[:, :n2]
+        y *= window
+        out = np.zeros((n_frames + 1) * n, dtype=np.float32)
+        for m in range(n_frames):
+            out[m * n : m * n + two_n] += y[m]
+        return out
+
+    def test_26_mdct_1024_lapped_lattice_vorbis_aac_detected(self):
+        """Phase 11: full-bandwidth MDCT-1024 lapped quantization lattice is caught."""
+        from _motor_espectral import _fast_mdct_f32, _get_vorbis_2048
+
+        sr = 44100
+        rng = np.random.default_rng(2601)
+        w = _get_vorbis_2048()
+        n_frames = 190
+        raw_pcm = rng.standard_normal((2, (n_frames + 2) * 1024)).astype(np.float32)
+        k_lo = int(12000.0 / (sr / 2.0) * 1024)
+        k_hi = int(20500.0 / (sr / 2.0) * 1024)
+        # Shared psychoacoustic masking lattice across stereo channels, shifted by phi_0 = 37
+        mask_zero = rng.random((n_frames, k_hi - k_lo)) < 0.45
+        transcoded_ch = []
+        for ch in range(2):
+            frames = np.lib.stride_tricks.sliding_window_view(raw_pcm[ch], 2048)[::1024][:n_frames]
+            c = _fast_mdct_f32(frames, w)
+            c[:, k_lo:k_hi] = np.where(mask_zero, 0.0, c[:, k_lo:k_hi] * np.sqrt(1.0 / 0.55))
+            sig_ch = self._imdct_overlap_add(c, w)
+            transcoded_ch.append(sig_ch[1024 + 37 : 1024 + 37 + sr * 4])
+
+        fake_sig = np.column_stack(transcoded_ch).astype(np.float64)
+        fake_sig /= np.max(np.abs(fake_sig)) * 1.15
+        path_fake = self.base_path / "falso_mdct_1024_vorbis_aac_fullband.flac"
+        sf.write(path_fake, fake_sig, sr, subtype="PCM_16")
+        res_fake = motor_flac.analyze_file_data(str(path_fake), use_cache=False)
+
+        self.assertIs(res_fake["esp"]["mdct_lattice_detected"], True)
+        self.assertEqual(res_fake["esp"]["mdct_lattice_family"], "MDCT-1024 (Vorbis/AAC)")
+        self.assertGreaterEqual(res_fake["esp"]["mdct_lattice_snr"], 10.0)
+        self.assertEqual(res_fake["veredicto"], "PROBABLE UPSCALE")
+        self.assertIn("lapped transform quantization lattice", " ".join(res_fake["problemas"]))
+
+        gen_sig = rng.standard_normal((sr * 4, 2))
+        gen_sig /= np.max(np.abs(gen_sig)) * 1.15
+        path_gen = self.base_path / "control_genuino_sin_reticula_mdct.flac"
+        sf.write(path_gen, gen_sig, sr, subtype="PCM_16")
+        res_gen = motor_flac.analyze_file_data(str(path_gen), use_cache=False)
+        self.assertIs(res_gen["esp"]["mdct_lattice_detected"], False)
+
+    def test_27_pqmf_576_hybrid_lattice_mp3_detected(self):
+        """Phase 11: MP3 32-band PQMF + 18-point MDCT hybrid granule lattice is caught."""
+        sr = 44100
+        rng = np.random.default_rng(2701)
+        h = signal.firwin(512, 1.0 / 64.0, window=("kaiser", 9.0)).astype(np.float32)
+        n_idx = np.arange(512, dtype=np.float32)
+        win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
+
+        n_granules = 160
+        m_sub = (n_granules + 1) * 18
+        n_pcm = m_sub * 32 + 1024
+        # Base low-band (<14 kHz) plus PQMF-synthesized upper subbands (22..29)
+        sos_low = signal.butter(6, 13800.0, btype="low", fs=sr, output="sos")
+        low_band = signal.sosfilt(sos_low, rng.standard_normal(n_pcm)).astype(np.float32)
+        high_band = np.zeros(n_pcm, dtype=np.float32)
+
+        for s in range(22, 30):
+            coeffs = rng.standard_normal((n_granules, 18)).astype(np.float32)
+            mask_z = rng.random(coeffs.shape) < 0.50
+            coeffs = np.where(mask_z, 0.0, coeffs * np.sqrt(2.0))
+            sub_sig = self._imdct_overlap_add(coeffs, win36)[:m_sub]
+            if s % 2 == 1:
+                sub_sig[1::2] *= -1.0
+            upsampled = np.zeros(m_sub * 32, dtype=np.float32)
+            upsampled[::32] = sub_sig * 32.0
+            synth_filter = (h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32))[::-1]
+            recon_s = np.convolve(upsampled, synth_filter, mode="full")
+            high_band[: recon_s.size] += recon_s
+
+        mono_mp3 = low_band * 0.4 + high_band * 0.6
+        # Shift by an arbitrary granule phase phi_0 = 213 samples
+        mono_mp3 = mono_mp3[213:]
+        mono_mp3 /= np.max(np.abs(mono_mp3)) * 1.15
+
+        det = motor_flac._detect_lapped_codec_grid(mono_mp3, sr)
+        self.assertIs(det["mdct_lattice_detected"], True)
+        self.assertEqual(det["mdct_lattice_family"], "PQMF-576 (MP3)")
+        self.assertGreaterEqual(det["mdct_lattice_snr"], 12.0)
+
+    def test_28_celt_960_opus_tdac_stopband_detected_vs_lti_brickwall(self):
+        """Phase 11: Opus CELT-960 20 kHz TDAC stopband cancellation is caught while static LTI 20 kHz is spared."""
+        from _motor_espectral import _fast_mdct_f32, _get_celt_1920
+
+        sr = 48000
+        rng = np.random.default_rng(2801)
+        w_celt = _get_celt_1920()
+        n_frames = 60
+        raw_frames = rng.standard_normal((n_frames, 1920)).astype(np.float32)
+        c = _fast_mdct_f32(raw_frames, w_celt)
+        # CELT fullband stops allocating PVQ pulses at bin 800 (20.00 kHz at 48 kHz)
+        c[:, 800:] = 0.0
+        pre_sig = self._imdct_overlap_add(c, w_celt)
+        # CELT synthesis deemphasis filter H(z) = 1 / (1 - 0.85 z^-1), shifted by phi_0 = 53
+        opus_mono = signal.lfilter([1.0], [1.0, -0.85], pre_sig).astype(np.float32)[53:]
+        opus_mono /= np.max(np.abs(opus_mono)) * 1.15
+
+        det_opus = motor_flac._detect_lapped_codec_grid(opus_mono, sr)
+        self.assertIs(det_opus["mdct_lattice_detected"], True)
+        self.assertEqual(det_opus["mdct_lattice_family"], "CELT-960 (Opus)")
+        self.assertGreaterEqual(det_opus["mdct_lattice_snr"], 6.5)
+
+        # Control: static LTI brickwall filter at the exact same 20.00 kHz cut-off
+        white = rng.standard_normal(opus_mono.size).astype(np.float32)
+        spec = np.fft.rfft(white)
+        freqs = np.fft.rfftfreq(white.size, 1.0 / sr)
+        spec[freqs > 20000.0] *= 1e-4
+        lti_mono = np.fft.irfft(spec, n=white.size).astype(np.float32)
+        det_lti = motor_flac._detect_lapped_codec_grid(lti_mono, sr)
+        self.assertIs(det_lti["mdct_lattice_detected"], False)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

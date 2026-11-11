@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-11-11
+
+### Added
+
+- Raised `ENGINE_VERSION` to `"11.0"` with **Phase 11 Orthogonal Lapped
+  Transform Inversion** (`_detect_lapped_codec_grid` in `_motor_espectral.py`
+  and scoring in `_motor_veredicto.py`) to detect full-bandwidth high-bitrate
+  lossy transcodes (`Vorbis -q8/-q10` up to 500 kbps, `AAC 320` with
+  `--cutoff 22000`, `LAME CBR 320` with `--lowpass -1`, `LAME V0`, and `Opus
+  160/256` at 44.1 and 48 kHz) whose power spectra extend to 22.05 kHz without
+  a spectral cliff:
+  - **`MDCT-1024 (Vorbis/AAC)`**: projects the decoded waveform onto the
+    2,048-sample Vorbis-windowed Type-IV DCT across all 128 sample-level phase
+    offsets and the 8 block-switching subgrids of 128 samples, measuring the
+    robust Z-score ($\sigma$) of upper-band (`12.0–20.5 kHz`) near-zero
+    coefficient sparsity where Princen-Bradley TDAC aliasing cancels at the
+    true encoder frame phase $\phi_0$.
+  - **`PQMF-576 (MP3)`**: applies a single-rFFT batched 32-band ISO/IEC 11172-3
+    polyphase quadrature mirror filterbank (subbands `22..29`, `15.1–20.7 kHz`,
+    512-tap Kaiser prototype decimated by 32 with odd-subband frequency
+    inversion) followed by a vectorised 36-tap 18-point sine MDCT across all
+    `576 = 32 x 18` granule phases.
+  - **`CELT-960 (Opus)`**: applies inverse CELT post-emphasis filtering
+    $y[n] = x[n] - 0.85\,x[n - 1]$ at 48 kHz (resampling a 0.33 s active window
+    by `160/147` when `sr == 44100`) and evaluates the 960-sample low-overlap
+    IETF RFC 6716 CELT MDCT across all 120 short-block phases, distinguishing
+    Opus 20.00 kHz TDAC stopband boundary cancellation (`17.6–19.9 kHz` vs
+    `20.05–21.75 kHz`) from static LTI mastering brickwall filters.
+  - Added `mdct_lattice_detected`, `mdct_lattice_snr` and `mdct_lattice_family`
+    to `esp`, scored confirmed phase-locked lattices (`-0.55`, blocking) in
+    `_motor_veredicto.py`, and added 3 deterministic Phase 11 unit tests
+    (`test_26` to `test_28`) in `tests/test_forense_riguroso.py` (suite is now
+    332 tests).
+
 ## [2.6.0] - 2026-11-10
 
 ### Added

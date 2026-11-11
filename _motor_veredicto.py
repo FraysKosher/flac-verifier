@@ -85,6 +85,7 @@ def calculate_score(meta, spectrum, bdi):
             and not spectrum.get("islas_mdct_sfb21")
             and not spectrum.get("sospecha_excitador_armonico")
             and not spectrum.get("modulacion_psicoacustica_20k")
+            and not spectrum.get("mdct_lattice_detected")
             and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
             and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
         )
@@ -234,6 +235,13 @@ def calculate_score(meta, spectrum, bdi):
                      f"P95-P05 spread {spectrum.get('brecha_modulacion_20k_db', 0.0):.1f} dB): "
                      f"frame-adaptive lossy codec signature",
                      0.30, blocks_max_verdict=True)
+        if spectrum.get("mdct_lattice_detected"):
+            family = spectrum.get("mdct_lattice_family") or "MDCT"
+            snr_grid = spectrum.get("mdct_lattice_snr") or 0.0
+            penalizes(f"phase-locked lapped transform quantization lattice detected "
+                     f"({family}, Z = {snr_grid:.1f} sigma): "
+                     f"full-bandwidth lossy codec signature",
+                     0.55, blocks_max_verdict=True)
 
         # Vector 5: libopus fullband cliff at 20.00 kHz. In isolation it is
         # indistinguishable from a mastering anti-alias low-pass, so it is scored
@@ -246,6 +254,7 @@ def calculate_score(meta, spectrum, bdi):
                 or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
                 or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
                 or spectrum.get("modulacion_psicoacustica_20k")
+                or spectrum.get("mdct_lattice_detected")
             )
             if corroborado:
                 penalizes(f"20.00 kHz cliff of "
@@ -299,6 +308,7 @@ def calculate_score(meta, spectrum, bdi):
                     and not spectrum.get("sospecha_joint_stereo")
                     and not spectrum.get("sospecha_corte_opus_20k")
                     and not spectrum.get("modulacion_psicoacustica_20k")
+                    and not spectrum.get("mdct_lattice_detected")
                     and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
                     and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
                     and (spectrum.get("gradiente_borde_db_khz") or 0.0) < 35.0
@@ -391,7 +401,8 @@ def _deserves_album_coherence(result):
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
                   "sospecha_joint_stereo", "sospecha_corte_opus_20k",
                   "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
-                  "sospecha_excitador_armonico", "modulacion_psicoacustica_20k"):
+                  "sospecha_excitador_armonico", "modulacion_psicoacustica_20k",
+                  "mdct_lattice_detected"):
         if spectrum.get(key):
             return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
@@ -534,6 +545,10 @@ def forensic_evidence(result):
         evidence.append(f"Upper-band psychoacoustic modulation (>20 kHz): "
                           f"{spectrum.get('caida_modulacion_20k_db', 0.0):.1f} dB median drop, "
                           f"{spectrum.get('brecha_modulacion_20k_db', 0.0):.1f} dB P95-P05 spread")
+    if spectrum.get("mdct_lattice_detected"):
+        family = spectrum.get("mdct_lattice_family") or "MDCT"
+        evidence.append(f"Lapped transform quantization lattice ({family}): "
+                          f"Z = {spectrum.get('mdct_lattice_snr', 0.0):.1f} sigma")
     forensic = bdi.get("forense_bits") or {}
     if forensic.get("es_padded_16_en_24"):
         evidence.append("16-bit content zero-padded into a 24-bit container")

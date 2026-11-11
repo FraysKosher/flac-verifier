@@ -866,6 +866,9 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "caida_modulacion_20k_db":  0.0,
         "brecha_modulacion_20k_db": 0.0,
         "modulacion_psicoacustica_20k": False,
+        "mdct_lattice_detected":    False,
+        "mdct_lattice_snr":         0.0,
+        "mdct_lattice_family":      None,
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }
@@ -1319,6 +1322,225 @@ class PsychoacousticSTFTAccumulator:
             "modulacion_psicoacustica_20k": psycho_mod_20k,
         }
 
+
+_VORBIS_WIN_2048 = None
+_CELT_WIN_1920 = None
+_PQMF_BANK_CACHE = None
+
+
+def _get_vorbis_2048():
+    global _VORBIS_WIN_2048
+    if _VORBIS_WIN_2048 is None:
+        n = np.arange(2048, dtype=np.float32)
+        _VORBIS_WIN_2048 = np.sin(
+            0.5 * np.pi * (np.sin(np.pi / 2048.0 * (n + 0.5)) ** 2)
+        ).astype(np.float32)
+    return _VORBIS_WIN_2048
+
+
+def _get_celt_1920():
+    global _CELT_WIN_1920
+    if _CELT_WIN_1920 is None:
+        n_mdct, span_ov = 960, 120
+        two_n = 1920
+        pad = (n_mdct - span_ov) // 2
+        w = np.zeros(two_n, dtype=np.float32)
+        n = np.arange(span_ov, dtype=np.float32)
+        trans = np.sin(
+            0.5 * np.pi * (np.sin(0.5 * np.pi * (n + 0.5) / span_ov) ** 2)
+        ).astype(np.float32)
+        w[pad : pad + span_ov] = trans
+        w[pad + span_ov : two_n - pad - span_ov] = 1.0
+        w[two_n - pad - span_ov : two_n - pad] = trans[::-1]
+        _CELT_WIN_1920 = w
+    return _CELT_WIN_1920
+
+
+def _get_pqmf_fast(n_fft):
+    global _PQMF_BANK_CACHE
+    if _PQMF_BANK_CACHE is None or _PQMF_BANK_CACHE[0] != n_fft:
+        from scipy import signal as _sp_signal
+        h = _sp_signal.firwin(512, 1.0 / 64.0, window=("kaiser", 9.0)).astype(np.float32)
+        n_idx = np.arange(512, dtype=np.float32)
+        sb_indices = list(range(22, 30))
+        bank = np.stack([
+            h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32)
+            for s in sb_indices
+        ], axis=0)
+        bank_fft = np.fft.rfft(bank, n=n_fft, axis=1)
+        win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
+        _PQMF_BANK_CACHE = (n_fft, bank_fft, win36)
+    return _PQMF_BANK_CACHE[1], _PQMF_BANK_CACHE[2]
+
+
+def _fast_mdct_f32(frames, window):
+    from scipy import fft as _sp_fft
+    two_n = frames.shape[-1]
+    n = two_n // 2
+    n2 = n // 2
+    w_frames = frames * window
+    a = w_frames[..., :n2]
+    b = w_frames[..., n2:n]
+    c = w_frames[..., n : n + n2]
+    d = w_frames[..., n + n2 :]
+    folded = np.empty(frames.shape[:-1] + (n,), dtype=np.float32)
+    folded[..., :n2] = -c[..., ::-1] - d
+    folded[..., n2:] = a - b[..., ::-1]
+    return _sp_fft.dct(folded, type=4, axis=-1, norm="ortho", workers=1)
+
+
+def _detect_lapped_codec_grid(mono, sr):
+    """Phase 11: orthogonal lapped transform inversion for full-bandwidth MDCT codecs.
+
+    Evaluates three standardized codec filterbanks across sample-level phase offsets:
+      1. MDCT-1024 (Vorbis / AAC) with 128-sample block-switching subgrids.
+      2. PQMF-576 (MP3 32-band polyphase filterbank + 18-point MDCT).
+      3. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 pre-emphasis).
+    """
+    neutral = {
+        "mdct_lattice_detected": False,
+        "mdct_lattice_snr": 0.0,
+        "mdct_lattice_family": None,
+    }
+    if not (41000 <= sr <= 48000):
+        return neutral
+    try:
+        from scipy import signal as _sp_signal
+        mono = np.asarray(mono, dtype=np.float32)
+        if mono.size < 24576 or float(np.std(mono)) < 1e-4:
+            return neutral
+
+        # 1. MDCT-1024 (Vorbis / AAC)
+        z1024 = 0.0
+        n_blocks_1024 = 10
+        needed_1024 = n_blocks_1024 * 1024 + 2048
+        if mono.size >= needed_1024:
+            s0 = (mono.size - needed_1024) // 2
+            seg = np.ascontiguousarray(mono[s0 : s0 + needed_1024], dtype=np.float32)
+            w = _get_vorbis_2048()
+            k_lo = int(12000.0 / (sr / 2.0) * 1024)
+            k_hi = int(min(20500.0, sr * 0.46) / (sr / 2.0) * 1024)
+            if k_hi > k_lo + 8:
+                n_all_1024 = n_blocks_1024 * 1024
+                all_frames = np.lib.stride_tricks.sliding_window_view(seg, 2048)[:n_all_1024]
+                sp_all = np.empty(n_all_1024, dtype=np.float32)
+                for i in range(0, n_all_1024, 1024):
+                    chunk = all_frames[i : i + 1024]
+                    coeffs = np.abs(_fast_mdct_f32(chunk, w))[:, k_lo:k_hi]
+                    rms_c = np.sqrt(np.mean(coeffs * coeffs, axis=1, keepdims=True)) + np.float32(1e-12)
+                    active_c = rms_c[:, 0] > np.float32(1e-6)
+                    sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
+                    sp_all[i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
+                scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
+                med_c = float(np.median(scores_1024))
+                if med_c < 0.55:
+                    mad_c = float(np.median(np.abs(scores_1024 - med_c))) + 1e-9
+                    mx_c = float(np.max(scores_1024))
+                    if mx_c - med_c >= 0.008:
+                        z1024 = (mx_c - med_c) / (1.4826 * mad_c)
+
+        if z1024 >= 10.0:
+            return {
+                "mdct_lattice_detected": True,
+                "mdct_lattice_snr": round(float(z1024), 2),
+                "mdct_lattice_family": "MDCT-1024 (Vorbis/AAC)",
+            }
+
+        # 2. PQMF-576 (MP3 hybrid filterbank)
+        z576 = 0.0
+        n_gran = 32
+        needed_576 = (n_gran + 3) * 576 + 512
+        if mono.size >= needed_576:
+            s0 = (mono.size - needed_576) // 2
+            seg = np.ascontiguousarray(mono[s0 : s0 + needed_576], dtype=np.float32)
+            n_fft = 1 << int(np.ceil(np.log2(needed_576 + 512)))
+            bank_fft, win36 = _get_pqmf_fast(n_fft)
+            seg_fft = np.fft.rfft(seg, n=n_fft)
+            conv_all = np.fft.irfft(seg_fft[None, :] * bank_fft, n=n_fft, axis=1)
+            sb_arr = conv_all[:, 511:needed_576].astype(np.float32)
+            m_sub_total = sb_arr.shape[1] // 32
+            dec_all = sb_arr[:, : m_sub_total * 32].reshape(8, m_sub_total, 32).transpose(2, 0, 1).copy()
+            dec_all[:, 1::2, 1::2] *= -1.0
+            all_win36 = np.lib.stride_tricks.sliding_window_view(dec_all, 36, axis=2)
+            n_avail = (all_win36.shape[2] // 18) * 18
+            if n_avail >= 18 * 10:
+                m_frames = n_avail // 18
+                grouped = all_win36[:, :, :n_avail, :].reshape(32, 8, m_frames, 18, 36)
+                coeffs = np.abs(_fast_mdct_f32(grouped, win36))
+                flat = coeffs.transpose(0, 3, 2, 1, 4).reshape(576, m_frames, 144)
+                rms_f = np.sqrt(np.mean(flat * flat, axis=2, keepdims=True)) + np.float32(1e-12)
+                active_f = rms_f[:, :, 0] > np.float32(1e-6)
+                sp_frames = np.where(active_f, np.mean(flat < (rms_f * np.float32(0.05)), axis=2), np.float32(0.0))
+                scores_576 = sp_frames.mean(axis=1)
+                med_576 = float(np.median(scores_576))
+                if med_576 < 0.55:
+                    mad_576 = float(np.median(np.abs(scores_576 - med_576))) + 1e-9
+                    mx_576 = float(np.max(scores_576))
+                    if mx_576 - med_576 >= 0.015:
+                        z576 = (mx_576 - med_576) / (1.4826 * mad_576)
+
+        if z576 >= 12.0:
+            return {
+                "mdct_lattice_detected": True,
+                "mdct_lattice_snr": round(float(z576), 2),
+                "mdct_lattice_family": "PQMF-576 (MP3)",
+            }
+
+        # 3. CELT-960 (Opus 20.00 kHz TDAC stopband boundary cancellation)
+        z_opus = 0.0
+        n_blocks_opus = 14
+        need_48 = n_blocks_opus * 960 + 2400
+        need_src = int(need_48 * sr / 48000)
+        if mono.size >= need_src:
+            s0 = (mono.size - need_src) // 2
+            if sr == 44100:
+                mono_48 = _sp_signal.resample_poly(mono[s0 : s0 + need_src], 160, 147).astype(np.float32)
+            elif sr == 48000:
+                mono_48 = np.asarray(mono[s0 : s0 + need_48], dtype=np.float32)
+            else:
+                mono_48 = None
+            if mono_48 is not None and mono_48.size >= n_blocks_opus * 960 + 1920:
+                pre = np.empty_like(mono_48)
+                pre[0] = mono_48[0]
+                pre[1:] = mono_48[1:] - np.float32(0.85) * mono_48[:-1]
+                w_celt = _get_celt_1920()
+                all_f = np.lib.stride_tricks.sliding_window_view(pre, 1920)[: n_blocks_opus * 960]
+                c0 = np.abs(_fast_mdct_f32(all_f[::960], w_celt))
+                ep0 = float(np.mean(c0[:, 704:796] ** 2)) + 1e-28
+                es0 = float(np.mean(c0[:, 802:870] ** 2)) + 1e-28
+                emid0 = float(np.mean(c0[:, 160:440] ** 2)) + 1e-28
+                if 10.0 * math.log10(ep0 / es0) >= 20.0 and ep0 > emid0 * 1e-4 and ep0 > 1e-9:
+                    n_all = len(all_f)
+                    drops_all = np.empty(n_all, dtype=np.float32)
+                    for i in range(0, n_all, 960):
+                        chunk = all_f[i : i + 960]
+                        c = np.abs(_fast_mdct_f32(chunk, w_celt))
+                        e_pass = np.mean(c[:, 704:796] ** 2, axis=1) + np.float32(1e-28)
+                        e_stop = np.mean(c[:, 802:870] ** 2, axis=1) + np.float32(1e-28)
+                        drops_all[i : i + 960] = 10.0 * np.log10(e_pass / e_stop)
+                    grid_d = drops_all.reshape(n_blocks_opus, 8, 120).mean(axis=0).max(axis=0)
+                    med_d = float(np.median(grid_d))
+                    mad_d = float(np.median(np.abs(grid_d - med_d))) + 1e-9
+                    mx_d = float(np.max(grid_d))
+                    if mx_d >= 38.0 and (mx_d - med_d) >= 6.0:
+                        z_opus = (mx_d - med_d) / (1.4826 * mad_d)
+
+        if z_opus >= 6.5:
+            return {
+                "mdct_lattice_detected": True,
+                "mdct_lattice_snr": round(float(z_opus), 2),
+                "mdct_lattice_family": "CELT-960 (Opus)",
+            }
+
+        best_z = max(z1024, z576, z_opus)
+        return {
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": round(float(best_z), 2) if math.isfinite(best_z) else 0.0,
+            "mdct_lattice_family": None,
+        }
+    except Exception:
+        return neutral
+
 class _SpectralAccumulator:
     """Keeps the K most active blocks in memory and runs the STFT on them at the
     end. Shared by the streaming path and the array path so both give the same
@@ -1501,6 +1723,12 @@ class _SpectralAccumulator:
             ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
             if math.isfinite(ms_p95) and ms_p95 > spectrum.get("caida_side_agudos_db", 0.0):
                 spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
+        if (41000 <= self.sr <= 48000
+                and spectrum.get("techo_hz", 0) >= 17500
+                and spectrum.get("clase_corte") != "far_cutoff"):
+            best_blk = max(chosen, key=lambda item: (len(item[4]) >= 24576, item[0]))[4]
+            mono_blk = best_blk[:, 0] if best_blk.ndim > 1 else best_blk
+            spectrum.update(_detect_lapped_codec_grid(mono_blk, self.sr))
         if self.save_png and png_power:
             png_path, error = self._renderer(
                 freqs, np.concatenate(png_times),

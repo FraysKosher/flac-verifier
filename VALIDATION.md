@@ -1,4 +1,4 @@
-# FLAC VERIFIER 2.6.0 — Validation (2026-11-10)
+# FLAC VERIFIER 2.7.0 — Validation (2026-11-11)
 
 <!-- BENCHMARK:START -->
 ## Validation benchmark (synthetic, n = 40)

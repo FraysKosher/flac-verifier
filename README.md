@@ -5,9 +5,9 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.6.0](https://img.shields.io/badge/version-2.6.0-blue)](CHANGELOG.md)
+[![Version: 2.7.0](https://img.shields.io/badge/version-2.7.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 329](https://img.shields.io/badge/tests-329-brightgreen)](#tests)
+[![Tests: 332](https://img.shields.io/badge/tests-332-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
 lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
@@ -30,10 +30,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
   `es_24bit_escalado_en_peine`, DoP markers) to catch 16-bit audio stored in
   24-bit containers—even when masked with $\pm 1\dots 3\text{ LSB}_{24}$
   boundary dither.
-- **Psychoacoustic & spectral forensics:** detects hard codec cut-offs,
-  upper-band 20 kHz psychoacoustic modulation (`LAME V0/320`, `AAC 256/320`,
-  `Vorbis`, `Opus`), `sfb21` MDCT islands, dynamic Mid/Side stereo collapse,
-  harmonic exciters/SBR, and Gibbs reconstruction clipping.
+- **Psychoacoustic, spectral & lapped-transform forensics:** detects hard codec
+  cut-offs, **orthogonal lapped transform quantization lattices** (`MDCT-1024`
+  for Vorbis `-q8/-q10` & AAC 320, `PQMF-576` for MP3 320/V0 even with
+  `--lowpass -1`, `CELT-960` for Opus 20 kHz TDAC boundary cancellation),
+  upper-band 20 kHz psychoacoustic modulation, `sfb21` MDCT islands, dynamic
+  Mid/Side stereo collapse, harmonic exciters/SBR, and Gibbs reconstruction
+  clipping.
 - **Hi-Res & DSD authenticity:** distinguishes genuine 96/192 kHz analogue
   roll-offs and SACD/DSD noise-shaping ramps (`direct_24_40k`, `scarlet_30k`,
   `dsd128_40_80k`) from 22.05/24.0 kHz brickwall upscales and aliasing mirrors.
@@ -47,13 +50,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.6.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.6.0)**,
+Download **[FLAC Verifier 2.7.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.7.0)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.6.0.txt`:
+To verify the download with `SHA256SUMS_2.7.0.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.6.0-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.7.0-win64.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -136,7 +139,7 @@ FLAC VERIFIER/
 ├── informe_pdf.py            per-album PDF report generator
 ├── build.py                  PyInstaller builder & post-build verifier
 ├── comprobar_ejecutable.py   11-check verification suite for the frozen .exe
-└── tests/                    329 unit tests (stdlib unittest, synthetic fixtures)
+└── tests/                    332 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -147,7 +150,7 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 329-test suite (~90 s, no external audio files needed)
+# Run the full 332-test suite (~90 s, no external audio files needed)
 python -m unittest discover -s tests
 
 # Skip GUI tests in headless environments
@@ -160,7 +163,7 @@ python build.py
 | Test module | Coverage |
 |---|---|
 | `test_blindaje.py`, `test_protocolo.py`, `test_md5.py` | Corrupt-file safety, strict NDJSON contract, 8/16/24-bit MD5 verification |
-| `test_veredictos.py`, `test_forense_riguroso.py` | Phase 8–10 forensic detectors: 24-bit lattice, 16-in-24 micro-dither, DSD/Hi-Res, 24 kHz brickwall, `sfb21` islands, 20 kHz modulation, harmonic exciter, acoustic exemption & album coherence |
+| `test_veredictos.py`, `test_forense_riguroso.py` | Phase 8–11 forensic detectors: 24-bit lattice, 16-in-24 micro-dither, DSD/Hi-Res, 24 kHz brickwall, lapped transform lattices (`MDCT-1024`, `PQMF-576`, `CELT-960`), `sfb21` islands, 20 kHz modulation, harmonic exciter, acoustic exemption & album coherence |
 | `test_rendimiento.py`, `test_cache_y_paralelo.py` | Streaming equivalence, vectorised hot paths, cache invalidation, parallel pool & natural track ordering |
 | `test_gui.py`, `test_theme.py`, `test_informe_pdf.py` | GUI lifecycle, dark/light live retheming, WCAG contrast, PDF layout & spectrogram embedding |
 | `test_estructura.py`, `test_empaquetado.py`, `test_idioma.py` | Architectural boundaries, PyInstaller spec invariants & English-only repository enforcement |
@@ -170,7 +173,7 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.6.0`).
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.7.0`).
 - **[`VALIDATION.md`](VALIDATION.md)** — Synthetic benchmark report and Wilson 95 % confidence intervals.
 - **[`COMPARISON.md`](COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`DESIGN.md`](DESIGN.md)** — UI/PDF design system and accessibility tokens.

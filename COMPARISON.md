@@ -3,9 +3,9 @@
 Both **FLAC VERIFIER** and **[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)**
 answer the same question — *is this lossless file genuinely lossless, or a
 lossy transcode / inflated container in disguise?* — from two different
-engineering philosophies. This page compares both tools at version **2.6.0**,
-with the exact commands used to obtain every figure, so you can choose the one
-that fits your workflow (or use both).
+engineering philosophies. This page compares **FLAC VERIFIER `v2.7.0`** (`engine
+11.0`) and **FLAC Detective `v2.6.0`**, with the exact commands used to obtain
+every figure, so you can choose the one that fits your workflow (or use both).
 
 - **FLAC Detective** is a Python package, CLI and library scanner meant to be
   installed via `pip`/`pipx`/Docker, scripted across a multi-format music
@@ -13,30 +13,31 @@ that fits your workflow (or use both).
   optional stereo CNN.
 - **FLAC VERIFIER** is a self-contained Windows desktop application (plus CLI
   and NDJSON engine) that requires no Python installation on the target machine,
-  verifies bit-exact `STREAMINFO MD5` integrity alongside spectral and 24-bit
-  algebraic forensics in a single streaming pass, and produces an archival
-  per-album PDF report with embedded spectrograms.
+  verifies bit-exact `STREAMINFO MD5` integrity alongside spectral,
+  lapped-transform (`MDCT-1024`, `PQMF-576`, `CELT-960`) and 24-bit algebraic
+  forensics in a single streaming pass, and produces an archival per-album PDF
+  report with embedded spectrograms.
 
 ---
 
-## Side by side (both at v2.6.0)
+## Side by side
 
-| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.6.0`, engine `10.0`) |
+| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.7.0`, engine `11.0`) |
 |---|---|---|
 | **Primary shape** | Python library + CLI + `beets` plugin + optional PySide6 GUI | Standalone Windows desktop app (`FLAC_Verifier.exe` + `flac_motor.exe`), interactive CLI & NDJSON engine |
 | **Installation** | `pip install flac-detective` (`[gui]`, `[ml]`, `[beets]`), Docker (`amd64`/`arm64`), built-in `--update` | Portable Windows ZIP (extract and double-click `FLAC_Verifier.exe`; no Python required) or `pip install -r requirements.txt` |
 | **OS shell integration** | Windows Explorer right-click menu (`--install-context-menu`) | Drag-and-drop folder/file target (`tkinterdnd2`), dark/light live in-place theme switch |
 | **Input formats** | FLAC (8/16/24/32-bit), WAV, ALAC (`.m4a`), APE (`.ape`), Musepack | FLAC (8/16/24-bit, CD and Hi-Res up to 192 kHz) |
 | **Bit-exact integrity (`STREAMINFO MD5`)** | Not checked (`0` matches in `src/`); offers a separate FLAC stream repair tool (`flac_detective.repair`) | Reconstructs decoded PCM bytes and verifies the 128-bit `STREAMINFO MD5` in the same pass; mismatch is a hard error outside scoring |
-| **Transcode forensics** | 18 rules across independent evidence families: spectral cliff, MP3/Vorbis/Opus MDCT frame-alignment grids (including Vorbis block switching & CELT de-emphasis undo), HE-AAC QMF phase coherence (`Rule 17`), Side-channel step (`Rule 18`), plus optional stereo CNN (`Rule 12`) | Energy-guided full-track STFT: multi-scale spectral step & distance to Nyquist, upper-band 20 kHz psychoacoustic modulation (`LAME V0/320`, `AAC 256/320`, `Vorbis`, `Opus`), `sfb21` MDCT islands, 600 Hz MDCT holes, dynamic Mid/Side collapse, Opus 20 kHz cliff, harmonic exciter/SBR & Gibbs reconstruction clipping |
+| **Transcode forensics** | 18 rules across independent evidence families: spectral cliff, MP3/Vorbis/Opus MDCT frame-alignment grids (including Vorbis block switching & CELT de-emphasis undo), HE-AAC QMF phase coherence (`Rule 17`), Side-channel step (`Rule 18`), plus optional stereo CNN (`Rule 12`) | Orthogonal lapped transform inversion (`MDCT-1024` Vorbis/AAC 128-subgrid, `PQMF-576` MP3 32-band polyphase + 18-MDCT, `CELT-960` Opus TDAC boundary cancellation) + energy-guided full-track STFT: multi-scale spectral step & distance to Nyquist, upper-band 20 kHz psychoacoustic modulation, `sfb21` MDCT islands, 600 Hz MDCT holes, dynamic Mid/Side collapse, Opus 20 kHz cliff, harmonic exciter/SBR & Gibbs reconstruction clipping |
 | **24-bit & Hi-Res upscale forensics** | Separate `hires_verdict` axis (`GENUINE_HIRES`, `UPSAMPLED`, `PADDED_DEPTH`): trailing-zero bit check across 8 windows + Welch cliff at `22.05/24/44.1/48 kHz` above a `-70 dB` void | Integrated into the forensic model: full-stream modulo-256 LSB8 audit (`es_padded_16_en_24`, `es_16bit_dither_en_24` for $\pm 1\dots 3\text{ LSB}_{24}$ micro-dither, `es_24bit_escalado_en_peine` gain comb, DoP markers), `22.05/24.0 kHz` Nyquist brickwall, `23–29 kHz` aliasing mirror, and DSD64/Scarlet/DSD128 ultrasonic ramp recognition |
 | **Album-level context** | Per-file independent evaluation | Album-level master coherence (`coherencia_album`) across the batch, plus natural numeric track ordering (`1, 2, …, 10, …, 100`) |
 | **Verdict model** | Two axes: transcode (`AUTHENTIC` / `WARNING` / `SUSPICIOUS` / `FAKE_CERTAIN`, 0–150 pts, conviction requires 2 evidence families) + `hires_verdict` | Single unified verdict (`GENUINE LOSSLESS` / `PROBABLY LOSSLESS` / `SUSPICIOUS` / `PROBABLE UPSCALE` / `indeterminate`), positive evidence minus confirmed defects; blocking defects cap the maximum verdict |
 | **Reports** | Text, CSV, JSON and self-contained HTML triage report with spectrum curves | Per-album PDF report (`flac_verifier_report.pdf`: executive cover, one page per song with embedded Pillow spectrogram and detected issues, overall summary table) + NDJSON stream |
 | **Parallelism & caching** | Process pool (`cli/pool.py`) and in-run audio/window cache | Process pool (up to 8 workers) + persistent on-disk per-track JSON cache keyed by size, `mtime_ns`, `STREAMINFO MD5`, `ENGINE_VERSION` and render fingerprint |
-| **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (8,245 lines), or 12 modules (9,046 lines) including build/verification scripts |
-| **Automated tests** | 772 test functions across 82 files (`pytest`) | 329 test functions across 13 files (`unittest`, zero external audio files) + 11-check frozen `.exe` gate |
-| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.6.0` (`ENGINE_VERSION = "10.0"`, 2026-11-10) |
+| **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (8,494 lines), or 12 modules (9,295 lines) including build/verification scripts |
+| **Automated tests** | 772 test functions across 82 files (`pytest`) | 332 test functions across 13 files (`unittest`, zero external audio files) + 11-check frozen `.exe` gate |
+| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.7.0` (`ENGINE_VERSION = "11.0"`, 2026-11-11) |
 | **Licence** | MIT | MIT |
 
 ---
@@ -48,11 +49,9 @@ Python ecosystem tool**:
 
 1. **Multi-container & 32-bit support:** It scans FLAC, WAV, ALAC (`.m4a`), APE
    and Musepack in one pass, and decodes 32-bit integer FLACs via `ffmpeg`.
-2. **Time-domain MDCT & QMF grid arithmetic:** Beyond spectral cut-offs, its
-   `Rule 13` inspects MDCT frame boundaries in the time domain (MP3 576/1152
-   samples, Vorbis 8-alignment block switching, and Opus 20 ms CELT frames after
-   inverting de-emphasis), and `Rule 17` measures subband phase coherence for
-   HE-AAC SBR—even when upsampled to 96/192 kHz.
+2. **HE-AAC SBR subband phase coherence (`Rule 17`):** Beyond MDCT frame grids,
+   it inspects QMF subband phase coherence for HE-AAC SBR streams—including
+   when subsequently upsampled to 96/192 kHz.
 3. **Two-family corroboration & pre-registered empirical audits:** A file is
    only convicted (`FAKE_CERTAIN`) when at least two independent evidence
    families agree, backed by an optional stereo CNN (`flac-detective[ml]`) and
@@ -68,7 +67,8 @@ Python ecosystem tool**:
 ## Where FLAC VERIFIER excels
 
 FLAC VERIFIER is the natural choice when you want a **zero-setup Windows desktop
-auditor, deep 24-bit/Hi-Res/DSD bit-lattice forensics, and an archival album PDF**:
+auditor, orthogonal lapped-transform & 24-bit/Hi-Res/DSD bit-lattice forensics,
+and an archival album PDF**:
 
 1. **Zero-install Windows distribution verified against source:** Released as a
    portable folder (`FLAC_Verifier.exe` + `flac_motor.exe`) that runs on any
@@ -79,7 +79,15 @@ auditor, deep 24-bit/Hi-Res/DSD bit-lattice forensics, and an archival album PDF
    streaming pass and hashes the raw little-endian PCM bytes against the
    128-bit MD5 stored in `STREAMINFO`. Corrupt or truncated files are caught
    deterministically and never assigned a speculative authenticity score.
-3. **Full-track 24-bit algebraic lattice & micro-dither detection:** Rather than
+3. **Orthogonal lapped transform inversion (`MDCT-1024`, `PQMF-576`, `CELT-960`):**
+   Projects the decoded waveform onto forward codec filterbanks across all
+   sample-level phase offsets (`128` Vorbis/AAC block-switching offsets, `576`
+   MP3 32-band PQMF × 18-MDCT granule phases, and `120` Opus CELT short-block
+   offsets after inverting CELT post-emphasis) to catch full-bandwidth lossy
+   transcodes (`Vorbis -q8/-q10` at 500 kbps, `AAC 320 --cutoff 22000`,
+   `LAME 320 --lowpass -1`, `Opus 160/256`) where the power spectrum reaches
+   22.05 kHz without a cliff.
+4. **Full-track 24-bit algebraic lattice & micro-dither detection:** Rather than
    only checking whether trailing bits are all zero, `_motor_bits.py` builds a
    modulo-256 LSB8 histogram across the track to catch:
    - zero-padded 16-in-24 containers (`es_padded_16_en_24`),
@@ -88,12 +96,12 @@ auditor, deep 24-bit/Hi-Res/DSD bit-lattice forensics, and an archival album PDF
    - 16-bit audio scaled by a fixed digital gain in a 24-bit container
      (`es_24bit_escalado_en_peine`), and
    - DSD-over-PCM (`es_flujo_dop`) markers.
-4. **Upper-band 20 kHz psychoacoustic modulation & DSD/Hi-Res profiling:**
+5. **Upper-band 20 kHz psychoacoustic modulation & DSD/Hi-Res profiling:**
    Detects frame-by-frame psychoacoustic energy drop and modulation in
    `20.2–21.8 kHz` (`modulacion_psicoacustica_20k`), `22.05/24.0 kHz` Nyquist
    brickwalls, `23–29 kHz` aliasing mirrors, and genuine SACD/DSD ultrasonic
    noise-shaping ramps (`direct_24_40k`, `scarlet_30k`, `dsd128_40_80k`).
-5. **Persistent per-track disk cache & archival PDF report:** Re-verifying an
+6. **Persistent per-track disk cache & archival PDF report:** Re-verifying an
    already analysed album takes seconds via `_spectrograms/_cache/`, and `--pdf`
    produces a print-ready `flac_verifier_report.pdf` with one page per track
    (in natural track order `1, 2, …, 10, …, 100`) and its full-resolution

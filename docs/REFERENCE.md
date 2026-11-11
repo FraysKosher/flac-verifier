@@ -74,6 +74,8 @@ with `error` and the process continues until it emits `fin`.
            "brecha_p90_p10_agudos_db": 0.0, "ratio_apagado_sfb21": 0.0,
            "islas_mdct_sfb21": false, "caida_modulacion_20k_db": 12.1,
            "brecha_modulacion_20k_db": 4.2, "modulacion_psicoacustica_20k": false,
+           "mdct_lattice_detected": false, "mdct_lattice_snr": 0.0,
+           "mdct_lattice_family": null,
            "corr_env_excitador": 0.0, "muesca_excitador_db": 0.0,
            "sospecha_excitador_armonico": false, "espectrograma": null },
   "score": 0.7, "veredicto": "PROBABLY LOSSLESS",
@@ -127,6 +129,8 @@ with `error` and the process continues until it emits `fin`.
 | `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
 | `esp.caida_modulacion_20k_db` / `brecha_modulacion_20k_db` | Median drop and P90–P10 modulation gap between 16.0–19.5 kHz and 20.2–21.8 kHz across active frames |
 | `esp.modulacion_psicoacustica_20k` | `true` when the 20.2–21.8 kHz band exhibits both a deep drop and dynamic psychoacoustic modulation |
+| `esp.mdct_lattice_detected` | `true` when orthogonal lapped transform inversion recovers a phase-locked codec quantization lattice (`MDCT-1024`, `PQMF-576` or `CELT-960`) |
+| `esp.mdct_lattice_snr` / `esp.mdct_lattice_family` | Peak robust Z-score ($\sigma$) across sample offsets and identified filterbank family (`MDCT-1024 (Vorbis/AAC)`, `PQMF-576 (MP3)` or `CELT-960 (Opus)`) |
 | `esp.corr_env_excitador` | Correlation between the 8–14 kHz envelope and the high band |
 | `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
 | `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / SBR signature |
@@ -188,6 +192,7 @@ contribute.
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
 | sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
 | Upper-band 20 kHz modulation | 0.30 | Frame-level drop and psychoacoustic modulation in 20.2–21.8 kHz (blocks) |
+| Lapped transform quantization lattice | 0.55 | Phase-locked `MDCT-1024`, `PQMF-576` or `CELT-960` lattice (`mdct_lattice_detected`, blocks) |
 | Harmonic exciter / SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
 | Opus 20 kHz cliff | 0.20 | 20.00 kHz cliff with other codec evidence (does not block) |
 | Gibbs clipping | 0.25 | 1–2 sample clipping events with a band limit < 20.5 kHz (does not block) |
@@ -220,12 +225,14 @@ never aborts the analysis.
 
 ## Known physical limits
 
-1. **Unmodulated CBR 320 kbps MP3 with lowpass disabled (`--lowpass -1`):**
-   standard high-bitrate codecs (`LAME V0/320`, `AAC 256/320`, `Vorbis Q6/Q9`,
-   `Opus 128`, `WMA 192`) are caught via upper-band 20 kHz psychoacoustic
-   modulation, dynamic Mid/Side collapse or sfb21 islands. A synthetic 16-bit
-   CBR 320 stream with the lowpass disabled and no sfb21 dropouts has no
-   deterministic physical boundary separating it from a 20 kHz CD master.
+1. **Post-processed lossy transcodes whose sample grid was destroyed:**
+   full-bandwidth high-bitrate codecs (`Vorbis -q8/-q10` at 500 kbps, `AAC 320`
+   with `--cutoff 22000`, `LAME CBR 320` with `--lowpass -1`, `Opus 160/256`)
+   are caught by Phase 11 orthogonal lapped transform inversion (`MDCT-1024`,
+   `PQMF-576`, `CELT-960`) as long as the decoded sample grid is intact. If a
+   full-bandwidth transcode is subsequently pitch-shifted, time-stretched or
+   re-recorded through an analogue loop, the sample-level MDCT phase lock is
+   broken and only spectral/psychoacoustic cues remain.
 2. **CD master filtered below 70 % of Nyquist:** scored as `PROBABLY LOSSLESS`
    or `SUSPICIOUS` unless rescued by the 8D acoustic exemption or album-level
    master coherence.
@@ -257,7 +264,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"10.0"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"11.0"`), spectral mode and seconds |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---
