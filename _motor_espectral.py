@@ -630,7 +630,7 @@ def _gradient_edge_db_khz(freqs_hz, power_db, ceiling_hz, nyquist):
     power_db = np.asarray(power_db, dtype=np.float64)
     if freqs.size < 8 or power_db.shape != freqs.shape or not ceiling_hz:
         return 0.0
-    f_min = max(12000.0, float(ceiling_hz) - 1500.0)
+    f_min = max(8000.0, float(ceiling_hz) - 1500.0)
     f_max = min(float(nyquist), float(ceiling_hz) + 500.0)
     if f_max <= f_min:
         return 0.0
@@ -814,6 +814,23 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         and ceiling_hz >= 11000.0
         and gradient_edge < 20.0
     )
+    smooth_band_limited_rolloff = False
+    if (samplerate <= 48000 and cutoff_hz is None
+            and 10000.0 <= ceiling_hz < 0.70 * nyquist
+            and 0.5 <= gradient_edge < 18.0):
+        mask_pre_lo = ((freqs >= max(5000.0, ceiling_hz - 4500.0))
+                       & (freqs <= max(6500.0, ceiling_hz - 2200.0)))
+        mask_pre_hi = ((freqs >= max(7500.0, ceiling_hz - 1400.0))
+                       & (freqs <= ceiling_hz))
+        mask_post_fl = (freqs >= ceiling_hz + 1500.0) & (freqs <= nyquist * 0.96)
+        if (np.any(mask_pre_lo) and np.any(mask_pre_hi)
+                and np.any(mask_post_fl)):
+            drop_pre = float(np.mean(power_db_n[mask_pre_lo])
+                             - np.mean(power_db_n[mask_pre_hi]))
+            floor_post = float(np.mean(power_db_n[mask_post_fl]))
+            smooth_band_limited_rolloff = bool(
+                3.5 <= drop_pre <= 42.0 and floor_post > -125.0
+            )
 
     return {
         "error":              None,
@@ -842,7 +859,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "rolloff_analogico_genuino": hires["rolloff_analogico_genuino"],
         "gradiente_nyquist_db_khz": hires["gradiente_nyquist_db_khz"],
         "salto_ultrasonico_db":     hires["salto_ultrasonico_db"],
-        "correlacion_espejo_22k":   hires["correlacion_espejo_22k"],
+        "correlacion_espejo_22k":   round(hires["correlacion_espejo_22k"], 3),
         "es_transferencia_dsd":     hires["es_transferencia_dsd"],
         "perfil_dsd":               hires["perfil_dsd"],
         # Transition band around the ceiling (dB/kHz of steepest descent).
@@ -850,6 +867,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "centroide_hz":             (round(centroid_hz, 1)
                                      if math.isfinite(centroid_hz) else 0.0),
         "decaimiento_acustico_suave": smooth_acoustic_decay,
+        "rolloff_banda_limitada_genuina": smooth_band_limited_rolloff,
         # Psychoacoustic metrics: the streaming path overwrites them with
         # _psycho.resultado(). Direct callers get the neutral default so every key
         # exists without an STFT-driven accumulator.
@@ -863,6 +881,9 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "corr_env_excitador":       0.0,
         "muesca_excitador_db":      0.0,
         "sospecha_excitador_armonico": False,
+        "sbr_qmf_detectado":        False,
+        "sbr_qmf_correlacion":      0.0,
+        "sbr_qmf_z":                0.0,
         "caida_modulacion_20k_db":  0.0,
         "brecha_modulacion_20k_db": 0.0,
         "modulacion_psicoacustica_20k": False,
@@ -1325,7 +1346,7 @@ class PsychoacousticSTFTAccumulator:
 
 _VORBIS_WIN_2048 = None
 _CELT_WIN_1920 = None
-_PQMF_BANK_CACHE = None
+_PQMF_BANK_CACHE = {}
 
 
 def _get_vorbis_2048():
@@ -1356,21 +1377,26 @@ def _get_celt_1920():
     return _CELT_WIN_1920
 
 
-def _get_pqmf_fast(n_fft):
-    global _PQMF_BANK_CACHE
-    if _PQMF_BANK_CACHE is None or _PQMF_BANK_CACHE[0] != n_fft:
-        from scipy import signal as _sp_signal
-        h = _sp_signal.firwin(512, 1.0 / 64.0, window=("kaiser", 9.0)).astype(np.float32)
+def _get_pqmf_fast(n_fft, sb_indices=(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)):
+    sb_key = (int(n_fft), tuple(sb_indices))
+    cached = _PQMF_BANK_CACHE.get(sb_key)
+    if cached is None:
+        from scipy import fft as _sp_fft
+        if len(_PQMF_BANK_CACHE) >= 8:
+            _PQMF_BANK_CACHE.clear()
+        m_tap = np.arange(512, dtype=np.float64) - 255.5
+        h_raw = (1.0 / 64.0) * np.sinc(m_tap / 64.0) * np.kaiser(512, 9.0)
+        h = (h_raw / np.sum(h_raw)).astype(np.float32)
         n_idx = np.arange(512, dtype=np.float32)
-        sb_indices = list(range(22, 30))
         bank = np.stack([
             h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32)
             for s in sb_indices
         ], axis=0)
-        bank_fft = np.fft.rfft(bank, n=n_fft, axis=1)
+        bank_fft = _sp_fft.rfft(bank, n=n_fft, axis=1, workers=1)
         win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
-        _PQMF_BANK_CACHE = (n_fft, bank_fft, win36)
-    return _PQMF_BANK_CACHE[1], _PQMF_BANK_CACHE[2]
+        cached = (bank_fft, win36)
+        _PQMF_BANK_CACHE[sb_key] = cached
+    return cached[0], cached[1]
 
 
 def _fast_mdct_f32(frames, window):
@@ -1389,13 +1415,113 @@ def _fast_mdct_f32(frames, window):
     return _sp_fft.dct(folded, type=4, axis=-1, norm="ortho", workers=1)
 
 
-def _detect_lapped_codec_grid(mono, sr):
-    """Phase 11: orthogonal lapped transform inversion for full-bandwidth MDCT codecs.
+def _detect_sbr_qmf_replication(mono, sr):
+    """Phase 12: seamless QMF subband replication detector for HE-AAC v1/v2 SBR.
 
-    Evaluates three standardized codec filterbanks across sample-level phase offsets:
+    Subtracts the local ~1.1 kHz spectral envelope per STFT frame to factor out
+    broadband percussive transients and SBR coarse envelope adjusters, then
+    correlates fine spectral trajectories across additive QMF patch shifts in
+    3.5-9.5 kHz. Genuine harmonics dilate multiplicatively (f -> 2f) rather than
+    by a constant additive translation (f -> f + delta_f). Works at CD and Hi-Res
+    sample rates alike.
+    """
+    neutral = {
+        "sbr_qmf_detectado": False,
+        "sbr_qmf_correlacion": 0.0,
+        "sbr_qmf_z": 0.0,
+    }
+    if sr < 32000:
+        return neutral
+    try:
+        from scipy import fft as _sp_fft
+        mono = np.asarray(mono, dtype=np.float32)
+        if mono.size < sr or float(np.std(mono)) < 1e-4:
+            return neutral
+        n_fft = 2048 * (1 << int(round(math.log2(max(1.0, sr / 46000.0)))))
+        hop = n_fft // 2
+        max_samples = min(mono.size, int(sr * 6))
+        s0 = (mono.size - max_samples) // 2
+        seg = mono[s0 : s0 + max_samples]
+        n_frames = (seg.size - n_fft) // hop + 1
+        if n_frames < 24:
+            return neutral
+        win = np.hanning(n_fft + 1)[:-1].astype(np.float32)
+        frames = np.lib.stride_tricks.sliding_window_view(seg, n_fft)[::hop][:n_frames]
+        if len(frames) > 160:
+            frames = frames[:: max(1, len(frames) // 160)][:160]
+        spec = _sp_fft.rfft(frames * win, axis=1, workers=1)
+        df = sr / float(n_fft)
+        k_max = min(spec.shape[1], int(20200.0 / df))
+        p_db = 10.0 * np.log10(np.abs(spec[:, :k_max]) ** 2 + np.float32(1e-24))
+
+        frame_e = np.mean(p_db[:, int(1000.0 / df) : int(9000.0 / df)], axis=1)
+        active = frame_e > (np.max(frame_e) - 35.0)
+        if int(np.count_nonzero(active)) < 20:
+            return neutral
+        p_db = p_db[active]
+
+        k_115 = int(11500.0 / df)
+        k_185 = min(k_max, int(18500.0 / df))
+        k_40 = int(4000.0 / df)
+        k_100 = int(10000.0 / df)
+        if k_185 <= k_115 + 32:
+            return neutral
+        if float(np.mean(p_db[:, k_115:k_185])) < float(np.mean(p_db[:, k_40:k_100])) - 45.0:
+            return neutral
+
+        w_bins = max(9, int(round(1100.0 / df)) | 1)
+        padded = np.pad(p_db, ((0, 0), (w_bins // 2, w_bins // 2 + 1)), mode="edge")
+        cs = np.cumsum(padded, axis=1, dtype=np.float32)
+        smooth_f = (cs[:, w_bins:] - cs[:, :-w_bins]) / np.float32(w_bins)
+        resid = p_db - smooth_f
+        resid -= np.mean(resid, axis=0, keepdims=True)
+        norms = np.sqrt(np.sum(resid * resid, axis=0, keepdims=True)) + np.float32(1e-9)
+        normed = resid / norms
+
+        dk_min = int(3500.0 / df)
+        dk_max = min(k_115 - 4, int(9500.0 / df))
+        if dk_max <= dk_min + 8:
+            return neutral
+        tgt = normed[:, k_115:k_185]
+        b_len = tgt.shape[1]
+        patch_bins = min(b_len, max(32, int(round(2200.0 / df))))
+        inv_patch = 1.0 / float(patch_bins)
+        shift_scores = np.empty(dk_max - dk_min + 1, dtype=np.float32)
+        for idx, dk in enumerate(range(dk_min, dk_max + 1)):
+            src = normed[:, k_115 - dk : k_185 - dk]
+            corr_bins = np.sum(tgt * src, axis=0)
+            cs_c = np.cumsum(np.insert(corr_bins, 0, 0.0))
+            win_means = (cs_c[patch_bins:] - cs_c[:-patch_bins]) * inv_patch
+            shift_scores[idx] = float(np.max(win_means))
+
+        med = float(np.median(shift_scores))
+        mad = float(np.median(np.abs(shift_scores - med))) + 1e-9
+        mx = float(np.max(shift_scores))
+        z_sbr = (mx - med) / (1.4826 * mad) if mx > med else 0.0
+        detected = bool(
+            (mx >= 0.36 and z_sbr >= 6.5)
+            or (mx >= 0.28 and z_sbr >= 11.0)
+            or (mx >= 0.21 and z_sbr >= 16.0)
+        )
+        return {
+            "sbr_qmf_detectado": detected,
+            "sbr_qmf_correlacion": round(float(mx), 4) if (detected and math.isfinite(mx)) else 0.0,
+            "sbr_qmf_z": round(float(z_sbr), 2) if (detected and math.isfinite(z_sbr)) else 0.0,
+        }
+    except Exception:
+        return neutral
+
+
+def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
+    """Phase 11/12: orthogonal lapped transform & subband inversion for lossy codecs.
+
+    Evaluates four standardized codec filterbanks across sample-level phase offsets:
       1. MDCT-1024 (Vorbis / AAC) with 128-sample block-switching subgrids.
       2. PQMF-576 (MP3 32-band polyphase filterbank + 18-point MDCT).
-      3. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 pre-emphasis).
+      3. PQMF-32 (Musepack SV7/SV8 32-band pure subband 36-sample frame grid).
+      4. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 preemphasis).
+    When 9.5 kHz <= ceiling_hz < 17.5 kHz, adapts MDCT-1024 and PQMF-576 to the
+    passband and ATH roll-off tail so band-limited transcodes are still caught.
     """
     neutral = {
         "mdct_lattice_detected": False,
@@ -1405,9 +1531,21 @@ def _detect_lapped_codec_grid(mono, sr):
     if not (41000 <= sr <= 48000):
         return neutral
     try:
-        from scipy import signal as _sp_signal
+        from scipy import fft as _sp_fft
         mono = np.asarray(mono, dtype=np.float32)
         if mono.size < 24576 or float(np.std(mono)) < 1e-4:
+            return neutral
+
+        nyq = sr / 2.0
+        fullband_mode = ceiling_hz is None or ceiling_hz >= 17500.0
+        if fullband_mode:
+            bands_1024 = [(12000.0, min(20500.0, sr * 0.46))]
+        elif ceiling_hz >= 9500.0:
+            bands_1024 = [
+                (max(4200.0, ceiling_hz * 0.48), ceiling_hz * 0.90),
+                (max(7000.0, ceiling_hz * 0.78), min(20500.0, sr * 0.46, max(15500.0, ceiling_hz * 1.25))),
+            ]
+        else:
             return neutral
 
         # 1. MDCT-1024 (Vorbis / AAC)
@@ -1418,11 +1556,13 @@ def _detect_lapped_codec_grid(mono, sr):
             s0 = (mono.size - needed_1024) // 2
             seg = np.ascontiguousarray(mono[s0 : s0 + needed_1024], dtype=np.float32)
             w = _get_vorbis_2048()
-            k_lo = int(12000.0 / (sr / 2.0) * 1024)
-            k_hi = int(min(20500.0, sr * 0.46) / (sr / 2.0) * 1024)
-            if k_hi > k_lo + 8:
-                n_all_1024 = n_blocks_1024 * 1024
-                all_frames = np.lib.stride_tricks.sliding_window_view(seg, 2048)[:n_all_1024]
+            n_all_1024 = n_blocks_1024 * 1024
+            all_frames = np.lib.stride_tricks.sliding_window_view(seg, 2048)[:n_all_1024]
+            for f_lo, f_hi in bands_1024:
+                k_lo = int(f_lo / nyq * 1024)
+                k_hi = int(f_hi / nyq * 1024)
+                if k_hi <= k_lo + 8:
+                    continue
                 sp_all = np.empty(n_all_1024, dtype=np.float32)
                 for i in range(0, n_all_1024, 1024):
                     chunk = all_frames[i : i + 1024]
@@ -1437,7 +1577,9 @@ def _detect_lapped_codec_grid(mono, sr):
                     mad_c = float(np.median(np.abs(scores_1024 - med_c))) + 1e-9
                     mx_c = float(np.max(scores_1024))
                     if mx_c - med_c >= 0.008:
-                        z1024 = (mx_c - med_c) / (1.4826 * mad_c)
+                        z1024 = max(z1024, (mx_c - med_c) / (1.4826 * mad_c))
+                if z1024 >= 10.0:
+                    break
 
         if z1024 >= 10.0:
             return {
@@ -1446,38 +1588,98 @@ def _detect_lapped_codec_grid(mono, sr):
                 "mdct_lattice_family": "MDCT-1024 (Vorbis/AAC)",
             }
 
-        # 2. PQMF-576 (MP3 hybrid filterbank)
+        # 2. PQMF-576 (MP3 hybrid filterbank) & PQMF-32 (Musepack subband frames)
         z576 = 0.0
+        z_mpc = 0.0
         n_gran = 32
         needed_576 = (n_gran + 3) * 576 + 512
         if mono.size >= needed_576:
             s0 = (mono.size - needed_576) // 2
             seg = np.ascontiguousarray(mono[s0 : s0 + needed_576], dtype=np.float32)
             n_fft = 1 << int(np.ceil(np.log2(needed_576 + 512)))
-            bank_fft, win36 = _get_pqmf_fast(n_fft)
-            seg_fft = np.fft.rfft(seg, n=n_fft)
-            conv_all = np.fft.irfft(seg_fft[None, :] * bank_fft, n=n_fft, axis=1)
-            sb_arr = conv_all[:, 511:needed_576].astype(np.float32)
-            m_sub_total = sb_arr.shape[1] // 32
-            dec_all = sb_arr[:, : m_sub_total * 32].reshape(8, m_sub_total, 32).transpose(2, 0, 1).copy()
-            dec_all[:, 1::2, 1::2] *= -1.0
-            all_win36 = np.lib.stride_tricks.sliding_window_view(dec_all, 36, axis=2)
-            n_avail = (all_win36.shape[2] // 18) * 18
-            if n_avail >= 18 * 10:
-                m_frames = n_avail // 18
-                grouped = all_win36[:, :, :n_avail, :].reshape(32, 8, m_frames, 18, 36)
-                coeffs = np.abs(_fast_mdct_f32(grouped, win36))
-                flat = coeffs.transpose(0, 3, 2, 1, 4).reshape(576, m_frames, 144)
-                rms_f = np.sqrt(np.mean(flat * flat, axis=2, keepdims=True)) + np.float32(1e-12)
-                active_f = rms_f[:, :, 0] > np.float32(1e-6)
-                sp_frames = np.where(active_f, np.mean(flat < (rms_f * np.float32(0.05)), axis=2), np.float32(0.0))
-                scores_576 = sp_frames.mean(axis=1)
-                med_576 = float(np.median(scores_576))
-                if med_576 < 0.55:
-                    mad_576 = float(np.median(np.abs(scores_576 - med_576))) + 1e-9
-                    mx_576 = float(np.max(scores_576))
-                    if mx_576 - med_576 >= 0.015:
-                        z576 = (mx_576 - med_576) / (1.4826 * mad_576)
+            seg_fft = _sp_fft.rfft(seg, n=n_fft, workers=1)
+
+            if fullband_mode:
+                pqmf_sets = [(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)]
+            else:
+                pqmf_sets = []
+                for _, f_hi in bands_1024:
+                    sb_top = min(29, max(14, int(f_hi / (sr / 64.0))))
+                    cand = tuple(range(sb_top - 7, sb_top + 1))
+                    if cand not in pqmf_sets:
+                        pqmf_sets.append(cand)
+
+            for sb_set in pqmf_sets:
+                bank_fft, win36 = _get_pqmf_fast(n_fft, sb_set)
+                conv_all = _sp_fft.irfft(seg_fft[None, :] * bank_fft, n=n_fft, axis=1, workers=1)
+                sb_arr_all = conv_all[:, 511:needed_576].astype(np.float32)
+                m_sub_total = sb_arr_all.shape[1] // 32
+
+                # In fullband mode, sb_set has 11 bands (19..29): [3:11] are 22..29 for MP3,
+                # while [0:3] vs [4:11] evaluate Musepack 36-sample pure subband frames.
+                if len(sb_set) == 11:
+                    sb_mp3 = sb_arr_all[3:11]
+                    mp3_sbs = sb_set[3:11]
+                else:
+                    sb_mp3 = sb_arr_all
+                    mp3_sbs = sb_set
+
+                dec_all = sb_mp3[:, : m_sub_total * 32].reshape(8, m_sub_total, 32).transpose(2, 0, 1).copy()
+                for idx_s, s_val in enumerate(mp3_sbs):
+                    if s_val % 2 == 1:
+                        dec_all[:, idx_s, 1::2] *= -1.0
+                all_win36 = np.lib.stride_tricks.sliding_window_view(dec_all, 36, axis=2)
+                n_avail = (all_win36.shape[2] // 18) * 18
+                if n_avail >= 18 * 10:
+                    m_frames = n_avail // 18
+                    grouped = all_win36[:, :, :n_avail, :].reshape(32, 8, m_frames, 18, 36)
+                    coeffs = np.abs(_fast_mdct_f32(grouped, win36))
+                    flat = coeffs.transpose(0, 3, 2, 1, 4).reshape(576, m_frames, 144)
+                    rms_f = np.sqrt(np.mean(flat * flat, axis=2, keepdims=True)) + np.float32(1e-12)
+                    active_f = rms_f[:, :, 0] > np.float32(1e-6)
+                    sp_frames = np.where(active_f, np.mean(flat < (rms_f * np.float32(0.05)), axis=2), np.float32(0.0))
+                    scores_576 = sp_frames.mean(axis=1)
+                    med_576 = float(np.median(scores_576))
+                    if med_576 < 0.55:
+                        mad_576 = float(np.median(np.abs(scores_576 - med_576))) + 1e-9
+                        mx_576 = float(np.max(scores_576))
+                        if mx_576 - med_576 >= 0.015:
+                            z576 = max(z576, (mx_576 - med_576) / (1.4826 * mad_576))
+
+                if z576 >= 12.0:
+                    break
+
+                if len(sb_set) == 11 and m_sub_total >= 36 * 10:
+                    dec_mpc = sb_arr_all[:, : m_sub_total * 32].reshape(
+                        11, m_sub_total, 32).transpose(2, 0, 1)
+                    w_mpc = np.lib.stride_tricks.sliding_window_view(dec_mpc, 6, axis=2)
+                    nf_mpc = (w_mpc.shape[2] // 36) * 36
+                    if nf_mpc >= 36 * 8:
+                        blks_m = w_mpc[:, :, :nf_mpc, :].reshape(32, 11, nf_mpc // 36, 36, 6)
+                        rms_m = np.sqrt(np.mean(blks_m * blks_m, axis=4)) + np.float32(1e-12)
+                        anchor_m = np.mean(rms_m[:, :3], axis=1, keepdims=True)
+                        upper_m = rms_m[:, 4:11]
+                        p80_anc = float(np.percentile(anchor_m[0], 80)) + 1e-12
+                        p80_upp = np.percentile(upper_m[0], 80, axis=(1, 2))
+                        valid_sb = (p80_upp > 1e-5) & ((p80_upp / p80_anc) > 0.015)
+                        n_valid = int(np.count_nonzero(valid_sb))
+                        if n_valid >= 2:
+                            scale_s = (p80_upp / p80_anc)[None, :, None, None].astype(np.float32)
+                            act_m = anchor_m[:, 0] > (p80_anc * 0.15)
+                            holes_m = (
+                                (upper_m[:, valid_sb] < (anchor_m * scale_s[:, valid_sb] * np.float32(0.06)))
+                                & act_m[:, None, :, :]
+                            )
+                            denom_m = float(n_valid) * np.maximum(1, np.sum(act_m, axis=1))
+                            curves_36 = np.sum(holes_m, axis=(1, 2)) / denom_m
+                            spans = np.max(curves_36, axis=1) - np.min(curves_36, axis=1)
+                            c36 = curves_36[int(np.argmax(spans))]
+                            mx_m = float(np.max(c36))
+                            mn_m = float(np.min(c36))
+                            if mx_m >= 0.045 and (mx_m - mn_m) >= 0.035:
+                                dft_m = np.abs(np.fft.rfft(c36 - np.mean(c36)))
+                                bg_m = np.delete(dft_m, [0, 1, 2, 3, 6])
+                                z_mpc = float(max(dft_m[1], dft_m[3]) / (np.median(bg_m) + 1e-9))
 
         if z576 >= 12.0:
             return {
@@ -1486,17 +1688,27 @@ def _detect_lapped_codec_grid(mono, sr):
                 "mdct_lattice_family": "PQMF-576 (MP3)",
             }
 
+        if z_mpc >= 6.5:
+            return {
+                "mdct_lattice_detected": True,
+                "mdct_lattice_snr": round(float(z_mpc), 2),
+                "mdct_lattice_family": "PQMF-32 (Musepack)",
+            }
+
         # 3. CELT-960 (Opus 20.00 kHz TDAC stopband boundary cancellation)
         z_opus = 0.0
         n_blocks_opus = 14
-        need_48 = n_blocks_opus * 960 + 2400
-        need_src = int(need_48 * sr / 48000)
-        if mono.size >= need_src:
+        need_48 = 16000
+        need_src = (need_48 * sr) // 48000
+        if fullband_mode and mono.size >= need_src:
             s0 = (mono.size - need_src) // 2
             if sr == 44100:
-                mono_48 = _sp_signal.resample_poly(mono[s0 : s0 + need_src], 160, 147).astype(np.float32)
+                spec_src = _sp_fft.rfft(mono[s0 : s0 + need_src], workers=1)
+                mono_48_full = (_sp_fft.irfft(spec_src, n=need_48, workers=1)
+                                * (need_48 / float(need_src))).astype(np.float32)
+                mono_48 = mono_48_full[320 : 320 + n_blocks_opus * 960 + 1920]
             elif sr == 48000:
-                mono_48 = np.asarray(mono[s0 : s0 + need_48], dtype=np.float32)
+                mono_48 = np.asarray(mono[s0 : s0 + n_blocks_opus * 960 + 1920], dtype=np.float32)
             else:
                 mono_48 = None
             if mono_48 is not None and mono_48.size >= n_blocks_opus * 960 + 1920:
@@ -1532,7 +1744,7 @@ def _detect_lapped_codec_grid(mono, sr):
                 "mdct_lattice_family": "CELT-960 (Opus)",
             }
 
-        best_z = max(z1024, z576, z_opus)
+        best_z = max(z1024, z576, z_mpc, z_opus)
         return {
             "mdct_lattice_detected": False,
             "mdct_lattice_snr": round(float(best_z), 2) if math.isfinite(best_z) else 0.0,
@@ -1723,12 +1935,35 @@ class _SpectralAccumulator:
             ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
             if math.isfinite(ms_p95) and ms_p95 > spectrum.get("caida_side_agudos_db", 0.0):
                 spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
+        ceiling_val = spectrum.get("techo_hz", 0)
         if (41000 <= self.sr <= 48000
-                and spectrum.get("techo_hz", 0) >= 17500
+                and ceiling_val >= 9500
                 and spectrum.get("clase_corte") != "far_cutoff"):
             best_blk = max(chosen, key=lambda item: (len(item[4]) >= 24576, item[0]))[4]
             mono_blk = best_blk[:, 0] if best_blk.ndim > 1 else best_blk
-            spectrum.update(_detect_lapped_codec_grid(mono_blk, self.sr))
+            spectrum.update(_detect_lapped_codec_grid(
+                mono_blk, self.sr, ceiling_hz=ceiling_val))
+        if (self.sr >= 32000
+                and ceiling_val >= 14500
+                and spectrum.get("clase_corte") != "far_cutoff"
+                and not spectrum.get("mdct_lattice_detected")):
+            target_samples = int(self.sr * 6)
+            mid_parts = []
+            gathered = 0
+            for item in sorted(chosen, key=lambda it: it[0], reverse=True):
+                blk = item[4]
+                if len(blk) == 0:
+                    continue
+                mid_p = (0.5 * (blk[:, 0] + blk[:, 1])
+                         if blk.ndim > 1 and blk.shape[1] >= 2
+                         else (blk[:, 0] if blk.ndim > 1 else blk))
+                mid_parts.append(np.asarray(mid_p, dtype=np.float32))
+                gathered += len(mid_p)
+                if gathered >= target_samples:
+                    break
+            if mid_parts:
+                mid_seg = mid_parts[0] if len(mid_parts) == 1 else np.concatenate(mid_parts)
+                spectrum.update(_detect_sbr_qmf_replication(mid_seg, self.sr))
         if self.save_png and png_power:
             png_path, error = self._renderer(
                 freqs, np.concatenate(png_times),

@@ -56,7 +56,7 @@ from _motor_espectral import (
     _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
-    _detect_lapped_codec_grid,
+    _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
@@ -75,7 +75,12 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "11.0"
+ENGINE_VERSION = "12.0"
+# 12.0: Phase 12 forensic closure: seamless QMF subband replication detector
+#       for HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates),
+#       PQMF-32 pure subband 36-sample frame lattice for Musepack SV7/SV8, and
+#       genuine band-limited / vintage / analogue roll-off protection paired
+#       with adaptive passband + ATH-tail lapped transform inversion.
 # 11.0: Phase 11 orthogonal lapped transform inversion: sample-aligned
 #       quantization lattice detection for MDCT-1024 (Vorbis / AAC with
 #       128-sample block-switching subgrids), PQMF-576 (MP3 32-band polyphase

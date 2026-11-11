@@ -1561,6 +1561,173 @@ class test_forensic_rigorous(unittest.TestCase):
         det_lti = motor_flac._detect_lapped_codec_grid(lti_mono, sr)
         self.assertIs(det_lti["mdct_lattice_detected"], False)
 
+    def test_29_seamless_sbr_qmf_replication_44k_and_96k_detected_vs_harmonic_synth(self):
+        """Phase 12: seamless QMF subband transposition without a boundary notch is caught at 44.1 and 96 kHz."""
+        sr = 44100
+        rng = np.random.default_rng(2901)
+        n = sr * 6
+        t = np.arange(n, dtype=np.float64) / sr
+
+        # Musical master with chord modulation and percussive transients
+        base = rng.standard_normal((n, 2)) * 0.15
+        for f0 in (110.0, 164.81, 220.0, 329.63, 440.0, 587.33):
+            for k in range(1, 34):
+                fk = f0 * k
+                if fk >= 19500.0:
+                    break
+                amp = (1.0 / (k ** 0.85)) * (0.5 + 0.5 * np.sin(2.0 * np.pi * (0.6 + 0.15 * (k % 5)) * t))
+                base[:, 0] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0.0, 6.28))
+                base[:, 1] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0.0, 6.28))
+        master = base / (np.max(np.abs(base)) * 1.15)
+
+        # Seamless SBR: copy 5.625-14.875 kHz into 11.25-20.5 kHz with matched boundary gain (zero notch)
+        n_fft, hop = 2048, 1024
+        df = sr / float(n_fft)
+        k_cross = int(11250.0 / df)
+        k_top = int(20500.0 / df)
+        patch_w = k_top - k_cross
+        k_src = k_cross // 2
+        sbr_44 = np.zeros_like(master)
+        for ch in range(2):
+            _, _, z_stft = signal.stft(master[:, ch], fs=sr, nperseg=n_fft, noverlap=n_fft - hop)
+            z_sbr = z_stft.copy()
+            z_sbr[k_cross:, :] *= 1e-4
+            src_patch = z_stft[k_src : k_src + patch_w, :]
+            e_below = np.sqrt(np.mean(np.abs(z_stft[k_cross - 3 : k_cross, :]) ** 2, axis=0, keepdims=True)) + 1e-12
+            e_start = np.sqrt(np.mean(np.abs(src_patch[:3, :]) ** 2, axis=0, keepdims=True)) + 1e-12
+            tilt = 10.0 ** (np.linspace(-0.5, -9.0, patch_w)[:, None] / 20.0)
+            noise_c = (rng.standard_normal(src_patch.shape) + 1j * rng.standard_normal(src_patch.shape)) * np.abs(src_patch) * 0.22
+            z_sbr[k_cross : k_cross + patch_w, :] = (src_patch * 0.94 + noise_c) * (e_below / e_start) * tilt
+            _, rec = signal.istft(z_sbr, fs=sr, nperseg=n_fft, noverlap=n_fft - hop)
+            sbr_44[:, ch] = rec[:n]
+        sbr_44 /= np.max(np.abs(sbr_44)) * 1.15
+
+        path_sbr = self.base_path / "falso_sbr_qmf_sin_muesca_44k.flac"
+        sf.write(path_sbr, sbr_44, sr, subtype="PCM_16")
+        res_sbr = motor_flac.analyze_file_data(str(path_sbr), use_cache=False)
+        self.assertIs(res_sbr["esp"]["sospecha_excitador_armonico"], False)
+        self.assertIs(res_sbr["esp"]["sbr_qmf_detectado"], True)
+        self.assertGreaterEqual(res_sbr["esp"]["sbr_qmf_z"], 12.0)
+        self.assertEqual(res_sbr["veredicto"], "PROBABLE UPSCALE")
+
+        # Upsampled to 96 kHz with ultrasonic dither masking: QMF replication still triggers
+        sbr_96_mono = signal.resample_poly(0.5 * (sbr_44[:, 0] + sbr_44[:, 1]), 320, 147).astype(np.float32)
+        sbr_96_mono += (rng.standard_normal(sbr_96_mono.size) * 1e-4).astype(np.float32)
+        det_96 = motor_flac._detect_sbr_qmf_replication(sbr_96_mono, 96000)
+        self.assertIs(det_96["sbr_qmf_detectado"], True)
+
+        # Control: dense polyphonic sawtooth chord (multiplicative harmonics f -> k*f0, not f + delta_f)
+        saw = np.zeros(n, dtype=np.float64)
+        for f0 in (110.0, 164.81, 220.0, 277.18, 329.63, 440.0, 659.25):
+            for k in range(1, int(21500 // f0)):
+                saw += (1.0 / k) * np.sin(2.0 * np.pi * k * f0 * t)
+        saw *= 0.2 + 0.8 * (np.sin(2.0 * np.pi * 3.1 * t) ** 8)
+        saw = (saw / (np.max(np.abs(saw)) * 1.15)).astype(np.float32)
+        det_saw = motor_flac._detect_sbr_qmf_replication(saw, sr)
+        self.assertIs(det_saw["sbr_qmf_detectado"], False)
+
+    def test_30_musepack_pqmf32_pure_subband_frame_lattice_detected(self):
+        """Phase 12: Musepack PQMF-32 pure subband quantization lattice is caught without false positives."""
+        sr = 44100
+        rng = np.random.default_rng(3001)
+        n = sr * 5
+        h = signal.firwin(512, 1.0 / 64.0, window=("kaiser", 9.0)).astype(np.float64)
+        n_idx = np.arange(512, dtype=np.float64)
+        src = rng.standard_normal(n) * 0.25
+        recon = np.zeros(n + 1024, dtype=np.float64)
+        for s in range(31):
+            ana = h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16))
+            syn = ana[::-1]
+            sb = np.convolve(src, ana, mode="full")[511 : 511 + n]
+            dec = sb[::32].copy()
+            if s >= 18:
+                n_blk = len(dec) // 12
+                for b_i in range(n_blk):
+                    sl = dec[b_i * 12 : (b_i + 1) * 12]
+                    if s >= 22 and rng.random() < 0.35:
+                        dec[b_i * 12 : (b_i + 1) * 12] = 0.0
+                    else:
+                        levels = 7.0 if s >= 24 else 15.0
+                        step = (np.max(np.abs(sl)) + 1e-12) / levels
+                        dec[b_i * 12 : (b_i + 1) * 12] = np.round(sl / step) * step
+            up = np.zeros(len(dec) * 32, dtype=np.float64)
+            up[::32] = dec * 32.0
+            r_s = np.convolve(up, syn, mode="full")
+            recon[: len(r_s)] += r_s
+        mpc_mono = (recon[19 : 19 + n] / (np.max(np.abs(recon)) * 1.15)).astype(np.float32)
+
+        det_mpc = motor_flac._detect_lapped_codec_grid(mpc_mono, sr)
+        self.assertIs(det_mpc["mdct_lattice_detected"], True)
+        self.assertEqual(det_mpc["mdct_lattice_family"], "PQMF-32 (Musepack)")
+        self.assertGreaterEqual(det_mpc["mdct_lattice_snr"], 6.5)
+
+        # Controls: sloping Butterworth low-pass and 384-sample hard-gated staccato bursts
+        sloped = signal.sosfilt(
+            signal.butter(4, 15000.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal(n),
+        ).astype(np.float32)
+        self.assertIs(motor_flac._detect_lapped_codec_grid(sloped, sr)["mdct_lattice_detected"], False)
+
+        staccato = rng.standard_normal(n).astype(np.float32) * 0.3
+        for idx in range(0, n - 384, 384):
+            if rng.random() < 0.5:
+                staccato[idx : idx + 384] = 0.0
+        self.assertIs(motor_flac._detect_lapped_codec_grid(staccato, sr)["mdct_lattice_detected"], False)
+
+    def test_31_vintage_archival_band_limited_master_spared_while_mdct_transcode_caught(self):
+        """Phase 12: bright vintage master (<15 kHz ceiling, >2 kHz centroid) is spared unless transcoded."""
+        from _motor_espectral import _fast_mdct_f32, _get_vorbis_2048
+
+        sr = 44100
+        rng = np.random.default_rng(3101)
+        n = sr * 5
+        raw = rng.standard_normal((n, 2))
+        bright = signal.sosfilt(
+            signal.butter(2, [1400.0, 5200.0], btype="band", fs=sr, output="sos"),
+            raw, axis=0,
+        ) * 2.0 + raw * 0.25
+        vintage = signal.sosfilt(
+            signal.butter(4, 6500.0, btype="low", fs=sr, output="sos"),
+            bright, axis=0,
+        )
+        tape_hiss = rng.standard_normal((n, 2)) * (10.0 ** (-82.0 / 20.0))
+        vintage = (vintage + tape_hiss) / (np.max(np.abs(vintage)) * 1.15)
+
+        path_gen = self.base_path / "genuino_archivo_analogico_1950s.flac"
+        sf.write(path_gen, vintage, sr, subtype="PCM_16")
+        res_gen = motor_flac.analyze_file_data(str(path_gen), use_cache=False)
+
+        self.assertGreater(res_gen["esp"]["centroide_hz"], 2000.0)
+        self.assertLess(res_gen["esp"]["techo_rel_nyquist"], 0.70)
+        self.assertIs(res_gen["esp"]["decaimiento_acustico_suave"], False)
+        self.assertIs(res_gen["esp"]["rolloff_banda_limitada_genuina"], True)
+        self.assertIs(res_gen["esp"]["mdct_lattice_detected"], False)
+        self.assertEqual(res_gen["veredicto"], "PROBABLY LOSSLESS")
+
+        # Transcode that exact vintage recording through MDCT-1024 passband quantization
+        w = _get_vorbis_2048()
+        nyq = sr / 2.0
+        k_lo, k_hi = int(6000.0 / nyq * 1024), int(11500.0 / nyq * 1024)
+        trans_ch = []
+        for ch in range(2):
+            padded = np.pad(vintage[:, ch].astype(np.float32), (2048, 2048))
+            n_fr = (padded.size - 2048) // 1024
+            frames = np.lib.stride_tricks.sliding_window_view(padded, 2048)[::1024][:n_fr]
+            c = _fast_mdct_f32(frames, w)
+            z_mask = rng.random((n_fr, k_hi - k_lo)) < 0.42
+            c[:, k_lo:k_hi] = np.where(z_mask, 0.0, c[:, k_lo:k_hi] * np.sqrt(1.0 / 0.58))
+            rec = self._imdct_overlap_add(c, w)
+            trans_ch.append(rec[2048 + 41 : 2048 + 41 + n])
+        fake_vintage = np.column_stack(trans_ch).astype(np.float64)
+        fake_vintage /= np.max(np.abs(fake_vintage)) * 1.15
+
+        path_fake = self.base_path / "falso_archivo_1950s_transcodificado_mdct.flac"
+        sf.write(path_fake, fake_vintage, sr, subtype="PCM_16")
+        res_fake = motor_flac.analyze_file_data(str(path_fake), use_cache=False)
+
+        self.assertIs(res_fake["esp"]["mdct_lattice_detected"], True)
+        self.assertEqual(res_fake["veredicto"], "PROBABLE UPSCALE")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

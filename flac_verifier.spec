@@ -76,6 +76,7 @@ hiddenimports += [
     "scipy.signal",
     "scipy.signal.windows",
     "scipy.signal._spectral_py",
+    "scipy.optimize",
     "scipy.special",
     "scipy.linalg",
     "scipy.sparse",
@@ -86,11 +87,16 @@ hiddenimports += [
 # and are only dead weight (and noise in the build report).
 hiddenimports += [m for m in collect_submodules("scipy.signal") if ".tests" not in m]
 hiddenimports += [m for m in collect_submodules("scipy.fft") if ".tests" not in m]
+hiddenimports += [m for m in collect_submodules("scipy.optimize") if ".tests" not in m]
 
 # Own modules that are only imported inside functions (lazy import): if they are
 # not declared, PyInstaller does not find them and the .exe fails when using them.
 hiddenimports += [
     "motor_flac",
+    "_motor_bits",
+    "_motor_espectral",
+    "_motor_veredicto",
+    "_motor_cache",
     "informe_pdf",
     "verificar_flac",
     "gui",

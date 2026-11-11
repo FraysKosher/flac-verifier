@@ -71,13 +71,16 @@ with `error` and the process continues until it emits `fin`.
            "var_alta_db": 683.6, "separacion_stereo": 0.438, "nyquist": 22050,
            "perfil_dsd": null, "gradiente_borde_db_khz": 12.4,
            "centroide_hz": 1420.0, "decaimiento_acustico_suave": false,
+           "rolloff_banda_limitada_genuina": false,
            "brecha_p90_p10_agudos_db": 0.0, "ratio_apagado_sfb21": 0.0,
            "islas_mdct_sfb21": false, "caida_modulacion_20k_db": 12.1,
            "brecha_modulacion_20k_db": 4.2, "modulacion_psicoacustica_20k": false,
            "mdct_lattice_detected": false, "mdct_lattice_snr": 0.0,
            "mdct_lattice_family": null,
            "corr_env_excitador": 0.0, "muesca_excitador_db": 0.0,
-           "sospecha_excitador_armonico": false, "espectrograma": null },
+           "sospecha_excitador_armonico": false,
+           "sbr_qmf_detectado": false, "sbr_qmf_correlacion": 0.0,
+           "sbr_qmf_z": 0.0, "espectrograma": null },
   "score": 0.7, "veredicto": "PROBABLY LOSSLESS",
   "problemas": ["…"],
   "evidencias_forenses": ["Spectral ceiling 20.0 kHz (91% of Nyquist)",
@@ -124,16 +127,18 @@ with `error` and the process continues until it emits `fin`.
 | `esp.gradiente_borde_db_khz` | Steepest slope of the transition band around the ceiling, in dB/kHz |
 | `esp.centroide_hz` | Spectral centroid: a low-centroid acoustic mix sits below 1800 Hz |
 | `esp.decaimiento_acustico_suave` | `true` for a low-centroid, no-cutoff, ≥ 11 kHz ceiling with a gentle (< 20 dB/kHz) edge: the acoustic exemption candidate |
+| `esp.rolloff_banda_limitada_genuina` | `true` for a smooth (< 18 dB/kHz), no-cutoff, 10–15.4 kHz ceiling with an analogue noise floor: vintage/archival/vinyl band-limited roll-off candidate |
 | `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
 | `esp.ratio_apagado_sfb21` | Fraction of high-energy frames whose sfb21 band is switched off |
 | `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
 | `esp.caida_modulacion_20k_db` / `brecha_modulacion_20k_db` | Median drop and P90–P10 modulation gap between 16.0–19.5 kHz and 20.2–21.8 kHz across active frames |
 | `esp.modulacion_psicoacustica_20k` | `true` when the 20.2–21.8 kHz band exhibits both a deep drop and dynamic psychoacoustic modulation |
-| `esp.mdct_lattice_detected` | `true` when orthogonal lapped transform inversion recovers a phase-locked codec quantization lattice (`MDCT-1024`, `PQMF-576` or `CELT-960`) |
-| `esp.mdct_lattice_snr` / `esp.mdct_lattice_family` | Peak robust Z-score ($\sigma$) across sample offsets and identified filterbank family (`MDCT-1024 (Vorbis/AAC)`, `PQMF-576 (MP3)` or `CELT-960 (Opus)`) |
+| `esp.mdct_lattice_detected` | `true` when orthogonal lapped transform / subband inversion recovers a phase-locked codec quantization lattice (`MDCT-1024`, `PQMF-576`, `PQMF-32` or `CELT-960`) |
+| `esp.mdct_lattice_snr` / `esp.mdct_lattice_family` | Peak robust Z-score / harmonic SNR across sample offsets and identified filterbank family (`MDCT-1024 (Vorbis/AAC)`, `PQMF-576 (MP3)`, `PQMF-32 (Musepack)` or `CELT-960 (Opus)`) |
 | `esp.corr_env_excitador` | Correlation between the 8–14 kHz envelope and the high band |
 | `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
-| `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / SBR signature |
+| `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / notched SBR signature |
+| `esp.sbr_qmf_detectado` / `esp.sbr_qmf_correlacion` / `esp.sbr_qmf_z` | Local-whitened additive QMF subband transposition detector (`3.5–9.5 kHz` shift sweep) for seamless HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates) |
 | `esp.sospecha_corte_opus_20k` | `true` for a 20.00 kHz cliff (> 45 dB between 19.85 and 20.15 kHz) with a flat 18–19.7 kHz band |
 | `esp.caida_opus_20k_db` | Depth of that cliff in dB |
 | `esp.clipping_eventos` / `clipping_longitud_media` | Saturation runs and their mean length |
@@ -175,14 +180,14 @@ contribute.
 | High-band variance | 1 | > 3 dB² |
 | Stereo separation | 1 | > 0.1 (not applicable in mono) |
 | Analogue/DSD morphology | 3 | `rolloff_analogico_genuino` or `es_transferencia_dsd`: the declared band is backed by a smooth roll-off / DSD ramp |
-| Acoustic exemption | 1.5 | `decaimiento_acustico_suave` + active LSB lattice + no lossy signature |
+| Acoustic / archival roll-off exemption | 1.5 | `decaimiento_acustico_suave` or `rolloff_banda_limitada_genuina` + active LSB lattice + no lossy signature |
 
 ### Confirmed defects
 
 | Defect | Subtracts | Condition |
 |---|---|---|
 | Far artificial cut-off | 0.40 | Step below 88 % of Nyquist (blocks) |
-| Destroyed high band | 0.40 | Up to 48 kHz: ceiling < 70 % of Nyquist. Above 48 kHz: ceiling < 22.05 kHz (blocks) |
+| Destroyed high band | 0.40 | Up to 48 kHz: ceiling < 70 % of Nyquist (unless exempted by smooth acoustic/archival roll-off with clean bits and no codec lattice). Above 48 kHz: ceiling < 22.05 kHz (blocks) |
 | Hi-res with no high content | 0.40 | ≥ 88.2 kHz and ceiling < 18 kHz (blocks) |
 | Empty LSBs | 0.40 | > 97 % of samples on the 16-bit grid (blocks) |
 | Partially inactive LSBs | 0.15 | 80–97 % (does not block) |
@@ -192,8 +197,9 @@ contribute.
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
 | sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
 | Upper-band 20 kHz modulation | 0.30 | Frame-level drop and psychoacoustic modulation in 20.2–21.8 kHz (blocks) |
-| Lapped transform quantization lattice | 0.55 | Phase-locked `MDCT-1024`, `PQMF-576` or `CELT-960` lattice (`mdct_lattice_detected`, blocks) |
-| Harmonic exciter / SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
+| Lapped transform / subband lattice | 0.55 | Phase-locked `MDCT-1024`, `PQMF-576`, `PQMF-32` or `CELT-960` lattice (`mdct_lattice_detected`, blocks) |
+| Harmonic exciter / notched SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
+| Seamless QMF SBR | 0.55 | Additive QMF subband transposition (`sbr_qmf_detectado`, blocks) |
 | Opus 20 kHz cliff | 0.20 | 20.00 kHz cliff with other codec evidence (does not block) |
 | Gibbs clipping | 0.25 | 1–2 sample clipping events with a band limit < 20.5 kHz (does not block) |
 | 16-in-24 padding / micro-dither | 0.40 | Trailing zero bits or interior modulo-256 occupancy < 5 % (blocks) |
@@ -225,17 +231,21 @@ never aborts the analysis.
 
 ## Known physical limits
 
-1. **Post-processed lossy transcodes whose sample grid was destroyed:**
-   full-bandwidth high-bitrate codecs (`Vorbis -q8/-q10` at 500 kbps, `AAC 320`
-   with `--cutoff 22000`, `LAME CBR 320` with `--lowpass -1`, `Opus 160/256`)
-   are caught by Phase 11 orthogonal lapped transform inversion (`MDCT-1024`,
-   `PQMF-576`, `CELT-960`) as long as the decoded sample grid is intact. If a
-   full-bandwidth transcode is subsequently pitch-shifted, time-stretched or
-   re-recorded through an analogue loop, the sample-level MDCT phase lock is
-   broken and only spectral/psychoacoustic cues remain.
-2. **CD master filtered below 70 % of Nyquist:** scored as `PROBABLY LOSSLESS`
-   or `SUSPICIOUS` unless rescued by the 8D acoustic exemption or album-level
-   master coherence.
+1. **Unconstrained ~500 kbps VBR or post-processed transcodes whose sample grid was destroyed:**
+   full-bandwidth high-bitrate codecs up to 320 kbps (`Vorbis -q9`, `AAC 320`
+   with `--cutoff 22000`, `LAME CBR 320` with `--lowpass -1`, `LAME V0`,
+   `Musepack SV7/SV8`, `Opus 160/256`) are caught by Phase 11/12 orthogonal
+   lapped transform & subband inversion (`MDCT-1024`, `PQMF-576`, `PQMF-32`,
+   `CELT-960`) as long as the decoded sample grid is intact. At unconstrained
+   `Vorbis -q10` (~500 kbps, half-CD bitrate), perceptual dead-zone zeroing
+   vanishes across the 1,024 MDCT bins, and if a transcode is pitch-shifted,
+   time-stretched or re-recorded through an analogue loop, the sample-level
+   phase lock is broken.
+2. **CD master brickwall-filtered below 70 % of Nyquist:** a steep (> 18 dB/kHz)
+   low-pass below 15.4 kHz without an analogue floor is scored as `PROBABLE
+   UPSCALE`; genuine solo-acoustic (`decaimiento_acustico_suave`) and vintage
+   analogue/archival (`rolloff_banda_limitada_genuina`) masters with smooth
+   roll-off and no codec lattice are spared as `PROBABLY LOSSLESS`.
 3. **`dr` is an informative mono RMS/peak estimate**, not the reference 3 s
    gated DR meter, and does not affect the score.
 
@@ -264,7 +274,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"11.0"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"12.0"`), spectral mode and seconds |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

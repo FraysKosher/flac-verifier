@@ -84,6 +84,7 @@ def calculate_score(meta, spectrum, bdi):
             and not spectrum.get("clipping_reconstruccion_lossy")
             and not spectrum.get("islas_mdct_sfb21")
             and not spectrum.get("sospecha_excitador_armonico")
+            and not spectrum.get("sbr_qmf_detectado")
             and not spectrum.get("modulacion_psicoacustica_20k")
             and not spectrum.get("mdct_lattice_detected")
             and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
@@ -91,6 +92,12 @@ def calculate_score(meta, spectrum, bdi):
         )
         acoustic_exemption = bool(
             spectrum.get("decaimiento_acustico_suave")
+            and bits_ok_acoustic
+            and without_signatures_lossy
+        )
+        band_limited_exemption = bool(
+            not acoustic_exemption
+            and spectrum.get("rolloff_banda_limitada_genuina")
             and bits_ok_acoustic
             and without_signatures_lossy
         )
@@ -125,6 +132,11 @@ def calculate_score(meta, spectrum, bdi):
                              f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
                              f"low spectral ceiling consistent with solo "
                              f"acoustic/low-centroid instrumentation")
+        elif band_limited_exemption:
+            votos += 1.5
+            problems.append(f"spectral ceiling {ceiling/1000:.1f} kHz "
+                             f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
+                             f"smooth analogue/archival roll-off with no codec signature")
         else:
             penalizes(f"spectral ceiling {ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist "
                      f"of {nyq_txt}): the high band is destroyed", 0.40)
@@ -168,7 +180,7 @@ def calculate_score(meta, spectrum, bdi):
             votos += 3
 
         # 4. High-band metrics (not applicable if the file has no high band).
-        if spectrum.get("ratio_aplica"):
+        if spectrum.get("ratio_aplica") and not band_limited_exemption:
             max_v += 2
             r = spectrum["ratio"]
             if r > 0.05:   votos += 2
@@ -228,6 +240,12 @@ def calculate_score(meta, spectrum, bdi):
                      f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch): "
                      f"adversarial bandwidth extension",
                      0.30, blocks_max_verdict=True)
+        elif spectrum.get("sbr_qmf_detectado"):
+            penalizes(f"seamless QMF subband replication detected "
+                     f"(additive patch correlation r = {spectrum.get('sbr_qmf_correlacion', 0.0):.2f}, "
+                     f"Z = {spectrum.get('sbr_qmf_z', 0.0):.1f} sigma): "
+                     f"HE-AAC / SBR bandwidth extension signature",
+                     0.55, blocks_max_verdict=True)
         if (spectrum.get("modulacion_psicoacustica_20k")
                 and not (spectrum.get("sospecha_corte_opus_20k") and iqr > 550.0)):
             penalizes(f"upper-band psychoacoustic modulation above 20 kHz "
@@ -307,6 +325,7 @@ def calculate_score(meta, spectrum, bdi):
                     category == "no_cutoff"
                     and not spectrum.get("sospecha_joint_stereo")
                     and not spectrum.get("sospecha_corte_opus_20k")
+                    and not spectrum.get("sbr_qmf_detectado")
                     and not spectrum.get("modulacion_psicoacustica_20k")
                     and not spectrum.get("mdct_lattice_detected")
                     and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
@@ -401,8 +420,8 @@ def _deserves_album_coherence(result):
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
                   "sospecha_joint_stereo", "sospecha_corte_opus_20k",
                   "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
-                  "sospecha_excitador_armonico", "modulacion_psicoacustica_20k",
-                  "mdct_lattice_detected"):
+                  "sospecha_excitador_armonico", "sbr_qmf_detectado",
+                  "modulacion_psicoacustica_20k", "mdct_lattice_detected"):
         if spectrum.get(key):
             return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
@@ -415,6 +434,7 @@ def _deserves_album_coherence(result):
         return False
     permitidos = ("spectral ceiling", "partial hi-res content",
                   "reduced high band", "high band is destroyed",
+                  "smooth analogue/archival roll-off", "dual-mono",
                   "high/mid ratio")
     for problem in result.get("problemas") or []:
         if not any(text in problem.lower() for text in permitidos):
@@ -513,7 +533,7 @@ def forensic_evidence(result):
                           f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f})")
     if spectrum.get("es_transferencia_dsd"):
         evidence.append("DSD/SACD noise-shaping profile in 24-40 kHz")
-    elif spectrum.get("rolloff_analogico_genuino"):
+    elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("rolloff_banda_limitada_genuina"):
         evidence.append("Analogue/acoustic roll-off with a continuous ultrasonic floor")
     if spectrum.get("sospecha_joint_stereo"):
         evidence.append(f"Side channel (L-R) collapse: "
@@ -541,6 +561,10 @@ def forensic_evidence(result):
         evidence.append(f"Harmonic exciter / SBR signature: "
                           f"r = {spectrum.get('corr_env_excitador', 0.0):.2f}, "
                           f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch")
+    if spectrum.get("sbr_qmf_detectado"):
+        evidence.append(f"Seamless QMF subband replication (HE-AAC SBR): "
+                          f"r = {spectrum.get('sbr_qmf_correlacion', 0.0):.2f}, "
+                          f"Z = {spectrum.get('sbr_qmf_z', 0.0):.1f} sigma")
     if spectrum.get("modulacion_psicoacustica_20k"):
         evidence.append(f"Upper-band psychoacoustic modulation (>20 kHz): "
                           f"{spectrum.get('caida_modulacion_20k_db', 0.0):.1f} dB median drop, "

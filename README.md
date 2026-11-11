@@ -5,9 +5,9 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.7.0](https://img.shields.io/badge/version-2.7.0-blue)](CHANGELOG.md)
+[![Version: 2.8.0](https://img.shields.io/badge/version-2.8.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 332](https://img.shields.io/badge/tests-332-brightgreen)](#tests)
+[![Tests: 335](https://img.shields.io/badge/tests-335-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
 lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
@@ -31,15 +31,18 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
   24-bit containers—even when masked with $\pm 1\dots 3\text{ LSB}_{24}$
   boundary dither.
 - **Psychoacoustic, spectral & lapped-transform forensics:** detects hard codec
-  cut-offs, **orthogonal lapped transform quantization lattices** (`MDCT-1024`
-  for Vorbis `-q8/-q10` & AAC 320, `PQMF-576` for MP3 320/V0 even with
-  `--lowpass -1`, `CELT-960` for Opus 20 kHz TDAC boundary cancellation),
-  upper-band 20 kHz psychoacoustic modulation, `sfb21` MDCT islands, dynamic
-  Mid/Side stereo collapse, harmonic exciters/SBR, and Gibbs reconstruction
-  clipping.
-- **Hi-Res & DSD authenticity:** distinguishes genuine 96/192 kHz analogue
-  roll-offs and SACD/DSD noise-shaping ramps (`direct_24_40k`, `scarlet_30k`,
-  `dsd128_40_80k`) from 22.05/24.0 kHz brickwall upscales and aliasing mirrors.
+  cut-offs, **orthogonal lapped transform & subband quantization lattices**
+  (`MDCT-1024` for Vorbis `-q4..-q9` & AAC 320, `PQMF-576` for MP3 320/V0 even
+  with `--lowpass -1`, `PQMF-32` for Musepack SV7/SV8, `CELT-960` for Opus 20
+  kHz TDAC boundary cancellation), **seamless QMF subband replication** for
+  HE-AAC v1/v2 SBR (at 44.1–192 kHz even without a boundary notch), upper-band
+  20 kHz psychoacoustic modulation, `sfb21` MDCT islands, dynamic Mid/Side
+  stereo collapse, harmonic exciters, and Gibbs reconstruction clipping.
+- **Hi-Res, DSD & vintage/analogue authenticity:** distinguishes genuine 96/192
+  kHz analogue roll-offs, SACD/DSD noise-shaping ramps (`direct_24_40k`,
+  `scarlet_30k`, `dsd128_40_80k`), and 1950s–1970s archival tape/vinyl/cassette
+  masters (`rolloff_banda_limitada_genuina`) from 22.05/24.0 kHz brickwall
+  upscales, aliasing mirrors, and band-limited lossy transcodes.
 - **Album-level coherence & ordered reports:** evaluates master consistency
   across the folder, sorts tracks in natural numeric order (`1, 2, …, 10, …,
   100`), and generates a per-album PDF report with embedded spectrograms.
@@ -50,13 +53,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.7.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.7.0)**,
+Download **[FLAC Verifier 2.8.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.8.0)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.7.0.txt`:
+To verify the download with `SHA256SUMS_2.8.0.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.7.0-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.8.0-win64.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -139,7 +142,7 @@ FLAC VERIFIER/
 ├── informe_pdf.py            per-album PDF report generator
 ├── build.py                  PyInstaller builder & post-build verifier
 ├── comprobar_ejecutable.py   11-check verification suite for the frozen .exe
-└── tests/                    332 unit tests (stdlib unittest, synthetic fixtures)
+└── tests/                    335 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -150,7 +153,7 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 332-test suite (~90 s, no external audio files needed)
+# Run the full 335-test suite (~90 s, no external audio files needed)
 python -m unittest discover -s tests
 
 # Skip GUI tests in headless environments
@@ -163,7 +166,7 @@ python build.py
 | Test module | Coverage |
 |---|---|
 | `test_blindaje.py`, `test_protocolo.py`, `test_md5.py` | Corrupt-file safety, strict NDJSON contract, 8/16/24-bit MD5 verification |
-| `test_veredictos.py`, `test_forense_riguroso.py` | Phase 8–11 forensic detectors: 24-bit lattice, 16-in-24 micro-dither, DSD/Hi-Res, 24 kHz brickwall, lapped transform lattices (`MDCT-1024`, `PQMF-576`, `CELT-960`), `sfb21` islands, 20 kHz modulation, harmonic exciter, acoustic exemption & album coherence |
+| `test_veredictos.py`, `test_forense_riguroso.py` | Phase 8–12 forensic detectors: 24-bit lattice, 16-in-24 micro-dither, DSD/Hi-Res, 24 kHz brickwall, lapped transform & subband lattices (`MDCT-1024`, `PQMF-576`, `PQMF-32`, `CELT-960`), seamless QMF SBR, `sfb21` islands, 20 kHz modulation, harmonic exciter, vintage/acoustic exemptions & album coherence |
 | `test_rendimiento.py`, `test_cache_y_paralelo.py` | Streaming equivalence, vectorised hot paths, cache invalidation, parallel pool & natural track ordering |
 | `test_gui.py`, `test_theme.py`, `test_informe_pdf.py` | GUI lifecycle, dark/light live retheming, WCAG contrast, PDF layout & spectrogram embedding |
 | `test_estructura.py`, `test_empaquetado.py`, `test_idioma.py` | Architectural boundaries, PyInstaller spec invariants & English-only repository enforcement |
@@ -173,8 +176,8 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.7.0`).
-- **[`VALIDATION.md`](VALIDATION.md)** — Synthetic benchmark report and Wilson 95 % confidence intervals.
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.8.0`).
+- **[`VALIDATION.md`](VALIDATION.md)** — 240-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
 - **[`COMPARISON.md`](COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`DESIGN.md`](DESIGN.md)** — UI/PDF design system and accessibility tokens.
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Development workflow and invariants.
@@ -182,22 +185,21 @@ python build.py
 ---
 
 <!-- BENCHMARK:START -->
-## Validation benchmark (synthetic, n = 40)
+## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 240)
 
-Generated by `tests/benchmark_validacion.py` with the fixed seed `2026`:
-20 authentic tracks (CD 16/44.1, Hi-Res analogue 24/96, DSD-like 24/88.2 and
-acoustic 18 kHz roll-off) and 20 fakes (sinc upscale, aliasing mirror, MP3 320
-joint stereo, Opus fullband 20 kHz, 16-in-24 padding and gain comb).
+Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `12.0`):
+- **100 authentic controls** across 10 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), and Vinyl / Cassette / Dense polyphonic synth transfers.
+- **140 fake & adversarial tracks** across 20 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, and 24-bit zero-pad / gain-comb / boundary micro-dither.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|
-| Fake (n = 20) | **TP = 20** | FN = 0 |
-| Authentic (n = 20) | FP = 0 | **TN = 20** |
+| Fake (n = 140) | **TP = 140** | FN = 0 |
+| Authentic (n = 100) | FP = 0 | **TN = 100** |
 
 | Metric | Value | Wilson 95% CI |
 |---|---:|---:|
-| Sensitivity (TPR) | **100.0%** | 83.9% – 100.0% |
-| Specificity (TNR) | **100.0%** | 83.9% – 100.0% |
+| Sensitivity (TPR) | **100.0%** | 97.3% – 100.0% |
+| Specificity (TNR) | **100.0%** | 96.3% – 100.0% |
 
 Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **PASS**.
 

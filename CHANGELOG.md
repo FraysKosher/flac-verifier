@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-11-11
+
+### Added
+
+- Raised `ENGINE_VERSION` to `"12.0"` with **Phase 12 Forensic Closure &
+  240-Track Real-Encoder Benchmark** across `_motor_espectral.py`,
+  `_motor_veredicto.py` and `tests/benchmark_validacion.py`:
+  - **Seamless HE-AAC v1/v2 QMF SBR detector (`_detect_sbr_qmf_replication`,
+    `sbr_qmf_detectado`, `sbr_qmf_correlacion`, `sbr_qmf_z`)**: subtracts the
+    local ~1.1 kHz spectral envelope per STFT frame to factor out broadband
+    percussive transients and SBR coarse envelope adjusters, then sweeps
+    additive QMF subband translation shifts (`3.5–9.5 kHz`) across `11.5–18.5
+    kHz`. Catches boundary-matched SBR transcodes (`0 dB` notch) at both CD
+    (`44.1/48 kHz`) and upsampled Hi-Res (`88.2/96/192 kHz`) rates while
+    sparing dense polyphonic harmonic overtones ($f \mapsto k f_0$).
+  - **Musepack SV7/SV8 `PQMF-32` pure subband frame lattice**: extends
+    `_detect_lapped_codec_grid` to evaluate spectral-tilt-invariant temporal
+    hole periodicity across all 32 polyphase offsets and 36 subband-frame
+    phases (covering both 12-subband-sample SV8 sub-blocks and 36-sample SV7
+    frames) with zero extra rFFT passes.
+  - **Genuine band-limited / vintage / analogue roll-off protection
+    (`rolloff_banda_limitada_genuina`) + adaptive passband lattice inversion**:
+    spares genuine 1950s–1970s archival tape, vinyl and cassette transfers
+    whose musical band ends smoothly below 70 % of Nyquist (`10.0–15.4 kHz`)
+    with no codec signature (`PROBABLY LOSSLESS`), while adapting `MDCT-1024`
+    and `PQMF-576` to the passband and ATH roll-off tail (`9.5–17.5 kHz`
+    ceilings) so those same vintage masters transcoded through MP3, AAC or
+    Vorbis are still caught (`PROBABLE UPSCALE`).
+  - **240-track reproducible validation benchmark (`tests/benchmark_validacion.py`,
+    `VALIDATION.md`)**: expands validation from `n = 40` synthetic tracks to
+    `n = 240` (`100` authentic across 10 mastering/archival/vinyl/DSD/Hi-Res
+    families + `140` fakes across 20 real `ffmpeg` codec, seamless SBR,
+    Musepack `PQMF-32`, vintage-transcode, upscale and 24-bit micro-dither
+    families) with per-family breakdown and SHA-256 corpus manifest digest.
+  - Added 3 deterministic Phase 12 unit tests (`test_29` to `test_31`) in
+    `tests/test_forense_riguroso.py` (suite is now 335 tests).
+
 ## [2.7.0] - 2026-11-11
 
 ### Added
