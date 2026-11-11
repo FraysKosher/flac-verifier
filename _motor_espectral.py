@@ -887,9 +887,12 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "caida_modulacion_20k_db":  0.0,
         "brecha_modulacion_20k_db": 0.0,
         "modulacion_psicoacustica_20k": False,
+        "es_estacionario":          False,
         "mdct_lattice_detected":    False,
         "mdct_lattice_snr":         0.0,
         "mdct_lattice_family":      None,
+        "familias_evidencia_lossy": [],
+        "corroboracion_multifamilia": False,
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
     }
@@ -898,16 +901,13 @@ def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=
     """Spectral analysis over an already loaded array (direct API and oracle of
     the tests). The production path uses _BlockAnalysis, which does not load
     the track. Both paths share the selector and the float32 STFT, so they must
-    give exactly the same metrics.
-
-    `mode` and `seconds` are kept in the signature for API/cache compatibility;
-    the selector already covers the whole file, so they do not narrow the window."""
+    give exactly the same metrics."""
     try:
         is_stereo = data.shape[1] >= 2
         accumulator = _SpectralAccumulator(
             samplerate, is_stereo,
             save_png=bool(save_png) and PIL_OK and bool(path),
-            path=path)
+            path=path, mode=mode, seconds=seconds)
         for start in range(0, len(data), FRAMES_BY_BLOCK):
             accumulator.add(data[start : start + FRAMES_BY_BLOCK], start)
         return accumulator.result()
@@ -916,10 +916,16 @@ def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=
 
 ACTIVE_RMS_THRESHOLD_DB = -65.0      # below this a block is silence for the selector
 
-def _needed_active_blocks(samplerate):
-    """K blocks, chosen so that the selected audio is at least SPECTRO_SECONDS
-    long. With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
-    return max(1, int(math.ceil(SPECTRO_SECONDS * float(samplerate) / FRAMES_BY_BLOCK)))
+def _needed_active_blocks(samplerate, mode="center", seconds=None):
+    """K blocks, chosen so that the selected audio covers the requested window.
+    With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
+    if mode == "full":
+        target_sec = float(SPECTRO_SECONDS * 4)
+    elif mode == "seconds" and seconds is not None:
+        target_sec = max(1.0, float(seconds))
+    else:
+        target_sec = float(SPECTRO_SECONDS)
+    return max(1, int(math.ceil(target_sec * float(samplerate) / FRAMES_BY_BLOCK)))
 
 def _activity_score(block, last_sample=None, mono=None):
     """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
@@ -1052,6 +1058,7 @@ class PsychoacousticSTFTAccumulator:
         self._e_16_195 = []
         self._e_202_218 = []
         self._ms_excess = []
+        self._env_4_11 = []
 
     def add(self, power, freqs, window, power_mid=None, power_side=None):
         """Consumes the (frames, bins) power of one selected block."""
@@ -1104,6 +1111,7 @@ class PsychoacousticSTFTAccumulator:
             # strong bass sweep the reference and produced fake cut-off jitter.
             ref_db = 10.0 * np.log10(np.maximum(
                 block_power[:, sl_band].mean(axis=1), _FLOOR_F32))
+            self._env_4_11.extend(ref_db.astype(np.float64).tolist())
 
             # sfb21 islands and the exciter envelopes. Both are referenced to the
             # 4-11 kHz band of the SAME frame: a 1-8 kHz reference would follow a
@@ -1320,6 +1328,31 @@ class PsychoacousticSTFTAccumulator:
                 self._ms_p95_db = ms_p95
                 self._ms_dynamic_collapse = bool(ms_p95 > 12.0 and ms_iqr > 5.0)
 
+        # Phase 13: Spectral stationarity guard for sustained electronic synth
+        # drones / modular harmonic pads. When the temporal envelope is nearly
+        # static across active frames (< 1.8 dB std) and the high band consists
+        # of discrete stationary harmonic overtones (>= 12 dB P95-P50 crest in
+        # 13.5-19.5 kHz), inter-harmonic valleys are natural comb spacing rather
+        # than MDCT frame holes or psychoacoustic frame starvation.
+        is_stationary = False
+        if (len(self._env_4_11) >= 16 and self._sum_power is not None
+                and self._freqs is not None and self._frames >= 16):
+            arr_env = np.asarray(self._env_4_11, dtype=np.float64)
+            if np.all(np.isfinite(arr_env)) and float(np.std(arr_env)) < 1.8:
+                freqs = self._freqs
+                mean = self._sum_power / float(self._frames)
+                mask_hb = (freqs >= 13500.0) & (freqs <= min(19500.0, self.sr * 0.45))
+                if np.count_nonzero(mask_hb) >= 16:
+                    hb_db = 10.0 * np.log10(np.maximum(mean[mask_hb], 1e-28))
+                    crest_hb = float(np.percentile(hb_db, 95) - np.percentile(hb_db, 50))
+                    if crest_hb >= 12.0:
+                        is_stationary = True
+                        ratio = 0.0
+                        islands_sfb21 = False
+                        psycho_mod_20k = False
+                        iqr = min(iqr, 350.0)
+                        self._ms_dynamic_collapse = False
+
         return {
             "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
             "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
@@ -1341,10 +1374,12 @@ class PsychoacousticSTFTAccumulator:
             "brecha_modulacion_20k_db": (round(drp_iqr, 2)
                                          if math.isfinite(drp_iqr) else 0.0),
             "modulacion_psicoacustica_20k": psycho_mod_20k,
+            "es_estacionario":          is_stationary,
         }
 
 
 _VORBIS_WIN_2048 = None
+_KBD_WIN_2048 = None
 _CELT_WIN_1920 = None
 _PQMF_BANK_CACHE = {}
 
@@ -1357,6 +1392,16 @@ def _get_vorbis_2048():
             0.5 * np.pi * (np.sin(np.pi / 2048.0 * (n + 0.5)) ** 2)
         ).astype(np.float32)
     return _VORBIS_WIN_2048
+
+
+def _get_kbd_2048():
+    """ISO/IEC 14496-3 MPEG-4 AAC Kaiser-Bessel Derived (KBD, alpha=4) window."""
+    global _KBD_WIN_2048
+    if _KBD_WIN_2048 is None:
+        cs = np.cumsum(np.kaiser(1025, 4.0 * np.pi), dtype=np.float64)
+        half = np.sqrt(cs[:1024] / cs[1024]).astype(np.float32)
+        _KBD_WIN_2048 = np.concatenate([half, half[::-1]])
+    return _KBD_WIN_2048
 
 
 def _get_celt_1920():
@@ -1548,36 +1593,38 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
         else:
             return neutral
 
-        # 1. MDCT-1024 (Vorbis / AAC)
+        # 1. MDCT-1024 (Vorbis / AAC Sine & KBD alpha=4)
         z1024 = 0.0
         n_blocks_1024 = 10
         needed_1024 = n_blocks_1024 * 1024 + 2048
         if mono.size >= needed_1024:
             s0 = (mono.size - needed_1024) // 2
             seg = np.ascontiguousarray(mono[s0 : s0 + needed_1024], dtype=np.float32)
-            w = _get_vorbis_2048()
             n_all_1024 = n_blocks_1024 * 1024
             all_frames = np.lib.stride_tricks.sliding_window_view(seg, 2048)[:n_all_1024]
-            for f_lo, f_hi in bands_1024:
-                k_lo = int(f_lo / nyq * 1024)
-                k_hi = int(f_hi / nyq * 1024)
-                if k_hi <= k_lo + 8:
-                    continue
-                sp_all = np.empty(n_all_1024, dtype=np.float32)
-                for i in range(0, n_all_1024, 1024):
-                    chunk = all_frames[i : i + 1024]
-                    coeffs = np.abs(_fast_mdct_f32(chunk, w))[:, k_lo:k_hi]
-                    rms_c = np.sqrt(np.mean(coeffs * coeffs, axis=1, keepdims=True)) + np.float32(1e-12)
-                    active_c = rms_c[:, 0] > np.float32(1e-6)
-                    sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
-                    sp_all[i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
-                scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
-                med_c = float(np.median(scores_1024))
-                if med_c < 0.55:
-                    mad_c = float(np.median(np.abs(scores_1024 - med_c))) + 1e-9
-                    mx_c = float(np.max(scores_1024))
-                    if mx_c - med_c >= 0.008:
-                        z1024 = max(z1024, (mx_c - med_c) / (1.4826 * mad_c))
+            for w in (_get_vorbis_2048(), _get_kbd_2048()):
+                for f_lo, f_hi in bands_1024:
+                    k_lo = int(f_lo / nyq * 1024)
+                    k_hi = int(f_hi / nyq * 1024)
+                    if k_hi <= k_lo + 8:
+                        continue
+                    sp_all = np.empty(n_all_1024, dtype=np.float32)
+                    for i in range(0, n_all_1024, 1024):
+                        chunk = all_frames[i : i + 1024]
+                        coeffs = np.abs(_fast_mdct_f32(chunk, w))[:, k_lo:k_hi]
+                        rms_c = np.sqrt(np.mean(coeffs * coeffs, axis=1, keepdims=True)) + np.float32(1e-12)
+                        active_c = rms_c[:, 0] > np.float32(1e-6)
+                        sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
+                        sp_all[i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
+                    scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
+                    med_c = float(np.median(scores_1024))
+                    if med_c < 0.55:
+                        mad_c = float(np.median(np.abs(scores_1024 - med_c))) + 1e-9
+                        mx_c = float(np.max(scores_1024))
+                        if mx_c - med_c >= 0.008:
+                            z1024 = max(z1024, (mx_c - med_c) / (1.4826 * mad_c))
+                    if z1024 >= 10.0:
+                        break
                 if z1024 >= 10.0:
                     break
 
@@ -1760,13 +1807,19 @@ class _SpectralAccumulator:
     between two non-adjacent blocks, which would invent high-frequency content."""
 
     def __init__(self, samplerate, is_stereo=None, save_png=False, path=None,
-                 renderer=None):
+                 renderer=None, mode="center", seconds=None):
         self.sr = int(samplerate)
         self.is_stereo = is_stereo
         self.save_png = bool(save_png)
         self.path = path
+        self.mode = mode or "center"
+        self.seconds = seconds
+        self._max_sample = (
+            int(round(max(1.0, float(seconds if seconds is not None else 15.0)) * self.sr))
+            if self.mode == "seconds" else None
+        )
         self._renderer = renderer or _save_spectrogram
-        self._k = _needed_active_blocks(self.sr)
+        self._k = _needed_active_blocks(self.sr, mode=self.mode, seconds=self.seconds)
         self._seleccion = []          # min-heap by (E_diff, -index)
         self._backup = None         # loudest block, used if none passes -65 dBFS
         self._index = 0
@@ -1778,6 +1831,16 @@ class _SpectralAccumulator:
         if self._error or block.shape[0] == 0:
             return
         try:
+            if self._max_sample is not None:
+                if start >= self._max_sample:
+                    return
+                if start + block.shape[0] > self._max_sample:
+                    n_keep = self._max_sample - int(start)
+                    block = block[:n_keep]
+                    if mono is not None:
+                        mono = mono[:n_keep]
+                    if block.shape[0] == 0:
+                        return
             rms_db, e_diff = _activity_score(block, self._last, mono=mono)
             if block.ndim > 1:
                 self._last = float(np.mean(block[-1]))
@@ -1929,6 +1992,18 @@ class _SpectralAccumulator:
                                     power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
         spectrum.update(self._psycho.result())
+        if spectrum.get("es_estacionario"):
+            if (spectrum.get("sospecha_joint_stereo")
+                    and (spectrum.get("delta_corte_ms_hz") or 0.0) < 2500.0):
+                spectrum["sospecha_joint_stereo"] = False
+            if ((spectrum.get("techo_rel_nyquist") or 0.0) >= 0.88
+                    and spectrum.get("clase_corte") == "far_cutoff"
+                    and (spectrum.get("frecuencia_corte") or 0) < 0.85 * (spectrum.get("techo_hz") or 0)):
+                spectrum["corte_detectado"] = False
+                spectrum["frecuencia_corte"] = None
+                spectrum["distancia_nyquist"] = None
+                spectrum["clase_corte"] = "no_cutoff"
+                spectrum["corte_artificial"] = False
         if (getattr(self._psycho, "_ms_dynamic_collapse", False)
                 and not spectrum.get("es_dual_mono")):
             spectrum["sospecha_joint_stereo"] = True
@@ -1939,10 +2014,37 @@ class _SpectralAccumulator:
         if (41000 <= self.sr <= 48000
                 and ceiling_val >= 9500
                 and spectrum.get("clase_corte") != "far_cutoff"):
-            best_blk = max(chosen, key=lambda item: (len(item[4]) >= 24576, item[0]))[4]
-            mono_blk = best_blk[:, 0] if best_blk.ndim > 1 else best_blk
-            spectrum.update(_detect_lapped_codec_grid(
-                mono_blk, self.sr, ceiling_hz=ceiling_val))
+            ranked_blks = sorted(
+                chosen, key=lambda item: (len(item[4]) >= 24576, item[0]), reverse=True)
+            best_blk = ranked_blks[0][4]
+            if best_blk.ndim > 1 and best_blk.shape[1] >= 2:
+                dl = np.diff(best_blk[:, 0])
+                dr = np.diff(best_blk[:, 1])
+                el = float(np.dot(dl, dl))
+                er = float(np.dot(dr, dr))
+                mono_blk = best_blk[:, 0] if el >= er * 0.5 else best_blk[:, 1]
+                asym_ch = abs(el - er) > 0.25 * max(el, er, 1e-12)
+            else:
+                mono_blk = best_blk[:, 0] if best_blk.ndim > 1 else best_blk
+                asym_ch = False
+            lat = _detect_lapped_codec_grid(mono_blk, self.sr, ceiling_hz=ceiling_val)
+            if (not lat.get("mdct_lattice_detected")
+                    and best_blk.ndim > 1 and best_blk.shape[1] >= 2
+                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 5.0)):
+                mid_blk = 0.5 * (best_blk[:, 0] + best_blk[:, 1])
+                lat_mid = _detect_lapped_codec_grid(mid_blk, self.sr, ceiling_hz=ceiling_val)
+                if (lat_mid.get("mdct_lattice_detected")
+                        or lat_mid.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
+                    lat = lat_mid
+            if (not lat.get("mdct_lattice_detected")
+                    and len(ranked_blks) > 1 and len(ranked_blks[1][4]) >= 24576):
+                sec_b = ranked_blks[1][4]
+                sec_mono = sec_b[:, 0] if sec_b.ndim > 1 else sec_b
+                lat_sec = _detect_lapped_codec_grid(sec_mono, self.sr, ceiling_hz=ceiling_val)
+                if (lat_sec.get("mdct_lattice_detected")
+                        or lat_sec.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
+                    lat = lat_sec
+            spectrum.update(lat)
         if (self.sr >= 32000
                 and ceiling_val >= 14500
                 and spectrum.get("clase_corte") != "far_cutoff"

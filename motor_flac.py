@@ -56,7 +56,7 @@ from _motor_espectral import (
     _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
-    _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
+    _detect_lapped_codec_grid, _detect_sbr_qmf_replication, _get_kbd_2048,
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
@@ -75,7 +75,22 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "12.0"
+ENGINE_VERSION = "13.0"
+# 13.0: Phase 13 forensic precision & architecture hardening:
+#       - Multi-family corroboration gate (`familias_evidencia_lossy` &
+#         `corroboracion_multifamilia`): condemning a track as PROBABLE UPSCALE
+#         requires either >= 2 independent evidence families or a hard
+#         arithmetic/structural proof (filterbank lattice, spectral cut-off, or
+#         container bit-depth padding/comb); a single uncorroborated soft
+#         spectral heuristic is capped at SUSPICIOUS.
+#       - Spectral stationarity guard (`es_estacionario`) protecting sustained
+#         electronic synth drones and harmonic pads from false subband-hole or
+#         modulation triggers between discrete overtones.
+#       - MPEG-4 AAC Kaiser-Bessel Derived (KBD, alpha=4) window in MDCT-1024
+#         plus stereo channel (L/R/Mid) and 2nd-block lapped transform selection.
+#       - Active `--mode` (center / full / seconds) and `--seconds N` spectral
+#         windowing, plus native 32-bit integer FLAC (PCM_32) streaming and
+#         bit-depth audit.
 # 12.0: Phase 12 forensic closure: seamless QMF subband replication detector
 #       for HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates),
 #       PQMF-32 pure subband 36-sample frame lattice for Musepack SV7/SV8, and
@@ -223,11 +238,64 @@ def verify_metadata(path):
         # corrupt files. They used to escape and abort the whole batch.
         return {"valido": False, "error": f"{type(e).__name__}: {e}"}
 
+def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
+    """Streaming fallback for 32-bit integer FLAC (RFC 9639 PCM_32) when the
+    bundled libsndfile cannot open 32-bit FLAC frames directly."""
+    import shutil
+    import subprocess
+    if meta is None:
+        meta = verify_metadata(path)
+    if not (meta and meta.get("valido") and meta.get("bits_per_sample") == 32):
+        raise ValueError("not a 32-bit integer FLAC container")
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("libsndfile does not support 32-bit FLAC and ffmpeg is not in PATH")
+    ch = max(1, int(meta.get("canales") or 1))
+    bytes_per_block = int(frames_by_block) * ch * 4
+    cmd = [
+        ffmpeg_bin, "-nostdin", "-v", "error",
+        "-i", _normalize_path_fs(path),
+        "-f", "s32le", "-acodec", "pcm_s32le", "-",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        while True:
+            raw = proc.stdout.read(bytes_per_block) if proc.stdout else b""
+            if not raw:
+                break
+            n_int = (len(raw) // (4 * ch)) * ch
+            if n_int <= 0:
+                break
+            arr = np.frombuffer(raw[: n_int * 4], dtype="<i4").reshape(-1, ch)
+            yield arr.astype(np.float64) * (1.0 / 2147483648.0)
+        stderr_bytes = proc.stderr.read() if proc.stderr else b""
+        rc = proc.wait()
+        if rc != 0:
+            msg = stderr_bytes.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"ffmpeg s32le decode failed (exit {rc}): {msg}")
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
 def read_audio(path):
     try:
         data, sr = sf.read(_normalize_path_fs(path), dtype="float64", always_2d=True)
         return data, sr
     except Exception:
+        try:
+            meta = verify_metadata(path)
+            if meta.get("valido") and meta.get("bits_per_sample") == 32:
+                blocks = list(_iter_blocks_s32_flac(path, meta=meta))
+                if blocks:
+                    return np.concatenate(blocks, axis=0), int(meta["sample_rate"])
+        except Exception:
+            pass
         return None, None
 
 # ─── INTEGRITY CHECK (STREAMINFO MD5) ────────────────────────────────────────
@@ -293,12 +361,20 @@ def read_audio(path):
 
 def _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
     """Generator of blocks: it never loads the whole track into memory."""
-    with sf.SoundFile(_normalize_path_fs(path)) as f:
-        while True:
-            block = f.read(frames_by_block, dtype="float64", always_2d=True)
-            if block.shape[0] == 0:
-                return
-            yield block
+    try:
+        with sf.SoundFile(_normalize_path_fs(path)) as f:
+            while True:
+                block = f.read(frames_by_block, dtype="float64", always_2d=True)
+                if block.shape[0] == 0:
+                    return
+                yield block
+    except Exception:
+        meta = verify_metadata(path)
+        if meta.get("valido") and meta.get("bits_per_sample") == 32:
+            yield from _iter_blocks_s32_flac(path, meta=meta,
+                                             frames_by_block=frames_by_block)
+        else:
+            raise
 
 # ─── ENERGY-GUIDED SPECTRAL SELECTOR ────────────────────────────────────────
 # The spectrum used to be measured on the first/central 45 s, which is exactly
@@ -355,15 +431,16 @@ class _BlockAnalysis:
         self._samples_n  = 0
         self._sampling_step = (max(1, int(round(self.total / MAX_SAMPLES_BITS)))
                                if self.total < (1 << 62) else 1)
-        # Vector 4: native-integer audit over the WHOLE file (24-bit only).
+        # Vector 4: native-integer audit over the WHOLE file (24-bit and 32-bit).
         self._forensic_bits = (ForensicBitsAccumulator(self.bits, sample_rate=self.sr)
-                              if self.bits == 24 else None)
+                              if self.bits in (24, 32) else None)
 
         # spectrum: the whole file is scored, the K most active blocks are kept
         self._spectrum_acc = _SpectralAccumulator(
             self.sr, meta.get("canales", 0) >= 2 if meta.get("canales") else None,
             save_png=self.save_png, path=path,
-            renderer=_save_spectrogram)
+            renderer=_save_spectrogram,
+            mode=mode, seconds=seconds)
 
     def add(self, block, offset):
         q_int = None
@@ -372,6 +449,11 @@ class _BlockAnalysis:
             q_int = np.clip(
                 np.rint(np.asarray(block, dtype=np.float64) * 8388608.0),
                 -8388608.0, 8388607.0).astype("<i4")
+        elif self.bits == 32 and (self._md5 is not None
+                                  or self._forensic_bits is not None):
+            q_int = np.clip(
+                np.rint(np.asarray(block, dtype=np.float64) * 2147483648.0),
+                -2147483648.0, 2147483647.0).astype("<i4")
         self._integrity_and_clipping(block, q_int=q_int)
         mono = self._dynamic_range(block)
         self._sample_bits(block, offset)
@@ -487,16 +569,34 @@ class _BlockAnalysis:
 
 def _analyze_streaming(path, meta, mode, seconds, save_png):
     """A single read of the file, with memory bounded per block."""
-    with sf.SoundFile(_normalize_path_fs(path)) as f:
-        sr    = f.samplerate
-        total = f.frames
+    try:
+        with sf.SoundFile(_normalize_path_fs(path)) as f:
+            sr    = f.samplerate
+            total = f.frames
+            accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
+                                             save_png, path)
+            offset = 0
+            while True:
+                block = f.read(FRAMES_BY_BLOCK, dtype="float64", always_2d=True)
+                if block.shape[0] == 0:
+                    break
+                accumulator.add(block, offset)
+                offset += block.shape[0]
+    except Exception:
+        if meta.get("bits_per_sample") != 32:
+            raise
+        sr = int(meta["sample_rate"])
+        try:
+            total = int(getattr(FLAC(_normalize_path_fs(path)).info, "total_samples", 0) or 0)
+        except Exception:
+            total = 0
         accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
                                          save_png, path)
         offset = 0
-        while True:
-            block = f.read(FRAMES_BY_BLOCK, dtype="float64", always_2d=True)
+        for block in _iter_blocks_s32_flac(path, meta=meta,
+                                           frames_by_block=FRAMES_BY_BLOCK):
             if block.shape[0] == 0:
-                break
+                continue
             accumulator.add(block, offset)
             offset += block.shape[0]
     if total and offset != total:

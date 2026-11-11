@@ -139,6 +139,8 @@ with `error` and the process continues until it emits `fin`.
 | `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
 | `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / notched SBR signature |
 | `esp.sbr_qmf_detectado` / `esp.sbr_qmf_correlacion` / `esp.sbr_qmf_z` | Local-whitened additive QMF subband transposition detector (`3.5–9.5 kHz` shift sweep) for seamless HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates) |
+| `esp.es_estacionario` | `true` for a stationary harmonic/tonal programme (`std(env_4_11) < 1.8 dB` and `13.5–19.5 kHz` tonal crest `P95 - P50 >= 12 dB`), protecting sustained electronic synth drones from false subband-hole or modulation flags |
+| `esp.familias_evidencia_lossy` / `esp.corroboracion_multifamilia` | Independent lossy evidence families triggered (`filterbank_lattice`, `spectral_cutoff`, `temporal_modulation`, `stereo_collapse`, `bit_depth_container`) and whether multi-family or hard-proof corroboration holds |
 | `esp.sospecha_corte_opus_20k` | `true` for a 20.00 kHz cliff (> 45 dB between 19.85 and 20.15 kHz) with a flat 18–19.7 kHz band |
 | `esp.caida_opus_20k_db` | Depth of that cliff in dB |
 | `esp.clipping_eventos` / `clipping_longitud_media` | Saturation runs and their mean length |
@@ -274,7 +276,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"12.0"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"13.0"`), spectral mode and seconds |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

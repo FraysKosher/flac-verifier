@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-11-11
+
+### Added
+
+- Raised `ENGINE_VERSION` to `"13.0"` with **Phase 13 Forensic Precision &
+  Architecture Hardening** across `_motor_bits.py`, `_motor_espectral.py`,
+  `_motor_veredicto.py`, `motor_flac.py` and `tests/benchmark_validacion.py`:
+  - **Multi-family corroboration gate (`familias_evidencia_lossy` &
+    `corroboracion_multifamilia`)**: prevents false-positive condemnation from
+    any single isolated soft spectral heuristic (`islas_mdct_sfb21`,
+    `modulacion_psicoacustica_20k`, `sospecha_joint_stereo`, `iqr_corte_hz`,
+    `ratio_huecos_mdct`). Condemning a file as `"PROBABLE UPSCALE"` now requires
+    either `>= 2` independent evidence families or a deterministic structural
+    proof (`filterbank_lattice`, `spectral_cutoff` or `bit_depth_container`);
+    a single uncorroborated soft heuristic is capped at `"SUSPICIOUS"`.
+  - **Spectral stationarity guard (`es_estacionario`)**: detects sustained
+    electronic synthesizer drones and harmonic pads (`std(env_4_11) < 1.8 dB`
+    coupled with a high-frequency tonal crest `P95 - P50 >= 12.0 dB` in
+    `13.5–19.5 kHz`) and suppresses false subband-hole, island, modulation and
+    inter-harmonic valley cut-off triggers between discrete overtones.
+  - **MPEG-4 AAC Kaiser-Bessel Derived (`KBD`, $\alpha = 4$) window
+    (`_get_kbd_2048`) + multi-channel (`L`/`R`/`Mid`) & 2nd-block lapped
+    transform selection**: evaluates `MDCT-1024` with both the Vorbis/Sine
+    window and the ISO/IEC 14496-3 AAC `KBD` ($\alpha = 4$) window, and selects
+    the higher-transient stereo channel (`L` vs `R`), `Mid`, and the second most
+    active block so asymmetric stereo AAC transcodes cannot evade lattice
+    inversion.
+  - **Active `--mode` (`center` | `full` | `seconds`) and `--seconds N`
+    spectral windowing + native 32-bit integer FLAC (`PCM_32`) streaming
+    audit**: wires `mode` and `seconds` into `_needed_active_blocks`,
+    `_SpectralAccumulator` and `_BlockAnalysis`, and extends `ForensicBitsAccumulator`,
+    `analyze_bit_depth` and `motor_flac._iter_blocks_s32_flac` to stream and
+    audit 32-bit integer FLAC (`PCM_32`) containers in bounded memory.
+  - **260-track validation benchmark (`tests/benchmark_validacion.py`,
+    `VALIDATION.md`)**: expands the benchmark to `n = 260` (`110` authentic
+    across 11 families + `150` fakes across 21 families) and adds 3 Phase 13
+    unit tests (`test_32` to `test_34`) in `tests/test_forense_riguroso.py`
+    (suite is now 338 tests).
+
 ## [2.8.0] - 2026-11-11
 
 ### Added

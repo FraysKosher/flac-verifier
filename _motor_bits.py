@@ -60,6 +60,11 @@ def _pcm_bytes(block, bits_per_sample, width, q_int=None):
     scale = float(1 << (bits_per_sample - 1))
     dt = _DTYPE_BY_WIDTH.get(width)
     if dt is not None:
+        if q_int is not None and width == 4:
+            return np.ascontiguousarray(q_int.astype(dt, copy=False))
+        if width == 4:
+            clipped = np.clip(np.rint(block * scale), -2147483648.0, 2147483647.0)
+            return np.ascontiguousarray(clipped.astype(dt))
         return np.ascontiguousarray(np.rint(block * scale).astype(dt))
     # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
     # little-endian layout the old <i8 path produced, at half the memory.
@@ -137,7 +142,7 @@ def analyze_bit_depth(data, meta, include_forensic=True):
 
         # 2) Effective resolution: declared bits minus the mode of trailing zeros
         #    of the integer samples (16 bits inside 24 -> 8 zeros -> 16 bits).
-        if bits <= 32:
+        if bits < 32:
             q = np.rint(active_mask * float(1 << (bits - 1))).astype(np.int32)
             if not np.all(q):
                 q = q[q != 0]
@@ -152,7 +157,8 @@ def analyze_bit_depth(data, meta, include_forensic=True):
             else:
                 effective = bits
         else:
-            q = np.rint(active_mask * float(1 << (bits - 1))).astype(np.int64)
+            scale_b = float(1 << (bits - 1))
+            q = np.clip(np.rint(active_mask * scale_b), -scale_b, scale_b - 1.0).astype(np.int64)
             q = q[q != 0]
             if q.size:
                 pow2 = np.abs(q) & -np.abs(q)
@@ -350,16 +356,17 @@ class ForensicBitsAccumulator:
         self.bits = int(bits_per_sample)
         self.sr = int(sample_rate or 0)
         self.max_val = float(1 << (self.bits - 1))
+        self.grid_max = float(1 << 23)
         self._or = 0
         self._samples = 0
 
-        # Integer bounds of the low window [-90, -48] dBFS.
-        self.low_int = int(np.rint(self.max_val * (10.0 ** (-90.0 / 20.0))))
-        self.high_int = int(np.rint(self.max_val * (10.0 ** (-48.0 / 20.0))))
+        # Integer bounds of the low window [-90, -48] dBFS on the 24-bit grid.
+        self.low_int = int(np.rint(self.grid_max * (10.0 ** (-90.0 / 20.0))))
+        self.high_int = int(np.rint(self.grid_max * (10.0 ** (-48.0 / 20.0))))
         self.low_width = max(1, self.high_int - self.low_int + 1)
 
-        if self.bits == 24:
-            self._bitmap_global = np.zeros(int(self.max_val) + 1, dtype=bool)
+        if self.bits in (24, 32):
+            self._bitmap_global = np.zeros(int(self.grid_max) + 1, dtype=bool)
             self._bitmap_low = self._bitmap_global[self.low_int : self.high_int + 1]
             self._bitmap_reb1 = self._bitmap_global[SLICE_1_BASE : SLICE_1_BASE + SLICE_WIDTH]
             self._bitmap_reb2 = self._bitmap_global[SLICE_2_BASE : SLICE_2_BASE + SLICE_WIDTH]
@@ -406,7 +413,7 @@ class ForensicBitsAccumulator:
         self._dop_last = tops[-1, :].copy()
 
     def add(self, block, q_int=None):
-        if self.bits != 24 or block.shape[0] == 0:
+        if self.bits not in (24, 32) or block.shape[0] == 0:
             return
         if q_int is None:
             q = np.rint(np.asarray(block, dtype=np.float64) * self.max_val)
@@ -414,9 +421,15 @@ class ForensicBitsAccumulator:
         else:
             q = q_int
         self._samples += int(q.size)
-        absq = np.abs(q).ravel()
-        if (self._or & 1) == 0:
-            self._or |= int(np.bitwise_or.reduce(absq))
+        if self.bits == 32:
+            absq32 = np.abs(q.astype(np.int64)).ravel()
+            if (self._or & 1) == 0:
+                self._or |= int(np.bitwise_or.reduce(absq32))
+            absq = np.minimum(absq32 >> 8, 8388608).astype(np.int32)
+        else:
+            absq = np.abs(q).ravel()
+            if (self._or & 1) == 0:
+                self._or |= int(np.bitwise_or.reduce(absq))
 
         self._bitmap_global[absq] = True
         self._bitmap_global[0] = False
@@ -511,7 +524,7 @@ class ForensicBitsAccumulator:
         }
 
     def result(self):
-        if self.bits != 24 or self._samples == 0:
+        if self.bits not in (24, 32) or self._samples == 0:
             return {"aplica": False}
 
         value_or = int(self._or)
@@ -590,7 +603,7 @@ def _analyze_forensic_bits(data, meta):
     """Array-path counterpart of ForensicBitsAccumulator (used by the oracle and
     by direct API callers). It walks the same FRAMES_BY_BLOCK blocks."""
     bits = meta.get("bits_per_sample")
-    if bits != 24:
+    if bits not in (24, 32):
         return {"aplica": False}
     accumulator = ForensicBitsAccumulator(bits,
                                        sample_rate=meta.get("sample_rate", 0))

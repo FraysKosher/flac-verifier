@@ -1,10 +1,11 @@
-"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Phase 12).
+"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Phase 13).
 
-Builds 240 tracks (100 authentic across 10 genuine mastering/archival families
-and 140 fakes across 20 real-encoder, SBR, subband, upscale and bit-forensic
-families) with fixed deterministic seeds, runs the engine on every track, and
-reports the confusion matrix, sensitivity, specificity, Wilson 95% confidence
-intervals, per-family breakdown and corpus SHA-256 digest.
+Builds 260 tracks (110 authentic across 11 genuine mastering/archival/synth
+families and 150 fakes across 21 real-encoder, SBR, subband, KBD-asymmetric,
+upscale and 24/32-bit forensic families) with fixed deterministic seeds, runs
+the engine on every track, and reports the confusion matrix, sensitivity,
+specificity, Wilson 95% confidence intervals, per-family breakdown and corpus
+SHA-256 digest.
 
 When `ffmpeg` is available on PATH, real external codec binaries (`libmp3lame`,
 `libshine`, `mp2`, `aac`, `aac_mf`, `libvorbis`, `libopus`, `wmav2`) encode and
@@ -33,7 +34,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import motor_flac
-from _motor_espectral import _fast_mdct_f32, _get_celt_1920, _get_vorbis_2048
+from _motor_espectral import _fast_mdct_f32, _get_celt_1920, _get_kbd_2048, _get_vorbis_2048
 
 SEED = 2026
 GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
@@ -432,11 +433,49 @@ def create_dataset(directory):
         _save(p, sig, sr, "PCM_16")
         cases.append((p, True, "GEN 10: Vinyl / cassette / polyphonic synth"))
 
+    for i in range(10):
+        p = os.path.join(directory, f"gen_stationary_synth32_{i:02d}.flac")
+        rng = np.random.default_rng(1960 + i)
+        n = int(sr * 5.0)
+        t = np.arange(n, dtype=np.float64) / float(sr)
+        if i < 6:
+            drone = np.zeros((n, 2), dtype=np.float64)
+            f_pair = (550.0 + 35.0 * i, 825.0 + 52.5 * i)
+            for f0 in f_pair:
+                for k in range(1, int(21200.0 // f0) + 1):
+                    fk = f0 * k
+                    amp = 1.0 / (k ** 0.76)
+                    drone[:, 0] += amp * np.sin(2.0 * np.pi * fk * t + 0.31 * k)
+                    drone[:, 1] += amp * np.cos(2.0 * np.pi * fk * t + 0.53 * k)
+            drone += rng.standard_normal((n, 2)) * (10.0 ** (-84.0 / 20.0))
+            drone /= np.max(np.abs(drone)) * 1.15
+            _save(p, drone, sr, "PCM_16")
+        else:
+            x32 = track_reference(sr, 4.5, 1980 + i)
+            x32 += rng.standard_normal(x32.shape) * (10.0 ** (-132.0 / 20.0))
+            x32 /= np.max(np.abs(x32)) * 1.12
+            if HAS_FFMPEG:
+                w32 = os.path.join(directory, f"_tmp_gen32_{i}.wav")
+                sf.write(w32, np.clip(x32, -0.99, 0.99), sr, subtype="PCM_32")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-i", w32,
+                     "-strict", "experimental", "-c:a", "flac", "-sample_fmt", "s32", p],
+                    check=True,
+                )
+                os.remove(w32)
+            else:
+                _save(p, x32, sr, "PCM_24")
+        cases.append((p, True, "GEN 11: Stationary synth drone & 32-bit PCM_32"))
+
     # Pre-render 7 reference WAVs at 44.1 kHz for real ffmpeg codecs
     wav_refs = []
     for i in range(7):
         w_path = os.path.join(directory, f"_ref_master_{i}.wav")
-        _save(w_path, track_reference(sr, 5.0, 5000 + i), sr, "PCM_16")
+        ref_sig = track_reference(sr, 5.0, 5000 + i) if i < 4 else (
+            0.55 * musical_chord_master(sr, 5.0, 5100 + i)
+            + 0.45 * track_reference(sr, 5.0, 5000 + i)
+        )
+        _save(w_path, ref_sig, sr, "PCM_16")
         wav_refs.append(w_path)
 
     def _add_codec_family(idx_base, tag, label, ext, args, fallback_fn, out_sr=None):
@@ -610,6 +649,44 @@ def create_dataset(directory):
         _save(p, x24, 96000, "PCM_24")
         cases.append((p, False, "FAKE 20: 16-in-24 boundary micro-dither"))
 
+    # 21. MPEG-4 AAC KBD-1024 asymmetric stereo & 16-in-32 container bloat
+    w_kbd = _get_kbd_2048()
+    nyq = sr / 2.0
+    k_lo_k, k_hi_k = int(12500.0 / nyq * 1024), int(20200.0 / nyq * 1024)
+    for i in range(10):
+        p = os.path.join(directory, f"fake_kbd_32bit_{i:02d}.flac")
+        rng = np.random.default_rng(7980 + i)
+        if i < 5:
+            base = musical_chord_master(sr, 5.0, 7980 + i)
+            left_muf = signal.sosfilt(
+                signal.butter(4, 11000.0, btype="low", fs=sr, output="sos"),
+                base[:, 0],
+            )
+            pad_r = np.pad(base[:, 1].astype(np.float32), (2048, 2048))
+            n_fr = (pad_r.size - 2048) // 1024
+            fr_r = np.lib.stride_tricks.sliding_window_view(pad_r, 2048)[::1024][:n_fr]
+            c_r = _fast_mdct_f32(fr_r, w_kbd)
+            m_r = rng.random((n_fr, k_hi_k - k_lo_k)) < 0.45
+            c_r[:, k_lo_k:k_hi_k] = np.where(m_r, 0.0, c_r[:, k_lo_k:k_hi_k] * np.sqrt(1.0 / 0.55))
+            rec_r = _imdct_overlap_add(c_r, w_kbd)[2048 + 73 : 2048 + 73 + len(base)]
+            asym = np.column_stack([left_muf * 0.35, rec_r.astype(np.float64)])
+            asym /= np.max(np.abs(asym)) * 1.14
+            _save(p, asym, sr, "PCM_16")
+        else:
+            x16 = np.round(track_reference(sr, 4.5, 7990 + i) * 32767.0) / 32768.0
+            if HAS_FFMPEG:
+                w16 = os.path.join(directory, f"_tmp_pad32_{i}.wav")
+                sf.write(w16, np.clip(x16, -0.99, 0.99), sr, subtype="PCM_16")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-i", w16,
+                     "-strict", "experimental", "-c:a", "flac", "-sample_fmt", "s32", p],
+                    check=True,
+                )
+                os.remove(w16)
+            else:
+                _save(p, x16, sr, "PCM_24")
+        cases.append((p, False, "FAKE 21: AAC KBD-1024 asymmetric & 16-in-32 bloat"))
+
     for w_path in wav_refs:
         if os.path.exists(w_path):
             os.remove(w_path)
@@ -716,8 +793,8 @@ def _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok):
 ## Validation benchmark ({mode_txt}, n = {n_total})
 
 Generated by `tests/benchmark_validacion.py` (fixed seed `{SEED}`, engine `{motor_flac.ENGINE_VERSION}`):
-- **{n_auth} authentic controls** across 10 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), and Vinyl / Cassette / Dense polyphonic synth transfers.
-- **{n_fake} fake & adversarial tracks** across 20 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, and 24-bit zero-pad / gain-comb / boundary micro-dither.
+- **{n_auth} authentic controls** across 11 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, and Stationary electronic synth drones & genuine 32-bit `PCM_32` masters.
+- **{n_fake} fake & adversarial tracks** across 21 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|
@@ -754,11 +831,11 @@ def _detailed_validation_doc(section, rows):
     ).hexdigest()
 
     lines = [
-        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.8.0) — Validation Report (2026-11-11)",
+        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.9.0) — Validation Report (2026-11-11)",
         "",
         section,
         "",
-        "## Per-family breakdown (30 families, n = 240)",
+        "## Per-family breakdown (32 families, n = 260)",
         "",
         f"- **Corpus manifest SHA-256**: `{corpus_hash}`",
         f"- **External encoder backend**: `{'ffmpeg on PATH' if HAS_FFMPEG else 'deterministic DSP fallback'}`",

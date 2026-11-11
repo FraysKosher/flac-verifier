@@ -1728,6 +1728,147 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIs(res_fake["esp"]["mdct_lattice_detected"], True)
         self.assertEqual(res_fake["veredicto"], "PROBABLE UPSCALE")
 
+    def test_32_aac_kbd_window_and_asymmetric_stereo_lapped_lattice_detected(self):
+        """Phase 13: MPEG-4 AAC KBD (alpha=4) window and R-channel asymmetric lattice are caught."""
+        from _motor_espectral import _fast_mdct_f32, _get_kbd_2048
+
+        w_kbd = _get_kbd_2048()
+        self.assertEqual(w_kbd.shape, (2048,))
+        tdac_err = float(np.max(np.abs(w_kbd[:1024] ** 2 + w_kbd[1023::-1] ** 2 - 1.0)))
+        self.assertLess(tdac_err, 1e-6)
+
+        sr = 44100
+        rng = np.random.default_rng(3201)
+        n = sr * 5
+        master = _create_track_reference(sr, duration=5.0, seed=3201)
+
+        # Left channel is gentle low-passed ambience; Right channel carries AAC KBD-1024 quantized programme
+        left_muffled = signal.sosfilt(
+            signal.butter(4, 11000.0, btype="low", fs=sr, output="sos"),
+            master[:, 0],
+        )
+        nyq = sr / 2.0
+        k_lo, k_hi = int(12500.0 / nyq * 1024), int(20200.0 / nyq * 1024)
+        padded_r = np.pad(master[:, 1].astype(np.float32), (2048, 2048))
+        n_fr = (padded_r.size - 2048) // 1024
+        frames_r = np.lib.stride_tricks.sliding_window_view(padded_r, 2048)[::1024][:n_fr]
+        c_r = _fast_mdct_f32(frames_r, w_kbd)
+        mask_r = rng.random((n_fr, k_hi - k_lo)) < 0.45
+        c_r[:, k_lo:k_hi] = np.where(mask_r, 0.0, c_r[:, k_lo:k_hi] * np.sqrt(1.0 / 0.55))
+        rec_r = self._imdct_overlap_add(c_r, w_kbd)[2048 + 73 : 2048 + 73 + n]
+
+        stereo_asym = np.column_stack([left_muffled * 0.35, rec_r.astype(np.float64)])
+        stereo_asym /= np.max(np.abs(stereo_asym)) * 1.15
+
+        path_aac = self.base_path / "falso_aac_kbd_asimetrico_r.flac"
+        sf.write(path_aac, stereo_asym, sr, subtype="PCM_16")
+        res = motor_flac.analyze_file_data(str(path_aac), use_cache=False)
+
+        self.assertIs(res["esp"]["mdct_lattice_detected"], True)
+        self.assertIn("MDCT-1024", res["esp"]["mdct_lattice_family"])
+        self.assertEqual(res["veredicto"], "PROBABLE UPSCALE")
+
+    def test_33_stationary_synth_drone_protected_and_single_soft_rule_capped_at_suspicious(self):
+        """Phase 13: stationary electronic synth drones are protected and isolated soft rules cap at SUSPICIOUS."""
+        sr = 44100
+        duration = 5.0
+        n = int(sr * duration)
+        t = np.arange(n, dtype=np.float64) / sr
+        rng = np.random.default_rng(3301)
+
+        # Sustained modular sawtooth/pulse synth drone with discrete overtones up to 21 kHz
+        drone = np.zeros((n, 2), dtype=np.float64)
+        for f0 in (660.0, 990.0):
+            for k in range(1, int(21200.0 // f0) + 1):
+                fk = f0 * k
+                amp = 1.0 / (k ** 0.75)
+                drone[:, 0] += amp * np.sin(2.0 * np.pi * fk * t + 0.3 * k)
+                drone[:, 1] += amp * np.cos(2.0 * np.pi * fk * t + 0.5 * k)
+        # Subtle analogue dither floor (-84 dBFS)
+        drone += rng.standard_normal((n, 2)) * (10.0 ** (-84.0 / 20.0))
+        drone /= np.max(np.abs(drone)) * 1.15
+
+        path_drone = self.base_path / "genuino_synth_drone_estacionario.flac"
+        sf.write(path_drone, drone, sr, subtype="PCM_16")
+        res_drone = motor_flac.analyze_file_data(str(path_drone), use_cache=False)
+
+        self.assertIs(res_drone["esp"]["es_estacionario"], True)
+        self.assertIs(res_drone["esp"]["islas_mdct_sfb21"], False)
+        self.assertIs(res_drone["esp"]["modulacion_psicoacustica_20k"], False)
+        self.assertEqual(res_drone["veredicto"], "GENUINE LOSSLESS")
+
+        # Multi-family corroboration check: a single isolated soft heuristic is capped at SUSPICIOUS
+        meta_cd = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2}
+        spec_single = dict(res_drone["esp"])
+        spec_single["es_estacionario"] = False
+        spec_single["islas_mdct_sfb21"] = True
+        spec_single["brecha_p90_p10_agudos_db"] = 48.0
+        score_1, verd_1, _ = motor_flac.calculate_score(meta_cd, spec_single, {"aplica": False})
+        self.assertEqual(spec_single["familias_evidencia_lossy"], ["temporal_modulation"])
+        self.assertIs(spec_single["corroboracion_multifamilia"], False)
+        self.assertEqual(verd_1, "SUSPICIOUS")
+        self.assertGreaterEqual(score_1, 0.50)
+
+        # Adding a second independent family (stereo_collapse) corroborates and triggers PROBABLE UPSCALE
+        spec_two = dict(spec_single)
+        spec_two["sospecha_joint_stereo"] = True
+        spec_two["caida_side_agudos_db"] = 24.0
+        spec_two["delta_corte_ms_hz"] = 2800.0
+        score_2, verd_2, _ = motor_flac.calculate_score(meta_cd, spec_two, {"aplica": False})
+        self.assertIs(spec_two["corroboracion_multifamilia"], True)
+        self.assertEqual(verd_2, "PROBABLE UPSCALE")
+        self.assertLess(score_2, 0.50)
+
+    def test_34_mode_seconds_and_32bit_flac_streaming_audit(self):
+        """Phase 13: --mode seconds restricts the spectral window and 32-bit integer FLAC is audited."""
+        import shutil
+        import subprocess
+
+        sr = 44100
+        # 12-second track (2 blocks of ~6s): first 4s clean broadband, second 6s louder 14.5 kHz brickwall
+        clean_part = _create_track_reference(sr, duration=6.0, seed=3401) * 0.35
+        loud_raw = _create_track_reference(sr, duration=6.0, seed=3402) * 0.95
+        sos_14k = signal.ellip(10, 0.1, 80.0, 14500.0, btype="low", fs=sr, output="sos")
+        cut_part = signal.sosfilt(sos_14k, loud_raw, axis=0)
+        combined = np.vstack([clean_part, cut_part])
+        combined = np.clip(combined, -0.98, 0.98)
+
+        path_mode = self.base_path / "pista_hibrida_modo_seconds.flac"
+        sf.write(path_mode, combined, sr, subtype="PCM_16")
+
+        res_sec = motor_flac.analyze_file_data(
+            str(path_mode), mode="seconds", seconds=4, use_cache=False
+        )
+        res_full = motor_flac.analyze_file_data(
+            str(path_mode), mode="full", use_cache=False
+        )
+        self.assertEqual(res_sec["veredicto"], "GENUINE LOSSLESS")
+        self.assertEqual(res_full["veredicto"], "PROBABLE UPSCALE")
+
+        # 32-bit integer FLAC streaming + bit-depth audit (requires ffmpeg)
+        if not shutil.which("ffmpeg"):
+            self.skipTest("ffmpeg is required to encode 32-bit integer FLAC fixtures")
+
+        wav_16 = self.base_path / "tmp_16.wav"
+        flac_32_pad = self.base_path / "falso_16_en_32bit.flac"
+        sf.write(wav_16, clean_part[: sr * 4], sr, subtype="PCM_16")
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error", "-i", str(wav_16),
+                "-strict", "experimental", "-c:a", "flac", "-sample_fmt", "s32",
+                str(flac_32_pad),
+            ],
+            check=True,
+        )
+        res_32 = motor_flac.analyze_file_data(str(flac_32_pad), use_cache=False)
+        self.assertIsNone(res_32.get("error"))
+        self.assertEqual(res_32["meta"]["bits_per_sample"], 32)
+        self.assertEqual(res_32["md5"]["estado"], "match")
+        self.assertEqual(res_32["bdi"]["lsbs"], "empty")
+        self.assertEqual(res_32["bdi"]["resolucion_efectiva_bits"], 16)
+        self.assertIs(res_32["bdi"]["forense_bits"]["es_padded_16_en_24"], True)
+        self.assertIn(res_32["veredicto"], BAD_VERDICTS)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
