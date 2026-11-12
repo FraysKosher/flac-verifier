@@ -14,7 +14,7 @@ file is genuine lossless or a lossy transcode. Architecture is deliberately flat
 
 | Module | Responsibility |
 |---|---|
-| `motor_flac.py` | **All** analysis logic: decoding, MD5, clipping, DR, low-bit usage, spectral analysis, scoring, cache, process pool, JSON protocol |
+| `motor_flac.py` | Engine facade (process pool, JSON protocol, CLI) over `_motor_bits.py` (MD5, clipping, DR, 24/32-bit lattice), `_motor_espectral.py` (streaming STFT, filterbank/SBR & Hi-Res/DSD detectors), `_motor_veredicto.py` (scoring, verdicts, album coherence) and `_motor_cache.py` (per-track cache I/O) |
 | `verificar_flac.py` | CLI presentation only |
 | `gui.py` | Window only: launches the engine as a subprocess and paints events |
 | `informe_pdf.py` | PDF only |

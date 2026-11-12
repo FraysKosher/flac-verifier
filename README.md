@@ -111,8 +111,8 @@ python motor_flac.py --path "track.flac" --png --no-cache
 | Option | Values | Description |
 |---|---|---|
 | `--path` | path | `.flac` file or album folder (required) |
-| `--mode` | `center` \| `full` \| `seconds` | Analysis mode label (default `center`) |
-| `--seconds` | integer | Seconds label when `--mode seconds` (default `15`) |
+| `--mode` | `center` \| `full` \| `seconds` | Spectral window: `center` (default: 45 s of highest-energy active blocks), `full` (up to 60 s of active blocks across the whole track), or `seconds` (first N seconds) |
+| `--seconds` | integer | Prefix window in seconds when `--mode seconds` (default `15`) |
 | `--png` | — | Save spectrograms in `<folder>/_spectrograms/` |
 | `--pdf` | — | Generate `flac_verifier_report.pdf` in the album folder (implies `--png`) |
 | `--workers` | integer | Parallel processes (`0` = auto up to 8, `1` = sequential) |

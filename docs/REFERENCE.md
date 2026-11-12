@@ -101,7 +101,7 @@ with `error` and the process continues until it emits `fin`.
 | `bdi.lsbs` | `empty` · `partial` · `active` · `indeterminate` |
 | `bdi.resolucion_efectiva_bits` | Bits actually used (16 inside a 24-bit container → `16`) |
 | `bdi.fraccion_16bit_grid` | % of samples aligned with the 16-bit grid |
-| `bdi.forense_bits` | Native-integer audit (24-bit only): `es_padded_16_en_24`, `es_16bit_dither_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `lsb8_ocupacion_interior`, `muestras_pasaje_bajo`, `paso_reticula_mediano`, `es_24bit_escalado_en_peine`, `es_flujo_dop`, `dop_pares_inspeccionados`, `dop_ratio` |
+| `bdi.forense_bits` | Native-integer audit (24-bit and 32-bit containers): `es_padded_16_en_24`, `es_16bit_dither_en_24`, `trailing_zeros_lsb`, `lsb8_entropia_bits`, `lsb8_cajones_ocupados`, `lsb8_ocupacion_interior`, `muestras_pasaje_bajo`, `paso_reticula_mediano`, `es_24bit_escalado_en_peine`, `es_flujo_dop`, `dop_pares_inspeccionados`, `dop_ratio` |
 | `esp.techo_hz` | Highest frequency with energy above −60 dB |
 | `esp.techo_rel_nyquist` | That ceiling as a fraction of Nyquist |
 | `esp.clase_corte` | `no_cutoff` · `near_nyquist_cutoff` (≥ 88 % of Nyquist) · `far_cutoff` (< 88 %) |
@@ -131,7 +131,7 @@ with `error` and the process continues until it emits `fin`.
 | `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
 | `esp.ratio_apagado_sfb21` | Fraction of high-energy frames whose sfb21 band is switched off |
 | `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
-| `esp.caida_modulacion_20k_db` / `brecha_modulacion_20k_db` | Median drop and P90–P10 modulation gap between 16.0–19.5 kHz and 20.2–21.8 kHz across active frames |
+| `esp.caida_modulacion_20k_db` / `brecha_modulacion_20k_db` | Median drop and P95–P05 modulation gap between 16.0–19.5 kHz and 20.2–21.8 kHz across active frames |
 | `esp.modulacion_psicoacustica_20k` | `true` when the 20.2–21.8 kHz band exhibits both a deep drop and dynamic psychoacoustic modulation |
 | `esp.mdct_lattice_detected` | `true` when orthogonal lapped transform / subband inversion recovers a phase-locked codec quantization lattice (`MDCT-1024`, `PQMF-576`, `PQMF-32` or `CELT-960`) |
 | `esp.mdct_lattice_snr` / `esp.mdct_lattice_family` | Peak robust Z-score / harmonic SNR across sample offsets and identified filterbank family (`MDCT-1024 (Vorbis/AAC)`, `PQMF-576 (MP3)`, `PQMF-32 (Musepack)` or `CELT-960 (Opus)`) |
@@ -210,7 +210,11 @@ contribute.
 
 **Thresholds:** ≥ 0.80 `GENUINE LOSSLESS` · ≥ 0.60 `PROBABLY LOSSLESS` ·
 ≥ 0.40 `SUSPICIOUS` · `< 0.40` `PROBABLE UPSCALE`. Any blocking defect caps the
-verdict at `SUSPICIOUS` (score ≥ 0.50) or `PROBABLE UPSCALE`.
+verdict at `SUSPICIOUS` (score ≥ 0.50) or `PROBABLE UPSCALE`. Condemning a track
+as `PROBABLE UPSCALE` requires `corroboracion_multifamilia` (`≥ 2` independent
+evidence families in `familias_evidencia_lossy` or a deterministic structural
+proof in `filterbank_lattice`, `spectral_cutoff`, or `bit_depth_container`); an
+isolated, uncorroborated soft heuristic is capped at `SUSPICIOUS` (`score ≥ 0.50`).
 
 ---
 
@@ -256,7 +260,7 @@ never aborts the analysis.
 ## Performance and streaming architecture
 
 The engine decodes each track in **a single streaming pass** with bounded
-memory (`FRAMES_BY_BLOCK = 65536`, `SPECTRO_SECONDS = 45`):
+memory (`FRAMES_BY_BLOCK = 262144` (`1 << 18`), `SPECTRO_SECONDS = 45`):
 
 | Fixture (`--mode full`) | Before streaming | Current streaming | Improvement |
 |---|---|---|---|

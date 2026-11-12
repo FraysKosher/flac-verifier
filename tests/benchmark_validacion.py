@@ -339,14 +339,14 @@ def _ffmpeg_encode_decode(wav_in, out_flac, lossy_ext, codec_args, out_sr=None):
                 pass
 
 
-# ─── DATASET (n = 240: 100 authentic + 140 fake) ────────────────────────────
+# ─── DATASET (n = 260: 110 authentic + 150 fake) ────────────────────────────
 
 def create_dataset(directory):
-    """Returns [(path, authentic_bool, class_name)] for n = 240 tracks."""
+    """Returns [(path, authentic_bool, class_name)] for n = 260 tracks."""
     cases = []
     sr = 44100
 
-    # --- 10 AUTHENTIC FAMILIES (10 tracks each = 100 authentic) ---
+    # --- 11 AUTHENTIC FAMILIES (10 tracks each = 110 authentic) ---
     for i in range(10):
         p = os.path.join(directory, f"gen_cd_{i:02d}.flac")
         _save(p, track_reference(sr, 4.5, 1000 + i), sr, "PCM_16")
@@ -486,7 +486,7 @@ def create_dataset(directory):
                 _save(p, y, fs_y, "PCM_16")
             cases.append((p, False, label))
 
-    # --- 20 FAKE / ADVERSARIAL FAMILIES (7 tracks each = 140 fake) ---
+    # --- 21 FAKE / ADVERSARIAL FAMILIES (140 + 10 = 150 fake) ---
     _add_codec_family(
         1, "mp3_128", "FAKE 01: MP3 LAME 128 kbps", ".mp3",
         ["-c:a", "libmp3lame", "-b:a", "128k"],

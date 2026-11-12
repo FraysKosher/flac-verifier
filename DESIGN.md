@@ -1,7 +1,8 @@
 # FLAC Verifier — Design System and UI Refresh
 
-Status: proposal for the `feat/ui-refresh` branch. No analysis, protocol, CLI or
-PDF data changes are allowed by this document; it is presentation only.
+Status: implemented across `gui.py`, `theme.py` and `informe_pdf.py`. No analysis,
+protocol, CLI or PDF data changes are allowed by this document; it is presentation
+only.
 
 ## 1. Product and audience
 
@@ -442,7 +443,7 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
   toggle with widget identity, scroll, focus, results and log preserved, a
   300-row retheme timing, a light window in every state, and a guard that
   `gui.py` contains no hard-coded colour.
-- Acceptance: both themes build and read; 325 tests; build READY;
+- Acceptance: both themes build and read; 338 tests; build READY;
   `comprobar_ejecutable` 11/11; screenshots at 100/125/150 % in both modes.
 
 ## 13. Guardrails
@@ -465,4 +466,4 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
 3. Every state (empty, loading, partial, error, cancelled, done) is designed.
 4. Buttons have hover, pressed, focus and disabled states and feel consistent.
 5. The PDF matches the GUI.
-6. 267 tests, benchmark 20/20, `comprobar_ejecutable` 11/11.
+6. 338 tests, 260-track validation benchmark, `comprobar_ejecutable` 11/11.
