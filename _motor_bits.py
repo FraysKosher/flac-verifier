@@ -568,7 +568,7 @@ class ForensicBitsAccumulator:
                 step_grid = rep["p10"]
             else:
                 step_grid = r_glob["p10"] if r_glob["evaluado"] else rep["p10"]
-                if r_glob["evaluado"] and r_glob["cajones"] >= 3 and inner_rep < 0.05:
+                if r_glob["evaluado"] and r_glob["cajones"] >= 2 and inner_rep < 0.05:
                     dithered_16_in_24 = True
         else:
             comb = False

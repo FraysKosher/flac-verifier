@@ -56,13 +56,16 @@ from _motor_espectral import (
     _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
-    _detect_lapped_codec_grid, _detect_sbr_qmf_replication, _get_kbd_2048,
+    _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
+    _get_kbd_2048, _get_sine_2048, _get_vorbis_2048, _get_pqmf_fast,
+    _robust_z_peak, _select_continuous_subwindow,
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
     LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, EvidenceTier, EvidenceFamily,
     VerdictCap, _ScoreLedger, calculate_score,
-    _deserves_album_coherence, apply_album_coherence, forensic_evidence,
+    _deserves_album_coherence, _is_clean_quorum_track,
+    apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (
     PNG_FOLDER_NAME, CacheLookupStatus, _png_folder, _cache_path, _identity,
@@ -77,7 +80,22 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.1"
+ENGINE_VERSION = "13.2"
+# 13.2: Phase 13.2 filterbank lattice, soft heuristic and album quorum calibration:
+#       - Added MPEG-2/4 AAC Sine window (`_get_sine_2048`), unbiased `el >= er`
+#         channel selection, opposite-channel fallback on asymmetric stereo, and
+#         energy-guided continuous subwindow selection (`_select_continuous_subwindow`).
+#       - Centered PQMF-576 / PQMF-32 512-tap Kaiser prototype around tap 256 and
+#         disambiguated MP3 vs Musepack 36-sample / 18-sample periodicity.
+#       - Replaced whole-buffer FFT resampling at 44.1 kHz in CELT-960 with a
+#         Kaiser-windowed polyphase resampler (`resample_poly(160, 147)`).
+#       - Restricted SBR-QMF analysis to single continuous blocks with per-frame
+#         common-mode subtraction and vectorized lag sweep.
+#       - Added scale-floored `_robust_z_peak`, refined static Joint-Stereo and
+#         20 kHz modulation guards, reclassified `sospecha_excitador_armonico` to
+#         `SPECTRAL_ENVELOPE`, allowed 2-block global comb persistence, and
+#         expanded album coherence quorum to include clean `PROBABLY LOSSLESS`
+#         tracks (`score >= 0.70`) with scalable candidate limit `max(2, N // 6)`.
 # 13.1: Phase 13.1 surgical calibration:
 #       - Fixed 24-in-32 container zero-padding threshold (`min_zeros_16 =
 #         max(8, bits - 16)`) so genuine 24-bit audio inside a 32-bit FLAC

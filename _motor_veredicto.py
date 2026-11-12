@@ -378,7 +378,7 @@ def calculate_score(meta, spectrum, bdi):
                 f"adversarial bandwidth extension",
                 0.30,
                 blocks_max_verdict=True,
-                family=EvidenceFamily.FILTERBANK_LATTICE,
+                family=EvidenceFamily.SPECTRAL_ENVELOPE,
             )
         elif spectrum.get("sbr_qmf_detectado"):
             ledger.penalize(
@@ -611,27 +611,44 @@ def _deserves_album_coherence(result):
     permitidos = ("spectral ceiling", "partial hi-res content",
                   "reduced high band", "high band is destroyed",
                   "smooth analogue/archival roll-off", "dual-mono",
-                  "high/mid ratio")
+                  "high/mid ratio", "mastering brickwall limiter",
+                  "studio anti-aliasing", "analogue/dsd master",
+                  "dsd/sacd noise-shaping")
     for problem in result.get("problemas") or []:
         if not any(text in problem.lower() for text in permitidos):
             return False
     return True
 
+
+def _is_clean_quorum_track(result):
+    verdict = result.get("veredicto")
+    if verdict == "GENUINE LOSSLESS":
+        return True
+    if verdict != "PROBABLY LOSSLESS":
+        return False
+    if _deserves_album_coherence(result):
+        return False
+    score = float(result.get("score") or 0.0)
+    fams = (result.get("esp") or {}).get("familias_evidencia_lossy") or []
+    return score >= 0.70 and len(fams) == 0
+
+
 def apply_album_coherence(results):
-    """Vector 6: rescue 1-2 acoustic/low-HF tracks of a consistent album.
+    """Vector 6: rescue acoustic/low-HF tracks of a consistent album.
 
     A candidate is any track accepted by `_deserves_album_coherence` (only the
     spectral ceiling is against it), whatever its current label: SUSPICIOUS or
     PROBABLE UPSCALE, and also PROBABLY LOSSLESS when it was already excused on
     its own by the Phase 8D acoustic exemption (`decaimiento_acustico_suave`
     with clean bits and no lossy signature). When at least 80% of the tracks in a
-    directory are GENUINE LOSSLESS with the same sample rate and bit depth, the
-    album context is stronger evidence than the isolated spectrum, so those
-    candidates get the album validation (`coherencia_album = True` and
-    ALBUM_COHERENCE_NOTE) and are at least PROBABLY LOSSLESS. That mark exists
-    only in this batch: it is never written into the per-file cache, so
-    analysing the track alone does not inherit it. Returns how many tracks were
-    raised or validated. Modifies the list in place."""
+    directory are GENUINE LOSSLESS (or clean PROBABLY LOSSLESS with score >= 0.70
+    and at least one GENUINE LOSSLESS / clean score >= 0.75 anchor) with the same
+    sample rate and bit depth, the album context is stronger evidence than the
+    isolated spectrum, so those candidates get the album validation
+    (`coherencia_album = True` and ALBUM_COHERENCE_NOTE) and are at least
+    PROBABLY LOSSLESS. That mark exists only in this batch: it is never written
+    into the per-file cache, so analysing the track alone does not inherit it.
+    Returns how many tracks were raised or validated. Modifies the list in place."""
     from collections import Counter
 
     grupos = {}
@@ -650,16 +667,21 @@ def apply_album_coherence(results):
                    and r.get("veredicto")]
         if len(validas) < 2:
             continue
-        genuinas = [r for r in validas if r.get("veredicto") == "GENUINE LOSSLESS"]
-        if not genuinas:
+        quorum_tracks = [r for r in validas if _is_clean_quorum_track(r)]
+        if not quorum_tracks:
             continue
         reference = Counter(
             (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
-            for r in genuinas).most_common(1)[0][0]
-        genuinas_ref = [r for r in genuinas
-                        if (r["meta"]["sample_rate"],
-                            r["meta"]["bits_per_sample"]) == reference]
-        if len(genuinas_ref) / float(len(validas)) < 0.80:
+            for r in quorum_tracks).most_common(1)[0][0]
+        quorum_ref = [r for r in quorum_tracks
+                      if (r["meta"]["sample_rate"],
+                          r["meta"]["bits_per_sample"]) == reference]
+        has_strong_anchor = any(
+            r.get("veredicto") == "GENUINE LOSSLESS"
+            or float(r.get("score") or 0.0) >= 0.75
+            for r in quorum_ref
+        )
+        if not has_strong_anchor or len(quorum_ref) / float(len(validas)) < 0.80:
             continue
 
         candidatos = []
@@ -672,7 +694,8 @@ def apply_album_coherence(results):
                 continue
             if _deserves_album_coherence(r):
                 candidatos.append(r)
-        if not 1 <= len(candidatos) <= 2:
+        max_candidates = max(2, len(validas) // 6)
+        if not 1 <= len(candidatos) <= max_candidates:
             continue
 
         for r in candidatos:

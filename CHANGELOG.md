@@ -5,6 +5,72 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.2] - 2026-11-11
+
+### Added
+
+- Raised `ENGINE_VERSION` to `"13.2"` and expanded the automated test suite to
+  **345 tests** across `_motor_bits.py`, `_motor_espectral.py`,
+  `_motor_veredicto.py`, `_motor_cache.py`, `motor_flac.py`, `verificar_flac.py`,
+  `main.py`, `gui.py` and `tests/`:
+  - **Filterbank & subband lattice calibration (`_motor_espectral.py`)**:
+    - Added the ISO/IEC 14496-3 AAC / WMA 2048-sample Sine analysis window
+      (`_get_sine_2048`) alongside Vorbis and AAC `KBD` ($\alpha=4$) in
+      `MDCT-1024`, eliminated the left-channel selection bias (`el >= er`),
+      evaluated the opposite channel on asymmetric stereo blocks, and replaced
+      center-slicing with energy-guided continuous subwindow selection
+      (`_select_continuous_subwindow`).
+    - Centered the 512-tap Kaiser PQMF prototype at tap `256.0` in
+      `_get_pqmf_fast` and disambiguated 18-sample single-granule `PQMF-576 (MP3)`
+      periodicity (`dft_m[2]`) from 12-sample subblock `PQMF-32 (Musepack)`
+      periodicity (`dft_m[3]`), while enabling `PQMF-32` on 8-subband sets with
+      `ceiling_hz >= 13.5 kHz`.
+    - Replaced whole-buffer rectangular FFT resampling at 44.1 kHz in `CELT-960`
+      with a Kaiser-windowed polyphase resampler (`scipy.signal.resample_poly(160, 147)`).
+    - Restricted `_detect_sbr_qmf_replication` to single continuous blocks
+      (never concatenating non-adjacent blocks), subtracted the per-frame
+      instantaneous common mode before column normalization to immunize against
+      sidechain/trance-gated harmonic synth chords, and vectorized the `dk`
+      shift sweep.
+    - Introduced `_robust_z_peak(values, min_scale)` combining `1.4826 * MAD`,
+      `0.5 * IQR / 1.349` and a family-specific scale floor (`1e-3`, `0.25`,
+      `1e-2`) so `MAD == 0` never inflates Z-scores.
+  - **Soft heuristic calibration, typed score ledger & album coherence
+    (`_motor_veredicto.py`, `_motor_espectral.py`, `_motor_bits.py`)**:
+    - Replaced `nonlocal` score mutation in `calculate_score` with typed
+      `EvidenceTier`, `EvidenceFamily`, `VerdictCap` and `_ScoreLedger` state
+      transitions. An isolated soft-blocking heuristic (`corroborated == False`)
+      caps the verdict at `"SUSPICIOUS"` (`score >= 0.50`), while condemning a
+      track as `"PROBABLE UPSCALE"` requires multi-family corroboration or a
+      hard structural proof.
+    - Moved `sospecha_excitador_armonico` to `EvidenceFamily.SPECTRAL_ENVELOPE`,
+      required lateral HF cut-off evidence (`delta_cutoff >= 900 Hz` or
+      `side_ceiling_hz < 17.5 kHz`) in the static `collapse > 16.5 dB`
+      Joint-Stereo branch, and required `max(drp_med, mean(drp)) >= 24.0 dB` on
+      the `30 dB` spread branch of `modulacion_psicoacustica_20k`.
+    - Lowered the global 16-bit boundary micro-dither persistence gate from `3`
+      to `2` blocks (`r_glob["cajones"] >= 2`) so 4–6 s `PCM_32` 16-in-32
+      dithered fakes trigger `es_16bit_dither_en_24`, and surfaced DoP 1.0
+      markers (`0x05`/`0xFA`) in `forensic_evidence` as an informational note.
+    - Expanded `apply_album_coherence` to allow benign mastering notes
+      (`mastering brickwall limiter`, `studio anti-aliasing`,
+      `analogue/dsd master`, `dsd/sacd noise-shaping`), build the 80 % album
+      quorum from `"GENUINE LOSSLESS"` plus clean `"PROBABLY LOSSLESS"` tracks
+      (`score >= 0.70` with at least one `"GENUINE LOSSLESS"` or `score >= 0.75`
+      anchor), and scale the rescuable candidate limit to `max(2, N // 6)`.
+  - **Partial PNG cache hydration, LPT pool scheduling & CLI/GUI state guards**:
+    - Added `CacheLookupStatus.METRICS_HIT_NEEDS_PNG` (`_motor_cache.py`,
+      `motor_flac.py`) so requesting `--png`/`--pdf` on a track with cached
+      metrics renders only the missing spectrogram without recomputing MD5,
+      bit lattices or lapped filterbanks.
+    - Enforced `_BlockAnalysis.result()` idempotency on EOF clipping runs,
+      32-bit unsigned two's-complement De Bruijn bit-depth algebra without
+      NumPy 2.x overflow warnings, single DCT-IV evaluation per `MDCT-1024`
+      window, native `complex64` `scipy.fft.rfft` STFTs, LPT (`os.path.getsize`)
+      process pool scheduling, PID-isolated `.tmp` cache writes, asynchronous
+      `ffmpeg` `stderr` draining, direct `--path` CLI dispatch in `main.py`, and
+      explicit `RUN_STATE_TRANSITIONS` / logical inspector selection in `gui.py`.
+
 ## [2.9.1] - 2026-11-11
 
 ### Fixed

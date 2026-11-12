@@ -1897,6 +1897,247 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIs(res_24_in_32["bdi"]["forense_bits"]["es_padded_16_en_24"], False)
         self.assertEqual(res_24_in_32["veredicto"], "GENUINE LOSSLESS")
 
+    def test_35_aac_sine_window_and_unbiased_right_channel_lattice_detected(self):
+        """Phase 13.2: MPEG-2/4 AAC Sine window, unbiased R-channel choice and active subwindow selection."""
+        from _motor_espectral import _fast_mdct_f32, _get_sine_2048
+
+        w_sine = _get_sine_2048()
+        self.assertEqual(w_sine.shape, (2048,))
+        tdac_err = float(np.max(np.abs(w_sine[:1024] ** 2 + w_sine[1023::-1] ** 2 - 1.0)))
+        self.assertLess(tdac_err, 1e-6)
+
+        sr = 44100
+        rng = np.random.default_rng(3501)
+        n = motor_flac.FRAMES_BY_BLOCK
+        master = _create_track_reference(sr, duration=n / float(sr), seed=3501)[:n]
+
+        # Right channel has AAC Sine-2048 MDCT lattice in the first 70 % and a quiet gap in the center/end,
+        # while Left channel has ~75 % of Right channel energy (el < er, but el >= 0.5 * er).
+        nyq = sr / 2.0
+        k_lo, k_hi = int(12500.0 / nyq * 1024), int(20200.0 / nyq * 1024)
+        padded_r = np.pad(master[:, 1].astype(np.float32), (2048, 2048))
+        n_fr = (padded_r.size - 2048) // 1024
+        frames_r = np.lib.stride_tricks.sliding_window_view(padded_r, 2048)[::1024][:n_fr]
+        c_r = _fast_mdct_f32(frames_r, w_sine)
+        mask_r = rng.random((n_fr, k_hi - k_lo)) < 0.48
+        c_r[:, k_lo:k_hi] = np.where(mask_r, 0.0, c_r[:, k_lo:k_hi] * np.sqrt(1.0 / 0.52))
+        rec_r = self._imdct_overlap_add(c_r, w_sine)[2048 + 59 : 2048 + 59 + n].astype(np.float64)
+
+        # Introduce a silence gap in the middle-to-late segment so center-slicing would dilute SNR,
+        # while the leading 196608-sample subwindow stays active.
+        rec_r[200000:] *= 0.01
+        clean_l = master[:, 0].astype(np.float64)
+        clean_l[200000:] *= 0.01
+        scale_l = np.sqrt(0.65 * np.mean(rec_r ** 2) / max(np.mean(clean_l ** 2), 1e-12))
+        stereo = np.column_stack([clean_l * scale_l, rec_r])
+        stereo /= np.max(np.abs(stereo)) * 1.10
+
+        acc = motor_flac._SpectralAccumulator(sr, 2)
+        acc.add(stereo, 0)
+        spec = acc.result()
+        self.assertIs(spec["mdct_lattice_detected"], True)
+        self.assertEqual(spec["mdct_lattice_family"], "MDCT-1024 (Vorbis/AAC)")
+
+    def test_36_pqmf_kaiser_exact_symmetry_and_mp3_not_misattributed_as_musepack(self):
+        """Phase 13.2: PQMF 512-tap prototype is symmetric around tap 256 and MP3 stays PQMF-576."""
+        bank_fft, win36 = motor_flac._get_pqmf_fast(4096)
+        self.assertEqual(bank_fft.shape, (11, 2049))
+        self.assertEqual(win36.shape, (36,))
+        bank_time = np.fft.irfft(bank_fft, n=4096, axis=1)[:, :512]
+        self.assertLess(float(np.max(np.abs(bank_time[:, 0]))), 1e-6)
+
+        m_tap = np.arange(512, dtype=np.float64) - 256.0
+        win_kaiser = np.concatenate(([0.0], np.kaiser(511, 9.0)))
+        h_raw = (1.0 / 64.0) * np.sinc(m_tap / 64.0) * win_kaiser
+        h_proto = (h_raw / np.sum(h_raw)).astype(np.float64)
+        self.assertEqual(float(h_proto[0]), 0.0)
+        sym_err = float(np.max(np.abs(h_proto[1:] - h_proto[1:][::-1])))
+        self.assertLess(sym_err, 1e-12)
+
+        # Synthesize an MP3-like 576-sample granule lattice (18-point MDCT per subband)
+        # with alternating granule energy so 36-sample (2-granule) periodicity is also present,
+        # verifying that it stays classified as PQMF-576 (MP3) rather than PQMF-32 (Musepack).
+        sr = 44100
+        rng = np.random.default_rng(3601)
+        h = h_proto.astype(np.float32)
+        n_idx = np.arange(512, dtype=np.float32)
+        n_granules = 160
+        m_sub = (n_granules + 1) * 18
+        n_pcm = m_sub * 32 + 1024
+        sos_low = signal.butter(6, 13800.0, btype="low", fs=sr, output="sos")
+        low_band = signal.sosfilt(sos_low, rng.standard_normal(n_pcm)).astype(np.float32)
+        high_band = np.zeros(n_pcm, dtype=np.float32)
+        for s in range(19, 30):
+            coeffs = rng.standard_normal((n_granules, 18)).astype(np.float32)
+            if s >= 22:
+                mask_z = rng.random(coeffs.shape) < 0.50
+                coeffs = np.where(mask_z, 0.0, coeffs * np.sqrt(2.0))
+                coeffs[1::2] *= 0.15
+            sub_sig = self._imdct_overlap_add(coeffs, win36)[:m_sub]
+            if s % 2 == 1:
+                sub_sig[1::2] *= -1.0
+            upsampled = np.zeros(m_sub * 32, dtype=np.float32)
+            upsampled[::32] = sub_sig * 32.0
+            synth_filter = (h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32))[::-1]
+            recon_s = np.convolve(upsampled, synth_filter, mode="full")
+            high_band[: recon_s.size] += recon_s
+        mp3_mono = (low_band * 0.4 + high_band * 0.6)[213:]
+        mp3_mono /= float(np.max(np.abs(mp3_mono)) * 1.15)
+
+        det = motor_flac._detect_lapped_codec_grid(mp3_mono, sr)
+        self.assertIs(det["mdct_lattice_detected"], True)
+        self.assertEqual(det["mdct_lattice_family"], "PQMF-576 (MP3)")
+
+    def test_37_celt960_44100_polyphase_resampler_and_gated_chord_sbr_immunity(self):
+        """Phase 13.2: 44.1 kHz brickwall master avoids CELT-960 ringing and gated chords avoid false SBR."""
+        sr = 44100
+        rng = np.random.default_rng(3701)
+        n = motor_flac.FRAMES_BY_BLOCK
+        t = np.arange(n, dtype=np.float64) / sr
+
+        # 1. 44.1 kHz broadband master with a brickwall low-pass at 20.0 kHz
+        raw = rng.standard_normal(n)
+        sos_20k = signal.ellip(12, 0.1, 85.0, 20000.0, btype="low", fs=sr, output="sos")
+        brick_44k = signal.sosfilt(sos_20k, raw).astype(np.float32)
+        brick_44k /= float(np.max(np.abs(brick_44k)) * 1.10)
+        det_celt = motor_flac._detect_lapped_codec_grid(brick_44k, sr, ceiling_hz=20000.0)
+        self.assertIs(det_celt["mdct_lattice_detected"], False)
+
+        # 2. Sidechain-pumped harmonic sawtooth synth chord across two non-adjacent blocks
+        chord = np.zeros(n, dtype=np.float64)
+        for f0 in (110.0, 164.81, 220.0, 277.18, 329.63, 440.0, 659.25):
+            for k in range(1, int(21500.0 // f0)):
+                chord += (1.0 / k) * np.sin(2.0 * np.pi * (f0 * k) * t)
+        # Trance gate modulating all harmonics simultaneously (strong common-mode envelope)
+        gate = 0.2 + 0.8 * (np.sin(2.0 * np.pi * 3.1 * t) ** 8)
+        gated_chord = (chord * gate).astype(np.float32)
+        gated_chord /= float(np.max(np.abs(gated_chord)) * 1.15)
+
+        sbr_res = motor_flac._detect_sbr_qmf_replication([gated_chord, gated_chord[::-1].copy()], sr)
+        self.assertIs(sbr_res["sbr_qmf_detectado"], False)
+
+    def test_38_wide_midrange_synth_centered_hf_drums_spared_and_album_coherence_quorum(self):
+        """Phase 13.2: wide midrange with centered HF drums is spared Joint-Stereo and album quorum scales."""
+        sr = 44100
+        rng = np.random.default_rng(3801)
+        n = sr * 5
+
+        # Wide stereo midrange (4-14 kHz strong in Side) + centered HF percussion up to 20.5 kHz in both M and S
+        mid_sig = signal.sosfilt(
+            signal.butter(4, [200.0, 20500.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(n),
+        )
+        side_mid = signal.sosfilt(
+            signal.butter(4, [4000.0, 14000.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(n),
+        ) * 1.8
+        side_hf = signal.sosfilt(
+            signal.butter(4, [14000.0, 20500.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(n),
+        ) * 0.12
+        side_sig = side_mid + side_hf
+        left = (mid_sig + side_sig) * 0.5
+        right = (mid_sig - side_sig) * 0.5
+        stereo_mix = np.column_stack([left, right])
+        stereo_mix /= np.max(np.abs(stereo_mix)) * 1.15
+
+        acc = motor_flac._SpectralAccumulator(sr, 2)
+        acc.add(stereo_mix, 0)
+        spec_mix = acc.result()
+        self.assertLess(spec_mix["delta_corte_ms_hz"], 900.0)
+        self.assertGreater(spec_mix["caida_side_agudos_db"], 16.5)
+        self.assertIs(spec_mix["sospecha_joint_stereo"], False)
+
+        # Album coherence quorum: 18-track album where quorum is formed by GENUINE LOSSLESS + clean PROBABLY LOSSLESS
+        # and 3 acoustic candidates (one carrying a benign "mastering brickwall limiter" note) are all rescued.
+        def _make_track(idx, verdict, score, rel_ceil=0.95, centroid=3200.0, decay=False, problems=None):
+            return {
+                "archivo": f"{idx:02d}_track.flac",
+                "ruta": str(self.base_path / f"{idx:02d}_track.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "veredicto": verdict,
+                "score": score,
+                "problemas": list(problems or []),
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "match"},
+                "bdi": {
+                    "lsbs": "active",
+                    "forense_bits": {
+                        "es_padded_16_en_24": False,
+                        "es_24bit_escalado_en_peine": False,
+                        "es_16bit_dither_en_24": False,
+                    },
+                },
+                "esp": {
+                    "corte_detectado": False,
+                    "techo_rel_nyquist": rel_ceil,
+                    "muro_brickwall_nyquist": False,
+                    "espejo_aliasing_detectado": False,
+                    "sospecha_joint_stereo": False,
+                    "sospecha_corte_opus_20k": False,
+                    "clipping_reconstruccion_lossy": False,
+                    "islas_mdct_sfb21": False,
+                    "sospecha_excitador_armonico": False,
+                    "sbr_qmf_detectado": False,
+                    "modulacion_psicoacustica_20k": False,
+                    "mdct_lattice_detected": False,
+                    "ratio_huecos_mdct": 0.0,
+                    "centroide_hz": centroid,
+                    "decaimiento_acustico_suave": decay,
+                    "rolloff_banda_limitada_genuina": False,
+                    "familias_evidencia_lossy": [],
+                },
+            }
+
+        album = []
+        for idx in range(1, 10):
+            album.append(_make_track(idx, "GENUINE LOSSLESS", 0.95))
+        for idx in range(10, 16):
+            album.append(_make_track(idx, "PROBABLY LOSSLESS", 0.75))
+        # 3 acoustic tracks (indices 16, 17, 18) — max_candidates = max(2, 18 // 6) = 3
+        album.append(
+            _make_track(
+                16,
+                "PROBABLY LOSSLESS",
+                0.70,
+                rel_ceil=0.65,
+                centroid=1400.0,
+                decay=True,
+                problems=[
+                    "spectral ceiling at 14.2 kHz (65% of Nyquist)",
+                    "clipping runs of 4+ consecutive samples: mastering brickwall limiter",
+                ],
+            )
+        )
+        album.append(
+            _make_track(
+                17,
+                "SUSPICIOUS",
+                0.55,
+                rel_ceil=0.62,
+                centroid=1350.0,
+                decay=True,
+                problems=["spectral ceiling at 13.8 kHz (62% of Nyquist)"],
+            )
+        )
+        album.append(
+            _make_track(
+                18,
+                "PROBABLY LOSSLESS",
+                0.70,
+                rel_ceil=0.66,
+                centroid=1500.0,
+                decay=True,
+                problems=["spectral ceiling at 14.5 kHz (66% of Nyquist)"],
+            )
+        )
+
+        motor_flac.apply_album_coherence(album)
+        for idx in (15, 16, 17):
+            self.assertIs(album[idx]["coherencia_album"], True)
+            self.assertEqual(album[idx]["veredicto"], "PROBABLY LOSSLESS")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
