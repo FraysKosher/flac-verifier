@@ -2152,6 +2152,163 @@ class test_forensic_rigorous(unittest.TestCase):
         no_md5_low_ceil["md5"] = {"estado": "absent"}
         self.assertFalse(_is_clean_quorum_track(no_md5_low_ceil))
 
+    def test_39_opus_hf_subwindow_dynamic_ms_spared_and_near_nyquist_coherence(self):
+        """Phase 13.4: HF multi-subwindow Opus detection, dynamic M/S guard and 0.60/near-Nyquist coherence."""
+        from _motor_espectral import _fast_mdct_f32, _get_celt_1920
+        from _motor_veredicto import _deserves_album_coherence
+
+        # 1. Sparse-cymbal Opus CELT-960 at 44.1 kHz inside a full 262,144-sample block
+        sr_opus = 48000
+        sr = 44100
+        rng = np.random.default_rng(3901)
+        w_celt = _get_celt_1920()
+        c_frames = rng.standard_normal((28, 1920)).astype(np.float32)
+        c_mdct = _fast_mdct_f32(c_frames, w_celt)
+        c_mdct[:, 800:] = 0.0
+        pre_sig = self._imdct_overlap_add(c_mdct, w_celt)
+        opus_48 = signal.lfilter([1.0], [1.0, -0.85], pre_sig).astype(np.float32)[53:]
+        opus_44 = signal.resample_poly(opus_48, 147, 160, window=("kaiser", 8.6)).astype(np.float32)
+        opus_44 /= float(np.max(np.abs(opus_44)) * 1.15)
+        burst = opus_44[:24000]
+
+        n_blk = motor_flac.FRAMES_BY_BLOCK
+        t = np.arange(n_blk, dtype=np.float64) / sr
+        low_mid = (
+            0.40 * np.sin(2.0 * np.pi * 220.0 * t)
+            + 0.25 * np.sin(2.0 * np.pi * 880.0 * t)
+        ).astype(np.float32)
+        # Boost central broadband energy so single-window p20 picks center instead of the burst
+        low_mid[90000:170000] *= np.float32(1.45)
+        mono_mix = low_mid.copy()
+        mono_mix[210000:234000] = (
+            np.float32(0.20) * low_mid[210000:234000] + np.float32(0.75) * burst
+        )
+        det = motor_flac._detect_lapped_codec_grid(mono_mix, sr, ceiling_hz=20000.0)
+        self.assertIs(det["mdct_lattice_detected"], True)
+        self.assertEqual(det["mdct_lattice_family"], "CELT-960 (Opus)")
+
+        # 2. Dynamic M/S guard when Side reaches 20.5 kHz with no HF cut-off asymmetry
+        n_ms = sr * 5
+        t_ms = np.arange(n_ms, dtype=np.float64) / sr
+        mid_sig = signal.sosfilt(
+            signal.butter(4, [200.0, 20500.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(n_ms),
+        )
+        side_mid_noise = signal.sosfilt(
+            signal.butter(4, [3000.0, 8000.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(n_ms),
+        )
+        # Intermittent 3-8 kHz Side bursts drive frame-level excess P95 to ~21-23 dB
+        burst_env = np.where((np.sin(2.0 * np.pi * 1.2 * t_ms) > 0.15), 2.8, 0.25)
+        side_mid = side_mid_noise * burst_env
+        side_hi = signal.sosfilt(
+            signal.butter(4, [13000.0, 20500.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(n_ms),
+        ) * 0.26
+        side_sig = side_mid + side_hi
+        left = (mid_sig + side_sig) * 0.5
+        right = (mid_sig - side_sig) * 0.5
+        stereo_ms = np.column_stack([left, right])
+        stereo_ms /= np.max(np.abs(stereo_ms)) * 1.15
+
+        acc = motor_flac._SpectralAccumulator(sr, 2)
+        acc.add(stereo_ms, 0)
+        spec_ms = acc.result()
+        self.assertIs(acc._psycho._ms_dynamic_collapse, True)
+        self.assertGreater(acc._psycho._ms_p95_db, 20.0)
+        self.assertLess(acc._psycho._ms_p95_db, 24.5)
+        self.assertGreaterEqual(spec_ms["caida_side_agudos_db"], 6.0)
+        self.assertLess(spec_ms["delta_corte_ms_hz"], 800.0)
+        self.assertIs(spec_ms["sospecha_joint_stereo"], False)
+
+        # 3. Album coherence: 0.60 clean full-band quorum + near_nyquist_cutoff closer
+        def _album_item(idx, verdict, score, rel_ceil=0.92, cutoff=False,
+                        artificial=False, cutoff_cls="no_cutoff",
+                        cutoff_iqr=0.0, problems=None):
+            return {
+                "archivo": f"{idx:02d}_track.flac",
+                "ruta": str(self.base_path / "v294_album" / f"{idx:02d}_track.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "veredicto": verdict,
+                "score": score,
+                "problemas": list(problems or []),
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "match"},
+                "bdi": {
+                    "lsbs": "active",
+                    "forense_bits": {
+                        "es_padded_16_en_24": False,
+                        "es_24bit_escalado_en_peine": False,
+                        "es_16bit_dither_en_24": False,
+                    },
+                },
+                "esp": {
+                    "corte_detectado": cutoff,
+                    "corte_artificial": artificial,
+                    "clase_corte": cutoff_cls,
+                    "iqr_corte_hz": cutoff_iqr,
+                    "techo_rel_nyquist": rel_ceil,
+                    "muro_brickwall_nyquist": False,
+                    "espejo_aliasing_detectado": False,
+                    "sospecha_joint_stereo": False,
+                    "sospecha_corte_opus_20k": False,
+                    "clipping_reconstruccion_lossy": False,
+                    "islas_mdct_sfb21": False,
+                    "sospecha_excitador_armonico": False,
+                    "sbr_qmf_detectado": False,
+                    "modulacion_psicoacustica_20k": False,
+                    "mdct_lattice_detected": False,
+                    "ratio_huecos_mdct": 0.0,
+                    "familias_evidencia_lossy": [],
+                },
+            }
+
+        album = [
+            _album_item(1, "GENUINE LOSSLESS", 0.90),
+            _album_item(2, "GENUINE LOSSLESS", 1.00),
+        ]
+        for idx in range(3, 8):
+            album.append(_album_item(idx, "PROBABLY LOSSLESS", 0.70))
+        for idx in range(8, 16):
+            album.append(_album_item(idx, "PROBABLY LOSSLESS", 0.60))
+        closer = _album_item(
+            16,
+            "SUSPICIOUS",
+            0.35,
+            rel_ceil=0.80,
+            cutoff=True,
+            artificial=False,
+            cutoff_cls="near_nyquist_cutoff",
+            cutoff_iqr=120.0,
+            problems=[
+                "spectral ceiling 17.7 kHz (80% of Nyquist of 22.0 kHz): reduced high band",
+                "band cut at 20.1 kHz (91% of Nyquist): consistent with the anti-alias filter of a legitimate master AND with a high-rate codec — inconclusive",
+            ],
+        )
+        album.append(closer)
+
+        raised = motor_flac.apply_album_coherence(album)
+        self.assertEqual(raised, 1)
+        self.assertEqual(closer["veredicto"], "PROBABLY LOSSLESS")
+        self.assertEqual(closer["score"], 0.60)
+        self.assertIs(closer["coherencia_album"], True)
+
+        far_fake = _album_item(
+            17,
+            "SUSPICIOUS",
+            0.35,
+            rel_ceil=0.72,
+            cutoff=True,
+            artificial=True,
+            cutoff_cls="far_cutoff",
+            cutoff_iqr=120.0,
+            problems=[
+                "band cut at 16.0 kHz (72% of Nyquist): typical of lossy codecs"
+            ],
+        )
+        self.assertFalse(_deserves_album_coherence(far_fake))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

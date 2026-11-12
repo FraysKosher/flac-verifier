@@ -58,7 +58,7 @@ from _motor_espectral import (
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
     _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
     _get_kbd_2048, _get_sine_2048, _get_vorbis_2048, _get_pqmf_fast,
-    _robust_z_peak, _select_continuous_subwindow,
+    _robust_z_peak, _select_continuous_subwindow, _select_hf_subwindow_candidates,
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
@@ -80,7 +80,20 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.3"
+ENGINE_VERSION = "13.4"
+# 13.4: Phase 13.4 high-frequency multi-subwindow Opus detection, dynamic M/S guard
+#       and album coherence calibration:
+#       - Added `_select_hf_subwindow_candidates` (75th-percentile second-order
+#         difference energy ranking over up to 3 non-overlapping windows) for
+#         `CELT-960 (Opus)` so sparse-cymbal 44.1 kHz transcodes are caught even when
+#         low/midrange energy dominates the block center, plus opposite-channel lattice
+#         fallback in `_SpectralAccumulator.result()` when primary SNR >= 4.5.
+#       - Calibrated `_ms_dynamic_collapse` fusion in `_SpectralAccumulator.result()`
+#         to require `delta_corte_ms_hz >= 800.0` or (`caida_side_agudos_db >= 6.0`
+#         and `_ms_p95_db >= 25.0`), sparing genuine wide-synth/centered-drum mixes.
+#       - Lowered `_is_clean_quorum_track` clean full-band floor to `score >= 0.60`
+#         and allowed `near_nyquist_cutoff` tracks (`iqr_corte_hz <= 550.0`,
+#         `corte_artificial == False`) into `_deserves_album_coherence`.
 # 13.3: no calculation changed. The frozen executable of 13.2 could not import
 #       scipy.signal (missing importlib.resources), so its lapped-codec lattice
 #       detector silently returned "nothing found" and it cached those results

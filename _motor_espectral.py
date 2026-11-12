@@ -1508,6 +1508,56 @@ def _select_continuous_subwindow(mono, needed):
     return np.ascontiguousarray(mono[best_s0 : best_s0 + needed], dtype=np.float32)
 
 
+def _select_hf_subwindow_candidates(mono, needed, max_windows=3):
+    """Selects up to `max_windows` non-overlapping contiguous `needed`-sample
+    windows from `mono`, ranked by 75th-percentile second-order difference
+    energy so high-frequency transients are prioritized over bass/midrange
+    passages while avoiding silence gaps."""
+    total = int(mono.size)
+    needed = int(needed)
+    if total <= needed:
+        return [np.ascontiguousarray(mono[:needed], dtype=np.float32)]
+    slack = total - needed
+    if slack < 2048:
+        center = slack // 2
+        return [np.ascontiguousarray(mono[center : center + needed], dtype=np.float32)]
+    n_cand = 9
+    candidates = []
+    for i in range(n_cand):
+        s0 = int(round(i * slack / float(n_cand - 1)))
+        if s0 not in candidates:
+            candidates.append(s0)
+    center = slack // 2
+    if center not in candidates:
+        candidates.append(center)
+    chunk_len = max(256, needed // 16)
+    n_chunks = max(1, needed // chunk_len)
+    ranked = []
+    for s0 in candidates:
+        sub = mono[s0 : s0 + n_chunks * chunk_len].reshape(n_chunks, chunk_len)
+        bb_chunks = np.mean(sub * sub, axis=1)
+        p10_bb = float(np.percentile(bb_chunks, 10))
+        d2 = sub[:, 2:] - np.float32(2.0) * sub[:, 1:-1] + sub[:, :-2]
+        hf_chunks = np.mean(d2 * d2, axis=1)
+        p75_hf = float(np.percentile(hf_chunks, 75))
+        has_floor = 1 if p10_bb > 1e-9 else 0
+        ranked.append((has_floor, p75_hf, s0))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    chosen = []
+    min_sep = max(1024, needed // 2)
+    for _, _, s0 in ranked:
+        if all(abs(s0 - prev) >= min_sep for prev in chosen):
+            chosen.append(s0)
+            if len(chosen) >= int(max_windows):
+                break
+    if not chosen:
+        chosen.append(ranked[0][2])
+    return [
+        np.ascontiguousarray(mono[s0 : s0 + needed], dtype=np.float32)
+        for s0 in chosen
+    ]
+
+
 def _fast_mdct_f32(frames, window):
     from scipy import fft as _sp_fft
     two_n = frames.shape[-1]
@@ -1856,22 +1906,21 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
         n_blocks_opus = 14
         need_48 = 16000
         need_src = (need_48 * sr) // 48000
-        if fullband_mode and mono.size >= need_src:
-            seg_src = _select_continuous_subwindow(mono, need_src)
-            if sr == 44100:
-                mono_48_full = _sp_signal.resample_poly(
-                    seg_src, 160, 147, window=("kaiser", 8.6)
-                ).astype(np.float32)
-                mono_48 = mono_48_full[320 : 320 + n_blocks_opus * 960 + 1920]
-            elif sr == 48000:
-                mono_48 = np.asarray(seg_src[: n_blocks_opus * 960 + 1920], dtype=np.float32)
-            else:
-                mono_48 = None
-            if mono_48 is not None and mono_48.size >= n_blocks_opus * 960 + 1920:
+        if fullband_mode and mono.size >= need_src and sr in (44100, 48000):
+            w_celt = _get_celt_1920()
+            for seg_src in _select_hf_subwindow_candidates(mono, need_src, max_windows=3):
+                if sr == 44100:
+                    mono_48_full = _sp_signal.resample_poly(
+                        seg_src, 160, 147, window=("kaiser", 8.6)
+                    ).astype(np.float32)
+                    mono_48 = mono_48_full[320 : 320 + n_blocks_opus * 960 + 1920]
+                else:
+                    mono_48 = np.asarray(seg_src[: n_blocks_opus * 960 + 1920], dtype=np.float32)
+                if mono_48.size < n_blocks_opus * 960 + 1920:
+                    continue
                 pre = np.empty_like(mono_48)
                 pre[0] = mono_48[0]
                 pre[1:] = mono_48[1:] - np.float32(0.85) * mono_48[:-1]
-                w_celt = _get_celt_1920()
                 all_f = np.lib.stride_tricks.sliding_window_view(pre, 1920)[: n_blocks_opus * 960]
                 c0 = np.abs(_fast_mdct_f32(all_f[::960], w_celt))
                 ep0 = float(np.mean(c0[:, 704:796] ** 2)) + 1e-28
@@ -1889,7 +1938,9 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
                     grid_d = drops_all.reshape(n_blocks_opus, 8, 120).mean(axis=0).max(axis=0)
                     z_cand_opus, med_d, mx_d = _robust_z_peak(grid_d, min_scale=0.25)
                     if mx_d >= 38.0 and (mx_d - med_d) >= 6.0:
-                        z_opus = z_cand_opus
+                        z_opus = max(z_opus, z_cand_opus)
+                        if z_opus >= 6.5:
+                            break
 
         if z_opus >= 6.5:
             return {
@@ -2111,14 +2162,16 @@ class _SpectralAccumulator:
                 spectrum["distancia_nyquist"] = None
                 spectrum["clase_corte"] = "no_cutoff"
                 spectrum["corte_artificial"] = False
+        ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
+        delta_cutoff = float(spectrum.get("delta_corte_ms_hz") or 0.0)
+        collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
         if (getattr(self._psycho, "_ms_dynamic_collapse", False)
                 and not spectrum.get("es_dual_mono")
                 and not spectrum.get("es_estacionario")
-                and ((spectrum.get("caida_side_agudos_db") or 0.0) >= 6.0
-                     or (spectrum.get("delta_corte_ms_hz") or 0.0) >= 800.0)):
+                and (delta_cutoff >= 800.0
+                     or (collapse >= 6.0 and math.isfinite(ms_p95) and ms_p95 >= 25.0))):
             spectrum["sospecha_joint_stereo"] = True
-            ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
-            if math.isfinite(ms_p95) and ms_p95 > spectrum.get("caida_side_agudos_db", 0.0):
+            if math.isfinite(ms_p95) and ms_p95 > collapse:
                 spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
         ceiling_val = spectrum.get("techo_hz", 0)
         if (41000 <= self.sr <= 48000
@@ -2143,7 +2196,7 @@ class _SpectralAccumulator:
             lat = _detect_lapped_codec_grid(mono_blk, self.sr, ceiling_hz=ceiling_val)
             if (not lat.get("mdct_lattice_detected")
                     and opp_blk is not None
-                    and asym_ch):
+                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 4.5)):
                 lat_opp = _detect_lapped_codec_grid(opp_blk, self.sr, ceiling_hz=ceiling_val)
                 if (lat_opp.get("mdct_lattice_detected")
                         or lat_opp.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):

@@ -588,8 +588,8 @@ def _deserves_album_coherence(result):
         return False
     if (result.get("md5") or {}).get("estado") != "match":
         return False
-    if spectrum.get("corte_detectado"):
-        return False                       # a step is not "only a low ceiling"
+    if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == "far_cutoff":
+        return False                       # a below-Nyquist codec step is never rescued
     if (spectrum.get("techo_rel_nyquist") or 1.0) >= 0.88:
         return False
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
@@ -599,6 +599,8 @@ def _deserves_album_coherence(result):
                   "modulacion_psicoacustica_20k", "mdct_lattice_detected"):
         if spectrum.get(key):
             return False
+    if (spectrum.get("iqr_corte_hz") or 0.0) > 550.0:
+        return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
         return False
     forensic = bdi.get("forense_bits") or {}
@@ -611,8 +613,8 @@ def _deserves_album_coherence(result):
                   "reduced high band", "high band is destroyed",
                   "smooth analogue/archival roll-off", "dual-mono",
                   "high/mid ratio", "mastering brickwall limiter",
-                  "studio anti-aliasing", "analogue/dsd master",
-                  "dsd/sacd noise-shaping")
+                  "studio anti-aliasing", "anti-alias filter of a legitimate master",
+                  "analogue/dsd master", "dsd/sacd noise-shaping")
     for problem in result.get("problemas") or []:
         if not any(text in problem.lower() for text in permitidos):
             return False
@@ -641,7 +643,7 @@ def _is_clean_quorum_track(result):
     )
     score = float(result.get("score") or 0.0)
     fams = spectrum.get("familias_evidencia_lossy") or []
-    return full_band and score >= 0.70 and len(fams) == 0
+    return full_band and score >= 0.60 and len(fams) == 0
 
 
 def apply_album_coherence(results):
@@ -652,7 +654,7 @@ def apply_album_coherence(results):
     PROBABLE UPSCALE, and also PROBABLY LOSSLESS when it was already excused on
     its own by the Phase 8D acoustic exemption (`decaimiento_acustico_suave`
     with clean bits and no lossy signature). When at least 80% of the tracks in a
-    directory are GENUINE LOSSLESS (or clean PROBABLY LOSSLESS with score >= 0.70
+    directory are GENUINE LOSSLESS (or clean PROBABLY LOSSLESS with score >= 0.60
     and at least one GENUINE LOSSLESS / clean score >= 0.75 anchor) with the same
     sample rate and bit depth, the album context is stronger evidence than the
     isolated spectrum, so those candidates get the album validation

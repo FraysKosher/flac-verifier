@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.4] - 2026-11-12
+
+### Changed & Fixed
+
+- Raised `ENGINE_VERSION` to `"13.4"` and expanded the automated test suite to
+  **346 tests** (`test_39_opus_hf_subwindow_dynamic_ms_spared_and_near_nyquist_coherence`
+  in `tests/test_forense_riguroso.py`):
+  - **HF multi-subwindow selection for `CELT-960 (Opus)` & borderline channel
+    fallback (`_motor_espectral.py`, `motor_flac.py`)**: Added
+    `_select_hf_subwindow_candidates(mono, needed, max_windows=3)` ranking up to
+    3 non-overlapping windows by 75th-percentile second-order difference energy
+    so sparse-cymbal 44.1 kHz Opus transcodes are caught even between cymbal
+    hits, and enabled opposite-channel fallback in `_SpectralAccumulator.result()`
+    whenever the primary lattice SNR reaches `4.5`.
+  - **Dynamic Mid/Side stereo collapse calibration (`_motor_espectral.py`)**:
+    In `_SpectralAccumulator.result()`, fused `_ms_dynamic_collapse` only when
+    `delta_corte_ms_hz >= 800.0` or (`caida_side_agudos_db >= 6.0` and
+    `_ms_p95_db >= 25.0`), eliminating false Joint-Stereo flags on wide-synth /
+    centered-drum studio mixes without losing real codec detections.
+  - **Album coherence quorum & `near_nyquist_cutoff` eligibility
+    (`_motor_veredicto.py`)**: Lowered the full-band clean quorum floor in
+    `_is_clean_quorum_track` from `0.70` to `0.60`, allowed
+    `"anti-alias filter of a legitimate master"` notes with
+    `near_nyquist_cutoff` (`not corte_artificial` and `iqr_corte_hz <= 550.0`)
+    into `_deserves_album_coherence`, and continued rejecting `far_cutoff` /
+    `corte_artificial` steps.
+
 ## [2.9.3] - 2026-11-12
 
 ### Fixed
