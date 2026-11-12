@@ -100,6 +100,7 @@ def _replace_with_retries(source, destination, attempts=3, wait_time=0.015):
 def write_cache(path, meta, mode, seconds, result, version, schema,
                    render):
     """Stores the result. A failure while writing cannot affect the analysis."""
+    temporal = None
     try:
         folder = _normalize_path_fs(os.path.join(_png_folder(path), "_cache"))
         os.makedirs(folder, exist_ok=True)
@@ -110,9 +111,13 @@ def write_cache(path, meta, mode, seconds, result, version, schema,
             "resultado": result,
         }
         destination = _normalize_path_fs(_cache_path(path, mode, seconds))
-        temporal = destination + ".tmp"
+        temporal = f"{destination}.{os.getpid()}.tmp"
         with open(temporal, "w", encoding="utf-8") as f:
             json.dump(_sanitize(input), f, ensure_ascii=False)
         _replace_with_retries(temporal, destination)  # atomic, with a short retry
     except Exception:
-        pass
+        if temporal is not None:
+            try:
+                os.unlink(temporal)
+            except OSError:
+                pass

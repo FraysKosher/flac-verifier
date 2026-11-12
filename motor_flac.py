@@ -254,6 +254,7 @@ def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
     bundled libsndfile cannot open 32-bit FLAC frames directly."""
     import shutil
     import subprocess
+    import threading
     if meta is None:
         meta = verify_metadata(path)
     if not (meta and meta.get("valido") and meta.get("bits_per_sample") == 32):
@@ -269,6 +270,22 @@ def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
         "-f", "s32le", "-acodec", "pcm_s32le", "-",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stderr_chunks = []
+
+    def _drain_stderr(stream):
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+        except Exception:
+            pass
+
+    stderr_thread = None
+    if proc.stderr is not None:
+        stderr_thread = threading.Thread(target=_drain_stderr, args=(proc.stderr,), daemon=True)
+        stderr_thread.start()
     try:
         while True:
             raw = proc.stdout.read(bytes_per_block) if proc.stdout else b""
@@ -279,7 +296,9 @@ def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
                 break
             arr = np.frombuffer(raw[: n_int * 4], dtype="<i4").reshape(-1, ch)
             yield arr.astype(np.float64) * (1.0 / 2147483648.0)
-        stderr_bytes = proc.stderr.read() if proc.stderr else b""
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=5.0)
+        stderr_bytes = b"".join(stderr_chunks)
         rc = proc.wait()
         if rc != 0:
             msg = stderr_bytes.decode("utf-8", errors="replace").strip()
@@ -292,6 +311,8 @@ def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        if stderr_thread is not None and stderr_thread.is_alive():
+            stderr_thread.join(timeout=1.0)
 
 
 def read_audio(path):
@@ -537,14 +558,16 @@ class _BlockAnalysis:
 
     # ── result ───────────────────────────────────────────────────────────────
     def result(self):
-        if self._clip_opened:
-            self._clip_lengths.append(self._clip_opened)   # run open at EOF
-        if self._clip_opened >= 3:
-            self._clip_runs += 1                # run that ends exactly with the file
+        closed_lengths = (
+            self._clip_lengths + [self._clip_opened]
+            if self._clip_opened
+            else list(self._clip_lengths)
+        )
+        closed_runs = self._clip_runs + (1 if self._clip_opened >= 3 else 0)
         output = {
             "pico": self._peak,
             "md5":  _compare_md5(self._md5.hexdigest() if self._md5 else None, self.meta),
-            "clip": {"runs_clip": self._clip_runs, "hay_clipping": self._clip_runs > 0},
+            "clip": {"runs_clip": closed_runs, "hay_clipping": closed_runs > 0},
         }
         if self._dr_block and self._dr_sumsq:
             rms = np.sqrt(np.asarray(self._dr_sumsq, dtype=np.float64) / self._dr_block)
@@ -564,15 +587,16 @@ class _BlockAnalysis:
             # matches the array path so both give identical results.
             bdi["forense_bits"] = {"aplica": False}
         output["bdi"] = bdi
-        output["esp"] = self._spectral_result()
+        output["esp"] = self._spectral_result(closed_lengths)
         return output
 
-    def _spectral_result(self):
+    def _spectral_result(self, clip_lengths=None):
         spectrum = self._spectrum_acc.result()
         if not spectrum.get("error"):
             # Vector 6: the nature of the clipping needs the spectrum (cut-off
             # below 20.5 kHz or content up to Nyquist).
-            spectrum.update(_classify_streaks(self._clip_lengths,
+            lengths = self._clip_lengths if clip_lengths is None else clip_lengths
+            spectrum.update(_classify_streaks(lengths,
                                           spectrum.get("techo_hz"),
                                           spectrum.get("frecuencia_corte"),
                                           self.sr // 2))
@@ -726,9 +750,21 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                 yield _work_analysis(task)
             return
         from concurrent.futures import ProcessPoolExecutor
+
+        def _file_size_key(idx):
+            try:
+                return -os.path.getsize(_normalize_path_fs(pendientes[idx]))
+            except OSError:
+                return 0
+
+        lpt_order = sorted(range(len(tasks)), key=_file_size_key)
         with ProcessPoolExecutor(max_workers=workers_efectivos) as ejecutor:
-            futuros = [ejecutor.submit(_work_analysis, task) for task in tasks]
-            for path, futuro in zip(pendientes, futuros):
+            futures_by_index = {
+                idx: ejecutor.submit(_work_analysis, tasks[idx])
+                for idx in lpt_order
+            }
+            for idx, path in enumerate(pendientes):
+                futuro = futures_by_index[idx]
                 try:
                     yield futuro.result()
                 except Exception as e:
@@ -751,12 +787,14 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
         retenidas = []
         for index, path, cached in plan:
             if cached is not None:
-                result = cached
+                result = dict(cached)
             else:
                 result = next(calculated, None) if calculated is not None else None
                 if result is None:
                     result = {"archivo": os.path.basename(path), "ruta": path,
                                  "error": "could not get the analysis result"}
+                else:
+                    result = dict(result)
             result["indice_original"] = index
             batch.append(result)
             # Everything that cannot be rescued by album context is streamed

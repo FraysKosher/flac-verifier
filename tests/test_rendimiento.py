@@ -217,6 +217,23 @@ class TestVectorization(unittest.TestCase):
         """Less than 6 seconds = less than two 3 s blocks."""
         self.assertIsNone(engine.calculate_dr(np.zeros((8000 * 5, 2)), 8000))
 
+    def test_result_idempotent_on_eof_clipping(self):
+        """Calling acc.result() repeatedly when EOF ends in an open clipping streak is idempotent."""
+        sr = 8000
+        rng = np.random.default_rng(77)
+        x = np.clip(rng.standard_normal((sr * 2, 2)) * 0.15, -0.5, 0.5)
+        x[100:104, 0] = 1.0
+        x[-5:, 1] = -1.0
+        meta = {"sample_rate": sr, "bits_per_sample": 16, "canales": 2,
+                "duracion": 2.0, "md5": None}
+        acc = engine._BlockAnalysis(meta, sr, len(x), "full", None)
+        acc.add(x, 0)
+        first = acc.result()
+        second = acc.result()
+        self.assertEqual(first, second)
+        self.assertEqual(first["clip"]["runs_clip"], 2)
+        self.assertEqual(first["esp"]["clipping_eventos"], 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

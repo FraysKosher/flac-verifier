@@ -65,6 +65,13 @@ def _pcm_bytes(block, bits_per_sample, width, q_int=None):
         if width == 4:
             clipped = np.clip(np.rint(block * scale), -2147483648.0, 2147483647.0)
             return np.ascontiguousarray(clipped.astype(dt))
+        if q_int is None and width in (1, 2):
+            clipped = np.clip(
+                np.rint(block * scale),
+                -(1 << (bits_per_sample - 1)),
+                (1 << (bits_per_sample - 1)) - 1,
+            )
+            return np.ascontiguousarray(clipped.astype(dt))
         return np.ascontiguousarray(np.rint(block * scale).astype(dt))
     # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
     # little-endian layout the old <i8 path produced, at half the memory.
@@ -142,31 +149,23 @@ def analyze_bit_depth(data, meta, include_forensic=True):
 
         # 2) Effective resolution: declared bits minus the mode of trailing zeros
         #    of the integer samples (16 bits inside 24 -> 8 zeros -> 16 bits).
+        scale_b = float(1 << (bits - 1))
         if bits < 32:
-            q = np.rint(active_mask * float(1 << (bits - 1))).astype(np.int32)
-            if not np.all(q):
-                q = q[q != 0]
-            if q.size:
-                pow2 = (q & -q).view(np.uint32)
-                idx = (pow2 * np.uint32(0x077CB531)) >> np.uint32(27)
-                counts_idx = np.bincount(idx, minlength=32)
-                counts_zeros = np.empty(32, dtype=np.int64)
-                counts_zeros[_DEBRUIJN_TABLE] = counts_idx
-                mode = int(counts_zeros.argmax())
-                effective = max(1, bits - mode)
-            else:
-                effective = bits
+            q = np.rint(active_mask * scale_b).astype(np.int32)
         else:
-            scale_b = float(1 << (bits - 1))
-            q = np.clip(np.rint(active_mask * scale_b), -scale_b, scale_b - 1.0).astype(np.int64)
-            q = q[q != 0]
-            if q.size:
-                pow2 = np.abs(q) & -np.abs(q)
-                zeros = np.log2(pow2).round().astype(np.int64)
-                mode = int(np.bincount(zeros).argmax())
-                effective = max(1, bits - mode)
-            else:
-                effective = bits
+            q = np.clip(np.rint(active_mask * scale_b), -scale_b, scale_b - 1.0).astype(np.int32)
+        q_nz = q if np.all(q) else q[q != 0]
+        if q_nz.size:
+            u = q_nz.view(np.uint32)
+            pow2 = u & (np.bitwise_not(u) + np.uint32(1))
+            idx = (pow2 * np.uint32(0x077CB531)) >> np.uint32(27)
+            counts_idx = np.bincount(idx, minlength=32)
+            counts_zeros = np.empty(32, dtype=np.int64)
+            counts_zeros[_DEBRUIJN_TABLE] = counts_idx
+            mode = int(counts_zeros.argmax())
+            effective = max(1, bits - mode)
+        else:
+            effective = bits
 
         pct = f"{fraction * 100:.1f}%"
         if fraction > 0.97:
@@ -422,10 +421,9 @@ class ForensicBitsAccumulator:
             q = q_int
         self._samples += int(q.size)
         if self.bits == 32:
-            absq32 = np.abs(q.astype(np.int64)).ravel()
             if (self._or & 1) == 0:
-                self._or |= int(np.bitwise_or.reduce(absq32))
-            absq = np.minimum(absq32 >> 8, 8388608).astype(np.int32)
+                self._or |= int(np.bitwise_or.reduce(q.view(np.uint32).ravel()))
+            absq = np.minimum(np.abs(q.astype(np.int64)).ravel() >> 8, 8388608).astype(np.int32)
         else:
             absq = np.abs(q).ravel()
             if (self._or & 1) == 0:

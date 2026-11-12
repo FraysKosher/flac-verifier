@@ -1059,6 +1059,8 @@ class PsychoacousticSTFTAccumulator:
         self._e_202_218 = []
         self._ms_excess = []
         self._env_4_11 = []
+        self._ms_p95_db = 0.0
+        self._ms_dynamic_collapse = False
 
     def add(self, power, freqs, window, power_mid=None, power_side=None):
         """Consumes the (frames, bins) power of one selected block."""
@@ -1604,31 +1606,39 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
             seg = np.ascontiguousarray(mono[s0 : s0 + needed_1024], dtype=np.float32)
             n_all_1024 = n_blocks_1024 * 1024
             all_frames = np.lib.stride_tricks.sliding_window_view(seg, 2048)[:n_all_1024]
-            for w in (_get_vorbis_2048(), _get_kbd_2048()):
-                for f_lo, f_hi in bands_1024:
-                    k_lo = int(f_lo / nyq * 1024)
-                    k_hi = int(f_hi / nyq * 1024)
-                    if k_hi <= k_lo + 8:
-                        continue
-                    sp_all = np.empty(n_all_1024, dtype=np.float32)
+            valid_slices_1024 = []
+            for f_lo, f_hi in bands_1024:
+                k_lo = int(f_lo / nyq * 1024)
+                k_hi = int(f_hi / nyq * 1024)
+                if k_hi > k_lo + 8:
+                    valid_slices_1024.append((k_lo, k_hi))
+            if valid_slices_1024:
+                for w in (_get_vorbis_2048(), _get_kbd_2048()):
+                    sp_by_band = [
+                        np.empty(n_all_1024, dtype=np.float32)
+                        for _ in valid_slices_1024
+                    ]
                     for i in range(0, n_all_1024, 1024):
                         chunk = all_frames[i : i + 1024]
-                        coeffs = np.abs(_fast_mdct_f32(chunk, w))[:, k_lo:k_hi]
-                        rms_c = np.sqrt(np.mean(coeffs * coeffs, axis=1, keepdims=True)) + np.float32(1e-12)
-                        active_c = rms_c[:, 0] > np.float32(1e-6)
-                        sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
-                        sp_all[i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
-                    scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
-                    med_c = float(np.median(scores_1024))
-                    if med_c < 0.55:
-                        mad_c = float(np.median(np.abs(scores_1024 - med_c))) + 1e-9
-                        mx_c = float(np.max(scores_1024))
-                        if mx_c - med_c >= 0.008:
-                            z1024 = max(z1024, (mx_c - med_c) / (1.4826 * mad_c))
+                        coeffs_chunk = np.abs(_fast_mdct_f32(chunk, w))
+                        for b_idx, (k_lo, k_hi) in enumerate(valid_slices_1024):
+                            coeffs = coeffs_chunk[:, k_lo:k_hi]
+                            rms_c = np.sqrt(np.mean(coeffs * coeffs, axis=1, keepdims=True)) + np.float32(1e-12)
+                            active_c = rms_c[:, 0] > np.float32(1e-6)
+                            sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
+                            sp_by_band[b_idx][i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
+                    for sp_all in sp_by_band:
+                        scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
+                        med_c = float(np.median(scores_1024))
+                        if med_c < 0.55:
+                            mad_c = float(np.median(np.abs(scores_1024 - med_c))) + 1e-9
+                            mx_c = float(np.max(scores_1024))
+                            if mx_c - med_c >= 0.008:
+                                z1024 = max(z1024, (mx_c - med_c) / (1.4826 * mad_c))
+                        if z1024 >= 10.0:
+                            break
                     if z1024 >= 10.0:
                         break
-                if z1024 >= 10.0:
-                    break
 
         if z1024 >= 10.0:
             return {
