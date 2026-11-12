@@ -116,7 +116,7 @@ Two more invariants worth knowing before you touch anything:
   `__main__` block of `main.py`. `tests/test_empaquetado.py` checks it.
 - `ENGINE_VERSION` in `motor_flac.py` must be raised whenever any analysis
   calculation changes: it is what invalidates the caches written by earlier
-  versions. It currently reads `ENGINE_VERSION = "13.2"`.
+  versions. It currently reads `ENGINE_VERSION = "13.3"`.
 
 ---
 
@@ -145,11 +145,13 @@ python comprobar_ejecutable.py --quick               # only steps 1-3, no PDF, n
 python comprobar_ejecutable.py --folder "dist\FLAC_Verifier"   # another build folder
 ```
 
-It runs 11 checks grouped into 7 steps (both executables answer, serial analysis,
+It runs 12 checks grouped into 8 steps (both executables answer, serial analysis,
 parallel analysis with 8 processes, PDF and spectrograms, the command the GUI
 builds plus the `--motor-cli` fallback, the window opening and closing cleanly,
 and the frozen executable producing the same records as the source code, field by
-field). Each step has its own time limit.
+field, plus a real Opus transcode that the executable must flag with the codec
+lattice detector exactly as the source does; that last step needs `ffmpeg` and is
+reported as skipped without it). Each step has its own time limit.
 
 Two environmental notes:
 

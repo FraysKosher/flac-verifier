@@ -82,7 +82,15 @@ hiddenimports += [
     "scipy.sparse",
     "scipy._lib",
     "scipy.io",
+    # `import scipy.signal` pulls in scipy.stats, whose compiled `_sobol` module
+    # imports importlib.resources at start-up. PyInstaller does not see that
+    # import (it lives inside a Cython extension), so without it every
+    # `from scipy import signal` raised ModuleNotFoundError in the frozen engine
+    # and the lapped-codec lattice detector silently returned "nothing found".
+    "importlib.resources",
 ]
+# A single module on Python 3.10, a package on 3.12: collect whatever exists.
+hiddenimports += collect_submodules("importlib.resources")
 # The submodules are collected, but without the test packages: they never run
 # and are only dead weight (and noise in the build report).
 hiddenimports += [m for m in collect_submodules("scipy.signal") if ".tests" not in m]

@@ -273,8 +273,10 @@ class TestSpecification(unittest.TestCase):
         self.assertIn("soundfile", self.source)
 
     def test_includes_submodules_scipy_numpy(self):
+        # importlib.resources: scipy.signal -> scipy.stats._sobol needs it, and the
+        # lattice detector swallows the ImportError (regression of 2.9.2).
         for modulo in ("numpy.fft", "scipy.fft", "scipy.signal",
-                       "scipy.special", "scipy.linalg"):
+                       "scipy.special", "scipy.linalg", "importlib.resources"):
             with self.subTest(modulo=modulo):
                 self.assertIn(f'"{modulo}"', self.source)
 

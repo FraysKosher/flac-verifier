@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.3] - 2026-11-12
+
+### Fixed
+
+- **The packaged `.exe` of 2.9.2 had the codec-lattice detector switched off.**
+  `_detect_lapped_codec_grid` imports `scipy.signal` for the 44.1 kHz Opus
+  resampler. Inside the frozen engine that import failed with
+  `ModuleNotFoundError: No module named 'importlib.resources'` (it is required by
+  the compiled `scipy.stats._sobol`, which `scipy.signal` drags in and which
+  PyInstaller cannot see). The detector's `except Exception` swallowed the error
+  and returned "nothing found", so MDCT/PQMF/CELT transcodes were reported as
+  clean by the executable while the source code flagged them. Measured on a real
+  `libopus` 96k transcode: source `PROBABLE UPSCALE` (`CELT-960`, Z = 9.67),
+  2.9.2 executable `PROBABLY LOSSLESS` (Z = 0.0). `flac_verifier.spec` now
+  declares `importlib.resources`; no calculation changed.
+- Raised `ENGINE_VERSION` to `"13.3"` only to invalidate the results that the
+  2.9.2 executable had cached under `"13.2"` with the detector dead.
+
+### Added
+
+- `comprobar_ejecutable.py` step 8: a real Opus transcode must be flagged by the
+  frozen engine exactly as by the source (skipped, with the reason printed, when
+  `ffmpeg` is missing). Steps 1-7 could not see this failure because their short
+  fixtures give a lattice Z of 0.0 in both modes.
+- `tests/test_empaquetado.py` now requires `importlib.resources` in the `.spec`.
+
 ## [2.9.2] - 2026-11-11
 
 ### Added

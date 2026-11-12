@@ -280,7 +280,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"13.2"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"13.3"`), spectral mode and seconds |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---
@@ -289,7 +289,7 @@ all three fingerprints match:
 
 ```powershell
 python build.py                                     # cleans, builds and verifies dist/FLAC_Verifier
-python comprobar_ejecutable.py                      # 11 checks across 7 steps
+python comprobar_ejecutable.py                      # 12 checks across 8 steps
 python comprobar_ejecutable.py --album "D:\Album"   # verify against a specific folder
 ```
 

@@ -80,7 +80,11 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.2"
+ENGINE_VERSION = "13.3"
+# 13.3: no calculation changed. The frozen executable of 13.2 could not import
+#       scipy.signal (missing importlib.resources), so its lapped-codec lattice
+#       detector silently returned "nothing found" and it cached those results
+#       under 13.2; raising the version invalidates them.
 # 13.2: Phase 13.2 filterbank lattice, soft heuristic and album quorum calibration:
 #       - Added MPEG-2/4 AAC Sine window (`_get_sine_2048`), unbiased `el >= er`
 #         channel selection, opposite-channel fallback on asymmetric stereo, and

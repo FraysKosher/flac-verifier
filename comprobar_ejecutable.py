@@ -32,6 +32,9 @@ What is checked, in order:
   7. The executable gives the SAME records as the source code on the same
      album, field by field: that is what guarantees that packaging did not change
      the analysis.
+  8. The lapped-codec lattice detector works inside the executable: a real Opus
+     transcode must be flagged by the .exe exactly as the source code flags it
+     (needs ffmpeg; reported as skipped when it is missing).
 """
 from __future__ import annotations
 
@@ -517,6 +520,79 @@ class Checker:
             print(f"     fuente     {name}: {self.abbreviate(json.dumps(source[name], ensure_ascii=False), 200)}")
             print(f"     executable {name}: {self.abbreviate(json.dumps(exe_file.get(name), ensure_ascii=False), 200)}")
 
+    def step_8_codec_lattice(self) -> None:
+        """The lapped-codec lattice detector must really run inside the .exe.
+
+        Short fixtures give a lattice Z of 0.0 both in Python and in the frozen
+        engine, so step 7 cannot notice a detector that is silently dead in the
+        .exe. The 2.9.2 build shipped exactly like that: `import scipy.signal`
+        failed in the frozen engine (a missing `importlib.resources`), the
+        detector swallowed the error and every Opus transcode passed as clean.
+        This step decodes a REAL Opus encode back to FLAC, which the source
+        flags as `CELT-960 (Opus)`, and requires the executable to agree.
+        """
+        print("\n[8] The codec-lattice detector works inside the executable")
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.annotate("Opus transcode flagged by the executable", True,
+                          "SKIPPED: ffmpeg not found on PATH")
+            return
+        import numpy as np
+        import soundfile as sf
+
+        folder = os.path.join(self.temporal, "lattice_album")
+        os.makedirs(folder, exist_ok=True)
+        rng = np.random.default_rng(7)
+        rate = 44100
+        samples = rate * 20
+        t = np.arange(samples) / rate
+        tones = rng.uniform(100, 12000, 60)
+        amps = rng.uniform(0.02, 0.1, 60)
+        mono = sum(a * np.sin(2 * np.pi * f * t * (1 + 0.002 * np.sin(2 * np.pi * 0.3 * t)))
+                   for a, f in zip(amps, tones))
+        mono = mono + 0.02 * rng.standard_normal(samples)
+        stereo = np.stack([mono, np.roll(mono, 37) * 0.9], axis=1)
+        stereo = stereo / np.max(np.abs(stereo)) * 0.8
+        wav = os.path.join(folder, "source.wav")
+        opus = os.path.join(folder, "encoded.opus")
+        fake = os.path.join(folder, "fake_opus.flac")
+        sf.write(wav, stereo, rate, subtype="PCM_16")
+        try:
+            subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", wav,
+                            "-c:a", "libopus", "-b:a", "96k", opus],
+                           check=True, creationflags=NO_WINDOW, timeout=120)
+            subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", opus,
+                            "-ar", "44100", "-sample_fmt", "s16", fake],
+                           check=True, creationflags=NO_WINDOW, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.annotate("Opus transcode flagged by the executable", True,
+                          f"SKIPPED: ffmpeg cannot encode Opus ({type(exc).__name__})")
+            return
+        for leftover in (wav, opus):
+            os.remove(leftover)
+
+        arguments = ["--path", folder, "--mode", "center", "--workers", "1",
+                     "--no-cache"]
+        _, text_source = self.launch([sys.executable, "-u", ENGINE_SOURCE, *arguments],
+                                     label="lattice_source")
+        _, text_exe = self.launch([self.engine, *arguments], label="lattice_exe")
+
+        def lattice(text: str) -> tuple:
+            card = self.cards(text).get("fake_opus.flac") or {}
+            spectrum = card.get("esp") or {}
+            return (bool(spectrum.get("mdct_lattice_detected")),
+                    spectrum.get("mdct_lattice_family"))
+
+        from_source = lattice(text_source)
+        from_exe = lattice(text_exe)
+        if not from_source[0]:
+            self.annotate("Opus transcode flagged by the executable", True,
+                          "SKIPPED: the source code does not flag this signal "
+                          "either, so it proves nothing")
+            return
+        self.annotate("Opus transcode flagged by the executable", from_exe == from_source,
+                      f"source={from_source}, executable={from_exe}")
+
     def summary(self) -> int:
         print("\n" + "=" * 72)
         failures = [r for r in self.results if not r[1]]
@@ -558,6 +634,7 @@ def main() -> int:
                 checker.step_4_pdf(args.album)
                 checker.step_5_flag_internal(args.album)
                 checker.step_7_same_verdicts(args.album)
+                checker.step_8_codec_lattice()
         else:
             checker.annotate("test album", False,
                                f"not found: {args.album} — pass --album")
