@@ -75,7 +75,18 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.0"
+ENGINE_VERSION = "13.1"
+# 13.1: Phase 13.1 surgical calibration:
+#       - Fixed 24-in-32 container zero-padding threshold (`min_zeros_16 =
+#         max(8, bits - 16)`) so genuine 24-bit audio inside a 32-bit FLAC
+#         container (8 trailing zeros) is never mistaken for 16-bit padding.
+#       - Calibrated `modulacion_psicoacustica_20k`, `_ms_dynamic_collapse`
+#         and `es_estacionario` so real commercial tracks with centered snare/
+#         vocal transients or rhythmic synth overtones are not capped at
+#         SUSPICIOUS (50 %) by false soft triggers.
+#       - Bounded `--mode full` active STFT budget to `SPECTRO_SECONDS + 15`
+#         (60 s across 100 % of the track timeline) to preserve full-track
+#         rigor without quadrupling CPU time.
 # 13.0: Phase 13 forensic precision & architecture hardening:
 #       - Multi-family corroboration gate (`familias_evidencia_lossy` &
 #         `corroboracion_multifamilia`): condemning a track as PROBABLE UPSCALE

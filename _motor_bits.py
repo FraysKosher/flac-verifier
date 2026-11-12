@@ -532,7 +532,8 @@ class ForensicBitsAccumulator:
             zeros = self.bits
         else:
             zeros = (value_or & -value_or).bit_length() - 1
-        padded = bool(value_or and zeros >= 8)
+        min_zeros_16 = max(8, self.bits - 16)
+        padded = bool(value_or and zeros >= min_zeros_16)
 
         r_low = self._evaluate_bitmap(self._bitmap_low, self.low_int,
                                       self._samples_low)

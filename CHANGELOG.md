@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] - 2026-11-11
+
+### Fixed
+
+- Raised `ENGINE_VERSION` to `"13.1"` across `_motor_bits.py`,
+  `_motor_espectral.py`, `_motor_veredicto.py` and `motor_flac.py`:
+  - **24-bit audio inside 32-bit FLAC container (`ForensicBitsAccumulator`)**:
+    computes `min_zeros_16 = max(8, self.bits - 16)` (`16` trailing zeros for
+    32-bit containers, `8` for 24-bit containers) and scales `effective` bit
+    resolution from `self.bits` so genuine 24-bit recordings stored in 32-bit
+    FLAC containers (`8` trailing zero bits) are recognized as 24-bit active
+    lossless instead of being misflagged as 16-bit zero-padded containers.
+  - **Soft heuristic calibration (`modulacion_psicoacustica_20k`,
+    `_ms_dynamic_collapse`, `es_estacionario`) & uncorroborated soft blocking**:
+    tightens upper-band 20 kHz modulation (`drp_iqr >= 13.5 dB`,
+    `top_iqr >= 6.5 dB`, `drp_med >= 36.0 dB` with `grad >= 20 dB/kHz` or
+    `drp_med >= 42 dB`), requires static HF Side collapse alongside dynamic M/S
+    swings before triggering `sospecha_joint_stereo`, widens `es_estacionario`
+    to cover rhythmic electronic tracks with sustained harmonic synth pads, and
+    only lets soft heuristics (`temporal_modulation`, `stereo_collapse`) cap the
+    verdict at `SUSPICIOUS` when corroborated by another independent family or
+    when `score < 0.70`.
+  - **Full-track `--mode full` active STFT budget (`_needed_active_blocks`)**:
+    caps `--mode full` at `SPECTRO_SECONDS + 15` (`60 s` of the highest-energy
+    active blocks selected across 100 % of the track timeline while MD5,
+    24/32-bit lattice, clipping and DR audit 100 % of all samples), avoiding
+    unnecessary STFT CPU overhead on long tracks.
+
 ## [2.9.0] - 2026-11-11
 
 ### Added

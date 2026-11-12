@@ -1869,6 +1869,34 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIs(res_32["bdi"]["forense_bits"]["es_padded_16_en_24"], True)
         self.assertIn(res_32["veredicto"], BAD_VERDICTS)
 
+        # Genuine 24-bit audio inside a 32-bit FLAC container (8 trailing zeros, not 16)
+        wav_24 = self.base_path / "tmp_24.wav"
+        flac_24_in_32 = self.base_path / "genuino_24_en_32bit.flac"
+        rng_24 = np.random.default_rng(3409)
+        sig_24 = np.clip(
+            clean_part[: sr * 4] * 2.5 + rng_24.normal(0.0, 10.0 ** (-115.0 / 20.0), (sr * 4, 2)),
+            -0.98,
+            0.98,
+        )
+        sig_24_q = np.rint(sig_24 * 8388608.0) / 8388608.0
+        sf.write(wav_24, sig_24_q, sr, subtype="PCM_32")
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error", "-i", str(wav_24),
+                "-strict", "experimental", "-c:a", "flac", "-sample_fmt", "s32",
+                str(flac_24_in_32),
+            ],
+            check=True,
+        )
+        res_24_in_32 = motor_flac.analyze_file_data(str(flac_24_in_32), use_cache=False)
+        self.assertIsNone(res_24_in_32.get("error"))
+        self.assertEqual(res_24_in_32["md5"]["estado"], "match")
+        self.assertEqual(res_24_in_32["bdi"]["lsbs"], "active")
+        self.assertEqual(res_24_in_32["bdi"]["resolucion_efectiva_bits"], 24)
+        self.assertEqual(res_24_in_32["bdi"]["forense_bits"]["trailing_zeros_lsb"], 8)
+        self.assertIs(res_24_in_32["bdi"]["forense_bits"]["es_padded_16_en_24"], False)
+        self.assertEqual(res_24_in_32["veredicto"], "GENUINE LOSSLESS")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

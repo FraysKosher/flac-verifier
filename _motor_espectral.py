@@ -920,7 +920,7 @@ def _needed_active_blocks(samplerate, mode="center", seconds=None):
     """K blocks, chosen so that the selected audio covers the requested window.
     With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
     if mode == "full":
-        target_sec = float(SPECTRO_SECONDS * 4)
+        target_sec = float(SPECTRO_SECONDS + 15)
     elif mode == "seconds" and seconds is not None:
         target_sec = max(1.0, float(seconds))
     else:
@@ -1310,7 +1310,8 @@ class PsychoacousticSTFTAccumulator:
                 drp_iqr = float(np.percentile(drp, 95) - np.percentile(drp, 5))
                 top_iqr = float(np.percentile(arr_20, 95) - np.percentile(arr_20, 5))
                 psycho_mod_20k = bool(
-                    (drp_iqr >= 10.0 and top_iqr >= 5.0 and drp_med >= 32.0)
+                    (drp_iqr >= 16.0 and top_iqr >= 16.0 and drp_med >= 24.0)
+                    or (drp_iqr >= 10.0 and top_iqr >= 5.0 and drp_med >= 52.0)
                     or (drp_iqr >= 30.0 and top_iqr >= 30.0)
                     or (drp_med >= 48.0 and drp_iqr >= 12.0 and iqr > 550.0)
                 )
@@ -1326,7 +1327,7 @@ class PsychoacousticSTFTAccumulator:
                 ms_p95 = float(np.percentile(arr_ms, 95))
                 ms_iqr = float(np.percentile(arr_ms, 90) - np.percentile(arr_ms, 10))
                 self._ms_p95_db = ms_p95
-                self._ms_dynamic_collapse = bool(ms_p95 > 12.0 and ms_iqr > 5.0)
+                self._ms_dynamic_collapse = bool(ms_p95 > 20.0 and ms_iqr > 10.0)
 
         # Phase 13: Spectral stationarity guard for sustained electronic synth
         # drones / modular harmonic pads. When the temporal envelope is nearly
@@ -1338,14 +1339,15 @@ class PsychoacousticSTFTAccumulator:
         if (len(self._env_4_11) >= 16 and self._sum_power is not None
                 and self._freqs is not None and self._frames >= 16):
             arr_env = np.asarray(self._env_4_11, dtype=np.float64)
-            if np.all(np.isfinite(arr_env)) and float(np.std(arr_env)) < 1.8:
+            std_env = float(np.std(arr_env)) if np.all(np.isfinite(arr_env)) else 99.0
+            if std_env < 5.5:
                 freqs = self._freqs
                 mean = self._sum_power / float(self._frames)
                 mask_hb = (freqs >= 13500.0) & (freqs <= min(19500.0, self.sr * 0.45))
                 if np.count_nonzero(mask_hb) >= 16:
                     hb_db = 10.0 * np.log10(np.maximum(mean[mask_hb], 1e-28))
                     crest_hb = float(np.percentile(hb_db, 95) - np.percentile(hb_db, 50))
-                    if crest_hb >= 12.0:
+                    if (std_env < 1.8 and crest_hb >= 12.0) or crest_hb >= 14.5:
                         is_stationary = True
                         ratio = 0.0
                         islands_sfb21 = False
@@ -2005,7 +2007,10 @@ class _SpectralAccumulator:
                 spectrum["clase_corte"] = "no_cutoff"
                 spectrum["corte_artificial"] = False
         if (getattr(self._psycho, "_ms_dynamic_collapse", False)
-                and not spectrum.get("es_dual_mono")):
+                and not spectrum.get("es_dual_mono")
+                and not spectrum.get("es_estacionario")
+                and ((spectrum.get("caida_side_agudos_db") or 0.0) >= 6.0
+                     or (spectrum.get("delta_corte_ms_hz") or 0.0) >= 800.0)):
             spectrum["sospecha_joint_stereo"] = True
             ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
             if math.isfinite(ms_p95) and ms_p95 > spectrum.get("caida_side_agudos_db", 0.0):
