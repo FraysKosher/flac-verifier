@@ -251,6 +251,19 @@ class TestHiRes(unittest.TestCase):
         res = self.analyze("upscale96")
         self.assertNotIn(res["veredicto"], GOOD_VERDICTS)
 
+    def test_dop_stream_reported_in_forensic_evidence_without_penalty(self):
+        res = self.analyze("ok24")
+        sample = dict(res)
+        sample["bdi"] = dict(res["bdi"])
+        forensic = dict(res["bdi"].get("forense_bits") or {})
+        forensic["es_flujo_dop"] = True
+        sample["bdi"]["forense_bits"] = forensic
+        evidence = engine.forensic_evidence(sample)
+        self.assertIn(
+            "DoP 1.0 framing markers (0x05/0xFA) detected in top byte",
+            evidence,
+        )
+
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is not on the PATH")
 class TestMP3Real(unittest.TestCase):

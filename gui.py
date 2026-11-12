@@ -56,6 +56,49 @@ except ImportError:                      # optional: without this there is no dr
 Event = dict[str, Any]
 Message = tuple[str, Event]             # (channel, event) as it travels through the queue
 
+RUN_STATE_TRANSITIONS: dict[str, frozenset[str]] = {
+    "idle": frozenset(("running",)),
+    "running": frozenset(("finished", "cancelled", "error")),
+    "finished": frozenset(("running", "idle")),
+    "cancelled": frozenset(("running", "idle")),
+    "error": frozenset(("running", "idle")),
+}
+
+
+def transition_run_state(current: str, target: str) -> str:
+    """Validates and executes a run_state transition.
+
+    While a batch is `running`, only terminal batch events (`finished`,
+    `cancelled`, `error`) can leave `running`, preventing intermediate
+    `informe` or `aviso` events from prematurely unlocking controls.
+    """
+    allowed = RUN_STATE_TRANSITIONS.get(current, frozenset(("running", "idle")))
+    if target == current or target in allowed:
+        return target
+    return current
+
+
+def event_logical_key(event: Event | None) -> tuple[Any, str] | None:
+    """Logical identity of a track event across out-of-order insertions."""
+    if not isinstance(event, dict):
+        return None
+    original_index = event.get("indice_original")
+    path = str(event.get("ruta") or "")
+    if not isinstance(original_index, int) and not path:
+        return None
+    return (original_index, path or str(event.get("archivo") or ""))
+
+
+def same_logical_event(first: Event | None, second: Event | None) -> bool:
+    """True when two result events refer to the same logical track."""
+    if first is None or second is None:
+        return False
+    if first is second:
+        return True
+    key_a = event_logical_key(first)
+    key_b = event_logical_key(second)
+    return key_a is not None and key_a == key_b
+
 DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(DIRECTORY, "motor_flac.py")
 # Single source: the report generator owns the file name and the GUI mirrors it,
@@ -1809,7 +1852,15 @@ if CTK_OK:
             else:
                 self.table_rows.append(entry)
             self._bind_row(row, entry)
-            self._paint_row(entry)
+            if self.selected_event is not None:
+                if same_logical_event(event, self.selected_event):
+                    self.selected_event = event
+                    self._render_hero()
+                    self._update_reveal()
+                for row_entry in self.table_rows:
+                    self._paint_row(row_entry)
+            else:
+                self._paint_row(entry)
             if follow:
                 self._schedule_table_scroll()
             return entry
@@ -1836,7 +1887,7 @@ if CTK_OK:
             self._hover_row(entry, False)
 
         def _paint_row(self, entry: dict[str, Any]) -> None:
-            selected = entry["event"] is self.selected_event
+            selected = same_logical_event(entry["event"], self.selected_event)
             if selected:
                 background = theme.mix(c("accent"), c("bg.surface"), 0.08)
                 bar = c("accent")
@@ -2601,6 +2652,11 @@ if CTK_OK:
             chosen = self.option_workers.get()
             return int(chosen) if chosen.isdigit() else 0   # 0 = automatic
 
+        def _set_run_state(self, target: str) -> str:
+            """Applies a guarded transition to `self.run_state`."""
+            self.run_state = transition_run_state(self.run_state, target)
+            return self.run_state
+
         def _is_busy(self) -> bool:
             """True while an analysis batch is active or draining its final events."""
             return self.manager.active or self.run_state == "running"
@@ -2687,7 +2743,7 @@ if CTK_OK:
             so the user sees the old theme and then the new one, never a mix. The
             plain Tk labels, canvases and text tags are recoloured explicitly.
             """
-            if self._retheming:
+            if self._is_busy() or self._retheming:
                 return
             self._retheming = True
             focused = self.focus_get()
@@ -2893,7 +2949,7 @@ if CTK_OK:
             self.label_progress.configure(text="")
             self.label_state.configure(text="Analyzing…")
             self.selected_event = None
-            self.run_state = "running"
+            self._set_run_state("running")
             self._clear_table()
             self._render_hero()
             try:
@@ -2903,7 +2959,7 @@ if CTK_OK:
                     pdf=bool(self.var_pdf.get()), workers=self._workers(),
                     without_cache=bool(self.var_without_cache.get()))
             except Exception as e:
-                self.run_state = "error"
+                self._set_run_state("error")
                 self._log(f"Could not start the analysis: {e}", "error")
                 self._alert("Could not start the engine", str(e), error=True)
                 self._update_state()
@@ -2919,7 +2975,7 @@ if CTK_OK:
                 return
             self._log("Cancelling the analysis and its child processes…", "aviso")
             self.manager.cancel()
-            self.run_state = "cancelled"
+            self._set_run_state("cancelled")
             self.label_state.configure(text="Cancelled")
             self._update_state()
 
@@ -3046,17 +3102,17 @@ if CTK_OK:
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
             if event.get("cancelado"):
-                self.run_state = "cancelled"
+                self._set_run_state("cancelled")
                 self.label_state.configure(text="Cancelled")
                 self._log("Analysis cancelled.", "aviso")
             elif event.get("codigo") not in (0, None):
-                self.run_state = "error"
+                self._set_run_state("error")
                 self.label_state.configure(text=f"Finished with code {event['codigo']}")
                 self._log(f"The engine finished with code {event['codigo']}.", "error")
                 self._alert("The engine finished with an error",
                              f"Exit code: {event['codigo']}", error=True)
             else:
-                self.run_state = "finished"
+                self._set_run_state("finished")
                 self.label_state.configure(text="Finished")
                 self._log("Analysis finished.", "ok")
             self._render_hero()

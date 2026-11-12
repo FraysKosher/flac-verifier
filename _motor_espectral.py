@@ -2090,3 +2090,83 @@ class _SpectralAccumulator:
             if error:
                 spectrum["espectrograma_error"] = error
         return spectrum
+
+    def render_png_only(self, ceiling_hz=None, cutoff_hz=None):
+        """Lightweight spectrogram render from selected active blocks when cached
+        spectral metrics are already valid and only the PNG is missing."""
+        if self._error:
+            return {"espectrograma": None, "espectrograma_error": self._error}
+        if not self.save_png:
+            return {"espectrograma": None}
+        chosen = self._seleccion or ([self._backup] if self._backup else [])
+        if not chosen:
+            return {"espectrograma": None,
+                    "espectrograma_error": "could not analyze the spectrum"}
+        chosen = sorted(chosen, key=lambda item: item[2])
+
+        lengths = [len(item[4]) for item in chosen]
+        total_samples = sum(lengths)
+        nperseg = max(256, min(4096, total_samples // 8))
+        nperseg = min(nperseg, max(lengths))
+        nperseg = max(32, nperseg)
+        hop = max(1, nperseg // 8)
+
+        window = np.hanning(nperseg + 1)[:-1].astype(np.float32)
+        scale = np.float32(1.0 / float(window.sum()))
+        frames_estimados = sum((n - nperseg) // hop + 1
+                               for n in lengths if n >= nperseg)
+        if frames_estimados <= 0:
+            return {"espectrograma": None,
+                    "espectrograma_error": "could not analyze the spectrum"}
+        step_png = max(1, frames_estimados // MAX_FRAMES_PNG)
+        step_png = max(step_png,
+                       int(round(self.sr / (hop * float(PNG_SPECTROGRAM_FPS)))))
+
+        freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
+        frames_global = 0
+        png_power, png_times, png_n = [], [], 0
+        medium = np.float32(0.5)
+
+        for _, _, _, start, audio in chosen:
+            if len(audio) < nperseg:
+                continue
+            n_frames_blk = (len(audio) - nperseg) // hop + 1
+            remaining = MAX_FRAMES_PNG - png_n
+            if remaining > 0:
+                i0 = (-frames_global) % step_png
+                idx = np.arange(i0, n_frames_blk, step_png)[:remaining]
+                if idx.size:
+                    ch_l = np.ascontiguousarray(
+                        audio[:, 0] if audio.ndim > 1 else audio, dtype=np.float32
+                    )
+                    frames_l = np.lib.stride_tricks.sliding_window_view(
+                        ch_l, nperseg
+                    )[::hop][idx] * window
+                    zl = np.fft.rfft(frames_l, axis=1) * scale
+                    if self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
+                        ch_r = np.ascontiguousarray(audio[:, 1], dtype=np.float32)
+                        frames_r = np.lib.stride_tricks.sliding_window_view(
+                            ch_r, nperseg
+                        )[::hop][idx] * window
+                        zr = np.fft.rfft(frames_r, axis=1) * scale
+                        zm = (zl + zr) * medium
+                        zs = (zl - zr) * medium
+                        power_total = _power_from_fft(zm) + _power_from_fft(zs)
+                    else:
+                        power_total = _power_from_fft(zl)
+                    png_power.append(power_total)
+                    png_times.append((start + idx * hop) / float(self.sr))
+                    png_n += idx.size
+            frames_global += n_frames_blk
+
+        if not png_power:
+            return {"espectrograma": None}
+        png_path, error = self._renderer(
+            freqs, np.concatenate(png_times),
+            np.concatenate(png_power, axis=0).T,
+            self.sr, self.path, ceiling_hz, cutoff_hz
+        )
+        out = {"espectrograma": png_path}
+        if error:
+            out["espectrograma_error"] = error
+        return out

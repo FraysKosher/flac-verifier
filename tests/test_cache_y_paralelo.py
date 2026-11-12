@@ -162,6 +162,28 @@ class test_cache(unittest.TestCase):
         without_png = engine.analyze_file_data(path, "center", None, False)
         self.assertIsNone(without_png["esp"]["espectrograma"])
 
+    @unittest.skipUnless(engine.PIL_OK, "Pillow not installed")
+    def test_metrics_hit_needs_png_hydrates_without_bit_audit(self):
+        path = self.copy("hydrate_png", source="ok24")
+        first = engine.analyze_file_data(path, "center", None, True)
+        png_path = first["esp"]["espectrograma"]
+        self.assertTrue(png_path and os.path.exists(png_path))
+        os.remove(png_path)
+
+        meta = engine.verify_metadata(path)
+        status, cached = engine.read_cache_entry(
+            path, meta, "center", None, requires_png=True
+        )
+        self.assertIs(status, engine.CacheLookupStatus.METRICS_HIT_NEEDS_PNG)
+        self.assertIsNotNone(cached)
+
+        with mock.patch.object(engine, "ForensicBitsAccumulator") as bit_acc:
+            second = engine.analyze_file_data(path, "center", None, True)
+        bit_acc.assert_not_called()
+        self.assertFalse(second.get("desde_cache"))
+        self.assertTrue(os.path.exists(second["esp"]["espectrograma"]))
+        self.assertEqual(comparable(first), comparable(second))
+
 
 class TestParallelization(unittest.TestCase):
 

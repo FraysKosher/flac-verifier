@@ -60,12 +60,14 @@ from _motor_espectral import (
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
-    LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, calculate_score,
+    LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, EvidenceTier, EvidenceFamily,
+    VerdictCap, _ScoreLedger, calculate_score,
     _deserves_album_coherence, apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (
-    PNG_FOLDER_NAME, _png_folder, _cache_path, _identity, _analysis_key,
-    _replace_with_retries, _sanitize,
+    PNG_FOLDER_NAME, CacheLookupStatus, _png_folder, _cache_path, _identity,
+    _analysis_key, _replace_with_retries, _sanitize,
+    read_cache_entry as _cache_read_entry,
     read_cache as _cache_read, write_cache as _cache_write,
 )
 
@@ -212,6 +214,13 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path,
         return None, "Image renderer is not available"
     return _spectrogram_save(freqs, times, mix, samplerate, audio_path,
                                       ceiling_hz, frequency_cutoff)
+
+def read_cache_entry(path, meta, mode, seconds, requires_png):
+    """Facade wrapper returning (CacheLookupStatus, cached_result_or_None)."""
+    return _cache_read_entry(
+        path, meta, mode, seconds, requires_png,
+        ENGINE_VERSION, CACHE_SCHEMA_VERSION, render_fingerprint()
+    )
 
 def read_cache(path, meta, mode, seconds, requires_png):
     """Facade wrapper: the mutable ENGINE_VERSION/render fingerprint are passed
@@ -822,6 +831,37 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
 
 # ─── ANALYSIS OF ONE FILE (returns a dict, does not print) ───────────────────
 
+def _hydrate_cached_png(path, meta, mode, seconds, cached, save_png=True):
+    """Regenerates only the missing spectrogram PNG while reusing all cached
+    forensic metrics, score, verdict and evidence."""
+    result = dict(cached)
+    spectrum = dict(result.get("esp") or {})
+    result["esp"] = spectrum
+    if bool(save_png) and PIL_OK and bool(path):
+        sr = int(meta["sample_rate"])
+        is_stereo = meta.get("canales", 0) >= 2 if meta.get("canales") else None
+        acc = _SpectralAccumulator(
+            sr, is_stereo, save_png=True, path=path,
+            renderer=_save_spectrogram, mode=mode, seconds=seconds
+        )
+        offset = 0
+        for block in _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
+            if block.shape[0] == 0:
+                continue
+            acc.add(block, offset)
+            offset += block.shape[0]
+        spectrum.update(acc.render_png_only(
+            ceiling_hz=spectrum.get("techo_hz"),
+            cutoff_hz=spectrum.get("frecuencia_corte"),
+        ))
+    else:
+        spectrum["espectrograma"] = None
+        spectrum.pop("espectrograma_error", None)
+    result["desde_cache"] = False
+    write_cache(path, meta, mode, seconds, result)
+    return result
+
+
 def analyze_file_data(path, mode="center", seconds=None, save_png=False,
                            use_cache=True):
     """Analyses one file and returns a dict. With `use_cache`, if the file has not
@@ -846,10 +886,16 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
 
         # Cache: an already verified album is not decoded or drawn again.
         if use_cache:
-            cached = read_cache(path, meta, mode, seconds, requires_png=save_png)
-            if cached is not None:
+            status, cached = read_cache_entry(
+                path, meta, mode, seconds, requires_png=save_png
+            )
+            if status is CacheLookupStatus.FULL_HIT and cached is not None:
                 cached["desde_cache"] = True
                 return cached
+            if status is CacheLookupStatus.METRICS_HIT_NEEDS_PNG and cached is not None:
+                return _hydrate_cached_png(
+                    path, meta, mode, seconds, cached, save_png=save_png
+                )
 
         # A single pass, memory bounded per block (Block 6). A decoding failure
         # here is a truncated or corrupt file.

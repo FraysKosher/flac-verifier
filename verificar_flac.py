@@ -158,7 +158,7 @@ def _body(res):
 def ask_mode():
     print('\nHow do you want to analyze the spectrum?')
     print("  [1] First N seconds (fast)")
-    print("  [2] 30 seconds from the center (recommended)")
+    print("  [2] 45 s of highest-energy active blocks (recommended)")
     print("  [3] Full track (more accurate, slower)")
     option = input("Choose an option (1/2/3): ").strip()
     mode = "full"; seconds = None
@@ -166,8 +166,8 @@ def ask_mode():
         seg_input = input("How many seconds? (default 15): ").strip()
         seconds = int(seg_input) if seg_input.isdigit() else 15
         mode = "seconds"; print(f"\nMode: first {seconds} seconds")
-    elif option == "2":
-        mode = "center"; print('\nMode: 30 seconds from the center')
+    elif option in ("", "2"):
+        mode = "center"; print("\nMode: 45 s of highest-energy active blocks")
     else:
         mode = "full"; print('\nMode: full track')
     return mode, seconds
@@ -232,6 +232,7 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
     results = []
     failures     = 0
     pending_by_index = {}
+    announced_holds = set()
     next_index = 0
 
     def _emit_track(file_path, result):
@@ -256,6 +257,15 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
             queued_path, queued_res = pending_by_index.pop(next_index)
             _emit_track(queued_path, queued_res)
             next_index += 1
+        if (original_index > next_index
+                and next_index not in announced_holds
+                and sys.stdout.isatty()):
+            print(
+                f"  ⏳ Holding {os.path.basename(files[next_index])} "
+                f"for album-level coherence check...",
+                flush=True,
+            )
+            announced_holds.add(next_index)
 
     for original_index in sorted(pending_by_index):
         queued_path, queued_res = pending_by_index[original_index]

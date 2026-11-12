@@ -4,12 +4,20 @@ Extracted from the motor facade in Phase 4. The version and the render
 fingerprint are passed by the facade, so mutating `motor_flac.ENGINE_VERSION`
 still invalidates the cache (the tests rely on that).
 """
+from enum import Enum
 import json
 import math
 import os
 import time
 
 from _motor_bits import _normalize_path_fs
+
+
+class CacheLookupStatus(Enum):
+    FULL_HIT = "full_hit"
+    METRICS_HIT_NEEDS_PNG = "metrics_hit_needs_png"
+    MISS = "miss"
+
 
 def _sanitize(obj):
     """Replaces any non-finite float with None before serialising.
@@ -48,32 +56,38 @@ def _analysis_key(mode, seconds, version, schema):
     return {"motor": version, "esquema": schema,
             "modo": mode, "seconds": seconds}
 
-def read_cache(path, meta, mode, seconds, requires_png, version, schema,
-               render):
-    """Returns the cached result, or None if it cannot be reused."""
+def read_cache_entry(path, meta, mode, seconds, requires_png, version, schema,
+                     render):
+    """Returns (CacheLookupStatus, cached_result_or_None)."""
     try:
         with open(_normalize_path_fs(_cache_path(path, mode, seconds)),
                   encoding="utf-8") as f:
             cached_entry = json.load(f)
     except (OSError, ValueError):
-        return None                    # no cache, or an unreadable entry
+        return CacheLookupStatus.MISS, None
 
     if cached_entry.get("identidad") != _identity(path, meta):
-        return None
+        return CacheLookupStatus.MISS, None
     if cached_entry.get("clave") != _analysis_key(mode, seconds, version, schema):
-        return None
+        return CacheLookupStatus.MISS, None
     result = cached_entry.get("resultado")
     if not isinstance(result, dict):
-        return None
+        return CacheLookupStatus.MISS, None
 
     if requires_png:
         # The PNG must exist and match the current parameters.
         png_path = (result.get("esp") or {}).get("espectrograma")
-        if cached_entry.get("render") != render or not png_path:
-            return None
-        if not os.path.exists(png_path) or os.path.getsize(png_path) == 0:
-            return None
-        return result
+        if (cached_entry.get("render") == render and png_path
+                and os.path.exists(png_path) and os.path.getsize(png_path) > 0):
+            return CacheLookupStatus.FULL_HIT, result
+        spectrum = result.get("esp")
+        if isinstance(spectrum, dict) and spectrum.get("error") is None:
+            copy = dict(result)
+            copy["esp"] = dict(spectrum)
+            copy["esp"]["espectrograma"] = None
+            copy["esp"].pop("espectrograma_error", None)
+            return CacheLookupStatus.METRICS_HIT_NEEDS_PNG, copy
+        return CacheLookupStatus.MISS, None
 
     # No PNG was requested: the caller must not see a path that this run has not
     # generated (the cache entry does keep it for next time).
@@ -81,7 +95,18 @@ def read_cache(path, meta, mode, seconds, requires_png, version, schema,
     copy["esp"] = dict(result.get("esp") or {})
     copy["esp"]["espectrograma"] = None
     copy["esp"].pop("espectrograma_error", None)
-    return copy
+    return CacheLookupStatus.FULL_HIT, copy
+
+
+def read_cache(path, meta, mode, seconds, requires_png, version, schema,
+               render):
+    """Returns the cached result, or None if it cannot be reused."""
+    status, result = read_cache_entry(
+        path, meta, mode, seconds, requires_png, version, schema, render
+    )
+    if status is CacheLookupStatus.FULL_HIT:
+        return result
+    return None
 
 def _replace_with_retries(source, destination, attempts=3, wait_time=0.015):
     """os.replace with a short retry: on Windows, another worker or the antivirus

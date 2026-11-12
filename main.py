@@ -43,6 +43,15 @@ del _variable_blas
 
 VERSION = "2.9.1"
 ENGINE_EXE_NAME = "flac_motor.exe"
+ENGINE_OPTION_FLAGS = frozenset((
+    "--path",
+    "--mode",
+    "--seconds",
+    "--png",
+    "--pdf",
+    "--workers",
+    "--no-cache",
+))
 
 HELP = """FLAC VERIFIER — FLAC authenticity verifier
 
@@ -81,41 +90,56 @@ def is_engine_exe() -> bool:
     return os.path.basename(sys.executable).lower() == ENGINE_EXE_NAME
 
 
+def resolve_cli_dispatch(
+    arguments: list[str],
+    frozen_engine: bool = False,
+) -> tuple[str, list[str] | str | None]:
+    """Pure argument dispatcher returning (target, payload)."""
+    args = list(arguments)
+    if args and args[0] in ("--version", "-V"):
+        return ("version", None)
+    if args and args[0] in ("--help", "-h", "/?"):
+        return ("help", None)
+    if args and args[0] == "--motor-cli":
+        return ("engine", args[1:])
+    if args and args[0] == "--cli":
+        return ("cli", args[1:])
+
+    explicit_gui = bool(args and args[0] in ("--gui", "-g"))
+    if frozen_engine and not explicit_gui:
+        if not args:
+            return ("help", None)
+        return ("engine", args)
+
+    if args and not explicit_gui and any(
+        token.split("=", 1)[0] in ENGINE_OPTION_FLAGS for token in args
+    ):
+        return ("engine", args)
+
+    rest = args[1:] if explicit_gui else args
+    path = rest[0] if (rest and not rest[0].startswith("-")) else None
+    return ("gui", path)
+
+
 def main(arguments: list[str] | None = None) -> int:
     """Routes the arguments towards the GUI, the engine or the interactive CLI."""
-    arguments = list(sys.argv[1:] if arguments is None else arguments)
+    raw_args = list(sys.argv[1:] if arguments is None else arguments)
+    target, payload = resolve_cli_dispatch(raw_args, is_engine_exe())
 
-    if arguments and arguments[0] in ("--version", "-V"):
+    if target == "version":
         print(f"FLAC VERIFIER {VERSION}")
         return 0
-    if arguments and arguments[0] in ("--help", "-h", "/?"):
+    if target == "help":
         print(HELP)
         return 0
-
-    # Internal flag: the GUI asks the same executable for the engine, in console mode.
-    if arguments and arguments[0] == "--motor-cli":
+    if target == "engine":
         import motor_flac
-        return motor_flac.main_cli(arguments[1:])
-
-    if arguments and arguments[0] == "--cli":
+        return motor_flac.main_cli(list(payload) if isinstance(payload, list) else [])
+    if target == "cli":
         import verificar_flac
-        return verificar_flac.main(arguments[1:])
+        return verificar_flac.main(list(payload) if isinstance(payload, list) else [])
 
-    # `flac_motor.exe` is the engine: unless the window is asked for on purpose,
-    # what it receives are its options. With no arguments, the help (and not an error).
-    if is_engine_exe() and not (arguments and arguments[0] in ("--gui", "-g")):
-        if not arguments:
-            print(HELP)
-            return 0
-        import motor_flac
-        return motor_flac.main_cli(arguments)
-
-    # By default, the graphical interface (with an optional path)
-    path = None
-    if arguments and arguments[0] in ("--gui", "-g"):
-        arguments = arguments[1:]
-    if arguments and not arguments[0].startswith("-"):
-        path = arguments[0]
+    path = payload if isinstance(payload, str) else None
     try:
         from gui import main as main_grafico
     except Exception as e:                       # without customtkinter, without Tk…

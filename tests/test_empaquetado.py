@@ -129,13 +129,22 @@ class test_executable_engine(unittest.TestCase):
         ui.assert_called_once_with("D:/Music")
 
     def test_from_code_source_no_changes_nothing(self):
-        """Without freezing there is no `flac_motor.exe`: `main.py` still opens the GUI."""
+        """From source, `main.py --path ...` routes directly to the engine CLI,
+        while `main.py` with no engine flags still opens the GUI."""
         import motor_flac
-        with mock.patch.object(motor_flac, "main_cli") as engine, \
+        self.assertEqual(
+            main.resolve_cli_dispatch(["--path", "C:/Album"], False),
+            ("engine", ["--path", "C:/Album"]),
+        )
+        self.assertEqual(
+            main.resolve_cli_dispatch(["--gui", "D:/Music"], False),
+            ("gui", "D:/Music"),
+        )
+        with mock.patch.object(motor_flac, "main_cli", return_value=0) as engine_cli, \
              mock.patch.object(gui, "main", return_value=0) as ui:
             self.assertEqual(main.main(["--path", "C:/Album"]), 0)
-        engine.assert_not_called()
-        ui.assert_called_once_with(None)
+        engine_cli.assert_called_once_with(["--path", "C:/Album"])
+        ui.assert_not_called()
 
     def test_name_engine_matches_with_spec(self):
         with open(SPEC, encoding="utf-8") as f:
