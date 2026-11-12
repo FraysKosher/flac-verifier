@@ -2138,6 +2138,20 @@ class test_forensic_rigorous(unittest.TestCase):
             self.assertIs(album[idx]["coherencia_album"], True)
             self.assertEqual(album[idx]["veredicto"], "PROBABLY LOSSLESS")
 
+        from _motor_veredicto import _is_clean_quorum_track
+
+        no_md5_low_ceil = _make_track(
+            99,
+            "PROBABLY LOSSLESS",
+            0.70,
+            rel_ceil=0.65,
+            centroid=1450.0,
+            decay=True,
+            problems=["spectral ceiling at 14.3 kHz (65% of Nyquist)"],
+        )
+        no_md5_low_ceil["md5"] = {"estado": "absent"}
+        self.assertFalse(_is_clean_quorum_track(no_md5_low_ceil))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

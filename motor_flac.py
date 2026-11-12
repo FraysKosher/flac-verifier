@@ -93,9 +93,10 @@ ENGINE_VERSION = "13.2"
 #         common-mode subtraction and vectorized lag sweep.
 #       - Added scale-floored `_robust_z_peak`, refined static Joint-Stereo and
 #         20 kHz modulation guards, reclassified `sospecha_excitador_armonico` to
-#         `SPECTRAL_ENVELOPE`, allowed 2-block global comb persistence, and
-#         expanded album coherence quorum to include clean `PROBABLY LOSSLESS`
-#         tracks (`score >= 0.70`) with scalable candidate limit `max(2, N // 6)`.
+#         `SPECTRAL_ENVELOPE`, allowed >= 2 occupied modulo-256 LSB8 bins in global
+#         micro-dither detection, and expanded album coherence quorum to include clean
+#         `PROBABLY LOSSLESS` tracks (`score >= 0.70`) with scalable candidate limit
+#         `max(2, N // 6)`.
 # 13.1: Phase 13.1 surgical calibration:
 #       - Fixed 24-in-32 container zero-padding threshold (`min_zeros_16 =
 #         max(8, bits - 16)`) so genuine 24-bit audio inside a 32-bit FLAC

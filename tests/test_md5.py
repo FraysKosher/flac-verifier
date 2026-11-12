@@ -28,12 +28,24 @@ class TestMD5(unittest.TestCase):
         cls.fx.close()
 
     def test_matches_8_16_24_bits(self):
+        import numpy as np
+        from _motor_bits import _pcm_bytes
+
         for name in ("ok8", "ok16", "ok24"):
             with self.subTest(file=name):
                 res = engine.analyze_file_data(self.fx[name], "center", None, False)
                 self.assertNotIn("error", res)
                 self.assertEqual(res["md5"]["estado"], "match")
                 self.assertEqual(res["md5"]["calculado"], res["md5"]["almacenado"])
+
+        edge = np.array([[1.0, -1.0]], dtype=np.float64)
+        for bits, width in ((8, 1), (16, 2), (24, 3), (32, 4)):
+            with self.subTest(clamp_bits=bits):
+                raw = bytes(_pcm_bytes(edge, bits, width))
+                pos = int.from_bytes(raw[:width], "little", signed=True)
+                neg = int.from_bytes(raw[width : 2 * width], "little", signed=True)
+                self.assertEqual(pos, (1 << (bits - 1)) - 1)
+                self.assertEqual(neg, -(1 << (bits - 1)))
 
     def test_md5_faked_is_error_hard(self):
         res = engine.analyze_file_data(self.fx["md5_obsoleto"], "center", None, False)

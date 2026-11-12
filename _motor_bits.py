@@ -75,7 +75,11 @@ def _pcm_bytes(block, bits_per_sample, width, q_int=None):
         return np.ascontiguousarray(np.rint(block * scale).astype(dt))
     # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
     # little-endian layout the old <i8 path produced, at half the memory.
-    q = q_int if q_int is not None else np.rint(block * scale).astype("<i4")
+    q = (
+        q_int
+        if q_int is not None
+        else np.clip(np.rint(block * scale), -8388608.0, 8388607.0).astype("<i4")
+    )
     return np.ascontiguousarray(q.view(np.uint8).reshape(-1, 4)[:, :width])
 
 def _md5_pcm(data, bits_per_sample, frames_by_block=1 << 20):

@@ -48,10 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       `side_ceiling_hz < 17.5 kHz`) in the static `collapse > 16.5 dB`
       Joint-Stereo branch, and required `max(drp_med, mean(drp)) >= 24.0 dB` on
       the `30 dB` spread branch of `modulacion_psicoacustica_20k`.
-    - Lowered the global 16-bit boundary micro-dither persistence gate from `3`
-      to `2` blocks (`r_glob["cajones"] >= 2`) so 4–6 s `PCM_32` 16-in-32
-      dithered fakes trigger `es_16bit_dither_en_24`, and surfaced DoP 1.0
-      markers (`0x05`/`0xFA`) in `forensic_evidence` as an informational note.
+    - Lowered the global 16-bit boundary micro-dither bin count gate from `3`
+      to `2` occupied modulo-256 LSB8 bins (`r_glob["cajones"] >= 2`) so 4–6 s
+      `PCM_32` 16-in-32 dithered fakes trigger `es_16bit_dither_en_24`, and
+      surfaced DoP 1.0 markers (`0x05`/`0xFA`) in `forensic_evidence` as an
+      informational note.
     - Expanded `apply_album_coherence` to allow benign mastering notes
       (`mastering brickwall limiter`, `studio anti-aliasing`,
       `analogue/dsd master`, `dsd/sacd noise-shaping`), build the 80 % album

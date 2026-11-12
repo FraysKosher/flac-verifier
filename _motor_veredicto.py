@@ -112,7 +112,6 @@ class _ScoreLedger:
 
 def calculate_score(meta, spectrum, bdi):
     ledger = _ScoreLedger()
-    problems = ledger.problems
 
     sr      = meta["sample_rate"]
     bits    = meta["bits_per_sample"]
@@ -628,9 +627,21 @@ def _is_clean_quorum_track(result):
         return False
     if _deserves_album_coherence(result):
         return False
+    spectrum = result.get("esp") or {}
+    sr = int((result.get("meta") or {}).get("sample_rate") or 0)
+    full_band = (
+        (spectrum.get("techo_rel_nyquist") or 0.0) >= 0.88
+        if sr <= 48000
+        else (
+            (spectrum.get("techo_hz") or 0) >= LIMIT_CD_HZ
+            or bool(spectrum.get("rolloff_analogico_genuino"))
+            or bool(spectrum.get("es_transferencia_dsd"))
+            or (spectrum.get("techo_rel_nyquist") or 0.0) >= 0.88
+        )
+    )
     score = float(result.get("score") or 0.0)
-    fams = (result.get("esp") or {}).get("familias_evidencia_lossy") or []
-    return score >= 0.70 and len(fams) == 0
+    fams = spectrum.get("familias_evidencia_lossy") or []
+    return full_band and score >= 0.70 and len(fams) == 0
 
 
 def apply_album_coherence(results):
