@@ -515,15 +515,27 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
     fall_14_17k_db = level_14_17k - level_after_db
     cutoff_previous = cutoff_hz is not None and cutoff_hz < 22050.0
 
-    rolloff_analog = bool(
+    base_rolloff_ok = (
         not muro_brickwall
         and not mirror_aliasing
         and not is_dsd
-        and worse_slope > -17.5
+        and not cutoff_previous
+    )
+    gentle_rolloff = (
+        worse_slope > -17.5
         and jump_db < 14.5
         and level_after_db > -124.0
-        and not cutoff_previous
         and fall_14_17k_db > 8.0
+    )
+    multipole_analog_rolloff = (
+        worse_slope > -12.0
+        and jump_db < 22.5
+        and level_after_db > -122.0
+        and fall_14_17k_db > 10.0
+        and (level_14_17k - level_before_db) >= 1.5
+    )
+    rolloff_analog = bool(
+        base_rolloff_ok and (gentle_rolloff or multipole_analog_rolloff)
     )
 
     output.update({
@@ -1794,6 +1806,12 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
 
             if fullband_mode:
                 pqmf_sets = [(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)]
+                if sr > 44100 or (ceiling_hz is not None and ceiling_hz < 0.91 * nyq):
+                    f_mp3_top = min(20250.0, (ceiling_hz * 0.96) if ceiling_hz else 20250.0)
+                    sb_top_48 = min(27, max(21, int(round(f_mp3_top / (sr / 64.0))) - 1))
+                    cand_48 = tuple(range(sb_top_48 - 7, sb_top_48 + 1))
+                    if cand_48 not in pqmf_sets:
+                        pqmf_sets.append(cand_48)
             else:
                 pqmf_sets = []
                 for _, f_hi in bands_1024:
@@ -1827,20 +1845,42 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
                     m_frames = n_avail // 18
                     grouped = all_win36[:, :, :n_avail, :].reshape(32, 8, m_frames, 18, 36)
                     coeffs = np.abs(_fast_mdct_f32(grouped, win36))
-                    flat = coeffs.transpose(0, 3, 2, 1, 4).reshape(576, m_frames, 144)
-                    rms_f = np.sqrt(np.mean(flat * flat, axis=2, keepdims=True)) + np.float32(1e-12)
-                    active_f = rms_f[:, :, 0] > np.float32(1e-6)
-                    sp_frames = np.where(active_f, np.mean(flat < (rms_f * np.float32(0.05)), axis=2), np.float32(0.0))
-                    scores_576 = sp_frames.mean(axis=1)
-                    z_cand_576, med_576, mx_576 = _robust_z_peak(scores_576, min_scale=1e-3)
-                    if med_576 < 0.55 and (mx_576 - med_576) >= 0.015:
-                        z576 = max(z576, z_cand_576)
+
+                    def _score_pqmf_slice(coeffs_slice):
+                        n_sb_cur = coeffs_slice.shape[1]
+                        flat_cur = coeffs_slice.transpose(0, 3, 2, 1, 4).reshape(
+                            576, m_frames, n_sb_cur * 18
+                        )
+                        rms_cur = np.sqrt(np.mean(flat_cur * flat_cur, axis=2, keepdims=True)) + np.float32(1e-12)
+                        active_cur = rms_cur[:, :, 0] > np.float32(1e-6)
+                        sp_cur = np.where(
+                            active_cur,
+                            np.mean(flat_cur < (rms_cur * np.float32(0.05)), axis=2),
+                            np.float32(0.0),
+                        )
+                        scores_cur = sp_cur.mean(axis=1)
+                        z_cur, med_cur, mx_cur = _robust_z_peak(scores_cur, min_scale=1e-3)
+                        if med_cur < 0.55 and (mx_cur - med_cur) >= 0.015:
+                            return z_cur
+                        return 0.0
+
+                    z576 = max(z576, _score_pqmf_slice(coeffs))
+                    sub_rms = np.sqrt(np.mean(coeffs * coeffs, axis=(0, 2, 3, 4)))
+                    max_sub_rms = float(np.max(sub_rms))
+                    if max_sub_rms > 0.0:
+                        active_sb = sub_rms >= (0.05 * max_sub_rms)
+                        n_act_sb = int(np.count_nonzero(active_sb))
+                        if 4 <= n_act_sb < 8:
+                            z576 = max(z576, _score_pqmf_slice(coeffs[:, active_sb, :, :, :]))
 
                 if z576 >= 12.0:
                     break
 
                 allow_mpc = len(sb_set) == 11 or (
-                    len(sb_set) >= 8 and ceiling_hz is not None and ceiling_hz >= 13500.0
+                    not fullband_mode
+                    and len(sb_set) >= 8
+                    and ceiling_hz is not None
+                    and ceiling_hz >= 13500.0
                 )
                 if allow_mpc and m_sub_total >= 36 * 10:
                     n_sb_mpc = len(sb_set)
@@ -2196,14 +2236,14 @@ class _SpectralAccumulator:
             lat = _detect_lapped_codec_grid(mono_blk, self.sr, ceiling_hz=ceiling_val)
             if (not lat.get("mdct_lattice_detected")
                     and opp_blk is not None
-                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 4.5)):
+                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
                 lat_opp = _detect_lapped_codec_grid(opp_blk, self.sr, ceiling_hz=ceiling_val)
                 if (lat_opp.get("mdct_lattice_detected")
                         or lat_opp.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
                     lat = lat_opp
             if (not lat.get("mdct_lattice_detected")
                     and best_blk.ndim > 1 and best_blk.shape[1] >= 2
-                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 5.0)):
+                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
                 mid_blk = 0.5 * (best_blk[:, 0] + best_blk[:, 1])
                 lat_mid = _detect_lapped_codec_grid(mid_blk, self.sr, ceiling_hz=ceiling_val)
                 if (lat_mid.get("mdct_lattice_detected")

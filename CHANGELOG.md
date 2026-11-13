@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.5] - 2026-11-12
+
+### Changed & Fixed
+
+- Raised `ENGINE_VERSION` to `"13.5"` and expanded the automated test suite to
+  **347 tests**
+  (`test_40_hires_70s_analogue_rolloff_coherence_and_48k_mp3_v0_pqmf_jitter` in
+  `tests/test_forense_riguroso.py`):
+  - **1970s Hi-Res analogue roll-off calibration (`_motor_espectral.py`)**:
+    In `_diagnose_hires_authenticity`, added a strictly guarded multi-pole
+    analogue decay path for `14.5 <= jump_db < 22.5` requiring gentle local
+    slope (`worse_slope > -12.0`), continuous ultrasonic floor
+    (`level_after_db > -122.0`), progressive 14–20.8 kHz roll-off
+    (`level_14_17k - level_before_db >= 1.5` and `fall_14_17k_db > 10.0`), and
+    zero brickwall/aliasing/DSD/prior-cutoff flags.
+  - **48 kHz `PQMF-576` subband alignment & active stopband slicing
+    (`_motor_espectral.py`)**: Appended an 8-subband frequency-aligned
+    `PQMF-576` passband (`14.25–20.25 kHz` at 48 kHz, skipping redundant
+    Musepack re-checks in fullband mode), added active-subband filtering when
+    4–7 subbands exceed `0.05 * max_sub_rms`, and lowered `_SpectralAccumulator`
+    opposite-channel / Mid lattice fallback triggers from `4.5`/`5.0` to `3.2`.
+  - **Extreme cut-off jitter soft-blocking tier (`_motor_veredicto.py`)**:
+    Split `iqr_corte_hz` penalties in `calculate_score` so extreme
+    uncorroborated cut-off jitter (`iqr > 1800 Hz`, guarded against
+    `es_estacionario`, `rolloff_analogico_genuino`, and `es_transferencia_dsd`)
+    penalizes `0.30` with `blocks_max_verdict=True` (capped at `"SUSPICIOUS"`),
+    while moderate `550–1800 Hz` jitter stays an advisory `0.20` note.
+  - **Complementary 75% Hi-Res album coherence (`_motor_veredicto.py`)**:
+    Lowered the `apply_album_coherence` quorum ratio from `0.80` to `0.75`
+    with matching `N // 4` candidate limit, enforced fail-closed
+    `lsbs == "active"` verification for 24-bit `>= 88.2 kHz` tracks, and
+    allowed Hi-Res Rule 1/2 strings (`"below the cd band"`,
+    `"not backed by content"`) at `>= 88.2 kHz` while keeping Rule 5
+    (`"not backed by the content"`) rejected at `<= 48 kHz`.
+
 ## [2.9.4] - 2026-11-12
 
 ### Changed & Fixed

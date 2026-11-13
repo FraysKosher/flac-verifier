@@ -214,7 +214,7 @@ class test_report_pdf(unittest.TestCase):
         text = text_pdf(report["ruta"])
         self.assertIn("FLAC VERIFIER", text)                       # wordmark
         self.assertIn("Authenticity and lossless verification", text)
-        self.assertIn("engine 13.4", text)                         # footer
+        self.assertIn("engine 13.5", text)                         # footer
         self.assertIsNotNone(pdf._logo_image(), "the logo is missing")
 
     def test_every_style_is_readable_on_paper(self):

@@ -338,13 +338,28 @@ def calculate_score(meta, spectrum, bdi):
                                 (spectrum.get("sospecha_joint_stereo") or iqr > 550.0 or
                                  (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10))
         if iqr > 550.0 and not opus_corroborado:
-            ledger.penalize(
-                f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
-                f"frame-adaptive codec signature",
-                0.20,
-                blocks_max_verdict=False,
-                family=EvidenceFamily.TEMPORAL_MODULATION,
+            extreme_jitter = (
+                iqr > 1800.0
+                and not spectrum.get("es_estacionario")
+                and not spectrum.get("rolloff_analogico_genuino")
+                and not spectrum.get("es_transferencia_dsd")
             )
+            if extreme_jitter:
+                ledger.penalize(
+                    f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
+                    f"severe frame-adaptive codec signature",
+                    0.30,
+                    blocks_max_verdict=True,
+                    family=EvidenceFamily.TEMPORAL_MODULATION,
+                )
+            else:
+                ledger.penalize(
+                    f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
+                    f"frame-adaptive codec signature",
+                    0.20,
+                    blocks_max_verdict=False,
+                    family=EvidenceFamily.TEMPORAL_MODULATION,
+                )
         huecos = spectrum.get("ratio_huecos_mdct") or 0.0
         if huecos > 0.10:
             ledger.penalize(
@@ -582,6 +597,9 @@ ALBUM_COHERENCE_NOTE = ("Acoustic/low-HF track validated by album-level "
 
 def _deserves_album_coherence(result):
     """True when the only evidence against the track is a low spectral ceiling."""
+    meta = result.get("meta") or {}
+    sr = int(meta.get("sample_rate") or 0)
+    bits = int(meta.get("bits_per_sample") or 0)
     spectrum = result.get("esp") or {}
     bdi = result.get("bdi") or {}
     if spectrum.get("error"):
@@ -603,18 +621,24 @@ def _deserves_album_coherence(result):
         return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
         return False
+    if sr >= 88200 and (bits > 16 or bdi.get("aplica")) and bdi.get("lsbs") != "active":
+        return False
     forensic = bdi.get("forense_bits") or {}
     if (forensic.get("es_padded_16_en_24")
             or forensic.get("es_24bit_escalado_en_peine")
             or forensic.get("es_16bit_dither_en_24")
             or bdi.get("lsbs") == "empty"):
         return False
-    permitidos = ("spectral ceiling", "partial hi-res content",
-                  "reduced high band", "high band is destroyed",
-                  "smooth analogue/archival roll-off", "dual-mono",
-                  "high/mid ratio", "mastering brickwall limiter",
-                  "studio anti-aliasing", "anti-alias filter of a legitimate master",
-                  "analogue/dsd master", "dsd/sacd noise-shaping")
+    permitidos = [
+        "spectral ceiling", "partial hi-res content",
+        "reduced high band", "high band is destroyed",
+        "smooth analogue/archival roll-off", "dual-mono",
+        "high/mid ratio", "mastering brickwall limiter",
+        "studio anti-aliasing", "anti-alias filter of a legitimate master",
+        "analogue/dsd master", "dsd/sacd noise-shaping",
+    ]
+    if sr >= 88200 and (not bdi.get("aplica") or bdi.get("lsbs") == "active"):
+        permitidos.extend(["below the cd band", "not backed by content"])
     for problem in result.get("problemas") or []:
         if not any(text in problem.lower() for text in permitidos):
             return False
@@ -653,7 +677,7 @@ def apply_album_coherence(results):
     spectral ceiling is against it), whatever its current label: SUSPICIOUS or
     PROBABLE UPSCALE, and also PROBABLY LOSSLESS when it was already excused on
     its own by the Phase 8D acoustic exemption (`decaimiento_acustico_suave`
-    with clean bits and no lossy signature). When at least 80% of the tracks in a
+    with clean bits and no lossy signature). When at least 75% of the tracks in a
     directory are GENUINE LOSSLESS (or clean PROBABLY LOSSLESS with score >= 0.60
     and at least one GENUINE LOSSLESS / clean score >= 0.75 anchor) with the same
     sample rate and bit depth, the album context is stronger evidence than the
@@ -694,7 +718,7 @@ def apply_album_coherence(results):
             or float(r.get("score") or 0.0) >= 0.75
             for r in quorum_ref
         )
-        if not has_strong_anchor or len(quorum_ref) / float(len(validas)) < 0.80:
+        if not has_strong_anchor or len(quorum_ref) / float(len(validas)) < 0.75:
             continue
 
         candidatos = []
@@ -707,7 +731,7 @@ def apply_album_coherence(results):
                 continue
             if _deserves_album_coherence(r):
                 candidatos.append(r)
-        max_candidates = max(2, len(validas) // 6)
+        max_candidates = max(2, len(validas) // 4)
         if not 1 <= len(candidatos) <= max_candidates:
             continue
 

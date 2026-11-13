@@ -195,7 +195,7 @@ contribute.
 | Partially inactive LSBs | 0.15 | 80–97 % (does not block) |
 | Declared resolution with no support | 0.25 | Claims > 16 bits at CD rate with no content above the CD band (blocks) |
 | Joint-stereo collapse | 0.30 | Side channel drops at HF (`sospecha_joint_stereo`, blocks) |
-| Cut-off jitter | 0.20 | IQR > 550 Hz (frame-adaptive codec; does not block) |
+| Cut-off jitter | 0.20 / 0.30 | Moderate (550–1800 Hz): 0.20 advisory. Extreme (> 1800 Hz without stationarity, analogue roll-off or DSD): 0.30 (blocks at `SUSPICIOUS`) |
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
 | sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
 | Upper-band 20 kHz modulation | 0.30 | Frame-level drop and psychoacoustic modulation in 20.2–21.8 kHz (blocks) |
@@ -280,7 +280,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"13.4"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"13.5"`), spectral mode and seconds |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

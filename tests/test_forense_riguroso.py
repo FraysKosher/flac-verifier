@@ -2309,6 +2309,216 @@ class test_forensic_rigorous(unittest.TestCase):
         )
         self.assertFalse(_deserves_album_coherence(far_fake))
 
+    def test_40_hires_70s_analogue_rolloff_coherence_and_48k_mp3_v0_pqmf_jitter(self):
+        """Phase 13.5: 1970s Hi-Res analogue roll-off, 75% Hi-Res coherence, 48 kHz PQMF-576 and extreme jitter cap."""
+        from _motor_veredicto import _deserves_album_coherence
+
+        rng = np.random.default_rng(4001)
+
+        # Part 1: 24-bit/96 kHz 1970s analogue tape/console roll-off vs sinc upscale + 24-bit TPDF dither
+        sr_hi = 96000
+        n_hi = sr_hi * 4
+        freqs_hi = np.fft.rfftfreq(n_hi, 1.0 / sr_hi)
+        pink_spec = np.fft.rfft(rng.standard_normal((n_hi, 2)), axis=0)
+        pink_spec *= (1.0 / np.maximum(freqs_hi, 100.0) ** 0.35)[:, None]
+        music_hi = np.fft.irfft(pink_spec, n_hi, axis=0)
+        music_hi /= np.max(np.abs(music_hi)) * 1.15
+        sos_rolloff = signal.butter(3, 16200.0, btype="low", fs=sr_hi, output="sos")
+        analog_hi = signal.sosfilt(sos_rolloff, music_hi, axis=0)
+        analog_hi += rng.normal(0.0, 10.0 ** (-108.0 / 20.0), size=analog_hi.shape)
+
+        path_analog = self.base_path / "queen_1970s_analog_24_96.flac"
+        sf.write(path_analog, np.clip(analog_hi, -0.98, 0.98), sr_hi, subtype="PCM_24")
+        res_analog = motor_flac.analyze_file_data(str(path_analog), use_cache=False)
+        self.assertGreater(res_analog["esp"]["salto_ultrasonico_db"], 14.5)
+        self.assertLess(res_analog["esp"]["salto_ultrasonico_db"], 22.5)
+        self.assertLess(res_analog["esp"]["gradiente_nyquist_db_khz"], 12.0)
+        self.assertIs(res_analog["esp"]["rolloff_analogico_genuino"], True)
+        self.assertEqual(res_analog["veredicto"], "GENUINE LOSSLESS")
+
+        n_44 = 44100 * 4
+        t_44 = np.arange(n_44, dtype=np.float64) / 44100.0
+        hi_44 = signal.sosfilt(
+            signal.butter(2, [4000.0, 21000.0], btype="band", fs=44100, output="sos"),
+            rng.standard_normal((n_44, 2)),
+            axis=0,
+        )
+        sig_44 = (0.25 * np.sin(2.0 * np.pi * 440.0 * t_44)[:, None]) + 0.18 * hi_44
+        sig_44 /= np.max(np.abs(sig_44)) * 1.15
+        sig_up = signal.resample_poly(sig_44, up=320, down=147, axis=0)
+        dither_24 = (rng.random(sig_up.shape) - rng.random(sig_up.shape)) / 8388608.0
+        path_upscale = self.base_path / "upscale_sinc_dither_24_96.flac"
+        sf.write(path_upscale, np.clip(sig_up + dither_24, -0.98, 0.98), sr_hi, subtype="PCM_24")
+        res_upscale = motor_flac.analyze_file_data(str(path_upscale), use_cache=False)
+        self.assertGreater(res_upscale["esp"]["salto_ultrasonico_db"], 40.0)
+        self.assertIs(res_upscale["esp"]["muro_brickwall_nyquist"], True)
+        self.assertIs(res_upscale["esp"]["rolloff_analogico_genuino"], False)
+        self.assertIn(res_upscale["veredicto"], BAD_VERDICTS)
+
+        # Part 2: 17-track 24/96 batch with 13/17 (76.5%) GENUINE quorum rescuing 4 low-ceiling tracks
+        def _hires_item(idx, verdict, score, ceiling_hz=26000, sr_item=96000,
+                        lsbs="active", brickwall=False, problems=None):
+            rel_ceil = round(ceiling_hz / (sr_item * 0.5), 4)
+            return {
+                "archivo": f"{idx:02d}_hires.flac",
+                "ruta": str(self.base_path / "v295_hires_album" / f"{idx:02d}_hires.flac"),
+                "meta": {"sample_rate": sr_item, "bits_per_sample": 24, "canales": 2},
+                "veredicto": verdict,
+                "score": score,
+                "problemas": list(problems or []),
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "match"},
+                "bdi": {
+                    "aplica": True,
+                    "lsbs": lsbs,
+                    "forense_bits": {
+                        "es_padded_16_en_24": False,
+                        "es_24bit_escalado_en_peine": False,
+                        "es_16bit_dither_en_24": False,
+                    },
+                },
+                "esp": {
+                    "techo_hz": ceiling_hz,
+                    "techo_rel_nyquist": rel_ceil,
+                    "corte_detectado": False,
+                    "corte_artificial": False,
+                    "clase_corte": "no_cutoff",
+                    "iqr_corte_hz": 0.0,
+                    "muro_brickwall_nyquist": brickwall,
+                    "espejo_aliasing_detectado": False,
+                    "rolloff_analogico_genuino": False,
+                    "es_transferencia_dsd": False,
+                    "sospecha_joint_stereo": False,
+                    "sospecha_corte_opus_20k": False,
+                    "clipping_reconstruccion_lossy": False,
+                    "islas_mdct_sfb21": False,
+                    "sospecha_excitador_armonico": False,
+                    "sbr_qmf_detectado": False,
+                    "modulacion_psicoacustica_20k": False,
+                    "mdct_lattice_detected": False,
+                    "ratio_huecos_mdct": 0.0,
+                    "familias_evidencia_lossy": [],
+                },
+            }
+
+        batch_17 = [_hires_item(i, "GENUINE LOSSLESS", 0.92) for i in range(1, 14)]
+        rescued_specs = (
+            (14, 17200, ["claims 96.0 kHz but the ceiling is 17.2 kHz, below the CD band: upscaled from 44.1/48 kHz",
+                         "spectral ceiling 17.2 kHz: there is no content above the CD limit (22.05 kHz), so the band of 96.0 kHz is not backed by content"]),
+            (15, 18700, ["partial hi-res content: ceiling of 18.7 kHz (39% of Nyquist of 48.0 kHz)",
+                         "spectral ceiling 18.7 kHz: there is no content above the CD limit (22.05 kHz), so the band of 96.0 kHz is not backed by content"]),
+            (16, 20500, ["partial hi-res content: ceiling of 20.5 kHz (43% of Nyquist of 48.0 kHz)",
+                         "the band of 96.0 kHz is not backed by content"]),
+            (17, 21800, ["partial hi-res content: ceiling of 21.8 kHz (45% of Nyquist of 48.0 kHz)",
+                         "spectral ceiling 21.8 kHz: there is no content above the CD limit (22.05 kHz), so the band of 96.0 kHz is not backed by content"]),
+        )
+        for idx, ceil_hz, probs in rescued_specs:
+            batch_17.append(_hires_item(idx, "SUSPICIOUS", 0.45, ceiling_hz=ceil_hz, problems=probs))
+
+        raised = motor_flac.apply_album_coherence(batch_17)
+        self.assertEqual(raised, 4)
+        for track in batch_17[13:]:
+            self.assertEqual(track["veredicto"], "PROBABLY LOSSLESS")
+            self.assertIs(track["coherencia_album"], True)
+
+        fake_bw = _hires_item(
+            18, "PROBABLE UPSCALE", 0.15, ceiling_hz=21800, brickwall=True,
+            problems=["spectral ceiling 21.8 kHz: so the band of 96.0 kHz is not backed by content"],
+        )
+        fake_partial = _hires_item(
+            19, "SUSPICIOUS", 0.45, ceiling_hz=20500, lsbs="partial",
+            problems=["partial hi-res content: ceiling of 20.5 kHz"],
+        )
+        fake_rule5 = _hires_item(
+            20, "SUSPICIOUS", 0.50, ceiling_hz=20500, sr_item=44100, lsbs="active",
+            problems=["declares 24 bits at 44.1 kHz but its high band is cut at 20.5 kHz: "
+                      "the declared resolution is not backed by the content "
+                      "(consistent with a repackaged high-rate transcode)"],
+        )
+        self.assertFalse(_deserves_album_coherence(fake_bw))
+        self.assertFalse(_deserves_album_coherence(fake_partial))
+        self.assertFalse(_deserves_album_coherence(fake_rule5))
+
+        # Part 3: 48 kHz PQMF-576 active in subbands 19..25 (14.25-19.5 kHz), 26..29 empty
+        sr_48 = 48000
+        m_tap = np.arange(512, dtype=np.float64) - 256.0
+        win_kaiser = np.concatenate(([0.0], np.kaiser(511, 9.0)))
+        h_raw = (1.0 / 64.0) * np.sinc(m_tap / 64.0) * win_kaiser
+        h_proto = (h_raw / np.sum(h_raw)).astype(np.float32)
+        n_idx = np.arange(512, dtype=np.float32)
+        win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
+
+        n_gran = 160
+        m_sub = (n_gran + 1) * 18
+        n_pcm = m_sub * 32 + 1024
+        low_48 = signal.sosfilt(
+            signal.butter(6, 13800.0, btype="low", fs=sr_48, output="sos"),
+            rng.standard_normal(n_pcm),
+        ).astype(np.float32)
+        high_48 = np.zeros(n_pcm, dtype=np.float32)
+        for sb in range(19, 26):
+            coeffs = rng.standard_normal((n_gran, 18)).astype(np.float32)
+            coeffs = np.where(rng.random(coeffs.shape) < 0.50, 0.0, coeffs * np.sqrt(2.0))
+            sub_sig = self._imdct_overlap_add(coeffs, win36)[:m_sub]
+            if sb % 2 == 1:
+                sub_sig[1::2] *= -1.0
+            upsampled = np.zeros(m_sub * 32, dtype=np.float32)
+            upsampled[::32] = sub_sig * 32.0
+            synth_f = (h_proto * np.cos(np.pi / 64.0 * (2 * sb + 1) * (n_idx - 16)).astype(np.float32))[::-1]
+            recon_s = np.convolve(upsampled, synth_f, mode="full")
+            high_48[: recon_s.size] += recon_s
+        mp3_48 = (low_48 * 0.4 + high_48 * 0.6)[213:]
+        mp3_48 /= float(np.max(np.abs(mp3_48)) * 1.15)
+
+        det_mp3 = motor_flac._detect_lapped_codec_grid(mp3_48, sr_48, ceiling_hz=21350)
+        self.assertIs(det_mp3["mdct_lattice_detected"], True)
+        self.assertEqual(det_mp3["mdct_lattice_family"], "PQMF-576 (MP3)")
+
+        gen_48 = signal.sosfilt(
+            signal.butter(4, 21000.0, btype="low", fs=sr_48, output="sos"),
+            rng.standard_normal(n_pcm),
+        ).astype(np.float32)
+        gen_48 /= float(np.max(np.abs(gen_48)) * 1.15)
+        det_gen = motor_flac._detect_lapped_codec_grid(gen_48, sr_48, ceiling_hz=21350)
+        self.assertIs(det_gen["mdct_lattice_detected"], False)
+
+        # Part 4: Extreme cut-off jitter (> 1800 Hz) capped at SUSPICIOUS while 700 Hz stays advisory
+        meta_48 = {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2}
+        base_spec_48 = {
+            "techo_hz": 22000,
+            "techo_rel_nyquist": 0.92,
+            "corte_detectado": False,
+            "corte_artificial": False,
+            "clase_corte": "no_cutoff",
+            "frecuencia_corte": None,
+            "distancia_nyquist": 0.0,
+            "ratio_aplica": True,
+            "ratio": 0.15,
+            "var_alta_db": 6.0,
+            "separacion_stereo": 0.45,
+            "es_dual_mono": False,
+            "es_estacionario": False,
+            "rolloff_analogico_genuino": False,
+            "es_transferencia_dsd": False,
+            "ratio_huecos_mdct": 0.0,
+        }
+        spec_extreme = dict(base_spec_48, iqr_corte_hz=2650.0)
+        score_ext, verd_ext, _ = motor_flac.calculate_score(meta_48, spec_extreme, {"aplica": False})
+        self.assertEqual(verd_ext, "SUSPICIOUS")
+        self.assertNotIn(verd_ext, ("GENUINE LOSSLESS", "PROBABLY LOSSLESS"))
+        self.assertGreaterEqual(score_ext, 0.50)
+
+        spec_ext_low = dict(spec_extreme, ratio=0.005)
+        score_ext_low, verd_ext_low, _ = motor_flac.calculate_score(meta_48, spec_ext_low, {"aplica": False})
+        self.assertEqual(verd_ext_low, "SUSPICIOUS")
+        self.assertEqual(score_ext_low, 0.50)
+
+        spec_mod = dict(base_spec_48, iqr_corte_hz=700.0)
+        score_mod, verd_mod, _ = motor_flac.calculate_score(meta_48, spec_mod, {"aplica": False})
+        self.assertEqual(verd_mod, "GENUINE LOSSLESS")
+        self.assertAlmostEqual(score_mod, 0.80, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -80,7 +80,23 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.4"
+ENGINE_VERSION = "13.5"
+# 13.5: Phase 13.5 1970s Hi-Res analogue roll-off calibration, 48 kHz PQMF-576 subband
+#       alignment, extreme cut-off jitter cap, and complementary 75% album coherence:
+#       - Added multi-pole 1970s analogue tape/console decay path (`14.5 <= jump_db < 22.5`,
+#         `worse_slope > -12.0`, `level_after_db > -122.0`, `fall_14_17k_db > 10.0`,
+#         `level_14_17k - level_before_db >= 1.5`) in `_diagnose_hires_authenticity`.
+#       - Added physical-frequency aligned 8-band `PQMF-576` fallback for 48 kHz /
+#         reduced-ceiling fullband tracks (`14.25-20.25 kHz` at 48 kHz, skipping redundant
+#         Musepack re-evaluation), active-subband stopband slicing when 4..7 subbands are
+#         active, and lowered `_SpectralAccumulator` opposite-channel / Mid fallback
+#         trigger to `mdct_lattice_snr >= 3.2`.
+#       - Added soft-blocking extreme cut-off jitter tier (`iqr_corte_hz > 1800 Hz`, -0.30,
+#         `blocks_max_verdict=True`) guarded by stationarity, analogue roll-off and DSD.
+#       - Lowered `apply_album_coherence` quorum to 75% with complementary `N // 4` candidate
+#         cap, required `lsbs == "active"` for 24-bit Hi-Res rescue, and allowed Hi-Res
+#         Rule 1/2 strings (`"below the cd band"`, `"not backed by content"`) at >= 88.2 kHz
+#         while keeping Rule 5 `"not backed by the content"` blocked at <= 48 kHz.
 # 13.4: Phase 13.4 high-frequency multi-subwindow Opus detection, dynamic M/S guard
 #       and album coherence calibration:
 #       - Added `_select_hf_subwindow_candidates` (75th-percentile second-order
