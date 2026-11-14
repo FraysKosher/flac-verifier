@@ -31,7 +31,7 @@ customtkinter>=5.2
 
 # Only for dragging folders onto the window. If it is missing the interface works
 # anyway: the path field is filled in with the "Browse" button.
-tkinterdnd2>=0.4
+tkinterdnd2>=0.7.0
 
 # ─── ONLY TO BUILD THE .EXE ──────────────────────────────────────────────────
 # Not needed to use the program; only to build the distributable folder:
