@@ -15,7 +15,7 @@ numpy>=1.24
 scipy>=1.10
 soundfile>=0.12
 mutagen>=1.46
-pillow>=9.1
+pillow>=13.0.0
 
 # ─── OPTIONAL ────────────────────────────────────────────────────────────────
 # The program works normally without these; only the matching feature is lost, and
