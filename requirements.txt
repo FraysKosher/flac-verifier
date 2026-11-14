@@ -24,7 +24,7 @@ pillow>=9.1
 # Only for the per-album PDF report (the engine's --pdf flag, or answering "y" in
 # the interactive CLI menu). It uses Pillow (already required) to embed the
 # spectrograms.
-reportlab>=4.0
+reportlab>=5.1.0
 
 # Only for the graphical interface (python gui.py or python verificar_flac.py --gui).
 customtkinter>=5.2
