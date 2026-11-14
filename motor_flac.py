@@ -67,7 +67,8 @@ from _motor_espectral import (
 from _motor_veredicto import (
     LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, EvidenceTier, EvidenceFamily,
     VerdictCap, _ScoreLedger, calculate_score,
-    _deserves_album_coherence, _is_clean_quorum_track,
+    _deserves_album_coherence, _deserves_album_lossy_coherence,
+    _is_clean_quorum_track,
     apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (
@@ -83,7 +84,11 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.9"
+ENGINE_VERSION = "14.0"
+# 14.0: Steep continuous 24/96 studio roll-off guard (24.5-28 kHz vs 34-42 kHz
+#       ultrasonic decay >= 7.5 dB), genuine Hi-Res ultrasonic stereo & low-LPF
+#       M/S + IQR guards, and confirmed lapped-codec batch quorum (>= 75%) for
+#       dark/low-ceiling intros in 44.1/48 kHz Opus/MDCT folders.
 # 13.9: L2-tiled zero-allocation stereo STFT with exact Parseval Mid/Side power,
 #       direct pypocketfft C++ bindings, vectorized MDCT subband matrix, and
 #       fused 24-bit integer MD5/abs/clipping streaming passes.
@@ -993,6 +998,8 @@ def classify_batch_disposition(result) -> BatchDisposition:
     """Determines whether a track result streams right away or awaits quorum."""
     if (result.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE", "PROBABLY LOSSLESS")
             and _deserves_album_coherence(result)):
+        return BatchDisposition.DEFERRED
+    if _deserves_album_lossy_coherence(result):
         return BatchDisposition.DEFERRED
     return BatchDisposition.IMMEDIATE
 

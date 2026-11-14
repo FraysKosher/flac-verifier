@@ -645,6 +645,45 @@ def _deserves_album_coherence(result):
     return True
 
 
+def _deserves_album_lossy_coherence(result):
+    """True when a dark/low-ceiling track in a 44.1/48 kHz container passed on
+    its own only because its musical ceiling sits below the codec's upper-band
+    detector, yet already shows a weak lapped-transform lattice peak."""
+    if not isinstance(result, dict) or result.get("error"):
+        return False
+    if result.get("veredicto") not in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS"):
+        return False
+    meta = result.get("meta") or {}
+    sr = int(meta.get("sample_rate") or 0)
+    if not 41000 <= sr <= 48000:
+        return False
+    spectrum = result.get("esp") or {}
+    if spectrum.get("error") or spectrum.get("mdct_lattice_detected"):
+        return False
+    rel = spectrum.get("techo_rel_nyquist")
+    if not isinstance(rel, (int, float)) or float(rel) >= 0.72:
+        return False
+    snr = float(spectrum.get("mdct_lattice_snr") or 0.0)
+    return snr >= 3.5
+
+
+def _is_lossy_codec_quorum_track(result):
+    """True when a 44.1/48 kHz track carries either a confirmed lapped-codec
+    lattice or a sharp ~20 kHz (78-87% Nyquist) codec brickwall in 48 kHz."""
+    spectrum = result.get("esp") or {}
+    if spectrum.get("mdct_lattice_detected"):
+        return True
+    if result.get("veredicto") not in ("CONFIRMED LOSSY", "PROBABLE UPSCALE"):
+        return False
+    sr = int((result.get("meta") or {}).get("sample_rate") or 0)
+    rel = float(spectrum.get("techo_rel_nyquist") or 0.0)
+    return (
+        sr == 48000
+        and bool(spectrum.get("corte_artificial"))
+        and 0.78 <= rel <= 0.87
+    )
+
+
 def _is_clean_quorum_track(result):
     verdict = result.get("veredicto")
     if verdict == "GENUINE LOSSLESS":
@@ -705,42 +744,90 @@ def apply_album_coherence(results):
         if len(validas) < 2:
             continue
         quorum_tracks = [r for r in validas if _is_clean_quorum_track(r)]
-        if not quorum_tracks:
+        if quorum_tracks:
+            reference = Counter(
+                (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
+                for r in quorum_tracks).most_common(1)[0][0]
+            quorum_ref = [r for r in quorum_tracks
+                          if (r["meta"]["sample_rate"],
+                              r["meta"]["bits_per_sample"]) == reference]
+            has_strong_anchor = any(
+                r.get("veredicto") == "GENUINE LOSSLESS"
+                or float(r.get("score") or 0.0) >= 0.75
+                for r in quorum_ref
+            )
+            if has_strong_anchor and len(quorum_ref) / float(len(validas)) >= 0.75:
+                candidatos = []
+                for r in validas:
+                    if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE",
+                                                  "PROBABLY LOSSLESS"):
+                        continue
+                    meta = r.get("meta") or {}
+                    if (meta.get("sample_rate"), meta.get("bits_per_sample")) != reference:
+                        continue
+                    if _deserves_album_coherence(r):
+                        candidatos.append(r)
+                max_candidates = max(2, len(validas) // 4)
+                if 1 <= len(candidatos) <= max_candidates:
+                    for r in candidatos:
+                        r["veredicto"] = "PROBABLY LOSSLESS"
+                        r["score"] = max(float(r.get("score") or 0.0), 0.60)
+                        r["problemas"] = list(r.get("problemas") or []) + [ALBUM_COHERENCE_NOTE]
+                        r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [ALBUM_COHERENCE_NOTE]
+                        r["coherencia_album"] = True
+                        elevados += 1
+                    continue
+
+        if len(validas) < 3:
             continue
-        reference = Counter(
+        lattice_tracks = [
+            r for r in validas
+            if _is_lossy_codec_quorum_track(r)
+        ]
+        if not lattice_tracks:
+            continue
+        lossy_ref_key = Counter(
             (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
-            for r in quorum_tracks).most_common(1)[0][0]
-        quorum_ref = [r for r in quorum_tracks
-                      if (r["meta"]["sample_rate"],
-                          r["meta"]["bits_per_sample"]) == reference]
-        has_strong_anchor = any(
-            r.get("veredicto") == "GENUINE LOSSLESS"
-            or float(r.get("score") or 0.0) >= 0.75
-            for r in quorum_ref
+            for r in lattice_tracks
+        ).most_common(1)[0][0]
+        lattice_ref = [
+            r for r in lattice_tracks
+            if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == lossy_ref_key
+        ]
+        if len(lattice_ref) / float(len(validas)) < 0.75:
+            continue
+        explicit_families = [
+            (r.get("esp") or {}).get("mdct_lattice_family")
+            for r in lattice_ref
+            if (r.get("esp") or {}).get("mdct_lattice_family")
+        ]
+        dominant_family = (
+            Counter(explicit_families).most_common(1)[0][0]
+            if explicit_families
+            else "20 kHz lossy/Opus"
         )
-        if not has_strong_anchor or len(quorum_ref) / float(len(validas)) < 0.75:
-            continue
-
-        candidatos = []
+        lossy_candidates = []
         for r in validas:
-            if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE",
-                                          "PROBABLY LOSSLESS"):
-                continue
             meta = r.get("meta") or {}
-            if (meta.get("sample_rate"), meta.get("bits_per_sample")) != reference:
+            if (meta.get("sample_rate"), meta.get("bits_per_sample")) != lossy_ref_key:
                 continue
-            if _deserves_album_coherence(r):
-                candidatos.append(r)
-        max_candidates = max(2, len(validas) // 4)
-        if not 1 <= len(candidatos) <= max_candidates:
+            if _deserves_album_lossy_coherence(r):
+                lossy_candidates.append(r)
+        max_lossy = max(2, len(validas) // 4)
+        if not 1 <= len(lossy_candidates) <= max_lossy:
             continue
-
-        for r in candidatos:
-            r["veredicto"] = "PROBABLY LOSSLESS"
-            r["score"] = max(float(r.get("score") or 0.0), 0.60)
-            r["problemas"] = list(r.get("problemas") or []) + [ALBUM_COHERENCE_NOTE]
-            r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [ALBUM_COHERENCE_NOTE]
+        for r in lossy_candidates:
+            snr_val = float((r.get("esp") or {}).get("mdct_lattice_snr") or 0.0)
+            note = (
+                f"Low-ceiling track in a confirmed {dominant_family} album batch "
+                f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
+            )
+            r["veredicto"] = "PROBABLE UPSCALE"
+            r["score"] = min(float(r.get("score") or 0.0), 0.35)
+            r["problemas"] = list(r.get("problemas") or []) + [note]
+            r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [note]
             r["coherencia_album"] = True
+            r["album_coherence_note"] = note
             elevados += 1
     return elevados
 
@@ -838,5 +925,5 @@ def forensic_evidence(result):
     if (result.get("md5") or {}).get("estado") == "match":
         evidence.append("STREAMINFO MD5 verified (match)")
     if result.get("coherencia_album"):
-        evidence.append(ALBUM_COHERENCE_NOTE)
+        evidence.append(result.get("album_coherence_note") or ALBUM_COHERENCE_NOTE)
     return evidence

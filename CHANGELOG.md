@@ -7,10 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Forensic Calibration
+
+- Raised `ENGINE_VERSION` to `"14.0"` and expanded the automated test suite to
+  **357 tests** (`tests/test_forense_riguroso.py`).
+- Added `continuous_steep_rolloff` to `_diagnose_hires_authenticity` in
+  `_motor_espectral.py` (`worse_slope > -15.0`, transition skirts `> -18.0`,
+  `jump_db < 40.0`, ultrasonic floor `> -105 dBFS`, and `24.5-28 kHz` to
+  `34-42 kHz` decay `>= 7.5 dB`) so steep continuous 24/96 synth/console
+  masters pass while 44.1/48 kHz bounces over flat tape hiss remain flagged.
+- Guarded `_ms_dynamic_collapse` and low-ceiling `iqr_corte_hz` in
+  `_SpectralAccumulator.result()` when a genuine Hi-Res master either rolls off
+  cleanly below `13.5 kHz` (`hires_clean_rolloff`) or carries continuous stereo
+  ultrasonic Side energy in `24-36 kHz` (`hires_ultrasonic_stereo`).
+- Extended `apply_album_coherence` (`_motor_veredicto.py`) and
+  `classify_batch_disposition` (`motor_flac.py`) with a complementary `>= 75%`
+  lossy-codec batch quorum (`mdct_lattice_detected` or sharp 48 kHz `78-87%`
+  Nyquist `~20 kHz` Opus/codec brickwall) to catch dark/low-ceiling intros
+  (`techo_rel_nyquist < 0.72`, `mdct_lattice_snr >= 3.5`) inside transcoded
+  albums without affecting standalone or genuine batches.
+
 ### Performance, Packaging & GUI
 
-- Raised `ENGINE_VERSION` to `"13.9"` and expanded the automated test suite to
-  **356 tests** (`tests/test_rendimiento.py` and `tests/test_gui.py`).
+- Raised `ENGINE_VERSION` to `"13.9"` (`tests/test_rendimiento.py` and
+  `tests/test_gui.py`).
 - Added native `<i2` / `<i4` (`PCM_16` / `PCM_24`) single-pass streaming decode
   with preallocated block buffers, reusable `_Int24Packer` `<u4` scratch buffers
   (`2.5x` faster 24-bit MD5 packing), shared `abs_q` lattice/clipping passes,

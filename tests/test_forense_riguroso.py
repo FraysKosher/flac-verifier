@@ -2782,6 +2782,217 @@ class test_forensic_rigorous(unittest.TestCase):
 
         self.assertIs(res_d["esp"]["sospecha_joint_stereo"], True)
 
+    def test_43_steep_24_96_rolloff_hires_ms_guards_and_opus_batch_quorum(self):
+        """Phase 14.0: steep continuous 24/96 roll-off guard, genuine Hi-Res
+        ultrasonic-stereo & dark-LPF M/S guards, and confirmed lapped-codec
+        batch quorum for low-ceiling Opus intros."""
+        sr_hi = 96000
+        dur = 4.0
+        n_hi = int(sr_hi * dur)
+        t_hi = np.arange(n_hi, dtype=np.float64) / float(sr_hi)
+        rng = np.random.default_rng(4301)
+
+        # Part A1: Steep continuous 24/96 studio roll-off (~15.5 kHz multi-pole
+        # decay that keeps decaying through 24.5-42 kHz above a -96 dBFS floor).
+        base_hi = _create_track_reference(sr_hi, duration=dur, seed=4302)
+        steep_cont = signal.sosfilt(
+            signal.butter(5, 15500.0, btype="low", fs=sr_hi, output="sos"),
+            base_hi,
+            axis=0,
+        )
+        steep_cont += rng.normal(0.0, 10.0 ** (-94.0 / 20.0), size=steep_cont.shape)
+        path_a1 = self.base_path / "genuine_steep_continuous_24_96.flac"
+        sf.write(
+            path_a1,
+            np.clip(steep_cont / (np.max(np.abs(steep_cont)) * 1.08), -0.99, 0.99),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_a1 = motor_flac.analyze_file_data(str(path_a1), use_cache=False)
+        self.assertIs(res_a1["esp"]["muro_brickwall_nyquist"], False)
+        self.assertIs(res_a1["esp"]["rolloff_analogico_genuino"], True)
+        self.assertIn(res_a1["veredicto"], GOOD_VERDICTS)
+
+        # Part A2: Adversarial 44.1 kHz stem with a flat -84 dBFS hiss floor
+        # added on top (zero ultrasonic decay between 24.5-28 kHz and 34-42 kHz)
+        # must NOT qualify for continuous_steep_rolloff.
+        sig_44 = signal.resample_poly(base_hi, 147, 320, axis=0)
+        up_flat = signal.resample_poly(sig_44, 320, 147, axis=0)[:n_hi]
+        up_flat = signal.sosfilt(
+            signal.butter(3, 18500.0, btype="low", fs=sr_hi, output="sos"),
+            up_flat,
+            axis=0,
+        )
+        flat_hiss = rng.normal(0.0, 10.0 ** (-78.0 / 20.0), size=up_flat.shape)
+        path_a2 = self.base_path / "upscale_44k_flat_hiss_floor_24_96.flac"
+        sf.write(
+            path_a2,
+            np.clip(up_flat * 0.8 + flat_hiss, -0.99, 0.99),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_a2 = motor_flac.analyze_file_data(str(path_a2), use_cache=False)
+        self.assertIs(res_a2["esp"]["rolloff_analogico_genuino"], False)
+        self.assertIn(res_a2["veredicto"], BAD_VERDICTS)
+
+        # Part B1: Genuine 24/96 dark studio LPF (< 13.5 kHz ceiling) with
+        # centered transient bursts must not trigger M/S collapse or IQR penalty.
+        dark_src = np.column_stack([
+            0.30 * np.sin(2.0 * np.pi * 110.0 * t_hi) + 0.08 * rng.standard_normal(n_hi),
+            0.30 * np.sin(2.0 * np.pi * 110.0 * t_hi) + 0.08 * rng.standard_normal(n_hi),
+        ])
+        burst_env = (np.sin(2.0 * np.pi * 2.5 * t_hi) > 0.65).astype(np.float64)
+        mono_burst = 0.22 * burst_env * rng.standard_normal(n_hi)
+        dark_mix = np.column_stack([dark_src[:, 0] + mono_burst, dark_src[:, 1] + mono_burst])
+        dark_lp = signal.sosfilt(
+            signal.butter(7, 5000.0, btype="low", fs=sr_hi, output="sos"),
+            dark_mix,
+            axis=0,
+        )
+        dark_lp += rng.normal(0.0, 10.0 ** (-102.0 / 20.0), size=dark_lp.shape)
+        path_b1 = self.base_path / "genuine_dark_lpf_24_96.flac"
+        sf.write(path_b1, np.clip(dark_lp, -0.99, 0.99), sr_hi, subtype="PCM_24")
+        res_b1 = motor_flac.analyze_file_data(str(path_b1), use_cache=False)
+        self.assertLess(res_b1["esp"]["techo_hz"], 13500)
+        self.assertLessEqual(res_b1["esp"]["iqr_corte_hz"], 350.0)
+        self.assertIs(res_b1["esp"]["sospecha_joint_stereo"], False)
+        self.assertIn(res_b1["veredicto"], GOOD_VERDICTS)
+
+        # Part B2: Genuine 24/96 full-bandwidth stereo synth with strong 24-36 kHz
+        # Side energy AND intermittent centered 10-20 kHz pulses must keep
+        # sospecha_joint_stereo False via hires_ultrasonic_stereo.
+        us_stereo = signal.sosfilt(
+            signal.butter(2, 4000.0, btype="high", fs=sr_hi, output="sos"),
+            rng.standard_normal((n_hi, 2)),
+            axis=0,
+        ) * 0.06
+        mid_pulse_band = signal.sosfilt(
+            signal.butter(3, [9500.0, 19500.0], btype="band", fs=sr_hi, output="sos"),
+            rng.standard_normal(n_hi),
+        ) * (0.35 * burst_env)
+        full_stereo = np.column_stack([
+            0.25 * np.sin(2.0 * np.pi * 165.0 * t_hi) + us_stereo[:, 0] + mid_pulse_band,
+            0.25 * np.sin(2.0 * np.pi * 165.0 * t_hi) + us_stereo[:, 1] + mid_pulse_band,
+        ])
+        path_b2 = self.base_path / "genuine_ultrasonic_stereo_24_96.flac"
+        sf.write(path_b2, np.clip(full_stereo, -0.99, 0.99), sr_hi, subtype="PCM_24")
+        res_b2 = motor_flac.analyze_file_data(str(path_b2), use_cache=False)
+        self.assertIs(res_b2["esp"]["sospecha_joint_stereo"], False)
+        self.assertIn(res_b2["veredicto"], GOOD_VERDICTS)
+
+        # Part C: Album-level lapped-codec quorum for dark/low-ceiling intros.
+        folder_opus = str(self.base_path / "opus_batch")
+        dark_intro = {
+            "archivo": "01_dark_intro.flac",
+            "ruta": os.path.join(folder_opus, "01_dark_intro.flac"),
+            "veredicto": "PROBABLY LOSSLESS",
+            "score": 0.72,
+            "problemas": [],
+            "evidencias_forenses": [],
+            "coherencia_album": False,
+            "meta": {"sample_rate": 48000, "bits_per_sample": 24, "canales": 2},
+            "esp": {
+                "techo_hz": 13500,
+                "techo_rel_nyquist": 0.5625,
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 4.25,
+                "familias_evidencia_lossy": [],
+            },
+            "bdi": {"aplica": True, "lsbs": "active", "forense_bits": {}},
+        }
+        self.assertEqual(
+            motor_flac.classify_batch_disposition(dark_intro),
+            motor_flac.BatchDisposition.DEFERRED,
+        )
+
+        # In a genuine 48 kHz album (0% lattice), dark_intro stays untouched.
+        genuine_siblings = [
+            {
+                "archivo": f"0{i}_genuine.flac",
+                "ruta": os.path.join(folder_opus, f"0{i}_genuine.flac"),
+                "veredicto": "GENUINE LOSSLESS",
+                "score": 0.95,
+                "problemas": [],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "meta": {"sample_rate": 48000, "bits_per_sample": 24, "canales": 2},
+                "esp": {
+                    "techo_hz": 22500,
+                    "techo_rel_nyquist": 0.9375,
+                    "mdct_lattice_detected": False,
+                    "mdct_lattice_snr": 1.1,
+                    "familias_evidencia_lossy": [],
+                },
+                "bdi": {"aplica": True, "lsbs": "active", "forense_bits": {}},
+            }
+            for i in range(2, 6)
+        ]
+        intro_gen_copy = dict(dark_intro, problemas=[], evidencias_forenses=[])
+        motor_flac.apply_album_coherence([intro_gen_copy] + genuine_siblings)
+        self.assertIn(intro_gen_copy["veredicto"], GOOD_VERDICTS)
+
+        # In an 80% confirmed CELT-960 (Opus) album batch, dark_intro is caught.
+        opus_siblings = [
+            {
+                "archivo": f"0{i}_opus.flac",
+                "ruta": os.path.join(folder_opus, f"0{i}_opus.flac"),
+                "veredicto": "CONFIRMED LOSSY",
+                "score": 0.15,
+                "problemas": ["Lapped transform quantization lattice (CELT-960 (Opus))"],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "meta": {"sample_rate": 48000, "bits_per_sample": 24, "canales": 2},
+                "esp": {
+                    "techo_hz": 20050,
+                    "techo_rel_nyquist": 0.835,
+                    "mdct_lattice_detected": True,
+                    "mdct_lattice_family": "CELT-960 (Opus)",
+                    "mdct_lattice_snr": 11.4,
+                    "familias_evidencia_lossy": ["CELT_GRID"],
+                },
+                "bdi": {"aplica": True, "lsbs": "active", "forense_bits": {}},
+            }
+            for i in range(2, 6)
+        ]
+        intro_opus_copy = dict(dark_intro, problemas=[], evidencias_forenses=[])
+        changed = motor_flac.apply_album_coherence([intro_opus_copy] + opus_siblings)
+        self.assertEqual(changed, 1)
+        self.assertEqual(intro_opus_copy["veredicto"], "PROBABLE UPSCALE")
+        self.assertLessEqual(intro_opus_copy["score"], 0.35)
+        self.assertIs(intro_opus_copy["coherencia_album"], True)
+        ev = motor_flac.forensic_evidence(intro_opus_copy)
+        self.assertTrue(any("CELT-960 (Opus)" in item for item in ev))
+
+        # Also caught when 48 kHz siblings have sharp 20 kHz Opus brickwalls
+        # (techo_rel_nyquist ~ 0.834, corte_artificial=True) without running lattice.
+        cliff_siblings = [
+            {
+                "archivo": f"0{i}_opus48_cliff.flac",
+                "ruta": os.path.join(folder_opus, f"0{i}_opus48_cliff.flac"),
+                "veredicto": "PROBABLE UPSCALE",
+                "score": 0.0,
+                "problemas": ["artificial spectral cut-off"],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "meta": {"sample_rate": 48000, "bits_per_sample": 24, "canales": 2},
+                "esp": {
+                    "techo_hz": 20020,
+                    "techo_rel_nyquist": 0.8342,
+                    "corte_artificial": True,
+                    "mdct_lattice_detected": False,
+                    "mdct_lattice_snr": 0.0,
+                    "familias_evidencia_lossy": ["spectral_cutoff"],
+                },
+                "bdi": {"aplica": True, "lsbs": "active", "forense_bits": {}},
+            }
+            for i in range(2, 6)
+        ]
+        intro_cliff_copy = dict(dark_intro, problemas=[], evidencias_forenses=[])
+        changed_cliff = motor_flac.apply_album_coherence([intro_cliff_copy] + cliff_siblings)
+        self.assertEqual(changed_cliff, 1)
+        self.assertEqual(intro_cliff_copy["veredicto"], "PROBABLE UPSCALE")
+        self.assertIs(intro_cliff_copy["coherencia_album"], True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

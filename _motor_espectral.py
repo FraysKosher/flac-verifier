@@ -693,9 +693,34 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and snr_ultra_pass_db >= 20.0
         and (level_14_17k - level_before_db) >= 1.5
     )
+    mask_ultra_hi_lo = (freqs >= 24500.0) & (freqs <= 28000.0)
+    mask_ultra_hi_top = ((freqs >= 34000.0)
+                         & (freqs <= min(42000.0, sample_rate * 0.44)))
+    if np.any(mask_ultra_hi_lo) and np.any(mask_ultra_hi_top):
+        level_ultra_lo_db = float(np.median(curva[mask_ultra_hi_lo]))
+        level_ultra_top_db = float(np.median(curva[mask_ultra_hi_top]))
+        decay_ultra_24_40k_db = level_ultra_lo_db - level_ultra_top_db
+    else:
+        level_ultra_top_db = -140.0
+        decay_ultra_24_40k_db = 0.0
+    continuous_steep_rolloff = (
+        worse_slope > -15.0
+        and slope_skirt_44k > -18.0
+        and slope_skirt_48k > -18.0
+        and jump_db < 40.0
+        and level_after_db > -95.0
+        and level_ultra_top_db > -105.0
+        and decay_ultra_24_40k_db >= 7.5
+        and (level_14_17k - level_before_db) >= 4.0
+    )
     rolloff_analog = bool(
         base_rolloff_ok
-        and (gentle_rolloff or multipole_analog_rolloff or ultrasonic_studio_rolloff)
+        and (
+            gentle_rolloff
+            or multipole_analog_rolloff
+            or ultrasonic_studio_rolloff
+            or continuous_steep_rolloff
+        )
     )
 
     output.update({
@@ -2593,27 +2618,49 @@ class _SpectralAccumulator:
                 spectrum["distancia_nyquist"] = None
                 spectrum["clase_corte"] = "no_cutoff"
                 spectrum["corte_artificial"] = False
+        ceiling_val = spectrum.get("techo_hz", 0)
+        hires_clean_rolloff = bool(
+            self.sr >= 88200
+            and spectrum.get("clase_corte") == "no_cutoff"
+            and (spectrum.get("rolloff_analogico_genuino")
+                 or spectrum.get("es_transferencia_dsd"))
+        )
+        if hires_clean_rolloff and ceiling_val < 13500:
+            cur_iqr = float(spectrum.get("iqr_corte_hz") or 0.0)
+            if cur_iqr > 350.0:
+                spectrum["iqr_corte_hz"] = 350.0
         ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
         delta_cutoff = float(spectrum.get("delta_corte_ms_hz") or 0.0)
         collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
         centered_hf_vocal = False
-        if (delta_cutoff < 800.0
-                and math.isfinite(ms_p95) and ms_p95 < 42.0
-                and mean_mid is not None and mean_side is not None):
-            diff_ms_db = 10.0 * np.log10(
-                np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
-            )
-            centered_hf_vocal = _has_centered_upper_mid_vocal(freqs, diff_ms_db)
+        hires_ultrasonic_stereo = False
+        if mean_mid is not None and mean_side is not None:
+            if delta_cutoff < 800.0 and math.isfinite(ms_p95) and ms_p95 < 42.0:
+                diff_ms_db = 10.0 * np.log10(
+                    np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
+                )
+                centered_hf_vocal = _has_centered_upper_mid_vocal(freqs, diff_ms_db)
+            if hires_clean_rolloff and delta_cutoff < 500.0:
+                mask_us = ((freqs >= 24000.0)
+                           & (freqs <= min(36000.0, self.sr * 0.42)))
+                if np.any(mask_us):
+                    mid_us_db = _spectrum_dbfs(mean_mid[mask_us], gain_noise)
+                    side_us_db = _spectrum_dbfs(mean_side[mask_us], gain_noise)
+                    hires_ultrasonic_stereo = bool(
+                        float(np.median(side_us_db)) > -85.0
+                        and float(np.median(mid_us_db - side_us_db)) < 12.0
+                    )
         if (getattr(self._psycho, "_ms_dynamic_collapse", False)
                 and not spectrum.get("es_dual_mono")
                 and not spectrum.get("es_estacionario")
                 and not centered_hf_vocal
+                and not hires_ultrasonic_stereo
+                and not (hires_clean_rolloff and ceiling_val < 13500)
                 and (delta_cutoff >= 800.0
                      or (collapse >= 6.0 and math.isfinite(ms_p95) and ms_p95 >= 25.0))):
             spectrum["sospecha_joint_stereo"] = True
             if math.isfinite(ms_p95) and ms_p95 > collapse:
                 spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
-        ceiling_val = spectrum.get("techo_hz", 0)
         if (41000 <= self.sr <= 48000
                 and ceiling_val >= 9500
                 and spectrum.get("clase_corte") != "far_cutoff"):
