@@ -27,7 +27,7 @@ pillow>=9.1
 reportlab>=4.0
 
 # Only for the graphical interface (python gui.py or python verificar_flac.py --gui).
-customtkinter>=5.2
+customtkinter>=6.0.0
 
 # Only for dragging folders onto the window. If it is missing the interface works
 # anyway: the path field is filled in with the "Browse" button.
