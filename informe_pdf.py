@@ -361,7 +361,7 @@ def _spectrogram_image(res, temporal, width_max=None, height_max=None):
             copy = image.convert("RGB")
             copy.thumbnail((MAX_PX_SPECTROGRAM, MAX_PX_SPECTROGRAM))
             source = os.path.join(temporal, os.path.basename(path) + ".jpg")
-            copy.save(source, format="JPEG", quality=88, optimize=True)
+            copy.save(source, format="JPEG", quality=85, optimize=True)
     except ImportError:                    # Pillow is optional for the report
         pillow_ok = False
         source = path
@@ -576,24 +576,32 @@ def _final_table(results, styles):
                   repeat_rows=1)
 
 
+_ENGINE_VERSION_CACHED = None
+_RULE_COLOR = colors.HexColor(RULE) if REPORTLAB_OK else None
+_INK_SEC_COLOR = colors.HexColor(INK_SECONDARY) if REPORTLAB_OK else None
+
+
 def _engine_version():
     """Version of the engine that produced the records, for the footer."""
-    try:
-        from motor_flac import ENGINE_VERSION
-        return str(ENGINE_VERSION)
-    except Exception:
-        return ""
+    global _ENGINE_VERSION_CACHED
+    if _ENGINE_VERSION_CACHED is None:
+        try:
+            from motor_flac import ENGINE_VERSION
+            _ENGINE_VERSION_CACHED = str(ENGINE_VERSION)
+        except Exception:
+            _ENGINE_VERSION_CACHED = ""
+    return _ENGINE_VERSION_CACHED
 
 
 def _page_footer(canvas, doc, album, counter):
     """Footer: album, page number and engine version, in tertiary text."""
     counter["paginas"] = max(counter["paginas"], canvas.getPageNumber())
     canvas.saveState()
-    canvas.setStrokeColor(colors.HexColor(RULE))
+    canvas.setStrokeColor(_RULE_COLOR if _RULE_COLOR is not None else colors.HexColor(RULE))
     canvas.setLineWidth(0.4)
     canvas.line(20 * mm, 14 * mm, A4[0] - 20 * mm, 14 * mm)
     canvas.setFont("Helvetica", 7.5)
-    canvas.setFillColor(colors.HexColor(INK_SECONDARY))
+    canvas.setFillColor(_INK_SEC_COLOR if _INK_SEC_COLOR is not None else colors.HexColor(INK_SECONDARY))
     canvas.drawString(20 * mm, 10 * mm, f"FLAC VERIFIER — {album}"[:110])
     right = f"Page {canvas.getPageNumber()}"
     version = _engine_version()

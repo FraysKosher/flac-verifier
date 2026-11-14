@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 import tkinter
-from collections import deque
+from collections import OrderedDict, deque
 from enum import Enum
 from typing import Any, Callable, Iterable
 
@@ -1104,7 +1104,7 @@ if CTK_OK:
             self._focus_rings: list[tuple[Any, str]] = []
             self._buttons: list[Any] = []
             self._scroll_scheduled = False
-            self._spectrograms: dict[str, Any] = {}
+            self._spectrograms: OrderedDict[str, Any] = OrderedDict()
             self._spectrogram_path_value = ""
             self._hero_layout_scheduled = False
 
@@ -1918,15 +1918,12 @@ if CTK_OK:
             else:
                 self.table_rows.append(entry)
             self._bind_row(row, entry)
-            if self.selected_event is not None:
-                if same_logical_event(event, self.selected_event):
-                    self.selected_event = event
-                    self._render_hero()
-                    self._update_reveal()
-                for row_entry in self.table_rows:
-                    self._paint_row(row_entry)
-            else:
-                self._paint_row(entry)
+            if (self.selected_event is not None
+                    and same_logical_event(event, self.selected_event)):
+                self.selected_event = event
+                self._render_hero()
+                self._update_reveal()
+            self._paint_row(entry)
             if follow:
                 self._schedule_table_scroll()
             return entry
@@ -2269,6 +2266,7 @@ if CTK_OK:
             if not path or not os.path.exists(path):
                 return None
             if path in self._spectrograms:
+                self._spectrograms.move_to_end(path)
                 return self._spectrograms[path]
             image = None
             try:
@@ -2286,6 +2284,8 @@ if CTK_OK:
                                      size=display)
             except Exception:
                 image = None
+            while len(self._spectrograms) >= 32:
+                self._spectrograms.popitem(last=False)
             self._spectrograms[path] = image
             return image
 

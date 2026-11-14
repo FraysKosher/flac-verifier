@@ -273,12 +273,16 @@ class TestSpecification(unittest.TestCase):
         self.assertIn("soundfile", self.source)
 
     def test_includes_submodules_scipy_numpy(self):
-        # importlib.resources: scipy.signal -> scipy.stats._sobol needs it, and the
-        # lattice detector swallows the ImportError (regression of 2.9.2).
-        for modulo in ("numpy.fft", "scipy.fft", "scipy.signal",
+        # scipy.fft imports special/linalg/sparse underneath; heavy scipy.signal
+        # and siblings were replaced by pure-NumPy kernels and stay excluded.
+        hidden_part = self.source.split("hiddenimports +=", 1)[1].split("excludes=[", 1)[0]
+        excludes_part = self.source.split("excludes=[", 1)[1].split("],", 1)[0]
+        for modulo in ("numpy.fft", "scipy.fft",
                        "scipy.special", "scipy.linalg", "importlib.resources"):
             with self.subTest(modulo=modulo):
-                self.assertIn(f'"{modulo}"', self.source)
+                self.assertIn(f'"{modulo}"', hidden_part)
+        self.assertIn('"scipy.signal"', excludes_part)
+        self.assertNotIn('"scipy.signal"', hidden_part)
 
     def test_declares_modules_own_import_lazy(self):
         for modulo in ("motor_flac", "informe_pdf", "verificar_flac", "gui"):

@@ -235,5 +235,92 @@ class TestVectorization(unittest.TestCase):
         self.assertEqual(first["esp"]["clipping_eventos"], 2)
 
 
+class TestNativeFastPathEquivalence(unittest.TestCase):
+    """Bit-exact and numerical equivalence of native integer & pure-NumPy paths."""
+
+    def test_native_int16_and_int24_streaming_bit_exact_oracle(self):
+        import tempfile
+        import soundfile as sf
+
+        sr = 44100
+        dur = 2.0
+        audio = fx.full_band_noise(sr=sr, dur=dur, seed=11)
+        # Inject an explicit clipping streak in the middle to verify integer gates.
+        audio[12000:12006, 0] = 1.0
+        audio[24000:24005, 1] = -1.0
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p16 = os.path.join(tmpdir, "clip_16.flac")
+            p24 = os.path.join(tmpdir, "clip_24.flac")
+            sf.write(p16, audio, sr, subtype="PCM_16")
+            sf.write(p24, audio, sr, subtype="PCM_24")
+            for path in (p16, p24):
+                with self.subTest(path=os.path.basename(path)):
+                    meta = engine.verify_metadata(path)
+                    fast_out = engine._analyze_streaming(
+                        path, meta, "full", None, False
+                    )
+                    ref_acc = engine._BlockAnalysis(
+                        meta, sr, sf.info(path).frames, "full", None, False, path
+                    )
+                    offset = 0
+                    for blk in engine._read_blocks(
+                        path, frames_by_block=engine.FRAMES_BY_BLOCK
+                    ):
+                        if blk.shape[0] == 0:
+                            continue
+                        ref_acc.add(blk, offset)
+                        offset += blk.shape[0]
+                    ref_out = ref_acc.result()
+
+                    self.assertEqual(fast_out["md5"], ref_out["md5"])
+                    self.assertAlmostEqual(fast_out["pico"], ref_out["pico"], places=12)
+                    self.assertEqual(fast_out["clip"], ref_out["clip"])
+                    self.assertEqual(fast_out["dr"], ref_out["dr"])
+                    self.assertEqual(fast_out["bdi"], ref_out["bdi"])
+                    self.assertEqual(fast_out["esp"], ref_out["esp"])
+
+    def test_polyphase_resampler_and_mdct36_basis_equivalence(self):
+        import subprocess
+        from scipy import signal as sp_signal
+        import _motor_espectral as spectral
+
+        # 1) Clean subprocess check: _detect_lapped_codec_grid never pulls scipy.signal.
+        probe_code = (
+            "import sys, numpy as np, _motor_espectral as spectral; "
+            "x = np.random.default_rng(1).standard_normal(44100 * 3).astype(np.float32); "
+            "spectral._detect_lapped_codec_grid(x, 44100, ceiling_hz=20000); "
+            "bad = [m for m in ('scipy.signal', 'scipy.stats', 'scipy.optimize') if m in sys.modules]; "
+            "assert not bad, f'unexpected imports: {bad}'"
+        )
+        subprocess.run([sys.executable, "-c", probe_code], check=True)
+
+        # 2) Polyphase 160/147 slice resampler vs scipy.signal.resample_poly.
+        rng = np.random.default_rng(42)
+        seg = rng.standard_normal(44100 * 3).astype(np.float32)
+        ref = sp_signal.resample_poly(
+            seg, 160, 147, window=("kaiser", 8.6)
+        ).astype(np.float32)[320 : 320 + 15360]
+        got = spectral._resample_celt_44k_to_48k_slice(seg, 320, 15360)
+        self.assertEqual(got.shape, ref.shape)
+        self.assertLess(float(np.max(np.abs(got - ref))), 5e-6)
+
+        # 3) PQMF-576 36x18 basis matmul vs full MDCT-36 + L2-tiled MDCT-2048.
+        grouped = rng.standard_normal((16, 8, 4, 18, 36)).astype(np.float32)
+        _, win36 = spectral._get_pqmf_fast(4096)
+        ref_36 = np.abs(spectral._fast_mdct_f32(grouped, win36))
+        got_36 = np.abs(grouped @ spectral._get_mdct36_basis())
+        self.assertLess(float(np.max(np.abs(got_36 - ref_36))), 5e-6)
+
+        frames_big = rng.standard_normal((100, 2048)).astype(np.float32)
+        win2048 = spectral._get_vorbis_2048()
+        got_big = spectral._fast_mdct_f32(frames_big, win2048)
+        ref_big = np.vstack([
+            spectral._fast_mdct_f32(frames_big[i : i + 32], win2048)
+            for i in range(0, frames_big.shape[0], 32)
+        ])
+        self.assertLess(float(np.max(np.abs(got_big - ref_big))), 5e-6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

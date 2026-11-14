@@ -62,6 +62,31 @@ for _bit_i in range(32):
     _DEBRUIJN_TABLE[((1 << _bit_i) * 0x077CB531 & 0xFFFFFFFF) >> 27] = _bit_i
 
 
+def _pack_int24_le(q_i32):
+    """Packs signed int32 samples in [-8388608, 8388607] into little-endian
+    24-bit PCM bytes (4 samples -> 3 uint32 words)."""
+    flat = np.asarray(q_i32, dtype="<i4").ravel()
+    if flat.size == 0:
+        return np.empty(0, dtype=np.uint8)
+    u = flat.view(np.uint32) & np.uint32(0xFFFFFF)
+    n4 = (u.size // 4) * 4
+    if n4 == 0:
+        return np.ascontiguousarray(flat.view(np.uint8).reshape(-1, 4)[:, :3]).ravel()
+    out = np.empty((n4 // 4) * 3, dtype="<u4")
+    u0 = u[0:n4:4]
+    u1 = u[1:n4:4]
+    u2 = u[2:n4:4]
+    u3 = u[3:n4:4]
+    out[0::3] = u0 | (u1 << np.uint32(24))
+    out[1::3] = (u1 >> np.uint32(8)) | (u2 << np.uint32(16))
+    out[2::3] = (u2 >> np.uint32(16)) | (u3 << np.uint32(8))
+    out_bytes = out.view(np.uint8)
+    if n4 == u.size:
+        return out_bytes
+    tail = np.ascontiguousarray(flat[n4:].view(np.uint8).reshape(-1, 4)[:, :3]).ravel()
+    return np.concatenate((out_bytes, tail))
+
+
 def _pcm_bytes(block, bits_per_sample, width, q_int=None):
     """Little-endian interleaved PCM of a block, exactly as the format hashes it.
 
@@ -69,6 +94,8 @@ def _pcm_bytes(block, bits_per_sample, width, q_int=None):
     scale = float(1 << (bits_per_sample - 1))
     dt = _DTYPE_BY_WIDTH.get(width)
     if dt is not None:
+        if q_int is not None and width == 2 and q_int.dtype == np.dtype("<i2") and q_int.flags.c_contiguous:
+            return q_int
         if q_int is not None and width == 4:
             return np.ascontiguousarray(q_int.astype(dt, copy=False))
         if width == 4:
@@ -82,13 +109,14 @@ def _pcm_bytes(block, bits_per_sample, width, q_int=None):
             )
             return np.ascontiguousarray(clipped.astype(dt))
         return np.ascontiguousarray(np.rint(block * scale).astype(dt))
-    # 24 bits (width 3): store as <i4 and keep the low 3 bytes, which is the same
-    # little-endian layout the old <i8 path produced, at half the memory.
+    # 24 bits (width 3): store as <i4 and pack the low 3 bytes with SIMD shifts.
     q = (
         q_int
         if q_int is not None
         else np.clip(np.rint(block * scale), -8388608.0, 8388607.0).astype("<i4")
     )
+    if width == 3:
+        return _pack_int24_le(q)
     return np.ascontiguousarray(q.view(np.uint8).reshape(-1, 4)[:, :width])
 
 def _md5_pcm(data, bits_per_sample, frames_by_block=1 << 20):
@@ -124,6 +152,122 @@ def verify_md5(data, meta):
     """Compares the recomputed MD5 of an array with the STREAMINFO one. A fact, not a vote."""
     return _compare_md5(_md5_pcm(data, meta.get("bits_per_sample")), meta)
 
+def _format_bit_depth_result(bits, n_active, n_grid16, counts_idx, forensic=None):
+    """Formats the LSB utilization metrics and conclusion from accumulated counts."""
+    if n_active < 1000:
+        output = {"aplica": True, "lsbs": "indeterminate",
+                  "conclusion": "indeterminate: too little signal to measure LSB utilization"}
+        if forensic is not None:
+            output["forense_bits"] = forensic
+        return output
+
+    fraction = float(n_grid16) / float(n_active)
+    if int(counts_idx.sum()):
+        counts_zeros = np.empty(32, dtype=np.int64)
+        counts_zeros[_DEBRUIJN_TABLE] = counts_idx
+        mode = int(counts_zeros.argmax())
+        effective = max(1, bits - mode)
+    else:
+        effective = bits
+
+    pct = f"{fraction * 100:.1f}%"
+    if fraction > 0.97:
+        lsbs = "empty"
+        conclusion = (f"the LSBs are empty ({pct} of samples on the 16-bit grid): "
+                      f"effective resolution of {effective} bits in a {bits}-bit container "
+                      f"— bit-depth upscale")
+    elif fraction > 0.80:
+        lsbs = "partial"
+        conclusion = (f"LSBs partially inactive ({pct} on the 16-bit grid), "
+                      f"effective resolution ~{effective} bits — upscale with later processing")
+    else:
+        lsbs = "active"
+        conclusion = (f"LSBs active, effective resolution ~{effective} of {bits} bits: "
+                      f"rules out grid upscaling, but does NOT prove the origin")
+    output = {
+        "aplica":                   True,
+        "fraccion_16bit_grid":      round(fraction * 100, 1),
+        "resolucion_efectiva_bits": int(effective),
+        "lsbs":                     lsbs,
+        "conclusion":               conclusion,
+    }
+    if forensic is not None:
+        output["forense_bits"] = forensic
+    return output
+
+
+class _StreamingBitDepthAccumulator:
+    """Streaming O(1)-memory LSB grid and effective-bit-depth accumulator."""
+
+    def __init__(self, bits_per_sample, total_frames):
+        self.bits = int(bits_per_sample)
+        self._sampled_frames = 0
+        self._sampling_step = (
+            max(1, int(round(total_frames / MAX_SAMPLES_BITS)))
+            if total_frames < (1 << 62)
+            else 1
+        )
+        self._n_active = 0
+        self._n_grid16 = 0
+        self._counts_idx = np.zeros(32, dtype=np.int64)
+        self._error = None
+
+    def add_block(self, offset, block_f64=None, q_int=None):
+        if self.bits <= 16 or self._sampled_frames >= MAX_SAMPLES_BITS or self._error:
+            return
+        if (offset // FRAMES_BY_BLOCK) % self._sampling_step:
+            return
+        try:
+            if self.bits == 24 and q_int is not None:
+                n_frames = q_int.shape[0]
+                self._sampled_frames += n_frames
+                flat = np.asarray(q_int).ravel()
+                active_mask = np.abs(flat) >= 8389
+                if not np.any(active_mask):
+                    return
+                active = flat if np.all(active_mask) else flat[active_mask]
+                self._n_active += int(active.size)
+                self._n_grid16 += int(np.count_nonzero(((active + 12) & 0xFF) <= 24))
+                u = active.view(np.uint32)
+                pow2 = u & (np.bitwise_not(u) + np.uint32(1))
+                idx = (pow2 * np.uint32(0x077CB531)) >> np.uint32(27)
+                self._counts_idx += np.bincount(idx, minlength=32)
+                return
+
+            if block_f64 is None:
+                return
+            self._sampled_frames += block_f64.shape[0]
+            samples = np.ascontiguousarray(block_f64).reshape(-1)
+            active_mask = samples[np.abs(samples) > 0.001]
+            if active_mask.size == 0:
+                return
+            self._n_active += int(active_mask.size)
+            upscaled = active_mask * 32768.0
+            self._n_grid16 += int(np.count_nonzero(np.abs(upscaled - np.rint(upscaled)) < 0.05))
+            scale_b = float(1 << (self.bits - 1))
+            if self.bits < 32:
+                q = np.rint(active_mask * scale_b).astype(np.int32)
+            else:
+                q = np.clip(np.rint(active_mask * scale_b), -scale_b, scale_b - 1.0).astype(np.int32)
+            q_nz = q if np.all(q) else q[q != 0]
+            if q_nz.size:
+                u = q_nz.view(np.uint32)
+                pow2 = u & (np.bitwise_not(u) + np.uint32(1))
+                idx = (pow2 * np.uint32(0x077CB531)) >> np.uint32(27)
+                self._counts_idx += np.bincount(idx, minlength=32)
+        except Exception as e:
+            self._error = str(e)
+
+    def result(self):
+        if self.bits <= 16:
+            return {"aplica": False}
+        if self._error:
+            return {"aplica": True, "lsbs": "indeterminate", "error": self._error}
+        return _format_bit_depth_result(
+            self.bits, self._n_active, self._n_grid16, self._counts_idx
+        )
+
+
 def analyze_bit_depth(data, meta, include_forensic=True):
     """LSB utilisation of the container (Block 4).
 
@@ -150,15 +294,13 @@ def analyze_bit_depth(data, meta, include_forensic=True):
         samples = np.ascontiguousarray(data).reshape(-1)
         active_mask  = samples[np.abs(samples) > 0.001]
         if active_mask.size < 1000:
-            output = {"aplica": True, "lsbs": "indeterminate",
-                      "conclusion": "indeterminate: too little signal to measure LSB utilization"}
-            if forensic is not None:
-                output["forense_bits"] = forensic
-            return output
+            return _format_bit_depth_result(
+                bits, active_mask.size, 0, np.zeros(32, dtype=np.int64), forensic=forensic
+            )
 
         # 1) Are the samples on the 16-bit grid? (the classic upscale test)
         upscaled = active_mask * 32768.0
-        fraction = float(np.mean(np.abs(upscaled - np.rint(upscaled)) < 0.05))
+        n_grid16 = int(np.count_nonzero(np.abs(upscaled - np.rint(upscaled)) < 0.05))
 
         # 2) Effective resolution: declared bits minus the mode of trailing zeros
         #    of the integer samples (16 bits inside 24 -> 8 zeros -> 16 bits).
@@ -173,37 +315,12 @@ def analyze_bit_depth(data, meta, include_forensic=True):
             pow2 = u & (np.bitwise_not(u) + np.uint32(1))
             idx = (pow2 * np.uint32(0x077CB531)) >> np.uint32(27)
             counts_idx = np.bincount(idx, minlength=32)
-            counts_zeros = np.empty(32, dtype=np.int64)
-            counts_zeros[_DEBRUIJN_TABLE] = counts_idx
-            mode = int(counts_zeros.argmax())
-            effective = max(1, bits - mode)
         else:
-            effective = bits
+            counts_idx = np.zeros(32, dtype=np.int64)
 
-        pct = f"{fraction * 100:.1f}%"
-        if fraction > 0.97:
-            lsbs = "empty"
-            conclusion = (f"the LSBs are empty ({pct} of samples on the 16-bit grid): "
-                          f"effective resolution of {effective} bits in a {bits}-bit container "
-                          f"— bit-depth upscale")
-        elif fraction > 0.80:
-            lsbs = "partial"
-            conclusion = (f"LSBs partially inactive ({pct} on the 16-bit grid), "
-                          f"effective resolution ~{effective} bits — upscale with later processing")
-        else:
-            lsbs = "active"
-            conclusion = (f"LSBs active, effective resolution ~{effective} of {bits} bits: "
-                          f"rules out grid upscaling, but does NOT prove the origin")
-        output = {
-            "aplica":                   True,
-            "fraccion_16bit_grid":      round(fraction * 100, 1),
-            "resolucion_efectiva_bits": int(effective),
-            "lsbs":                     lsbs,
-            "conclusion":               conclusion,
-        }
-        if forensic is not None:
-            output["forense_bits"] = forensic
-        return output
+        return _format_bit_depth_result(
+            bits, int(active_mask.size), n_grid16, counts_idx, forensic=forensic
+        )
     except Exception as e:
         output = {"aplica": True, "lsbs": "indeterminate", "error": str(e)}
         if forensic is not None:
@@ -379,6 +496,8 @@ class ForensicBitsAccumulator:
 
         if self.bits in (24, 32):
             self._bitmap_global = np.zeros(int(self.grid_max) + 1, dtype=bool)
+            self._bitmap_hi16 = np.zeros((int(self.grid_max) >> 8) + 1, dtype=bool)
+            self._hi16_only = True
             self._bitmap_low = self._bitmap_global[self.low_int : self.high_int + 1]
             self._bitmap_reb1 = self._bitmap_global[SLICE_1_BASE : SLICE_1_BASE + SLICE_WIDTH]
             self._bitmap_reb2 = self._bitmap_global[SLICE_2_BASE : SLICE_2_BASE + SLICE_WIDTH]
@@ -387,6 +506,8 @@ class ForensicBitsAccumulator:
             self._bitmap_reb1 = None
             self._bitmap_reb2 = None
             self._bitmap_global = None
+            self._bitmap_hi16 = None
+            self._hi16_only = False
 
         # Samples that fed each bitmap: they decide whether it is judged at all.
         self._samples_low = 0
@@ -400,6 +521,16 @@ class ForensicBitsAccumulator:
         self._dop_last = None
         self._state = AccumulatorState.COLLECTING
         self._cached_result = None
+
+    def _flush_hi16_bitmap(self):
+        """Materialises the compact upper-16-bit bitmap into the full 24-bit map."""
+        if not self._hi16_only:
+            return
+        nz = np.flatnonzero(self._bitmap_hi16)
+        if nz.size:
+            self._bitmap_global[nz << 8] = True
+        self._bitmap_global[0] = False
+        self._hi16_only = False
 
     @property
     def state(self) -> AccumulatorState:
@@ -452,22 +583,35 @@ class ForensicBitsAccumulator:
             if (self._or & 1) == 0:
                 self._or |= int(np.bitwise_or.reduce(q.view(np.uint32).ravel()))
             absq = np.minimum(np.abs(q.astype(np.int64)).ravel() >> 8, 8388608).astype(np.int32)
+            absq_or = int(np.bitwise_or.reduce(absq)) if self._hi16_only else 0
         else:
             absq = np.abs(q).ravel()
-            if (self._or & 1) == 0:
+            if self._hi16_only:
+                absq_or = int(np.bitwise_or.reduce(absq))
+                self._or |= absq_or
+            elif (self._or & 1) == 0:
                 self._or |= int(np.bitwise_or.reduce(absq))
 
-        self._bitmap_global[absq] = True
-        self._bitmap_global[0] = False
+        if self._hi16_only:
+            if (absq_or & 0xFF) == 0:
+                self._bitmap_hi16[absq >> 8] = True
+            else:
+                self._flush_hi16_bitmap()
+                self._bitmap_global[absq] = True
+                self._bitmap_global[0] = False
+        else:
+            self._bitmap_global[absq] = True
+            self._bitmap_global[0] = False
 
+        u_abs = absq.view(np.uint32)
         self._samples_low += int(np.count_nonzero(
-            (absq >= self.low_int) & (absq <= self.high_int)))
+            (u_abs - np.uint32(self.low_int)) <= np.uint32(self.high_int - self.low_int)))
         if self._samples_reb1 < 2048:
             self._samples_reb1 += int(np.count_nonzero(
-                (absq >= SLICE_1_BASE) & (absq < SLICE_1_BASE + SLICE_WIDTH)))
+                (u_abs - np.uint32(SLICE_1_BASE)) < np.uint32(SLICE_WIDTH)))
         if self._samples_reb2 < 2048:
             self._samples_reb2 += int(np.count_nonzero(
-                (absq >= SLICE_2_BASE) & (absq < SLICE_2_BASE + SLICE_WIDTH)))
+                (u_abs - np.uint32(SLICE_2_BASE)) < np.uint32(SLICE_WIDTH)))
         if self._samples_active < 2048:
             self._samples_active += int(np.count_nonzero(absq))
 
@@ -557,6 +701,7 @@ class ForensicBitsAccumulator:
             self._cached_result = {"aplica": False}
             return dict(self._cached_result)
 
+        self._flush_hi16_bitmap()
         value_or = int(self._or)
         if value_or == 0:                      # digital silence: no grid to judge
             zeros = self.bits

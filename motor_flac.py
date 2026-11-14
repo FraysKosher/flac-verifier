@@ -45,7 +45,8 @@ from _motor_espectral import Image
 from _motor_bits import (
     AccumulatorState,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
-    _normalize_path_fs, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
+    _normalize_path_fs, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
+    _StreamingBitDepthAccumulator,
     analyze_bit_depth, _streaks, detect_clipping, _classify_streaks,
     _classify_clipping_nature, _dr_from_rms, calculate_dr,
     ForensicBitsAccumulator, _analyze_forensic_bits,
@@ -82,7 +83,10 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.7"
+ENGINE_VERSION = "13.8"
+# 13.8: Streaming native int16/int24 decode without full-block float64 copies,
+#       O(1)-RAM streaming bit-depth accumulator, PQMF-576 36x18 MDCT basis,
+#       and pure-NumPy 160/147 polyphase resampler removing scipy.signal startup.
 # 13.7: Phase 13.7 quiet 24/96 studio roll-off vs ultrasonic stopband and
 #       centered upper-mid vocal M/S guard
 # 13.6: Phase 13.6 polyphase transition-skirt and ultrasonic stopband brickwall
@@ -550,11 +554,8 @@ class _BlockAnalysis:
         self._dr_slope = np.zeros(0)
         self._dr_peak     = 0.0
 
-        # LSB: sample spread over the whole file
-        self._samples    = []
-        self._samples_n  = 0
-        self._sampling_step = (max(1, int(round(self.total / MAX_SAMPLES_BITS)))
-                               if self.total < (1 << 62) else 1)
+        # LSB: O(1)-memory sample spread over the whole file
+        self._bdi_acc = _StreamingBitDepthAccumulator(self.bits, self.total)
         # Vector 4: native-integer audit over the WHOLE file (24-bit and 32-bit).
         self._forensic_bits = (ForensicBitsAccumulator(self.bits, sample_rate=self.sr)
                               if self.bits in (24, 32) else None)
@@ -625,17 +626,72 @@ class _BlockAnalysis:
         self._clip_lengths.extend(streaks)
         self._clip_runs += sum(1 for long in streaks if long >= 3)
 
-    def _dynamic_range(self, block):
-        if block.ndim > 1:
-            n_ch = block.shape[1]
-            if n_ch == 2:
-                mono = (block[:, 0] + block[:, 1]) * 0.5
-            elif n_ch == 1:
-                mono = block[:, 0]
-            else:
-                mono = block.mean(axis=1)
+    def add_int16(self, block_i16, offset):
+        """Streaming path for native little-endian int16 PCM blocks."""
+        if self._state is AccumulatorState.COMPLETED:
+            raise RuntimeError("cannot add audio blocks after completion")
+        if block_i16.shape[0] == 0:
+            return
+        if self._md5 is not None:
+            self._md5.update(_pcm_bytes(None, 16, self._md5_width, q_int=block_i16))
+        if block_i16.size:
+            peak = max(int(np.max(block_i16)), -int(np.min(block_i16))) * (1.0 / 32768.0)
+            if peak > self._peak:
+                self._peak = peak
+        # |sample| / 32768.0 >= 0.9999 iff |sample| >= 32765.
+        en_clip_ch = (block_i16 >= 32765) | (block_i16 <= -32765)
+        n_ch = block_i16.shape[1]
+        if n_ch == 2:
+            en_clip = en_clip_ch[:, 0] | en_clip_ch[:, 1]
+            mono = (
+                block_i16[:, 0].astype(np.int32) + block_i16[:, 1].astype(np.int32)
+            ) * (0.5 / 32768.0)
+        elif n_ch == 1:
+            en_clip = en_clip_ch[:, 0]
+            mono = block_i16[:, 0] * (1.0 / 32768.0)
         else:
-            mono = block
+            en_clip = np.any(en_clip_ch, axis=1)
+            mono = block_i16.mean(axis=1, dtype=np.float64) * (1.0 / 32768.0)
+        streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
+        self._clip_lengths.extend(streaks)
+        self._clip_runs += sum(1 for long in streaks if long >= 3)
+        self._dynamic_range_from_mono(mono)
+        self._spectrum_acc.add(block_i16, offset, mono=mono, int_scale=1.0 / 32768.0)
+
+    def add_int24_s32(self, q_i32, offset):
+        """Streaming path for signed 24-bit integers stored in <i4 containers."""
+        if self._state is AccumulatorState.COMPLETED:
+            raise RuntimeError("cannot add audio blocks after completion")
+        if q_i32.shape[0] == 0:
+            return
+        if self._md5 is not None:
+            self._md5.update(_pcm_bytes(None, 24, self._md5_width, q_int=q_i32))
+        if q_i32.size:
+            peak = max(int(np.max(q_i32)), -int(np.min(q_i32))) * (1.0 / 8388608.0)
+            if peak > self._peak:
+                self._peak = peak
+        # |sample| / 8388608.0 >= 0.9999 iff |sample| >= 8387770.
+        en_clip_ch = (q_i32 >= 8387770) | (q_i32 <= -8387770)
+        n_ch = q_i32.shape[1]
+        if n_ch == 2:
+            en_clip = en_clip_ch[:, 0] | en_clip_ch[:, 1]
+            mono = (q_i32[:, 0] + q_i32[:, 1]) * (0.5 / 8388608.0)
+        elif n_ch == 1:
+            en_clip = en_clip_ch[:, 0]
+            mono = q_i32[:, 0] * (1.0 / 8388608.0)
+        else:
+            en_clip = np.any(en_clip_ch, axis=1)
+            mono = q_i32.mean(axis=1, dtype=np.float64) * (1.0 / 8388608.0)
+        streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
+        self._clip_lengths.extend(streaks)
+        self._clip_runs += sum(1 for long in streaks if long >= 3)
+        self._dynamic_range_from_mono(mono)
+        self._bdi_acc.add_block(offset, q_int=q_i32)
+        if self._forensic_bits is not None:
+            self._forensic_bits.add(q_i32, q_int=q_i32)
+        self._spectrum_acc.add(q_i32, offset, mono=mono, int_scale=1.0 / 8388608.0)
+
+    def _dynamic_range_from_mono(self, mono):
         block_mono = mono
         if mono.size:
             # max(|mono|) without materialising a full np.abs(mono) temporary.
@@ -652,16 +708,21 @@ class _BlockAnalysis:
         self._dr_slope = mono
         return block_mono
 
+    def _dynamic_range(self, block):
+        if block.ndim > 1:
+            n_ch = block.shape[1]
+            if n_ch == 2:
+                mono = (block[:, 0] + block[:, 1]) * 0.5
+            elif n_ch == 1:
+                mono = block[:, 0]
+            else:
+                mono = block.mean(axis=1)
+        else:
+            mono = block
+        return self._dynamic_range_from_mono(mono)
+
     def _sample_bits(self, block, offset):
-        # Bits <= 16 never reach the LSB test (analyze_bit_depth returns
-        # {"aplica": False}), so nothing is buffered for CD-depth tracks: this
-        # saves holding up to 1<<20 float64 frames (~16 MB) per file.
-        if self.bits <= 16 or self._samples_n >= MAX_SAMPLES_BITS:
-            return
-        if (offset // FRAMES_BY_BLOCK) % self._sampling_step:
-            return
-        self._samples.append(block)
-        self._samples_n += block.shape[0]
+        self._bdi_acc.add_block(offset, block_f64=block)
 
     # ── result ───────────────────────────────────────────────────────────────
     def result(self):
@@ -684,11 +745,7 @@ class _BlockAnalysis:
         else:
             output["dr"] = None
 
-        if self._samples:
-            sample = np.concatenate(self._samples)
-        else:
-            sample = np.zeros((0, 1))
-        bdi = analyze_bit_depth(sample, self.meta, include_forensic=False)
+        bdi = self._bdi_acc.result()
         if self._forensic_bits is not None:
             bdi["forense_bits"] = self._forensic_bits.result()
         elif bdi.get("aplica"):
@@ -722,12 +779,34 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
             accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
                                              save_png, path)
             offset = 0
-            while True:
-                block = f.read(FRAMES_BY_BLOCK, dtype="float64", always_2d=True)
-                if block.shape[0] == 0:
-                    break
-                accumulator.add(block, offset)
-                offset += block.shape[0]
+            bits = meta.get("bits_per_sample")
+            subtype = getattr(f, "subtype", None)
+            if bits == 16 and subtype == "PCM_16":
+                buf = np.empty((FRAMES_BY_BLOCK, f.channels), dtype="<i2")
+                while True:
+                    block = f.read(out=buf)
+                    if block.shape[0] == 0:
+                        break
+                    accumulator.add_int16(block, offset)
+                    offset += block.shape[0]
+            elif bits == 24 and subtype == "PCM_24":
+                buf = np.empty((FRAMES_BY_BLOCK, f.channels), dtype="<i4")
+                q_buf = np.empty((FRAMES_BY_BLOCK, f.channels), dtype="<i4")
+                while True:
+                    block = f.read(out=buf)
+                    if block.shape[0] == 0:
+                        break
+                    q_view = q_buf[: block.shape[0]]
+                    np.right_shift(block, 8, out=q_view)
+                    accumulator.add_int24_s32(q_view, offset)
+                    offset += block.shape[0]
+            else:
+                while True:
+                    block = f.read(FRAMES_BY_BLOCK, dtype="float64", always_2d=True)
+                    if block.shape[0] == 0:
+                        break
+                    accumulator.add(block, offset)
+                    offset += block.shape[0]
     except Exception:
         if meta.get("bits_per_sample") != 32:
             raise
@@ -795,49 +874,50 @@ def default_workers(n_files):
 
 def _work_analysis(task):
     """Work for one file in a child process (it must be at module level)."""
-    path, mode, seconds, save_png, use_cache = task
-    return analyze_file_data(path, mode, seconds, save_png, use_cache)
+    if len(task) == 5:
+        path, mode, seconds, save_png, use_cache = task
+        return analyze_file_data(path, mode, seconds, save_png, use_cache)
+    path, mode, seconds, save_png, use_cache, pre_meta, skip_cache_lookup = task
+    return analyze_file_data(
+        path, mode, seconds, save_png, use_cache,
+        _pre_meta=pre_meta, _skip_cache_lookup=skip_cache_lookup,
+    )
 
 _PROBE_PROCESSES_CACHE = None
 
 def _probe_processes():
     """Can processes be created in this environment?
 
-    Some environments do not allow it (sandboxes that block Windows named pipes).
-    In that case the analysis runs in series: slower, but correct. The answer is
-    cached for the lifetime of the process: probing starts a whole child
-    interpreter (numpy, scipy, soundfile, Pillow), which is wasteful to repeat
-    on every batch.
+    Some environments do not allow it (sandboxes that block Windows named pipes
+    or SemLock creation). Check Queue allocation once without spawning a heavy
+    child interpreter; ProcessPoolExecutor also falls back serially on error.
     """
     global _PROBE_PROCESSES_CACHE
     if _PROBE_PROCESSES_CACHE is None:
         try:
-            from concurrent.futures import ProcessPoolExecutor
-            with ProcessPoolExecutor(max_workers=1) as ejecutor:
-                _PROBE_PROCESSES_CACHE = (
-                    ejecutor.submit(int, 1).result(timeout=120) == 1)
+            import multiprocessing
+            ctx = multiprocessing.get_context()
+            q = ctx.Queue()
+            q.close()
+            q.join_thread()
+            _PROBE_PROCESSES_CACHE = True
         except Exception:
             _PROBE_PROCESSES_CACHE = False
     return _PROBE_PROCESSES_CACHE
 
 
-
-
-def plan_batch_cache(files, mode, seconds, save_png, use_cache=True):
-    """Classifies each batch input against the cache lookup state machine.
-
-    Returns a list of `(index, path, CacheLookupStatus, cached_or_none)` tuples:
-    - `FULL_HIT`: returned immediately from JSON cache (`desde_cache=True`)
-    - `METRICS_HIT_NEEDS_PNG`: scheduled for fast PNG hydration (no re-audit)
-    - `MISS`: scheduled for full single-pass streaming analysis
-    """
+def _plan_batch_cache_with_meta(files, mode, seconds, save_png, use_cache=True,
+                                check_signature=False):
+    """Internal cache planner that optionally preserves validated metadata."""
     plan = []
     for index, path in enumerate(files):
         status = CacheLookupStatus.MISS
         cached = None
-        if use_cache:
+        pre_meta = None
+        if use_cache and (not check_signature or verify_signature(path)):
             meta = verify_metadata(path)
             if meta.get("valido"):
+                pre_meta = meta if check_signature else None
                 status, entry = read_cache_entry(
                     path, meta, mode, seconds, requires_png=save_png
                 )
@@ -848,8 +928,24 @@ def plan_batch_cache(files, mode, seconds, save_png, use_cache=True):
                 elif (status is CacheLookupStatus.METRICS_HIT_NEEDS_PNG
                       and entry is not None):
                     cached = dict(entry)
-        plan.append((index, path, status, cached))
+        plan.append((index, path, status, cached, pre_meta))
     return plan
+
+
+def plan_batch_cache(files, mode, seconds, save_png, use_cache=True):
+    """Classifies each batch input against the cache lookup state machine.
+
+    Returns a list of `(index, path, CacheLookupStatus, cached_or_none)` tuples:
+    - `FULL_HIT`: returned immediately from JSON cache (`desde_cache=True`)
+    - `METRICS_HIT_NEEDS_PNG`: scheduled for fast PNG hydration (no re-audit)
+    - `MISS`: scheduled for full single-pass streaming analysis
+    """
+    return [
+        (index, path, status, cached)
+        for index, path, status, cached, _ in _plan_batch_cache_with_meta(
+            files, mode, seconds, save_png, use_cache=use_cache, check_signature=False
+        )
+    ]
 
 
 def classify_batch_disposition(result) -> BatchDisposition:
@@ -869,11 +965,15 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
     processes. If a child process dies, that file is reported as an error and the
     batch continues."""
     # 1) What can be reused without analysing anything
-    plan = plan_batch_cache(files, mode, seconds, save_png, use_cache=use_cache)
-    pendientes = [
-        path for _, path, status, _ in plan
+    plan_with_meta = _plan_batch_cache_with_meta(
+        files, mode, seconds, save_png, use_cache=use_cache, check_signature=True
+    )
+    pending_entries = [
+        (path, status, pre_meta)
+        for _, path, status, _, pre_meta in plan_with_meta
         if status is not CacheLookupStatus.FULL_HIT
     ]
+    pendientes = [path for path, _, _ in pending_entries]
     workers = workers if workers and workers > 0 else default_workers(len(files))
     parallel = (workers > 1 and len(pendientes) >= MIN_FILES_PARALLEL
                    and _probe_processes())
@@ -884,7 +984,18 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
 
     def calculate_pending():
         """Analyses in series or in parallel the files that were not in the cache."""
-        tasks = [(path, mode, seconds, save_png, use_cache) for path in pendientes]
+        tasks = [
+            (
+                path,
+                mode,
+                seconds,
+                save_png,
+                use_cache,
+                pre_meta,
+                status is CacheLookupStatus.MISS and pre_meta is not None,
+            )
+            for path, status, pre_meta in pending_entries
+        ]
         if not parallel:
             for task in tasks:
                 yield _work_analysis(task)
@@ -898,20 +1009,24 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                 return 0
 
         lpt_order = sorted(range(len(tasks)), key=_file_size_key)
-        with ProcessPoolExecutor(max_workers=workers_efectivos) as ejecutor:
-            futures_by_index = {
-                idx: ejecutor.submit(_work_analysis, tasks[idx])
-                for idx in lpt_order
-            }
-            for idx, path in enumerate(pendientes):
-                futuro = futures_by_index[idx]
-                try:
-                    yield futuro.result()
-                except Exception as e:
-                    # A crashed process (memory, hang) cannot bring the batch down.
-                    yield {"archivo": os.path.basename(path), "ruta": path,
-                           "error": f"the analysis process failed "
-                                    f"({type(e).__name__}: {e})"}
+        try:
+            with ProcessPoolExecutor(max_workers=workers_efectivos) as executor:
+                futures_by_index = {
+                    idx: executor.submit(_work_analysis, tasks[idx])
+                    for idx in lpt_order
+                }
+                for idx, path in enumerate(pendientes):
+                    futuro = futures_by_index[idx]
+                    try:
+                        yield futuro.result()
+                    except Exception as e:
+                        # A crashed process (memory, hang) cannot bring the batch down.
+                        yield {"archivo": os.path.basename(path), "ruta": path,
+                               "error": f"the analysis process failed "
+                                        f"({type(e).__name__}: {e})"}
+        except (PermissionError, OSError):
+            for task in tasks:
+                yield _work_analysis(task)
 
     def in_order():
         """Two-phase result stream:
@@ -925,7 +1040,7 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
         calculated = calculate_pending() if pendientes else None
         batch = []
         retenidas = []
-        for index, path, status, cached in plan:
+        for index, path, status, cached, _ in plan_with_meta:
             if status is CacheLookupStatus.FULL_HIT and cached is not None:
                 result = dict(cached)
             else:
@@ -991,7 +1106,8 @@ def _hydrate_cached_png(path, meta, mode, seconds, cached, save_png=True):
 
 
 def analyze_file_data(path, mode="center", seconds=None, save_png=False,
-                           use_cache=True):
+                           use_cache=True, _pre_meta=None,
+                           _skip_cache_lookup=False):
     """Analyses one file and returns a dict. With `use_cache`, if the file has not
     changed since the last analysis the stored result is reused."""
     result = {"archivo": os.path.basename(path), "ruta": path}
@@ -1000,20 +1116,23 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
     # THAT file. Previously an exception escaped, killed the process and the
     # consumer was left without the {"tipo":"fin"} line.
     try:
-        if not verify_signature(path):
-            result["error"] = "Not a valid FLAC signature"
-            return result
+        if _pre_meta is not None:
+            meta = _pre_meta
+        else:
+            if not verify_signature(path):
+                result["error"] = "Not a valid FLAC signature"
+                return result
 
-        meta = verify_metadata(path)
-        if not meta["valido"]:
-            detail = meta.get("error")
-            result["error"] = ("Could not read FLAC metadata"
-                                  + (f" ({detail})" if detail else ""))
-            return result
+            meta = verify_metadata(path)
+            if not meta["valido"]:
+                detail = meta.get("error")
+                result["error"] = ("Could not read FLAC metadata"
+                                      + (f" ({detail})" if detail else ""))
+                return result
         result["meta"] = meta
 
         # Cache: an already verified album is not decoded or drawn again.
-        if use_cache:
+        if use_cache and not _skip_cache_lookup:
             status, cached = read_cache_entry(
                 path, meta, mode, seconds, requires_png=save_png
             )

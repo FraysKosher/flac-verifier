@@ -66,36 +66,23 @@ datas    = [(s, d) for (s, d) in datas if _conservar(s)]
 binaries = [(s, d) for (s, d) in binaries if _conservar(s)]
 
 # Submodules that PyInstaller usually omits in scipy/numpy and that this project
-# uses (scipy.signal.stft/welch for the spectrum, scipy.fft and numpy.fft underneath).
+# uses (`scipy.fft` + `numpy.fft`; `scipy.fft` eagerly imports special/linalg/sparse).
 hiddenimports += [
     "numpy.fft",
     "numpy.fft.helper",
     "scipy.fft",
     "scipy.fft._pocketfft",
-    "scipy.fftpack",
-    "scipy.signal",
-    "scipy.signal.windows",
-    "scipy.signal._spectral_py",
-    "scipy.optimize",
     "scipy.special",
     "scipy.linalg",
     "scipy.sparse",
     "scipy._lib",
-    "scipy.io",
-    # `import scipy.signal` pulls in scipy.stats, whose compiled `_sobol` module
-    # imports importlib.resources at start-up. PyInstaller does not see that
-    # import (it lives inside a Cython extension), so without it every
-    # `from scipy import signal` raised ModuleNotFoundError in the frozen engine
-    # and the lapped-codec lattice detector silently returned "nothing found".
     "importlib.resources",
 ]
 # A single module on Python 3.10, a package on 3.12: collect whatever exists.
 hiddenimports += collect_submodules("importlib.resources")
 # The submodules are collected, but without the test packages: they never run
 # and are only dead weight (and noise in the build report).
-hiddenimports += [m for m in collect_submodules("scipy.signal") if ".tests" not in m]
 hiddenimports += [m for m in collect_submodules("scipy.fft") if ".tests" not in m]
-hiddenimports += [m for m in collect_submodules("scipy.optimize") if ".tests" not in m]
 
 # Own modules that are only imported inside functions (lazy import): if they are
 # not declared, PyInstaller does not find them and the .exe fails when using them.
@@ -163,10 +150,11 @@ a = Analysis(
         # reportlab's chart/graphics stack: `platypus` never imports it (verified),
         # so the report renders fine without it.
         "reportlab.graphics",
-        # NOTE: scipy.optimize._highspy is deliberately NOT excluded: `import
-        # scipy.signal` pulls in scipy.optimize._linprog_highs, which imports
-        # _highspy eagerly, so removing it would break the engine at start-up
-        # (verified: it is loaded as soon as scipy.signal is imported).
+        # Heavy scipy subpackages never imported by the streaming engine (polyphase
+        # resampling and STFT/MDCT use numpy + scipy.fft directly).
+        "scipy.signal", "scipy.optimize", "scipy.spatial", "scipy.interpolate",
+        "scipy.stats", "scipy.io", "scipy.integrate", "scipy.ndimage",
+        "scipy.cluster", "scipy.odr", "scipy.datasets", "scipy.fftpack",
     ],
     noarchive=False,
     optimize=0,

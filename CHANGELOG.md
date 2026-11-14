@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance & Packaging
+
+- Raised `ENGINE_VERSION` to `"13.8"` and expanded the automated test suite to
+  **354 tests** (`tests/test_rendimiento.py` `TestNativeFastPathEquivalence`).
+- Added native `<i2` / `<i4` (`PCM_16` / `PCM_24`) single-pass streaming decode
+  with preallocated block buffers, vectorised 24-bit SIMD packing
+  (`_pack_int24_le`), O(1)-RAM `_StreamingBitDepthAccumulator`, and an L1
+  compact upper-16-bit bitmap in `ForensicBitsAccumulator`.
+- Replaced `scipy.signal.resample_poly` with a pure-NumPy `(160, 21)` Kaiser
+  (`beta=8.6`) polyphase resampler (`_resample_celt_44k_to_48k_slice`), added
+  cached `(36, 18)` matrix multiplication for `PQMF-576` (`_get_mdct36_basis`),
+  batched stereo STFT (`_stft_complex_stereo_pair`), cached frequency slices in
+  `PsychoacousticSTFTAccumulator`, and `mode="L"` pre-LUT spectrogram resizing.
+- Excluded 12 unused `scipy` subpackages (`signal`, `optimize`, `spatial`,
+  `interpolate`, `stats`, `io`, `integrate`, `ndimage`, `cluster`, `odr`,
+  `datasets`, `fftpack`) in `flac_verifier.spec`, shrinking `dist/FLAC_Verifier`
+  from `164.46 MB` (`1,304` files) to `115.89 MB` (`1,242` files, `-29.5%`).
+- Eliminated redundant child-interpreter process probing (`_probe_processes`),
+  forwarded pre-validated metadata across batch workers, switched GUI streaming
+  row painting in `_add_row` to O(1) with a 32-entry LRU spectrogram cache, and
+  cached footer colours/version in `informe_pdf.py`.
+
 ## [2.9.7] - 2026-11-14
 
 ### Changed & Fixed
