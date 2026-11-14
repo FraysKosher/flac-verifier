@@ -7,27 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Performance & Packaging
+### Performance, Packaging & GUI
 
-- Raised `ENGINE_VERSION` to `"13.8"` and expanded the automated test suite to
-  **354 tests** (`tests/test_rendimiento.py` `TestNativeFastPathEquivalence`).
+- Raised `ENGINE_VERSION` to `"13.9"` and expanded the automated test suite to
+  **356 tests** (`tests/test_rendimiento.py` and `tests/test_gui.py`).
 - Added native `<i2` / `<i4` (`PCM_16` / `PCM_24`) single-pass streaming decode
-  with preallocated block buffers, vectorised 24-bit SIMD packing
-  (`_pack_int24_le`), O(1)-RAM `_StreamingBitDepthAccumulator`, and an L1
-  compact upper-16-bit bitmap in `ForensicBitsAccumulator`.
+  with preallocated block buffers, reusable `_Int24Packer` `<u4` scratch buffers
+  (`2.5x` faster 24-bit MD5 packing), shared `abs_q` lattice/clipping passes,
+  O(1)-RAM `_StreamingBitDepthAccumulator`, and an L1 compact upper-16-bit
+  bitmap in `ForensicBitsAccumulator`.
 - Replaced `scipy.signal.resample_poly` with a pure-NumPy `(160, 21)` Kaiser
-  (`beta=8.6`) polyphase resampler (`_resample_celt_44k_to_48k_slice`), added
-  cached `(36, 18)` matrix multiplication for `PQMF-576` (`_get_mdct36_basis`),
-  batched stereo STFT (`_stft_complex_stereo_pair`), cached frequency slices in
-  `PsychoacousticSTFTAccumulator`, and `mode="L"` pre-LUT spectrogram resizing.
-- Excluded 12 unused `scipy` subpackages (`signal`, `optimize`, `spatial`,
-  `interpolate`, `stats`, `io`, `integrate`, `ndimage`, `cluster`, `odr`,
-  `datasets`, `fftpack`) in `flac_verifier.spec`, shrinking `dist/FLAC_Verifier`
-  from `164.46 MB` (`1,304` files) to `115.89 MB` (`1,242` files, `-29.5%`).
+  (`beta=8.6`) polyphase resampler (`_resample_celt_44k_to_48k_slice`), loaded
+  `pypocketfft` directly via `spec_from_file_location` in frozen mode without
+  importing `scipy`, added cached `(36, 18)` matrix multiplication for `PQMF-576`
+  (`_get_mdct36_basis`), precomputed `(bins, 10)` subband weights in
+  `PsychoacousticSTFTAccumulator`, replaced full-block complex STFT allocations
+  with 64-frame L2-tiled zero-allocation STFT + Parseval Mid/Side power identity
+  (`3.7x` faster STFT+power, zero forensic threshold changes), and switched
+  spectrogram resizing to `mode="L"` pre-LUT.
+- Pruned `scipy` Python/compiled modules, duplicate `scipy.libs` OpenBLAS,
+  optional codecs (`PIL._avif`, `PIL._webp`), unused stdlib binaries (`ssl`,
+  `sqlite3`), and Tcl timezone/locale catalogs (`tzdata`, `msgs`) in
+  `flac_verifier.spec`, shrinking `dist/FLAC_Verifier` from `164.46 MB` (`1,304`
+  files) to `66.14 MB` (`463` files, `-59.8%` size and `-64.5%` file count).
+- Overhauled GUI batch responsiveness and theme switching in `gui.py`: replaced
+  per-row `CTkFrame`/`CTkLabel`/3-widget chips with zero-canvas `_FlatRowFrame`,
+  `_FlatRowLabel`, DPI-cached `_tk_icon`, and 3x-supersampled `_VerdictChip`
+  pills (`300-row _retheme` reduced from `5,968 ms` to `~540 ms`, `11.1x`
+  faster; `300-row _add_row` `4.9x` faster), switched row selection to O(1),
+  coalesced batch log/hero updates per queue tick, debounced table resize to
+  `16 ms`, and added background daemon PIL spectrogram pre-warming.
 - Eliminated redundant child-interpreter process probing (`_probe_processes`),
-  forwarded pre-validated metadata across batch workers, switched GUI streaming
-  row painting in `_add_row` to O(1) with a 32-entry LRU spectrogram cache, and
-  cached footer colours/version in `informe_pdf.py`.
+  forwarded pre-validated metadata across batch workers, and cached footer
+  colours/version in `informe_pdf.py`.
 
 ## [2.9.7] - 2026-11-14
 

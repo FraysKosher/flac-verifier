@@ -1582,7 +1582,7 @@ class test_live_swap(unittest.TestCase):
         elapsed = (time.perf_counter() - start) * 1000
         self.window._retheme("dark")
         print(f"\n300-row retheme: {elapsed:.0f} ms", flush=True)
-        self.assertLess(elapsed, 15000,
+        self.assertLess(elapsed, 5000,
                         "the in-place retheme is pathologically slow")
 
 
@@ -1940,6 +1940,53 @@ class TestExplicitStateMachines(unittest.TestCase):
 
         self.window._log("legacy tag check", "aviso", scroll=False)
         self.assertEqual(self.window._log_entries[-1][2], "warn")
+
+    def test_batch_drain_coalesces_logs_and_selection_stays_o1(self):
+        self.window.active_run_id = 7
+        self.window._set_run_state(gui.RunState.RUNNING)
+        self.window.message_queue.put(
+            ("stdout", {"tipo": "inicio", "total": 10, "workers": 4, "run_id": 7})
+        )
+        for idx in range(10):
+            self.window.message_queue.put((
+                "stdout",
+                {
+                    "tipo": "resultado",
+                    "indice": idx + 1,
+                    "indice_original": idx,
+                    "total": 10,
+                    "archivo": f"{idx + 1:02d}.flac",
+                    "ruta": f"C:/Album/{idx + 1:02d}.flac",
+                    "veredicto": "GENUINE LOSSLESS",
+                    "score": 0.95,
+                    "problemas": [],
+                    "evidencias_forenses": ["clean lattice"],
+                    "meta": {"bits_per_sample": 24, "sample_rate": 96000},
+                    "md5": {"estado": "match"},
+                    "dr": 13.0,
+                    "run_id": 7,
+                },
+            ))
+        self.window.message_queue.put(
+            ("fin", {"tipo": "__fin__", "codigo": 0, "cancelado": False, "run_id": 7})
+        )
+        self.window._drain_queue()
+        self.assertEqual(self.window.run_state, gui.RunState.FINISHED)
+        self.assertEqual(len(self.window.table_rows), 10)
+        log_text = self.window.log.get("1.0", "end")
+        self.assertIn("01.flac", log_text)
+        self.assertIn("10.flac", log_text)
+        self.assertIn("clean lattice", log_text)
+
+        # Verify O(1) row selection only repaints the affected rows, not the whole table.
+        with mock.patch.object(
+            self.window, "_paint_row", wraps=self.window._paint_row
+        ) as spy_paint:
+            self.window._select(self.window.table_rows[3]["event"])
+            self.assertEqual(spy_paint.call_count, 1)
+            spy_paint.reset_mock()
+            self.window._select(self.window.table_rows[7]["event"])
+            self.assertEqual(spy_paint.call_count, 2)
 
 
 if __name__ == "__main__":

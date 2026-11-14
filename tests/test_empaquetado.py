@@ -273,16 +273,19 @@ class TestSpecification(unittest.TestCase):
         self.assertIn("soundfile", self.source)
 
     def test_includes_submodules_scipy_numpy(self):
-        # scipy.fft imports special/linalg/sparse underneath; heavy scipy.signal
-        # and siblings were replaced by pure-NumPy kernels and stay excluded.
+        # pypocketfft is shipped directly as a binary extension so the frozen
+        # bundle excludes the entire scipy Python package + duplicate OpenBLAS.
         hidden_part = self.source.split("hiddenimports +=", 1)[1].split("excludes=[", 1)[0]
         excludes_part = self.source.split("excludes=[", 1)[1].split("],", 1)[0]
-        for modulo in ("numpy.fft", "scipy.fft",
-                       "scipy.special", "scipy.linalg", "importlib.resources"):
+        for modulo in ("numpy.fft", "importlib.resources"):
             with self.subTest(modulo=modulo):
                 self.assertIn(f'"{modulo}"', hidden_part)
+        self.assertIn("pypocketfft", self.source)
+        self.assertIn('"scipy"', excludes_part)
         self.assertIn('"scipy.signal"', excludes_part)
         self.assertNotIn('"scipy.signal"', hidden_part)
+        self.assertNotIn('"scipy.special"', hidden_part)
+        self.assertNotIn('"scipy.linalg"', hidden_part)
 
     def test_declares_modules_own_import_lazy(self):
         for modulo in ("motor_flac", "informe_pdf", "verificar_flac", "gui"):

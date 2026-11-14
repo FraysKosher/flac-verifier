@@ -316,30 +316,23 @@ COLOUR_PROPERTIES = (
 def freeze_redraw(window: Any) -> list[int]:
     """Stops the window from painting while the colours change (Windows only).
 
-    Returns the handles that were frozen, empty off Windows or on failure. Tk
-    draws every widget on the toplevel window, but the children are enumerated
-    as well so an embedded native child is covered too."""
+    Returns the top-level handle that was frozen, or empty when unmapped, off
+    Windows, or on failure."""
     if not sys.platform.startswith("win"):
         return []
     try:
+        if not window.winfo_ismapped():
+            return []
         import ctypes
         user32 = ctypes.windll.user32
-        handles = [int(window.winfo_id())]
-        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
-                                       ctypes.c_void_p)
-
-        def collect(hwnd, _param):
-            handles.append(int(hwnd or 0))
-            return True
-
-        callback = enum_proc(collect)
-        user32.EnumChildWindows(ctypes.c_void_p(handles[0]), callback, None)
+        hwnd = int(window.winfo_id())
+        if not hwnd:
+            return []
         send = user32.SendMessageW
         send.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
                          ctypes.c_void_p]
-        for hwnd in handles:
-            send(ctypes.c_void_p(hwnd), 0x000B, None, None)      # WM_SETREDRAW off
-        return handles
+        send(ctypes.c_void_p(hwnd), 0x000B, None, None)          # WM_SETREDRAW off
+        return [hwnd]
     except Exception:
         return []
 
@@ -1037,6 +1030,185 @@ class _TableScrollbar(tkinter.Canvas):
         return "break"
 
 
+class _FlatRowFrame(tkinter.Frame):
+    """Zero-canvas flat frame for 0-radius table rows, bars and separators.
+
+    Translates `fg_color` in `configure()` and `cget()` while avoiding per-row
+    CustomTkinter canvas widgets and global tracker callbacks.
+    """
+
+    def __init__(self, master: Any, fg_color: str = "", width: int = 0,
+                 height: int = 0, **kwargs: Any) -> None:
+        self._fg_color = fg_color
+        self._logical_width = width
+        self._logical_height = height
+        init_kw: dict[str, Any] = {"bd": 0, "highlightthickness": 0}
+        if fg_color:
+            init_kw["background"] = str(fg_color)
+        if width:
+            init_kw["width"] = width
+        if height:
+            init_kw["height"] = height
+        init_kw.update(kwargs)
+        super().__init__(master, **init_kw)
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if "fg_color" in kwargs:
+            fg = kwargs.pop("fg_color")
+            self._fg_color = fg
+            kwargs["background"] = str(fg)
+        if "width" in kwargs:
+            self._logical_width = int(kwargs["width"])
+        if "height" in kwargs:
+            self._logical_height = int(kwargs["height"])
+        return super().configure(cnf, **kwargs)
+
+    config = configure
+
+    def cget(self, key: str) -> Any:
+        if key == "fg_color":
+            return self._fg_color
+        if key == "height":
+            return self._logical_height if self._logical_height else int(super().cget("height"))
+        if key == "width":
+            return self._logical_width if self._logical_width else int(super().cget("width"))
+        return super().cget(key)
+
+
+class _FlatRowLabel(tkinter.Label):
+    """Zero-canvas flat label for monospace table cells and MD5 status icons."""
+
+    def __init__(self, master: Any, fg_color: str = "", text_color: str = "",
+                 image: Any = None, **kwargs: Any) -> None:
+        self._fg_color = fg_color
+        self._text_color = text_color
+        self._image_ref = image
+        init_kw: dict[str, Any] = {
+            "bd": 0, "highlightthickness": 0, "padx": 0, "pady": 0,
+        }
+        if fg_color:
+            init_kw["background"] = str(fg_color)
+        if text_color:
+            init_kw["foreground"] = str(text_color)
+        if image is not None:
+            init_kw["image"] = image
+        init_kw.update(kwargs)
+        super().__init__(master, **init_kw)
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if "fg_color" in kwargs:
+            fg = kwargs.pop("fg_color")
+            self._fg_color = fg
+            kwargs["background"] = str(fg)
+        if "text_color" in kwargs:
+            tc = kwargs.pop("text_color")
+            self._text_color = tc
+            kwargs["foreground"] = str(tc)
+        if "image" in kwargs:
+            img = kwargs["image"]
+            self._image_ref = img
+            if img is None:
+                kwargs["image"] = ""
+        return super().configure(cnf, **kwargs)
+
+    config = configure
+
+    def cget(self, key: str) -> Any:
+        if key == "fg_color":
+            return self._fg_color
+        if key == "text_color":
+            return self._text_color
+        if key == "image":
+            return self._image_ref
+        return super().cget(key)
+
+
+class _VerdictChip(_FlatRowLabel):
+    """Single-widget table verdict pill backed by a cached anti-aliased PhotoImage.
+
+    Replaces three CustomTkinter canvas widgets (`chip`, `dot`, `label`) per row
+    while exposing `cget("fg_color")` for theme and state assertions.
+    """
+
+    def __init__(self, master: Any, text: str, tone: str, pill_fg: str,
+                 row_bg: str, image: Any = None) -> None:
+        self.chip_text = text
+        self.chip_tone = tone
+        self._pill_fg = pill_fg
+        super().__init__(master, text="" if image is not None else text,
+                         fg_color=row_bg, image=image)
+
+    def set_pill_visual(self, pill_fg: str, row_bg: str, image: Any) -> None:
+        self._pill_fg = pill_fg
+        if image is not None:
+            super().configure(fg_color=row_bg, image=image, text="")
+        else:
+            super().configure(fg_color=row_bg, text=self.chip_text)
+
+    def cget(self, key: str) -> Any:
+        if key == "fg_color":
+            return self._pill_fg
+        return super().cget(key)
+
+
+_CHIP_FONT_CANDIDATES = (
+    "C:/Windows/Fonts/segoeuib.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+)
+_PIL_CHIP_FONTS: dict[int, Any] = {}
+
+
+def _get_pil_chip_font(px_size: int) -> Any:
+    cached = _PIL_CHIP_FONTS.get(px_size)
+    if cached is not None:
+        return cached
+    from PIL import ImageFont
+    loaded: Any = None
+    for candidate in _CHIP_FONT_CANDIDATES:
+        if os.path.exists(candidate):
+            try:
+                loaded = ImageFont.truetype(candidate, px_size)
+                break
+            except Exception:
+                continue
+    if loaded is None:
+        loaded = ImageFont.load_default()
+    _PIL_CHIP_FONTS[px_size] = loaded
+    return loaded
+
+
+def _decode_spectrogram_pil(path: str, width_limit: int,
+                            height_limit: int) -> tuple[Any, tuple[int, int]] | None:
+    """Decodes and downscales a spectrogram PNG using PIL only (thread-safe)."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        from PIL import Image
+        target_w = width_limit * 2
+        target_h = height_limit * 2
+        with Image.open(path) as source:
+            src_w, src_h = source.size
+            if src_w <= 0 or src_h <= 0:
+                return None
+            ratio = min(1.0, target_w / src_w, target_h / src_h)
+            thumb_size = (max(1, round(src_w * ratio)),
+                          max(1, round(src_h * ratio)))
+            rgb = source.convert("RGB")
+            if rgb.size != thumb_size:
+                picture = rgb.resize(thumb_size, Image.Resampling.BILINEAR)
+            else:
+                picture = rgb.copy()
+        width, height = picture.size
+        scale = min(width_limit / width, height_limit / height)
+        display = (max(1, round(width * scale)),
+                   max(1, round(height * scale)))
+        return picture, display
+    except Exception:
+        return None
+
+
 if CTK_OK:
 
     class _BaseWindow(ctk.CTk, TkinterDnD.DnDWrapper if DND_OK else object):  # type: ignore[misc]
@@ -1083,15 +1255,19 @@ if CTK_OK:
             self.total = 0
             self.recibidos = 0
             self.pdf_path: str | None = None
-            # CTkImage references must stay alive: a collected image disappears
-            # from the button silently.
+            # CTkImage and PhotoImage references must stay alive: a collected
+            # image disappears from its widget silently.
             self._icons: dict[tuple[str, int, str], Any] = {}
+            self._tk_icons: dict[tuple[str, int, str], Any] = {}
+            self._chip_images: dict[tuple[str, str, str, float, str], Any] = {}
             # Results surface: the selected row, its widgets and the text metrics
             # used by the ellipsis.
             self.selected_event: Event | None = None
             self._problems_expanded = False
             self.table_rows: list[dict[str, Any]] = []
             self._measures: dict[tuple[Any, ...], Any] = {}
+            self._font_max_char: dict[tuple[Any, ...], int] = {}
+            self._scaled_fonts: dict[tuple[Any, ...], tuple[Any, ...]] = {}
             self._eyebrow_full = ""
             self._headline_full = ""
             self._last_log_line = ""
@@ -1100,11 +1276,23 @@ if CTK_OK:
             self._retheming = False
             self._hero_width = 0
             self._preview_width = 0
+            self._canvas_width = 0
+            self._pending_canvas_width = 0
+            self._canvas_resize_after: str | None = None
             # (widget, background token) of every frame focus ring.
             self._focus_rings: list[tuple[Any, str]] = []
             self._buttons: list[Any] = []
             self._scroll_scheduled = False
+            self._batch_draining = False
+            self._pending_log_chunks: list[str] = []
+            self._pending_log_scroll = False
+            self._hero_dirty = False
             self._spectrograms: OrderedDict[str, Any] = OrderedDict()
+            self._pil_spectrograms: OrderedDict[str, tuple[Any, tuple[int, int]]] = OrderedDict()
+            self._spec_inflight: set[str] = set()
+            self._spec_lock = threading.Lock()
+            self._spec_queue: "queue.Queue[str | None]" = queue.Queue(maxsize=64)
+            self._spec_worker: threading.Thread | None = None
             self._spectrogram_path_value = ""
             self._hero_layout_scheduled = False
 
@@ -1170,6 +1358,34 @@ if CTK_OK:
                     image = None
             self._icons[key] = image
             return image
+
+        def _tk_icon(self, name: str, size: int = 16, color: str | None = None) -> Any:
+            """Native PhotoImage icon for lightweight table cells, cached by DPI and tint."""
+            tint = str(color or c("text.secondary"))
+            scaling = ctk.ScalingTracker.get_widget_scaling(self)
+            px = max(1, round(size * scaling))
+            key = (name, px, tint)
+            if key in self._tk_icons:
+                return self._tk_icons[key]
+            photo = None
+            path = os.path.join(ICON_FOLDER, f"{name}_{size}.png")
+            if not os.path.exists(path):
+                closest = min(ICON_SIZES, key=lambda value: abs(value - size))
+                path = os.path.join(ICON_FOLDER, f"{name}_{closest}.png")
+            if os.path.exists(path):
+                try:
+                    from PIL import Image, ImageTk
+                    with Image.open(path) as source:
+                        alpha = source.convert("RGBA").getchannel("A")
+                    if alpha.size != (px, px):
+                        alpha = alpha.resize((px, px), Image.Resampling.BILINEAR)
+                    coloured = Image.new("RGBA", (px, px), tint)
+                    coloured.putalpha(alpha)
+                    photo = ImageTk.PhotoImage(coloured, master=self)
+                except Exception:
+                    photo = None
+            self._tk_icons[key] = photo
+            return photo
 
         def _section_label(self, parent: Any, text: str, row: int) -> Any:
             """11 px uppercase section label (DESIGN.md 5.3)."""
@@ -1803,8 +2019,8 @@ if CTK_OK:
             self.table_scroll.grid(row=1, column=1, sticky="ns")
             self.table_canvas.configure(yscrollcommand=self.table_scroll.set)
 
-            self.table_body = ctk.CTkFrame(self.table_canvas, height=1,
-                                           fg_color=c("bg.surface"), corner_radius=0)
+            self.table_body = _FlatRowFrame(self.table_canvas, height=1,
+                                            fg_color=c("bg.surface"))
             self._table_window = self.table_canvas.create_window(
                 (0, 0), window=self.table_body, anchor="nw")
             self.table_body.bind("<Configure>", self._on_table_body)
@@ -1823,9 +2039,9 @@ if CTK_OK:
             """One 44 px row, appended as the event arrives."""
             follow = self._table_at_bottom()
             values = result_row(event)
-            mono = theme.mono(12)
-            row = ctk.CTkFrame(self.table_body, height=44,
-                               fg_color=c("bg.surface"), corner_radius=0)
+            mono = self._scaled_font(theme.mono(12))
+            surface_bg = c("bg.surface")
+            row = _FlatRowFrame(self.table_body, height=44, fg_color=surface_bg)
             insert_pos: int | None = None
             original_index = event.get("indice_original")
             if isinstance(original_index, int):
@@ -1846,8 +2062,7 @@ if CTK_OK:
             row.grid_rowconfigure(1, minsize=1)
             self._configure_table_columns(row)
 
-            bar = ctk.CTkFrame(row, width=2, height=1, corner_radius=0,
-                               fg_color=c("bg.surface"))
+            bar = _FlatRowFrame(row, width=2, height=1, fg_color=surface_bg)
             bar.grid(row=0, column=0, sticky="ns")
 
             plain: list[Any] = []
@@ -1855,64 +2070,67 @@ if CTK_OK:
             # on the file name, so a long name can never widen the column or
             # feed a Configure loop; sticky="ew" stretches it to the cell and the
             # ellipsis is applied on its own <Configure>.
+            file_font = theme.font(13)
             file_label = tkinter.Label(row, text=values["file"], anchor="w",
                                        width=1, bd=0, highlightthickness=0,
-                                       background=c("bg.surface"),
+                                       background=surface_bg,
                                        foreground=c("text.primary"),
-                                       font=self._scaled_font(theme.font(13)))
+                                       font=self._scaled_font(file_font))
             file_label.grid(row=0, column=1, sticky="ew",
                             padx=(theme.SPACE["sm"], theme.SPACE["xs"]))
             file_label.full_text = values["file"]
-            file_label.ui_font = theme.font(13)
+            file_label.ui_font = file_font
             file_label.tooltip = None
             file_label.fitted_width = 0
             file_label.bind("<Configure>",
                             lambda configure, label=file_label:
                             self._refit_file_name(label, configure))
 
-            chip = self._chip(row, values["label"], values["tone"])
+            chip = self._row_chip(row, values["label"], values["tone"], surface_bg)
             chip.grid(row=0, column=2, sticky="w",
                       padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
 
             score_text = "—" if values["score"] is None else str(values["score"])
+            text_sec = c("text.secondary")
             for column, key, text, anchor in (
                     (3, "score", score_text, "e"),
                     (4, "depth", values["depth"], "w"),
                     (5, "rate", values["rate"], "w"),
                     (6, "dr", values["dr"], "w")):
-                label = ctk.CTkLabel(row, text=text, anchor=anchor, font=mono,
-                                     fg_color=c("bg.surface"), corner_radius=0,
-                                     text_color=c("text.secondary"))
+                label = _FlatRowLabel(row, text=text, anchor=anchor, font=mono,
+                                      fg_color=surface_bg, text_color=text_sec)
                 label.grid(row=0, column=column, sticky="ew",
                            padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
                 plain.append(label)
 
             icon_spec = None
             if values["md5"] == "—":
-                mark = ctk.CTkLabel(row, text="—", font=mono,
-                                    fg_color=c("bg.surface"), corner_radius=0,
-                                    text_color=c("text.tertiary"))
+                mark = _FlatRowLabel(row, text="—", font=mono,
+                                     fg_color=surface_bg,
+                                     text_color=c("text.tertiary"))
             else:
                 icon_spec = (values["md5_icon"], 16, values["md5_tone"])
-                mark = ctk.CTkLabel(row, text="", image=self._icon(
+                mark = _FlatRowLabel(row, text="", image=self._tk_icon(
                     icon_spec[0], icon_spec[1], c(icon_spec[2])),
-                    fg_color=c("bg.surface"), corner_radius=0)
+                    fg_color=surface_bg)
                 _Tooltip(mark, f"MD5 {values['md5']}")
             mark.grid(row=0, column=7, sticky="w",
                       padx=(theme.SPACE["xs"], theme.SPACE["sm"]))
             plain.append(mark)
 
-            separator = ctk.CTkFrame(row, height=1, corner_radius=0,
-                                     fg_color=c("border.subtle"))
+            separator = _FlatRowFrame(row, height=1, fg_color=c("border.subtle"))
             separator.grid(row=1, column=0, columnspan=len(TABLE_COLUMNS) + 1,
                            sticky="ew")
 
             entry = {"event": event, "values": values, "frame": row, "bar": bar,
+                     "separator": separator,
                      "cells": {"file": file_label, "verdict": chip,
                                "score": plain[0], "depth": plain[1],
                                "rate": plain[2], "dr": plain[3], "md5": mark},
                      "file_label": file_label, "plain": plain,
-                     "icon_spec": icon_spec, "hover": False}
+                     "icon_spec": icon_spec, "hover": False,
+                     "_was_selected": False, "_paint_state": None,
+                     "_chip_bg": str(surface_bg)}
             if insert_pos is not None:
                 self.table_rows.insert(insert_pos, entry)
             else:
@@ -1921,8 +2139,11 @@ if CTK_OK:
             if (self.selected_event is not None
                     and same_logical_event(event, self.selected_event)):
                 self.selected_event = event
-                self._render_hero()
-                self._update_reveal()
+                if self._batch_draining:
+                    self._hero_dirty = True
+                else:
+                    self._render_hero()
+                    self._update_reveal()
             self._paint_row(entry)
             if follow:
                 self._schedule_table_scroll()
@@ -1938,6 +2159,8 @@ if CTK_OK:
                 self._bind_row(child, entry)
 
         def _hover_row(self, entry: dict[str, Any], hovering: bool) -> None:
+            if entry["hover"] == hovering:
+                return
             entry["hover"] = hovering
             self._paint_row(entry)
 
@@ -1949,8 +2172,9 @@ if CTK_OK:
                     return
             self._hover_row(entry, False)
 
-        def _paint_row(self, entry: dict[str, Any]) -> None:
+        def _paint_row(self, entry: dict[str, Any], force: bool = False) -> None:
             selected = same_logical_event(entry["event"], self.selected_event)
+            entry["_was_selected"] = selected
             if selected:
                 background = theme.mix(c("accent"), c("bg.surface"), 0.08)
                 bar = c("accent")
@@ -1958,12 +2182,41 @@ if CTK_OK:
                 background, bar = c("bg.hover"), c("bg.hover")
             else:
                 background, bar = c("bg.surface"), c("bg.surface")
-            entry["frame"].configure(fg_color=background)
-            entry["bar"].configure(fg_color=bar)
-            entry["file_label"].configure(background=background,
-                                          foreground=c("text.primary"))
+            bg_str = str(background)
+            paint_state = (theme.MODE, bg_str, str(bar))
+            if not force and entry.get("_paint_state") == paint_state:
+                return
+            entry["_paint_state"] = paint_state
+            tk_call = self.tk.call
+            bar_str = str(bar)
+            text_pri = str(c("text.primary"))
+            entry["frame"]._fg_color = background
+            tk_call(entry["frame"]._w, "configure", "-background", bg_str)
+            entry["bar"]._fg_color = bar
+            tk_call(entry["bar"]._w, "configure", "-background", bar_str)
+            tk_call(entry["file_label"]._w, "configure",
+                    "-background", bg_str, "-foreground", text_pri)
             for label in entry["plain"]:
-                label.configure(fg_color=background)
+                label._fg_color = background
+                tk_call(label._w, "configure", "-background", bg_str)
+            if force or entry.get("_chip_bg") != bg_str:
+                entry["_chip_bg"] = bg_str
+                verdict_cell = entry["cells"]["verdict"]
+                if isinstance(verdict_cell, _VerdictChip):
+                    ink_t, bg_t, bd_t = CHIP_STYLES.get(
+                        verdict_cell.chip_tone, CHIP_STYLES["unknown"]
+                    )
+                    pill_fg = c(bg_t)
+                    img = self._chip_photo(
+                        verdict_cell.chip_text, verdict_cell.chip_tone,
+                        c(ink_t), pill_fg, c(bd_t), bg_str,
+                    )
+                    verdict_cell.set_pill_visual(pill_fg, background, img)
+                else:
+                    try:
+                        verdict_cell.configure(bg_color=bg_str)
+                    except Exception:
+                        pass
 
         def _clear_table(self) -> None:
             for entry in self.table_rows:
@@ -1978,7 +2231,8 @@ if CTK_OK:
             self.selected_event = event
             self._problems_expanded = False
             for entry in self.table_rows:
-                self._paint_row(entry)
+                if entry.get("_was_selected") or same_logical_event(entry["event"], event):
+                    self._paint_row(entry)
             self._render_hero()
             self._update_reveal()
 
@@ -1991,7 +2245,8 @@ if CTK_OK:
             self.selected_event = None
             self._problems_expanded = False
             for entry in self.table_rows:
-                self._paint_row(entry)
+                if entry.get("_was_selected"):
+                    self._paint_row(entry)
             self._render_hero()
             self._update_reveal()
 
@@ -2005,8 +2260,29 @@ if CTK_OK:
             self.table_canvas.configure(scrollregion=bbox)
 
         def _on_table_canvas(self, event: Any) -> None:
-            self.table_canvas.itemconfigure(self._table_window, width=event.width)
-            self._on_table_body()
+            width = int(getattr(event, "width", 0) or 0)
+            if width <= 1 or width == self._canvas_width:
+                return
+            if self._canvas_width == 0:
+                self._canvas_width = width
+                self.table_canvas.itemconfigure(self._table_window, width=width)
+                self._on_table_body()
+                return
+            self._pending_canvas_width = width
+            if self._canvas_resize_after is None:
+                self._canvas_resize_after = self.after(16, self._apply_canvas_width)
+
+        def _apply_canvas_width(self) -> None:
+            self._canvas_resize_after = None
+            width = self._pending_canvas_width
+            if width <= 1 or width == self._canvas_width:
+                return
+            self._canvas_width = width
+            try:
+                self.table_canvas.itemconfigure(self._table_window, width=width)
+                self._on_table_body()
+            except Exception:
+                pass
 
         def _on_table_wheel(self, event: Any) -> str:
             if self.table_canvas.yview() != (0.0, 1.0):
@@ -2043,6 +2319,66 @@ if CTK_OK:
                 pass
 
         # ── chips ───────────────────────────────────────────────────────────
+        def _chip_photo(self, text: str, tone: str, ink_col: str,
+                        pill_bg: str, pill_border: str, row_bg: str) -> Any:
+            """Renders and caches a 3x-supersampled anti-aliased verdict pill."""
+            scaling = ctk.ScalingTracker.get_widget_scaling(self)
+            key = (text, tone, str(row_bg), scaling, theme.MODE)
+            if key in self._chip_images:
+                return self._chip_images[key]
+            photo = None
+            try:
+                from PIL import Image, ImageDraw, ImageTk
+                ss = 3
+                pad_l = max(1, round(theme.SPACE["xs"] * scaling))
+                pad_r = pad_l
+                gap = max(1, round(6 * scaling))
+                dot_d = max(2, round(6 * scaling))
+                height = max(12, round(24 * scaling))
+                font_px = max(8, round(11 * scaling * ss))
+                pil_font = _get_pil_chip_font(font_px)
+                dummy = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+                bbox = dummy.textbbox((0, 0), text, font=pil_font)
+                text_w = max(1, math.ceil((bbox[2] - bbox[0]) / ss)) if "math" in globals() else max(1, (bbox[2] - bbox[0] + ss - 1) // ss)
+                width = pad_l + dot_d + gap + text_w + pad_r
+                hi_w, hi_h = width * ss, height * ss
+                canvas = Image.new("RGB", (hi_w, hi_h), str(row_bg))
+                draw = ImageDraw.Draw(canvas)
+                radius = max(2, round(theme.RADIUS["sm"] * scaling * ss))
+                border_w = max(1, round(1 * scaling * ss))
+                draw.rounded_rectangle(
+                    (0, 0, hi_w - 1, hi_h - 1),
+                    radius=radius, fill=str(pill_bg),
+                    outline=str(pill_border), width=border_w,
+                )
+                dot_x = pad_l * ss
+                dot_size = dot_d * ss
+                dot_y = (hi_h - dot_size) // 2
+                draw.ellipse(
+                    (dot_x, dot_y, dot_x + dot_size, dot_y + dot_size),
+                    fill=str(ink_col),
+                )
+                text_x = (pad_l + dot_d + gap) * ss
+                text_h = bbox[3] - bbox[1]
+                text_y = (hi_h - text_h) // 2 - bbox[1]
+                draw.text((text_x, text_y), text, fill=str(ink_col), font=pil_font)
+                smooth = canvas.resize((width, height), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(smooth, master=self)
+            except Exception:
+                photo = None
+            self._chip_images[key] = photo
+            return photo
+
+        def _row_chip(self, parent: Any, text: str, tone: str,
+                      row_bg: str) -> _VerdictChip:
+            """Lightweight single-widget verdict chip for streaming table rows."""
+            ink_t, bg_t, bd_t = CHIP_STYLES.get(tone, CHIP_STYLES["unknown"])
+            pill_fg = c(bg_t)
+            photo = self._chip_photo(
+                text, tone, c(ink_t), pill_fg, c(bd_t), str(row_bg),
+            )
+            return _VerdictChip(parent, text, tone, pill_fg, row_bg, image=photo)
+
         def _chip(self, parent: Any, text: str, tone: str) -> Any:
             """24 px chip of DESIGN.md 7.5: dot + label, never colour alone."""
             ink, background, border = CHIP_STYLES.get(tone, CHIP_STYLES["unknown"])
@@ -2052,10 +2388,45 @@ if CTK_OK:
             dot = ctk.CTkFrame(chip, width=6, height=6, corner_radius=3,
                                fg_color=c(ink))
             dot.grid(row=0, column=0, padx=(theme.SPACE["xs"], 6), pady=9)
-            ctk.CTkLabel(chip, text=text, font=theme.font(11, 600),
-                         text_color=c(ink)).grid(row=0, column=1,
-                                                 padx=(0, theme.SPACE["xs"]))
+            label = ctk.CTkLabel(chip, text=text, font=theme.font(11, 600),
+                                 text_color=c(ink))
+            label.grid(row=0, column=1, padx=(0, theme.SPACE["xs"]))
+            chip._chip_parts = (dot, label, tone)
             return chip
+
+        def _recolour_chip(self, chip: Any, row_bg: str,
+                           palette: dict[str, tuple[Any, Any, Any]]) -> None:
+            """Fast direct retheme of a verdict chip without tree introspection."""
+            if isinstance(chip, _VerdictChip):
+                colours = palette.get(chip.chip_tone)
+                if colours is None:
+                    ink_t, bg_t, bd_t = CHIP_STYLES.get(
+                        chip.chip_tone, CHIP_STYLES["unknown"]
+                    )
+                    colours = (c(ink_t), c(bg_t), c(bd_t))
+                    palette[chip.chip_tone] = colours
+                ink_col, bg_col, bd_col = colours
+                img = self._chip_photo(
+                    chip.chip_text, chip.chip_tone,
+                    ink_col, bg_col, bd_col, str(row_bg),
+                )
+                chip.set_pill_visual(bg_col, row_bg, img)
+                return
+            parts = getattr(chip, "_chip_parts", None)
+            if parts is None:
+                self._recolour_widget(chip)
+                return
+            dot, label, tone = parts
+            colours = palette.get(tone)
+            if colours is None:
+                ink_t, bg_t, bd_t = CHIP_STYLES.get(tone, CHIP_STYLES["unknown"])
+                colours = (c(ink_t), c(bg_t), c(bd_t))
+                palette[tone] = colours
+            ink_col, bg_col, bd_col = colours
+            bg_hex = str(bg_col)
+            chip.configure(fg_color=bg_col, border_color=bd_col, bg_color=str(row_bg))
+            dot.configure(fg_color=ink_col, bg_color=bg_hex)
+            label.configure(text_color=ink_col, bg_color=bg_hex)
 
         # ── hero content ────────────────────────────────────────────────────
         def _render_hero(self) -> None:
@@ -2261,6 +2632,41 @@ if CTK_OK:
             self._set_enabled(self.btn_open_spectrogram,
                               self.spectrogram_state is SpectrogramState.READY)
 
+        def _prewarm_spectrogram(self, path: str) -> None:
+            """Queues background PIL decoding so row selection hits RAM instead of disk."""
+            if not path or path in self._spectrograms:
+                return
+            with self._spec_lock:
+                if path in self._pil_spectrograms or path in self._spec_inflight:
+                    return
+                self._spec_inflight.add(path)
+            if self._spec_worker is None or not self._spec_worker.is_alive():
+                self._spec_worker = threading.Thread(
+                    target=self._spectrogram_worker_loop,
+                    daemon=True, name="spectrogram-prewarm",
+                )
+                self._spec_worker.start()
+            try:
+                self._spec_queue.put_nowait(path)
+            except queue.Full:
+                with self._spec_lock:
+                    self._spec_inflight.discard(path)
+
+        def _spectrogram_worker_loop(self) -> None:
+            while True:
+                item = self._spec_queue.get()
+                if item is None:
+                    return
+                decoded = _decode_spectrogram_pil(
+                    item, self.SPECTROGRAM_WIDTH, self.SPECTROGRAM_HEIGHT,
+                )
+                with self._spec_lock:
+                    self._spec_inflight.discard(item)
+                    if decoded is not None:
+                        while len(self._pil_spectrograms) >= 64:
+                            self._pil_spectrograms.popitem(last=False)
+                        self._pil_spectrograms[item] = decoded
+
         def _spectrogram_image(self, path: str) -> Any:
             """Thumbnail of the track spectrogram, cached by path."""
             if not path or not os.path.exists(path):
@@ -2268,22 +2674,23 @@ if CTK_OK:
             if path in self._spectrograms:
                 self._spectrograms.move_to_end(path)
                 return self._spectrograms[path]
+            decoded = None
+            with self._spec_lock:
+                if path in self._pil_spectrograms:
+                    self._pil_spectrograms.move_to_end(path)
+                    decoded = self._pil_spectrograms[path]
+            if decoded is None:
+                decoded = _decode_spectrogram_pil(
+                    path, self.SPECTROGRAM_WIDTH, self.SPECTROGRAM_HEIGHT,
+                )
             image = None
-            try:
-                from PIL import Image
-                with Image.open(path) as source:
-                    picture = source.convert("RGB")
-                picture.thumbnail((self.SPECTROGRAM_WIDTH * 2,
-                                   self.SPECTROGRAM_HEIGHT * 2))
-                width, height = picture.size
-                scale = min(self.SPECTROGRAM_WIDTH / width,
-                            self.SPECTROGRAM_HEIGHT / height)
-                display = (max(1, round(width * scale)),
-                           max(1, round(height * scale)))
-                image = ctk.CTkImage(light_image=picture, dark_image=picture,
-                                     size=display)
-            except Exception:
-                image = None
+            if decoded is not None:
+                try:
+                    picture, display = decoded
+                    image = ctk.CTkImage(light_image=picture, dark_image=picture,
+                                         size=display)
+                except Exception:
+                    image = None
             while len(self._spectrograms) >= 32:
                 self._spectrograms.popitem(last=False)
             self._spectrograms[path] = image
@@ -2456,6 +2863,7 @@ if CTK_OK:
                 self.activity_bar.grid_remove()
                 self.activity_panel.grid()
                 self.activity_tooltip.text = "Collapse activity"
+                self._scroll_log()
             else:
                 self.activity_panel.grid_remove()
                 self.activity_bar.grid()
@@ -2465,6 +2873,8 @@ if CTK_OK:
             self._set_activity(not self.activity_expanded)
 
         def _clear_log(self) -> None:
+            self._pending_log_chunks.clear()
+            self._pending_log_scroll = False
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             self.log.configure(state="disabled")
@@ -2503,6 +2913,7 @@ if CTK_OK:
                                             weight=("bold" if "bold" in style
                                                     else "normal"))
                 self._measures[key] = measure
+                self._font_max_char[key] = max(1, measure.measure("W"))
             return measure
 
         def _text_width(self, font: Any, text: str) -> int:
@@ -2511,14 +2922,28 @@ if CTK_OK:
 
         def _scaled_font(self, font: Any) -> tuple[Any, ...]:
             """Tk font tuple at the current scaling, for plain Tk widgets."""
-            return font.create_scaled_tuple(ctk.ScalingTracker.get_widget_scaling(self))
+            scaling = ctk.ScalingTracker.get_widget_scaling(self)
+            key = (font.cget("family"), int(font.cget("size")),
+                   str(font.cget("weight")), scaling)
+            cached = self._scaled_fonts.get(key)
+            if cached is None:
+                cached = font.create_scaled_tuple(scaling)
+                self._scaled_fonts[key] = cached
+            return cached
 
         def _fit(self, text: str, font: Any, pixels: int,
                  from_left: bool = False) -> str:
             """Truncates with an ellipsis so a row or the hero never overflows."""
             if not text or pixels <= 0:
                 return text
-            measure = self._measure_font(font)
+            scaling = ctk.ScalingTracker.get_widget_scaling(self)
+            key = (font.cget("family"), int(font.cget("size")),
+                   str(font.cget("weight")), scaling)
+            measure = self._measures.get(key)
+            if measure is None:
+                measure = self._measure_font(font)
+            if len(text) * self._font_max_char.get(key, 24) <= pixels:
+                return text
             if measure.measure(text) <= pixels:
                 return text
             ellipsis = "…"
@@ -2587,6 +3012,37 @@ if CTK_OK:
                 self.empty_state.grid()
 
         # ── view helpers ────────────────────────────────────────────────────
+        def _bulk_insert_log(self, chunks: list[str]) -> None:
+            """Inserts alternating (text, tag) pairs into `self.log` in one Tcl call."""
+            if not chunks:
+                return
+            textbox = getattr(self.log, "_textbox", None)
+            if textbox is not None:
+                textbox.insert("end", *chunks)
+            else:
+                for idx in range(0, len(chunks), 2):
+                    self.log.insert("end", chunks[idx], chunks[idx + 1])
+
+        def _flush_pending_logs(self) -> None:
+            """Flushes buffered batch log lines into the textbox once per UI tick."""
+            if not self._pending_log_chunks:
+                if self._pending_log_scroll:
+                    self._pending_log_scroll = False
+                    if self.activity_expanded:
+                        self._scroll_log()
+                return
+            chunks = self._pending_log_chunks
+            self._pending_log_chunks = []
+            need_scroll = self._pending_log_scroll
+            self._pending_log_scroll = False
+            self.log.configure(state="normal")
+            self._bulk_insert_log(chunks)
+            self._trim_log()
+            self.log.configure(state="disabled")
+            self._refresh_activity_preview()
+            if need_scroll and self.activity_expanded:
+                self._scroll_log()
+
         def _log(self, text: str, label: str = "info",
                  scroll: bool = True,
                  result_event: Event | None = None) -> None:
@@ -2598,18 +3054,23 @@ if CTK_OK:
             self._log_entries.append((stamp, text, label, result_event))
             if len(self._log_entries) > MAX_LINES_LOG:
                 del self._log_entries[:-MAX_LINES_LOG]
+            self._last_log_line = text
+            if self._batch_draining:
+                self._pending_log_chunks.extend((f"{stamp}  ", "time", f"{text}\n", label))
+                if scroll:
+                    self._pending_log_scroll = True
+                return
             self.log.configure(state="normal")
-            self.log.insert("end", f"{stamp}  ", "time")
-            self.log.insert("end", f"{text}\n", label)
+            self._bulk_insert_log([f"{stamp}  ", "time", f"{text}\n", label])
             self._trim_log()
             self.log.configure(state="disabled")
-            self._last_log_line = text
             self._refresh_activity_preview()
             if scroll:
                 self._scroll_log()
 
         def _order_batch_results(self) -> None:
             """Ensures `self.events` and the activity log list tracks in album order."""
+            self._flush_pending_logs()
             if len(self.table_rows) <= 1:
                 return
             ordered_events = [row["event"] for row in self.table_rows]
@@ -2647,11 +3108,12 @@ if CTK_OK:
                     rebuilt.append(entry)
 
             self._log_entries = rebuilt[-MAX_LINES_LOG:]
+            flat_chunks: list[str] = []
+            for stamp, line_text, tag_label, _ in self._log_entries:
+                flat_chunks.extend((f"{stamp}  ", "time", f"{line_text}\n", tag_label))
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
-            for stamp, line_text, tag_label, _ in self._log_entries:
-                self.log.insert("end", f"{stamp}  ", "time")
-                self.log.insert("end", f"{line_text}\n", tag_label)
+            self._bulk_insert_log(flat_chunks)
             self.log.configure(state="disabled")
             if self._log_entries:
                 self._last_log_line = self._log_entries[-1][1]
@@ -2845,6 +3307,8 @@ if CTK_OK:
                 theme.MODE = mode
                 self._set_appearance(mode)
                 self._icons.clear()
+                self._tk_icons.clear()
+                self._chip_images.clear()
                 # The toggle is the same button: its icon and tooltip must show
                 # the mode a click will switch to.
                 name = "sun" if mode == "dark" else "moon"
@@ -2855,7 +3319,8 @@ if CTK_OK:
 
                 # Plain Tk surfaces first: the CTk widgets painted over them
                 # re-detect their background colour from the new values.
-                self.table_canvas.configure(background=c("bg.surface"))
+                surface_bg = c("bg.surface")
+                self.table_canvas.configure(background=surface_bg)
                 self.drop_zone.retheme()
                 self.table_scroll.retheme()
 
@@ -2864,9 +3329,32 @@ if CTK_OK:
                     tkinter.Frame.configure(widget,
                                             highlightbackground=c(background),
                                             highlightcolor=c("focus"))
+                self.table_body.configure(fg_color=surface_bg)
+                sep_col = c("border.subtle")
+                sep_str = str(sep_col)
+                text_sec = c("text.secondary")
+                sec_str = str(text_sec)
+                text_ter = c("text.tertiary")
+                ter_str = str(text_ter)
+                tk_call = self.tk.call
+                chip_palette: dict[str, tuple[Any, Any, Any]] = {}
                 for entry in self.table_rows:
-                    self._paint_row(entry)
-                    self._refresh_row_icon(entry)
+                    self._paint_row(entry, force=True)
+                    row_bg = str(entry["frame"].cget("fg_color"))
+                    sep = entry["separator"]
+                    sep._fg_color = sep_col
+                    tk_call(sep._w, "configure", "-background", sep_str)
+                    for plain_lbl in entry["plain"][:4]:
+                        plain_lbl._text_color = text_sec
+                        tk_call(plain_lbl._w, "configure", "-foreground", sec_str)
+                    if entry.get("icon_spec"):
+                        self._refresh_row_icon(entry)
+                    else:
+                        md5_lbl = entry["cells"]["md5"]
+                        md5_lbl._text_color = text_ter
+                        tk_call(md5_lbl._w, "configure", "-foreground", ter_str)
+                    if not isinstance(entry["cells"]["verdict"], _VerdictChip):
+                        self._recolour_chip(entry["cells"]["verdict"], row_bg, chip_palette)
                 if self._placeholder_icon_spec:
                     name, size, token = self._placeholder_icon_spec
                     self.spectrogram_icon.configure(
@@ -2958,6 +3446,8 @@ if CTK_OK:
             All the properties of one widget are configured in a single call: a
             few CustomTkinter widgets run `update_idletasks` inside their draw,
             and one call per property multiplied that cost by five."""
+            if widget is self.table_body:
+                return
             updates: dict[str, Any] = {}
             # Plain Tk children (a CustomTkinter canvas or label) do not accept
             # tokens: asking them for sixteen colour options raises sixteen Tcl
@@ -2971,13 +3461,15 @@ if CTK_OK:
                     if (isinstance(value, _TokenColor)
                             and str(value) != theme.color(value.token)):
                         updates[prop] = c(value.token)
-                try:
-                    # Transparent frames store the colour of their master when
-                    # they are created; re-detecting picks the new one.
-                    widget.cget("bg_color")
-                    updates["bg_color"] = "transparent"
-                except Exception:
-                    pass
+                if not isinstance(widget.master, ctk.CTkBaseClass):
+                    try:
+                        # Widgets hosted directly on a plain Tk surface store
+                        # their master's colour on creation; re-detecting picks
+                        # up the new one without quadratic child propagation.
+                        widget.cget("bg_color")
+                        updates["bg_color"] = "transparent"
+                    except Exception:
+                        pass
             if updates:
                 try:
                     widget.configure(**updates)
@@ -3003,8 +3495,8 @@ if CTK_OK:
             spec = entry.get("icon_spec")
             if spec:
                 name, size, token = spec
-                entry["cells"]["md5"].configure(image=self._icon(name, size,
-                                                                c(token)))
+                entry["cells"]["md5"].configure(image=self._tk_icon(name, size,
+                                                                    c(token)))
 
         def _show_action(self, button: Any) -> None:
             """Only one primary action is visible: Analyze or Cancel."""
@@ -3084,6 +3576,7 @@ if CTK_OK:
                 return
             processed = 0
             results = 0
+            self._batch_draining = True
             try:
                 while (processed < BATCH_DRAINED
                        and results < MAX_RESULTS_BY_TICK):
@@ -3092,9 +3585,10 @@ if CTK_OK:
                                     and event.get("tipo") == "resultado")
                     try:
                         # Non-result events keep their immediate handling; the
-                        # progress widgets are redrawn once per batch below.
+                        # progress, hero and log widgets flush once per batch below.
                         self._process(channel, event,
-                                       update_progress=not is_result)
+                                       update_progress=not is_result,
+                                       batch_mode=True)
                     except Exception as e:      # one bad event cannot stall the UI
                         self._log(f"Could not process an engine event: "
                                   f"{type(e).__name__}: {e}", "error")
@@ -3103,7 +3597,14 @@ if CTK_OK:
                         results += 1
             except queue.Empty:
                 pass
+            finally:
+                self._batch_draining = False
+                self._flush_pending_logs()
 
+            if self._hero_dirty:
+                self._hero_dirty = False
+                self._render_hero()
+                self._update_reveal()
             if results:
                 self._update_progress()
 
@@ -3125,7 +3626,8 @@ if CTK_OK:
             self.label_progress.configure(text=f"{self.recibidos} / {self.total}")
 
         def _process(self, channel: str, event: Event,
-                      update_progress: bool = True) -> None:
+                      update_progress: bool = True,
+                      batch_mode: bool = False) -> None:
             kind = event.get("tipo")
             event_run_id = event.get("run_id")
             if event_run_id is not None:
@@ -3165,11 +3667,19 @@ if CTK_OK:
                               scroll=False, result_event=event)
                 # A row per file, as the event arrives (DESIGN.md 7.7).
                 self._add_row(event)
-                # One layout/scroll per result block, not once per evidence line.
-                self._scroll_log()
-                if self.selected_event is None:
-                    self._render_hero()
-                    self._update_reveal()
+                if batch_mode:
+                    spec_path = spectrogram_path(event)
+                    if spec_path:
+                        self._prewarm_spectrogram(spec_path)
+                    self._pending_log_scroll = True
+                    if self.selected_event is None:
+                        self._hero_dirty = True
+                else:
+                    # One layout/scroll per result block, not once per evidence line.
+                    self._scroll_log()
+                    if self.selected_event is None:
+                        self._render_hero()
+                        self._update_reveal()
                 if update_progress:
                     self._update_progress()
             elif kind == "informe":
@@ -3194,6 +3704,7 @@ if CTK_OK:
                 self._log(f"Problem reading the output: {event.get('mensaje')}", "aviso")
 
         def _finish(self, event: Event) -> None:
+            self._hero_dirty = False
             self._order_batch_results()
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
@@ -3249,6 +3760,11 @@ if CTK_OK:
 
         def destroy(self) -> None:
             """Cancels pending Tcl `after` callbacks before tearing down the window."""
+            if self._spec_worker is not None and self._spec_worker.is_alive():
+                try:
+                    self._spec_queue.put_nowait(None)
+                except Exception:
+                    pass
             try:
                 for after_id in self.tk.call("after", "info"):
                     try:

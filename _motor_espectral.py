@@ -4,10 +4,87 @@ Extracted from the motor facade in Phase 4. The STFT is float32 with
 sliding_window_view; the PNG is NumPy + Pillow (no matplotlib).
 """
 import heapq
+import importlib.machinery
+import importlib.util
 import math
 import os
+import sys
 
 import numpy as np
+
+_POCKETFFT_MOD = None
+
+
+def _get_pocketfft():
+    """Returns SciPy's compiled C++ pypocketfft extension without importing
+    scipy.fft / scipy.special / scipy.linalg when running frozen."""
+    global _POCKETFFT_MOD
+    if _POCKETFFT_MOD is not None:
+        return _POCKETFFT_MOD
+    existing = (
+        sys.modules.get("scipy.fft._pocketfft.pypocketfft")
+        or sys.modules.get("pypocketfft")
+    )
+    if existing is not None:
+        _POCKETFFT_MOD = existing
+        return existing
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        for rel in (("scipy", "fft", "_pocketfft"), ()):
+            folder = os.path.join(meipass, *rel)
+            if not os.path.isdir(folder):
+                continue
+            for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+                candidate = os.path.join(folder, "pypocketfft" + suffix)
+                if os.path.isfile(candidate):
+                    spec = importlib.util.spec_from_file_location("pypocketfft", candidate)
+                    if spec is not None and spec.loader is not None:
+                        mod = importlib.util.module_from_spec(spec)
+                        sys.modules["pypocketfft"] = mod
+                        spec.loader.exec_module(mod)
+                        _POCKETFFT_MOD = mod
+                        return mod
+    from scipy.fft._pocketfft import pypocketfft as mod
+    _POCKETFFT_MOD = mod
+    return mod
+
+
+def _rfft_f32(x, n=None, axis=-1, out=None):
+    """Single-threaded float32 real-to-complex FFT via pypocketfft."""
+    arr = np.asarray(x, dtype=np.float32)
+    ax = axis if axis >= 0 else arr.ndim + axis
+    if n is not None:
+        target_n = int(n)
+        cur_n = arr.shape[ax]
+        if target_n < cur_n:
+            sl = [slice(None)] * arr.ndim
+            sl[ax] = slice(0, target_n)
+            arr = arr[tuple(sl)]
+        elif target_n > cur_n:
+            pad_shape = list(arr.shape)
+            pad_shape[ax] = target_n
+            padded = np.zeros(pad_shape, dtype=np.float32)
+            sl = [slice(None)] * arr.ndim
+            sl[ax] = slice(0, cur_n)
+            padded[tuple(sl)] = arr
+            arr = padded
+    return _get_pocketfft().r2c(arr, (ax,), True, 0, out, 1)
+
+
+def _irfft_f32(z, n, axis=-1, out=None):
+    """Single-threaded complex64-to-float32 inverse real FFT via pypocketfft."""
+    arr = np.asarray(z, dtype=np.complex64)
+    ax = axis if axis >= 0 else arr.ndim + axis
+    return _get_pocketfft().c2r(arr, (ax,), int(n), False, 2, out, 1)
+
+
+def _dct4_ortho_f32(x, axis=-1, overwrite_x=False):
+    """Single-threaded orthogonal float32 DCT-IV via pypocketfft."""
+    arr = np.asarray(x, dtype=np.float32)
+    ax = axis if axis >= 0 else arr.ndim + axis
+    return _get_pocketfft().dct(
+        arr, 4, (ax,), 1, arr if overwrite_x else None, 1, True
+    )
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -1047,7 +1124,7 @@ def _needed_active_blocks(samplerate, mode="center", seconds=None):
         target_sec = float(SPECTRO_SECONDS)
     return max(1, int(math.ceil(target_sec * float(samplerate) / FRAMES_BY_BLOCK)))
 
-def _activity_score(block, last_sample=None, mono=None):
+def _activity_score(block, last_sample=None, mono=None, diff_buf=None):
     """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
     cheap high-frequency/transient indicator: it is large on cymbals and attacks
     and almost zero on a sustained bass line. The last sample of the previous
@@ -1076,7 +1153,8 @@ def _activity_score(block, last_sample=None, mono=None):
     if n_diffs <= 0:
         return rms_db, 0.0
     chunk = 16384
-    diff_buf = np.empty(min(chunk, n_diffs), dtype=mono.dtype)
+    if diff_buf is None or diff_buf.dtype != mono.dtype or diff_buf.size < min(chunk, n_diffs):
+        diff_buf = np.empty(min(chunk, n_diffs), dtype=mono.dtype)
     total_sq = 0.0
     if last_sample is not None:
         first_diff = float(mono[0]) - float(last_sample)
@@ -1092,19 +1170,17 @@ def _activity_score(block, last_sample=None, mono=None):
 def _stft_complex(channel, nperseg, hop, window, scale, frame_buf=None):
     """float32 STFT with sliding_window_view: no copies beyond the windowed
     frames, and the result stays in single precision (half the RAM of float64)."""
-    from scipy import fft as _sp_fft
     x = np.ascontiguousarray(channel, dtype=np.float32)
     frames = np.lib.stride_tricks.sliding_window_view(x, nperseg)[::hop]
     effective_window = window * np.float32(scale) if scale is not None else window
     if frame_buf is not None and frame_buf.shape == frames.shape:
         np.multiply(frames, effective_window, out=frame_buf)
-        return _sp_fft.rfft(frame_buf, axis=1, workers=1)
-    return _sp_fft.rfft(frames * effective_window, axis=1, workers=1)
+        return _rfft_f32(frame_buf, axis=1)
+    return _rfft_f32(frames * effective_window, axis=1)
 
 
 def _stft_complex_stereo_pair(ch_l, ch_r, nperseg, hop, scaled_window, stereo_buf=None):
     """Batched float32 STFT of left+right stereo channels in a single rfft call."""
-    from scipy import fft as _sp_fft
     xl = np.ascontiguousarray(ch_l, dtype=np.float32)
     xr = np.ascontiguousarray(ch_r, dtype=np.float32)
     frames_l = np.lib.stride_tricks.sliding_window_view(xl, nperseg)[::hop]
@@ -1113,7 +1189,7 @@ def _stft_complex_stereo_pair(ch_l, ch_r, nperseg, hop, scaled_window, stereo_bu
         stereo_buf = np.empty((2, frames_l.shape[0], nperseg), dtype=np.float32)
     np.multiply(frames_l, scaled_window, out=stereo_buf[0])
     np.multiply(frames_r, scaled_window, out=stereo_buf[1])
-    z_lr = _sp_fft.rfft(stereo_buf, axis=2, workers=1)
+    z_lr = _rfft_f32(stereo_buf, axis=2)
     return z_lr, stereo_buf
 
 _FLOOR_F32 = np.float32(1e-28)
@@ -1221,8 +1297,9 @@ class PsychoacousticSTFTAccumulator:
         sl_ms_hi, ok_ms_hi = _freq_slice(freqs, 13500.0, 16500.0, True)
         sl_presence, ok_presence = _freq_slice(freqs, 10000.0, 14000.0, True)
         sl_hf, ok_hf = _freq_slice(freqs, 11000.0, min(22050.0, self.sr * 0.49), True)
-        sb_slices = []
+        sb_proj = None
         if self.sr >= 39000:
+            sb_slices = []
             for i in range(self.N_SUBBANDS):
                 lo = self.START_SUBBAND_HZ + i * self.WIDTH_SUBBAND_HZ
                 hi = lo + self.WIDTH_SUBBAND_HZ
@@ -1231,10 +1308,15 @@ class PsychoacousticSTFTAccumulator:
                     sb_slices = None
                     break
                 sb_slices.append(sl_sb)
-            else:
-                sb_slices = tuple(sb_slices)
-        else:
-            sb_slices = None
+            if sb_slices is not None:
+                s0_sb = sb_slices[0].start
+                s1_sb = sb_slices[-1].stop
+                w_sb = np.zeros((s1_sb - s0_sb, len(sb_slices)), dtype=np.float32)
+                for j, sl_sb in enumerate(sb_slices):
+                    w_sb[sl_sb.start - s0_sb : sl_sb.stop - s0_sb, j] = (
+                        1.0 / float(sl_sb.stop - sl_sb.start)
+                    )
+                sb_proj = (slice(s0_sb, s1_sb), w_sb)
         cached = (
             gain, sl_band,
             (sl_16_195, sl_202_218) if (ok_16_195 and ok_202_218) else None,
@@ -1242,7 +1324,7 @@ class PsychoacousticSTFTAccumulator:
             (sl_ms_lo, sl_ms_hi) if (ok_ms_lo and ok_ms_hi) else None,
             (sl_presence, sl_hf) if (ok_presence and ok_hf) else None,
             freqs[sl_hf] if (ok_presence and ok_hf) else None,
-            sb_slices,
+            sb_proj,
         )
         self._slice_key = key
         self._cached_slices = cached
@@ -1256,10 +1338,10 @@ class PsychoacousticSTFTAccumulator:
             slices = self._get_cached_slices(freqs, window, window.size)
             if slices is None:
                 return
-            gain, sl_band, mod_sl, sfb_sl, ms_sl, pres_sl, freqs_hf, sb_slices = slices
+            gain, sl_band, mod_sl, sfb_sl, ms_sl, pres_sl, freqs_hf, sb_proj = slices
 
-            band = (power[:, sl_band].mean(axis=1, dtype=np.float64)
-                    / gain)
+            band_mean_f32 = power[:, sl_band].mean(axis=1)
+            band = band_mean_f32.astype(np.float64) / gain
             # Upper-band modulation (16.0-19.5 kHz vs 20.2-21.8 kHz) uses a
             # -78 dBFS gate so quieter passages where a full-band codec starves
             # its top scalefactor band are also captured.
@@ -1280,6 +1362,7 @@ class PsychoacousticSTFTAccumulator:
                 return
             all_active = bool(np.all(active_mask))
             block_power = power if all_active else power[active_mask]
+            band_act = band_mean_f32 if all_active else band_mean_f32[active_mask]
             self._frames += int(block_power.shape[0])
             self._freqs = freqs
             block_sum = block_power.sum(axis=0, dtype=np.float64)
@@ -1289,8 +1372,7 @@ class PsychoacousticSTFTAccumulator:
             # Instantaneous cut-off: last bin above -60 dB relative to the
             # frame's 4-11 kHz mean power. Referencing the frame peak made a
             # strong bass sweep the reference and produced fake cut-off jitter.
-            ref_db = 10.0 * np.log10(np.maximum(
-                block_power[:, sl_band].mean(axis=1), _FLOOR_F32))
+            ref_db = 10.0 * np.log10(np.maximum(band_act, _FLOOR_F32))
             ref_db_f64 = ref_db.astype(np.float64)
             self._env_4_11.extend(ref_db_f64.tolist())
 
@@ -1353,10 +1435,11 @@ class PsychoacousticSTFTAccumulator:
                         self._fc.extend(freqs_hf[last].tolist())
 
             # MDCT holes: 10 x 600 Hz sub-bands in 13.5-19.5 kHz.
-            if sb_slices is None:
+            if sb_proj is None:
                 return                     # the band does not exist
-            subbands = [block_power[:, sl_sb].mean(axis=1) for sl_sb in sb_slices]
-            sb = 10.0 * np.log10(np.maximum(np.column_stack(subbands), 1e-28))
+            sl_sb_union, w_sb = sb_proj
+            sb_lin = block_power[:, sl_sb_union] @ w_sb
+            sb = 10.0 * np.log10(np.maximum(sb_lin, 1e-28))
             gap = np.any(
                 (sb[:, 1:-1] < sb[:, :-2] - self.FALL_GAP_DB)
                 & (sb[:, 1:-1] < sb[:, 2:] - self.FALL_GAP_DB),
@@ -1608,7 +1691,6 @@ def _get_pqmf_fast(n_fft, sb_indices=(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
     sb_key = (int(n_fft), tuple(sb_indices))
     cached = _PQMF_BANK_CACHE.get(sb_key)
     if cached is None:
-        from scipy import fft as _sp_fft
         if len(_PQMF_BANK_CACHE) >= 8:
             _PQMF_BANK_CACHE.clear()
         m_tap = np.arange(512, dtype=np.float64) - 256.0
@@ -1620,7 +1702,7 @@ def _get_pqmf_fast(n_fft, sb_indices=(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
             h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32)
             for s in sb_indices
         ], axis=0)
-        bank_fft = _sp_fft.rfft(bank, n=n_fft, axis=1, workers=1)
+        bank_fft = _rfft_f32(bank, n=n_fft, axis=1)
         win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
         cached = (bank_fft, win36)
         _PQMF_BANK_CACHE[sb_key] = cached
@@ -1724,7 +1806,6 @@ def _select_hf_subwindow_candidates(mono, needed, max_windows=3):
 
 def _fast_mdct_f32(frames, window):
     """Vectorized float32 MDCT via TDAC folding + orthogonal DCT-IV."""
-    from scipy import fft as _sp_fft
     two_n = frames.shape[-1]
     n = two_n // 2
     n2 = n // 2
@@ -1747,7 +1828,7 @@ def _fast_mdct_f32(frames, window):
         d = w_frames[..., n + n2 :]
         folded[..., :n2] = -c[..., ::-1] - d
         folded[..., n2:] = a - b[..., ::-1]
-    return _sp_fft.dct(folded, type=4, axis=-1, norm="ortho", workers=1, overwrite_x=True)
+    return _dct4_ortho_f32(folded, axis=-1, overwrite_x=True)
 
 
 def _get_mdct36_basis():
@@ -1826,7 +1907,6 @@ def _detect_sbr_qmf_replication(mono, sr):
     if sr < 32000:
         return neutral
     try:
-        from scipy import fft as _sp_fft
         if isinstance(mono, (list, tuple)):
             blocks = [np.asarray(blk, dtype=np.float32).reshape(-1)
                       for blk in mono if blk is not None and len(blk) > 0]
@@ -1869,7 +1949,7 @@ def _detect_sbr_qmf_replication(mono, sr):
             return neutral
         if len(frames) > 160:
             frames = frames[:: max(1, len(frames) // 160)][:160]
-        spec = _sp_fft.rfft(frames * win, axis=1, workers=1)
+        spec = _rfft_f32(frames * win, axis=1)
         df = sr / float(n_fft)
         k_max = min(spec.shape[1], int(20200.0 / df))
         p_db = 10.0 * np.log10(np.abs(spec[:, :k_max]) ** 2 + np.float32(1e-24))
@@ -1952,7 +2032,6 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
     if not (41000 <= sr <= 48000):
         return neutral
     try:
-        from scipy import fft as _sp_fft
         mono = np.asarray(mono, dtype=np.float32)
         if mono.size < 24576 or float(np.std(mono)) < 1e-4:
             return neutral
@@ -2023,7 +2102,7 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
         if mono.size >= needed_576:
             seg = _select_continuous_subwindow(mono, needed_576)
             n_fft = 1 << int(np.ceil(np.log2(needed_576 + 512)))
-            seg_fft = _sp_fft.rfft(seg, n=n_fft, workers=1)
+            seg_fft = _rfft_f32(seg, n=n_fft)
 
             if fullband_mode:
                 pqmf_sets = [(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)]
@@ -2043,7 +2122,7 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
 
             for sb_set in pqmf_sets:
                 bank_fft, win36 = _get_pqmf_fast(n_fft, sb_set)
-                conv_all = _sp_fft.irfft(seg_fft[None, :] * bank_fft, n=n_fft, axis=1, workers=1)
+                conv_all = _irfft_f32(seg_fft[None, :] * bank_fft, n=n_fft, axis=1)
                 sb_arr_all = conv_all[:, 511:needed_576].astype(np.float32)
                 m_sub_total = sb_arr_all.shape[1] // 32
 
@@ -2246,6 +2325,7 @@ class _SpectralAccumulator:
         self._state = AccumulatorState.COLLECTING
         self._cached_result = None
         self._psycho = PsychoacousticSTFTAccumulator(self.sr)
+        self._diff_buf = np.empty(16384, dtype=np.float64)
 
     @property
     def state(self) -> AccumulatorState:
@@ -2275,7 +2355,9 @@ class _SpectralAccumulator:
                         mono = mono[:n_keep]
                     if block.shape[0] == 0:
                         return
-            rms_db, e_diff = _activity_score(block, self._last, mono=mono)
+            rms_db, e_diff = _activity_score(
+                block, self._last, mono=mono, diff_buf=self._diff_buf
+            )
             if block.ndim > 1:
                 if mono is not None:
                     self._last = float(mono[-1])
@@ -2356,94 +2438,137 @@ class _SpectralAccumulator:
         step_png = max(step_png,
                        int(round(self.sr / (hop * float(PNG_SPECTROGRAM_FPS)))))
 
-        sum_l = sum_r = sum_total = None
-        sum_mid = sum_side = None
+        n_bins = nperseg // 2 + 1
+        stft_tile = 64
+        sum_l = np.zeros(n_bins, dtype=np.float32)
+        sum_r = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
+        sum_total = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
+        sum_mid = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
+        sum_side = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
         freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
         frames = 0
         frames_global = 0
         png_power, png_times, png_n = [], [], 0
-        frame_buf = stereo_buf = buf_a = buf_b = buf_tmp = None
         medium = np.float32(0.5)
+        zero_f32 = np.float32(0.0)
+        pfft = _get_pocketfft()
+
+        if self.is_stereo:
+            tile_in = np.empty((2, stft_tile, nperseg), dtype=np.float32)
+            tile_z = np.empty((2, stft_tile, n_bins), dtype=np.complex64)
+        else:
+            tile_in = np.empty((stft_tile, nperseg), dtype=np.float32)
+            tile_z = np.empty((stft_tile, n_bins), dtype=np.complex64)
+        tile_sq = np.empty((stft_tile, n_bins * 2), dtype=np.float32)
+        tile_a = np.empty((stft_tile, n_bins), dtype=np.float32)
+        tile_b = np.empty((stft_tile, n_bins), dtype=np.float32)
+        tile_c = np.empty((stft_tile, n_bins), dtype=np.float32)
 
         for _, _, _, start, audio in chosen:
             if len(audio) < nperseg:
                 continue                  # a very short trailing block
             n_frames_blk = (len(audio) - nperseg) // hop + 1
             if self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
-                z_lr, stereo_buf = _stft_complex_stereo_pair(
-                    audio[:, 0], audio[:, 1], nperseg, hop, scaled_window,
-                    stereo_buf=stereo_buf,
-                )
-                zl = z_lr[0]
-                zr = z_lr[1]
-                if buf_a is None or buf_a.shape != zl.shape:
-                    buf_a = np.empty(zl.shape, dtype=np.float32)
-                    buf_b = np.empty(zl.shape, dtype=np.float32)
-                    buf_tmp = np.empty(zl.shape, dtype=np.float32)
-                power_l = _power_from_fft(zl, out=buf_a, tmp=buf_tmp)
-                cur_sum_l = power_l.sum(axis=0, dtype=np.float32)
-                sum_l = cur_sum_l if sum_l is None else sum_l + cur_sum_l
+                xl = np.ascontiguousarray(audio[:, 0], dtype=np.float32)
+                xr = np.ascontiguousarray(audio[:, 1], dtype=np.float32)
+                frames_l = np.lib.stride_tricks.sliding_window_view(xl, nperseg)[::hop]
+                frames_r = np.lib.stride_tricks.sliding_window_view(xr, nperseg)[::hop]
+                for f0 in range(0, n_frames_blk, stft_tile):
+                    f1 = min(f0 + stft_tile, n_frames_blk)
+                    m = f1 - f0
+                    tin = tile_in[:, :m, :]
+                    tz = tile_z[:, :m, :]
+                    tsq = tile_sq[:m, :]
+                    raw_l = tile_a[:m, :]
+                    raw_r = tile_b[:m, :]
+                    tmp_f = tile_c[:m, :]
 
-                power_r = _power_from_fft(zr, out=buf_a, tmp=buf_tmp)
-                cur_sum_r = power_r.sum(axis=0, dtype=np.float32)
-                sum_r = cur_sum_r if sum_r is None else sum_r + cur_sum_r
+                    np.multiply(frames_l[f0:f1], scaled_window, out=tin[0])
+                    np.multiply(frames_r[f0:f1], scaled_window, out=tin[1])
+                    pfft.r2c(tin, (2,), True, 0, tz, 1)
+                    zl_t, zr_t = tz[0], tz[1]
 
-                zm = (zl + zr) * medium
-                zs = (zl - zr) * medium
-                del z_lr, zl, zr
+                    np.square(zl_t.view(np.float32), out=tsq)
+                    np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_l)
+                    np.maximum(raw_l, _FLOOR_F32, out=tmp_f)
+                    sum_l += tmp_f.sum(axis=0, dtype=np.float32)
 
-                power_mid = _power_from_fft(zm, out=buf_a, tmp=buf_tmp)
-                del zm
-                cur_sum_mid = power_mid.sum(axis=0, dtype=np.float32)
-                sum_mid = cur_sum_mid if sum_mid is None else sum_mid + cur_sum_mid
+                    np.square(zr_t.view(np.float32), out=tsq)
+                    np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_r)
+                    np.maximum(raw_r, _FLOOR_F32, out=tmp_f)
+                    sum_r += tmp_f.sum(axis=0, dtype=np.float32)
 
-                power_side = _power_from_fft(zs, out=buf_b, tmp=buf_tmp)
-                del zs
-                cur_sum_side = power_side.sum(axis=0, dtype=np.float32)
-                sum_side = cur_sum_side if sum_side is None else sum_side + cur_sum_side
+                    # Exact Parseval Mid/Side identity: |ZM|^2 + |ZS|^2 = 0.5*(|ZL|^2 + |ZR|^2).
+                    np.add(raw_l, raw_r, out=raw_l)
+                    raw_l *= medium
+                    np.subtract(zl_t, zr_t, out=zl_t)
+                    zl_t *= medium
+                    np.square(zl_t.view(np.float32), out=tsq)
+                    np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_r)
 
-                np.add(power_mid, power_side, out=power_mid)
-                power_total = power_mid
-                cur_sum_total = power_total.sum(axis=0, dtype=np.float32)
-                sum_total = cur_sum_total if sum_total is None else sum_total + cur_sum_total
+                    np.subtract(raw_l, raw_r, out=raw_l)
+                    np.maximum(raw_l, zero_f32, out=raw_l)
+                    np.maximum(raw_l, _FLOOR_F32, out=raw_l)
+                    sum_mid += raw_l.sum(axis=0, dtype=np.float32)
+
+                    np.maximum(raw_r, _FLOOR_F32, out=raw_r)
+                    sum_side += raw_r.sum(axis=0, dtype=np.float32)
+
+                    np.add(raw_l, raw_r, out=raw_l)
+                    power_total_t = raw_l
+                    power_side_t = raw_r
+                    sum_total += power_total_t.sum(axis=0, dtype=np.float32)
+
+                    self._psycho.add(power_total_t, freqs, window,
+                                     power_side=power_side_t)
+                    if self.save_png:
+                        remaining = MAX_FRAMES_PNG - png_n
+                        if remaining > 0:
+                            i0 = (-(frames_global + f0)) % step_png
+                            idx = np.arange(i0, m, step_png)[:remaining]
+                            if idx.size:
+                                png_power.append(power_total_t[idx].copy())
+                                png_times.append((start + (f0 + idx) * hop) / float(self.sr))
+                                png_n += idx.size
             else:
-                ch0 = audio[:, 0] if audio.ndim > 1 else audio
-                if frame_buf is None or frame_buf.shape != (n_frames_blk, nperseg):
-                    frame_buf = np.empty((n_frames_blk, nperseg), dtype=np.float32)
-                zl = _stft_complex(ch0, nperseg, hop, scaled_window, None,
-                                   frame_buf=frame_buf)
-                if buf_a is None or buf_a.shape != zl.shape:
-                    buf_a = np.empty(zl.shape, dtype=np.float32)
-                    buf_b = np.empty(zl.shape, dtype=np.float32)
-                    buf_tmp = np.empty(zl.shape, dtype=np.float32)
-                power_l = _power_from_fft(zl, out=buf_a, tmp=buf_tmp)
-                del zl
-                cur_sum_l = power_l.sum(axis=0, dtype=np.float32)
-                sum_l = cur_sum_l if sum_l is None else sum_l + cur_sum_l
-                power_total = power_l
-                sum_r = sum_l
-                sum_total = sum_l
+                ch0 = np.ascontiguousarray(
+                    audio[:, 0] if audio.ndim > 1 else audio, dtype=np.float32
+                )
+                frames_0 = np.lib.stride_tricks.sliding_window_view(ch0, nperseg)[::hop]
+                for f0 in range(0, n_frames_blk, stft_tile):
+                    f1 = min(f0 + stft_tile, n_frames_blk)
+                    m = f1 - f0
+                    tin0 = tile_in[:m, :] if tile_in.ndim == 2 else tile_in[0, :m, :]
+                    tz0 = tile_z[:m, :] if tile_z.ndim == 2 else tile_z[0, :m, :]
+                    tsq = tile_sq[:m, :]
+                    power_l_t = tile_a[:m, :]
 
-            self._psycho.add(power_total, freqs, window,
-                             power_side=power_side if self.is_stereo else None)
+                    np.multiply(frames_0[f0:f1], scaled_window, out=tin0)
+                    pfft.r2c(tin0, (1,), True, 0, tz0, 1)
+                    np.square(tz0.view(np.float32), out=tsq)
+                    np.add(tsq[:, 0::2], tsq[:, 1::2], out=power_l_t)
+                    np.maximum(power_l_t, _FLOOR_F32, out=power_l_t)
+                    sum_l += power_l_t.sum(axis=0, dtype=np.float32)
 
-            n_frames = power_total.shape[0]
-            if self.save_png:
-                remaining = MAX_FRAMES_PNG - png_n
-                if remaining > 0:
-                    i0 = (-frames_global) % step_png
-                    idx = np.arange(i0, n_frames, step_png)[:remaining]
-                    if idx.size:
-                        # power_total is (frames, bins): keep the time rows here and
-                        # transpose once, so the PNG gets (bins, frames).
-                        png_power.append(power_total[idx])
-                        png_times.append((start + idx * hop) / float(self.sr))
-                        png_n += idx.size
-            frames_global += n_frames
-            frames += n_frames
+                    self._psycho.add(power_l_t, freqs, window, power_side=None)
+                    if self.save_png:
+                        remaining = MAX_FRAMES_PNG - png_n
+                        if remaining > 0:
+                            i0 = (-(frames_global + f0)) % step_png
+                            idx = np.arange(i0, m, step_png)[:remaining]
+                            if idx.size:
+                                png_power.append(power_l_t[idx].copy())
+                                png_times.append((start + (f0 + idx) * hop) / float(self.sr))
+                                png_n += idx.size
 
-        if frames == 0 or sum_l is None:
+            frames_global += n_frames_blk
+            frames += n_frames_blk
+
+        if frames == 0:
             return {"error": "could not analyze the spectrum"}
+        if not self.is_stereo:
+            sum_r = sum_l
+            sum_total = sum_l
 
         mean_l = sum_l / np.float32(frames)
         mean_r = mean_l if not self.is_stereo else sum_r / np.float32(frames)
@@ -2618,7 +2743,6 @@ class _SpectralAccumulator:
                 i0 = (-frames_global) % step_png
                 idx = np.arange(i0, n_frames_blk, step_png)[:remaining]
                 if idx.size:
-                    from scipy import fft as _sp_fft
                     if self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
                         ch_l = np.ascontiguousarray(audio[:, 0], dtype=np.float32)
                         ch_r = np.ascontiguousarray(audio[:, 1], dtype=np.float32)
@@ -2631,7 +2755,7 @@ class _SpectralAccumulator:
                         stereo_frames = np.empty((2, idx.size, nperseg), dtype=np.float32)
                         np.multiply(frames_l, scaled_window, out=stereo_frames[0])
                         np.multiply(frames_r, scaled_window, out=stereo_frames[1])
-                        z_lr = _sp_fft.rfft(stereo_frames, axis=2, workers=1)
+                        z_lr = _rfft_f32(stereo_frames, axis=2)
                         zm = (z_lr[0] + z_lr[1]) * medium
                         zs = (z_lr[0] - z_lr[1]) * medium
                         power_total = _power_from_fft(zm) + _power_from_fft(zs)
@@ -2642,7 +2766,7 @@ class _SpectralAccumulator:
                         frames_l = np.lib.stride_tricks.sliding_window_view(
                             ch_l, nperseg
                         )[::hop][idx] * scaled_window
-                        zl = _sp_fft.rfft(frames_l, axis=1, workers=1)
+                        zl = _rfft_f32(frames_l, axis=1)
                         power_total = _power_from_fft(zl)
                     png_power.append(power_total)
                     png_times.append((start + idx * hop) / float(self.sr))

@@ -45,7 +45,7 @@ from _motor_espectral import Image
 from _motor_bits import (
     AccumulatorState,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
-    _normalize_path_fs, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
+    _normalize_path_fs, _Int24Packer, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
     _StreamingBitDepthAccumulator,
     analyze_bit_depth, _streaks, detect_clipping, _classify_streaks,
     _classify_clipping_nature, _dr_from_rms, calculate_dr,
@@ -83,7 +83,10 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.8"
+ENGINE_VERSION = "13.9"
+# 13.9: L2-tiled zero-allocation stereo STFT with exact Parseval Mid/Side power,
+#       direct pypocketfft C++ bindings, vectorized MDCT subband matrix, and
+#       fused 24-bit integer MD5/abs/clipping streaming passes.
 # 13.8: Streaming native int16/int24 decode without full-block float64 copies,
 #       O(1)-RAM streaming bit-depth accumulator, PQMF-576 36x18 MDCT basis,
 #       and pure-NumPy 160/147 polyphase resampler removing scipy.signal startup.
@@ -541,6 +544,10 @@ class _BlockAnalysis:
         self._md5_width = _WIDTH_BY_BITS.get(self.bits)
         self._md5 = (hashlib.md5()
                      if self._md5_width and meta.get("md5") else None)
+        self._packer24 = (_Int24Packer()
+                          if self._md5 is not None and self._md5_width == 3
+                          else None)
+        self._abs_i32_buf = None
 
         # clipping + global peak
         self._clip_runs   = 0
@@ -605,7 +612,7 @@ class _BlockAnalysis:
     def _integrity_and_clipping(self, block, q_int=None):
         if self._md5 is not None:
             self._md5.update(_pcm_bytes(block, self.bits, self._md5_width,
-                                        q_int=q_int))
+                                        q_int=q_int, packer24=self._packer24))
         if block.ndim > 1:
             n_ch = block.shape[1]
             if n_ch == 2:
@@ -618,10 +625,18 @@ class _BlockAnalysis:
                 amp = np.max(np.abs(block), axis=1)
         else:
             amp = np.abs(block)
+        peak = 0.0
         if amp.size:
             peak = float(np.max(amp))
             if peak > self._peak:
                 self._peak = peak
+        if peak < 0.9999:
+            if self._clip_opened:
+                self._clip_lengths.append(self._clip_opened)
+                if self._clip_opened >= 3:
+                    self._clip_runs += 1
+                self._clip_opened = 0
+            return
         streaks, self._clip_opened = _streaks(amp >= 0.9999, self._clip_opened)
         self._clip_lengths.extend(streaks)
         self._clip_runs += sum(1 for long in streaks if long >= 3)
@@ -634,27 +649,39 @@ class _BlockAnalysis:
             return
         if self._md5 is not None:
             self._md5.update(_pcm_bytes(None, 16, self._md5_width, q_int=block_i16))
+        max_abs = 0
         if block_i16.size:
-            peak = max(int(np.max(block_i16)), -int(np.min(block_i16))) * (1.0 / 32768.0)
+            max_abs = max(int(np.max(block_i16)), -int(np.min(block_i16)))
+            peak = max_abs * (1.0 / 32768.0)
             if peak > self._peak:
                 self._peak = peak
-        # |sample| / 32768.0 >= 0.9999 iff |sample| >= 32765.
-        en_clip_ch = (block_i16 >= 32765) | (block_i16 <= -32765)
         n_ch = block_i16.shape[1]
         if n_ch == 2:
-            en_clip = en_clip_ch[:, 0] | en_clip_ch[:, 1]
             mono = (
                 block_i16[:, 0].astype(np.int32) + block_i16[:, 1].astype(np.int32)
             ) * (0.5 / 32768.0)
         elif n_ch == 1:
-            en_clip = en_clip_ch[:, 0]
             mono = block_i16[:, 0] * (1.0 / 32768.0)
         else:
-            en_clip = np.any(en_clip_ch, axis=1)
             mono = block_i16.mean(axis=1, dtype=np.float64) * (1.0 / 32768.0)
-        streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
-        self._clip_lengths.extend(streaks)
-        self._clip_runs += sum(1 for long in streaks if long >= 3)
+        # |sample| / 32768.0 >= 0.9999 iff |sample| >= 32765.
+        if max_abs < 32765:
+            if self._clip_opened:
+                self._clip_lengths.append(self._clip_opened)
+                if self._clip_opened >= 3:
+                    self._clip_runs += 1
+                self._clip_opened = 0
+        else:
+            en_clip_ch = (block_i16 >= 32765) | (block_i16 <= -32765)
+            if n_ch == 2:
+                en_clip = en_clip_ch[:, 0] | en_clip_ch[:, 1]
+            elif n_ch == 1:
+                en_clip = en_clip_ch[:, 0]
+            else:
+                en_clip = np.any(en_clip_ch, axis=1)
+            streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
+            self._clip_lengths.extend(streaks)
+            self._clip_runs += sum(1 for long in streaks if long >= 3)
         self._dynamic_range_from_mono(mono)
         self._spectrum_acc.add(block_i16, offset, mono=mono, int_scale=1.0 / 32768.0)
 
@@ -665,30 +692,44 @@ class _BlockAnalysis:
         if q_i32.shape[0] == 0:
             return
         if self._md5 is not None:
-            self._md5.update(_pcm_bytes(None, 24, self._md5_width, q_int=q_i32))
-        if q_i32.size:
-            peak = max(int(np.max(q_i32)), -int(np.min(q_i32))) * (1.0 / 8388608.0)
-            if peak > self._peak:
-                self._peak = peak
-        # |sample| / 8388608.0 >= 0.9999 iff |sample| >= 8387770.
-        en_clip_ch = (q_i32 >= 8387770) | (q_i32 <= -8387770)
+            self._md5.update(_pcm_bytes(None, 24, self._md5_width, q_int=q_i32,
+                                        packer24=self._packer24))
+        if self._abs_i32_buf is None or self._abs_i32_buf.shape != q_i32.shape:
+            self._abs_i32_buf = np.empty(q_i32.shape, dtype=np.int32)
+        abs_view = self._abs_i32_buf
+        np.abs(q_i32, out=abs_view)
+        max_abs = int(np.max(abs_view)) if abs_view.size else 0
+        peak = max_abs * (1.0 / 8388608.0)
+        if peak > self._peak:
+            self._peak = peak
         n_ch = q_i32.shape[1]
         if n_ch == 2:
-            en_clip = en_clip_ch[:, 0] | en_clip_ch[:, 1]
             mono = (q_i32[:, 0] + q_i32[:, 1]) * (0.5 / 8388608.0)
         elif n_ch == 1:
-            en_clip = en_clip_ch[:, 0]
             mono = q_i32[:, 0] * (1.0 / 8388608.0)
         else:
-            en_clip = np.any(en_clip_ch, axis=1)
             mono = q_i32.mean(axis=1, dtype=np.float64) * (1.0 / 8388608.0)
-        streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
-        self._clip_lengths.extend(streaks)
-        self._clip_runs += sum(1 for long in streaks if long >= 3)
+        # |sample| / 8388608.0 >= 0.9999 iff |sample| >= 8387770.
+        if max_abs < 8387770:
+            if self._clip_opened:
+                self._clip_lengths.append(self._clip_opened)
+                if self._clip_opened >= 3:
+                    self._clip_runs += 1
+                self._clip_opened = 0
+        else:
+            if n_ch == 2:
+                en_clip = (abs_view[:, 0] >= 8387770) | (abs_view[:, 1] >= 8387770)
+            elif n_ch == 1:
+                en_clip = abs_view[:, 0] >= 8387770
+            else:
+                en_clip = np.any(abs_view >= 8387770, axis=1)
+            streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
+            self._clip_lengths.extend(streaks)
+            self._clip_runs += sum(1 for long in streaks if long >= 3)
         self._dynamic_range_from_mono(mono)
-        self._bdi_acc.add_block(offset, q_int=q_i32)
+        self._bdi_acc.add_block(offset, q_int=q_i32, abs_q=abs_view)
         if self._forensic_bits is not None:
-            self._forensic_bits.add(q_i32, q_int=q_i32)
+            self._forensic_bits.add(q_i32, q_int=q_i32, abs_q=abs_view)
         self._spectrum_acc.add(q_i32, offset, mono=mono, int_scale=1.0 / 8388608.0)
 
     def _dynamic_range_from_mono(self, mono):

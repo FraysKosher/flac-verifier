@@ -62,9 +62,55 @@ for _bit_i in range(32):
     _DEBRUIJN_TABLE[((1 << _bit_i) * 0x077CB531 & 0xFFFFFFFF) >> 27] = _bit_i
 
 
-def _pack_int24_le(q_i32):
+class _Int24Packer:
+    """Reusable scratch-buffer packer for little-endian 24-bit PCM words."""
+
+    def __init__(self):
+        self._u = None
+        self._t0 = None
+        self._t1 = None
+        self._out = None
+
+    def pack(self, q_i32):
+        flat = np.asarray(q_i32, dtype="<i4").ravel()
+        n = flat.size
+        if n == 0:
+            return np.empty(0, dtype=np.uint8)
+        n4 = (n // 4) * 4
+        if n4 == 0:
+            return np.ascontiguousarray(flat.view(np.uint8).reshape(-1, 4)[:, :3]).ravel()
+        q4 = n4 // 4
+        if self._u is None or self._u.size < n4:
+            self._u = np.empty(n4, dtype="<u4")
+            self._t0 = np.empty(q4, dtype="<u4")
+            self._t1 = np.empty(q4, dtype="<u4")
+            self._out = np.empty(q4 * 3, dtype="<u4")
+        u = self._u[:n4]
+        np.bitwise_and(flat[:n4].view(np.uint32), np.uint32(0xFFFFFF), out=u)
+        u2d = u.reshape(q4, 4)
+        u0, u1, u2, u3 = u2d[:, 0], u2d[:, 1], u2d[:, 2], u2d[:, 3]
+        t0, t1 = self._t0[:q4], self._t1[:q4]
+        out3 = self._out[: q4 * 3].reshape(q4, 3)
+        np.left_shift(u1, np.uint32(24), out=t0)
+        np.bitwise_or(u0, t0, out=out3[:, 0])
+        np.right_shift(u1, np.uint32(8), out=t0)
+        np.left_shift(u2, np.uint32(16), out=t1)
+        np.bitwise_or(t0, t1, out=out3[:, 1])
+        np.right_shift(u2, np.uint32(16), out=t0)
+        np.left_shift(u3, np.uint32(8), out=t1)
+        np.bitwise_or(t0, t1, out=out3[:, 2])
+        out_bytes = out3.reshape(-1).view(np.uint8)
+        if n4 == n:
+            return out_bytes
+        tail = np.ascontiguousarray(flat[n4:].view(np.uint8).reshape(-1, 4)[:, :3]).ravel()
+        return np.concatenate((out_bytes, tail))
+
+
+def _pack_int24_le(q_i32, packer=None):
     """Packs signed int32 samples in [-8388608, 8388607] into little-endian
     24-bit PCM bytes (4 samples -> 3 uint32 words)."""
+    if packer is not None:
+        return packer.pack(q_i32)
     flat = np.asarray(q_i32, dtype="<i4").ravel()
     if flat.size == 0:
         return np.empty(0, dtype=np.uint8)
@@ -87,7 +133,7 @@ def _pack_int24_le(q_i32):
     return np.concatenate((out_bytes, tail))
 
 
-def _pcm_bytes(block, bits_per_sample, width, q_int=None):
+def _pcm_bytes(block, bits_per_sample, width, q_int=None, packer24=None):
     """Little-endian interleaved PCM of a block, exactly as the format hashes it.
 
     float64 -> exact integer: the soundfile conversion is m / 2**(bits-1)."""
@@ -116,7 +162,7 @@ def _pcm_bytes(block, bits_per_sample, width, q_int=None):
         else np.clip(np.rint(block * scale), -8388608.0, 8388607.0).astype("<i4")
     )
     if width == 3:
-        return _pack_int24_le(q)
+        return _pack_int24_le(q, packer=packer24)
     return np.ascontiguousarray(q.view(np.uint8).reshape(-1, 4)[:, :width])
 
 def _md5_pcm(data, bits_per_sample, frames_by_block=1 << 20):
@@ -125,8 +171,10 @@ def _md5_pcm(data, bits_per_sample, frames_by_block=1 << 20):
     if width is None:
         return None
     md5 = hashlib.md5()
+    packer = _Int24Packer() if width == 3 else None
     for i in range(0, len(data), frames_by_block):
-        md5.update(_pcm_bytes(data[i : i + frames_by_block], bits_per_sample, width))
+        md5.update(_pcm_bytes(data[i : i + frames_by_block], bits_per_sample, width,
+                              packer24=packer))
     return md5.hexdigest()
 
 def _compare_md5(calculated, meta):
@@ -212,7 +260,7 @@ class _StreamingBitDepthAccumulator:
         self._counts_idx = np.zeros(32, dtype=np.int64)
         self._error = None
 
-    def add_block(self, offset, block_f64=None, q_int=None):
+    def add_block(self, offset, block_f64=None, q_int=None, abs_q=None):
         if self.bits <= 16 or self._sampled_frames >= MAX_SAMPLES_BITS or self._error:
             return
         if (offset // FRAMES_BY_BLOCK) % self._sampling_step:
@@ -222,7 +270,8 @@ class _StreamingBitDepthAccumulator:
                 n_frames = q_int.shape[0]
                 self._sampled_frames += n_frames
                 flat = np.asarray(q_int).ravel()
-                active_mask = np.abs(flat) >= 8389
+                abs_flat = np.asarray(abs_q).ravel() if abs_q is not None else np.abs(flat)
+                active_mask = abs_flat >= 8389
                 if not np.any(active_mask):
                     return
                 active = flat if np.all(active_mask) else flat[active_mask]
@@ -568,7 +617,7 @@ class ForensicBitsAccumulator:
             self._dop_valid += int(np.count_nonzero(valid))
         self._dop_last = tops[-1, :].copy()
 
-    def add(self, block, q_int=None):
+    def add(self, block, q_int=None, abs_q=None):
         if self._state is AccumulatorState.COMPLETED:
             raise RuntimeError("cannot add audio blocks after completion")
         if self.bits not in (24, 32) or block.shape[0] == 0:
@@ -585,7 +634,7 @@ class ForensicBitsAccumulator:
             absq = np.minimum(np.abs(q.astype(np.int64)).ravel() >> 8, 8388608).astype(np.int32)
             absq_or = int(np.bitwise_or.reduce(absq)) if self._hi16_only else 0
         else:
-            absq = np.abs(q).ravel()
+            absq = np.asarray(abs_q).ravel() if abs_q is not None else np.abs(q).ravel()
             if self._hi16_only:
                 absq_or = int(np.bitwise_or.reduce(absq))
                 self._or |= absq_or

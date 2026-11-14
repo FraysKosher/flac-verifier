@@ -321,6 +321,62 @@ class TestNativeFastPathEquivalence(unittest.TestCase):
         ])
         self.assertLess(float(np.max(np.abs(got_big - ref_big))), 5e-6)
 
+    def test_int24_packer_and_pocketfft_direct_isolation(self):
+        import importlib.util
+        import subprocess
+        from scipy import fft as sp_fft
+        import _motor_bits as bits
+        import _motor_espectral as spectral
+
+        # 1) Reusable _Int24Packer bit-exactness across boundary values and sizes.
+        packer = bits._Int24Packer()
+        rng = np.random.default_rng(139)
+        edge = np.array(
+            [-8388608, -8388607, -32768, -256, -1, 0, 1, 255, 32767, 8388606, 8388607],
+            dtype=np.int32,
+        )
+        for chunk in (
+            edge,
+            rng.integers(-8388608, 8388608, size=(17, 2), dtype=np.int32),
+            rng.integers(-8388608, 8388608, size=(8192, 2), dtype=np.int32),
+        ):
+            flat = chunk.reshape(-1)
+            expected = b"".join(int(v).to_bytes(4, "little", signed=True)[:3] for v in flat)
+            got = bytes(bits._pack_int24_le(chunk, packer=packer))
+            self.assertEqual(got, expected)
+
+        # 2) Direct pypocketfft wrappers vs scipy.fft reference.
+        sig = rng.standard_normal((12, 4096)).astype(np.float32)
+        ref_rfft = sp_fft.rfft(sig, axis=-1, workers=1)
+        got_rfft = spectral._rfft_f32(sig, axis=-1)
+        self.assertLess(float(np.max(np.abs(got_rfft - ref_rfft))), 1e-4)
+
+        ref_irfft = sp_fft.irfft(ref_rfft, n=4096, axis=-1, workers=1)
+        got_irfft = spectral._irfft_f32(got_rfft, 4096, axis=-1)
+        self.assertLess(float(np.max(np.abs(got_irfft - ref_irfft))), 1e-5)
+
+        dct_in = rng.standard_normal((8, 1024)).astype(np.float32)
+        ref_dct = sp_fft.dct(dct_in, type=4, norm="ortho", axis=-1, workers=1)
+        got_dct = spectral._dct4_ortho_f32(dct_in, axis=-1)
+        self.assertLess(float(np.max(np.abs(got_dct - ref_dct))), 1e-4)
+
+        # 3) Frozen-mode isolation: _MEIPASS direct pypocketfft load pulls zero scipy subpackages.
+        scipy_root = os.path.dirname(
+            os.path.dirname(importlib.util.find_spec("scipy").origin)
+        )
+        probe = (
+            "import sys, numpy as np; "
+            f"sys._MEIPASS = {scipy_root!r}; "
+            "import _motor_espectral as spectral; "
+            "acc = spectral._SpectralAccumulator(96000, 'full', None); "
+            "x = np.random.default_rng(7).standard_normal((96000, 2)).astype(np.float32) * 0.1; "
+            "acc.add(x, 0); res = acc.result(); "
+            "assert res['error'] is None; "
+            "leaked = [m for m in sys.modules if m == 'scipy' or m.startswith('scipy.')]; "
+            "assert not leaked, f'scipy leaked in frozen mode: {leaked}'"
+        )
+        subprocess.run([sys.executable, "-c", probe], check=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
