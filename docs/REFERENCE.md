@@ -280,7 +280,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"13.6"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"13.7"`), spectral mode and seconds |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

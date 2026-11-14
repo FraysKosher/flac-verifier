@@ -131,12 +131,12 @@ def calculate_score(meta, spectrum, bdi):
         #    claims to be hi-res. At 44.1/48 kHz it is physically impossible.
         if is_hires:
             ledger.add_votes(0.0, 3.0)
-            if spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
+            if ceiling >= LIMIT_CD_HZ:
+                ledger.add_votes(3.0)
+            elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
                 ledger.add_votes(3.0)
                 ledger.note("hi-res morphology consistent with an analogue/DSD "
                             "master (smooth roll-off and continuous ultrasonic floor)")
-            elif ceiling >= LIMIT_CD_HZ:
-                ledger.add_votes(3.0)
             elif ceiling >= 18000:
                 ledger.add_votes(1.5)
                 ledger.note(f"partial hi-res content: ceiling of {ceiling/1000:.1f} kHz "

@@ -65,5 +65,5 @@ jobs:
         shell: bash
         run: |
           echo "Suite finished on ${{ runner.os }} with Python ${{ matrix.python }}."
-          echo "Expected: 351 tests. Two are skipped when the platform cannot"
+          echo "Expected: 352 tests. Two are skipped when the platform cannot"
           echo "create processes or when ffmpeg is not on the PATH."

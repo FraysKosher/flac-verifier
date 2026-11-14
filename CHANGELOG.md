@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.7] - 2026-11-14
+
+### Changed & Fixed
+
+- Raised `ENGINE_VERSION` to `"13.7"` and expanded the automated test suite to
+  **352 tests** (`tests/test_forense_riguroso.py` Case `test_42`).
+- Refined `_diagnose_hires_authenticity()` in `_motor_espectral.py` to separate
+  quiet 24/96 studio masters using ~29.5 kHz ultrasonic mastering LPFs into 24-bit
+  TPDF dither from genuine 44.1/48 -> 96+ kHz upscales:
+  - Constrained the `(jump_db > 21.0 and level_after_db < -125.0)` brickwall
+    branch so it only fires when the 23.8-25.8 kHz Nyquist midpoint is already at
+    digital silence (`level_mid_44k_db < -120.0`) or exhibits a true transition
+    cliff (`drop_mid_44k_db > 21.0 and min(worse_slope, slope_skirt_44k) < -18.5`),
+    leaving `muro_24k`, `skirt_44k_brickwall`, and `skirt_48k_brickwall` strict
+    for true 44.1/48 kHz upscales and 48 kHz stems.
+  - Added `ultrasonic_studio_rolloff` backed by passband ultrasonic SNR
+    (`snr_ultra_pass_db >= 20.0` in `25.5-27.5 kHz` above the `31-42 kHz`
+    stopband) so quiet genuine 24/96 tracks are recognized as authentic even when
+    sub-bass/midrange level pushes the relative `-60 dB` ceiling below 22.05 kHz.
+- Added a centered upper-mid vocal guard (`_has_centered_upper_mid_vocal()` in
+  `_motor_espectral.py`) across both static and dynamic M/S asymmetry paths:
+  when `9-13 kHz` already shows a `>= 22.0 dB` Mid-over-Side lead with `< 4.0 dB`
+  additional collapse into `15.5-19.8 kHz`, dry wide-panned acoustic arrangements
+  with a centered mono vocal no longer trigger false `sospecha_joint_stereo`.
+- Checked `ceiling >= LIMIT_CD_HZ` before adding the analogue/DSD morphology
+  note in `_motor_veredicto.py` so that explanatory note is attached only when a
+  genuine Hi-Res track's relative ceiling dips below 22.05 kHz.
+
 ## [2.9.6] - 2026-11-13
 
 ### Changed & Fixed

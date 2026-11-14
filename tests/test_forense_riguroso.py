@@ -2644,6 +2644,144 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIs(res_u30["esp"]["muro_brickwall_nyquist"], False)
         self.assertEqual(res_u30["veredicto"], "GENUINE LOSSLESS")
 
+    def test_42_quiet_hires_30k_master_and_centered_vocal_ms_guard(self):
+        """Phase 13.7: quiet 24/96 tracks with centered vocals, low sub-bass
+        relative ceiling (< 22.05 kHz), and ~29.5 kHz studio LPFs must verify as
+        GENUINE LOSSLESS without flagging muro_brickwall_nyquist or joint-stereo
+        M/S collapse, while quiet 44.1->96 upscales, 48->96 stems over an analog
+        floor, and true joint-stereo collapses remain detected."""
+        sr_hi = 96000
+        sr_44 = 44100
+        dur = 6.0
+        n_hi = int(sr_hi * dur)
+        t_hi = np.arange(n_hi, dtype=np.float64) / float(sr_hi)
+        rng = np.random.default_rng(4201)
+
+        # Case A: Intimate genuine 24/96 track — wide stereo 2-6 kHz acoustic bed,
+        # strictly centered mono 9-27 kHz vocal harmonics, sub-bass weighting
+        # pushing the -60 dB ceiling below 22.05 kHz, gentle studio DAC roll-off
+        # + 29.5 kHz ultrasonic LPF into 24-bit TPDF dither.
+        wide_l = signal.sosfilt(
+            signal.butter(2, [300.0, 5800.0], btype="band", fs=sr_hi, output="sos"),
+            rng.standard_normal(n_hi),
+        )
+        wide_r = signal.sosfilt(
+            signal.butter(2, [300.0, 5800.0], btype="band", fs=sr_hi, output="sos"),
+            rng.standard_normal(n_hi),
+        )
+        centered_hf = signal.sosfilt(
+            signal.butter(2, 7500.0, btype="high", fs=sr_hi, output="sos"),
+            rng.standard_normal(n_hi),
+        )
+        # Mild amplitude modulation + sub-bass tone so relative -60 dB sits < 22 kHz.
+        env = 0.25 + 0.75 * (np.sin(2.0 * np.pi * 1.8 * t_hi) ** 4)
+        sub_bass = 0.22 * np.sin(2.0 * np.pi * 65.0 * t_hi)
+        raw_genuine = np.column_stack([
+            sub_bass + 0.03 * wide_l * env + 0.014 * centered_hf * env,
+            sub_bass + 0.03 * wide_r * env + 0.014 * centered_hf * env,
+        ])
+        # Studio DAC pre-emphasis attenuation + 29.5 kHz ultrasonic anti-image filter.
+        rolled = signal.sosfilt(
+            signal.butter(2, 16500.0, btype="low", fs=sr_hi, output="sos"),
+            raw_genuine,
+            axis=0,
+        )
+        rolled = signal.sosfilt(
+            signal.butter(10, 29500.0, btype="low", fs=sr_hi, output="sos"),
+            rolled,
+            axis=0,
+        )
+        dither_a = (rng.random(rolled.shape) - rng.random(rolled.shape)) / 8388608.0
+        path_a = self.base_path / "genuine_quiet_30k_centered_vocal_24_96.flac"
+        sf.write(
+            path_a,
+            np.clip(rolled + dither_a, -1.0, 8388607.0 / 8388608.0),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_a = motor_flac.analyze_file_data(str(path_a), use_cache=False)
+
+        self.assertIs(res_a["esp"]["muro_brickwall_nyquist"], False)
+        self.assertIs(res_a["esp"]["rolloff_analogico_genuino"], True)
+        self.assertIs(res_a["esp"]["sospecha_joint_stereo"], False)
+        self.assertEqual(res_a["veredicto"], "GENUINE LOSSLESS")
+
+        # Case B1: Quiet 44.1 -> 96 Sinc upscale -> must still be flagged.
+        n_44 = int(sr_44 * dur)
+        sig_44 = signal.resample_poly(raw_genuine, 147, 320, axis=0)[:n_44]
+        up_sinc = signal.resample_poly(sig_44, 320, 147, axis=0)[:n_hi]
+        dither_b1 = (rng.random(up_sinc.shape) - rng.random(up_sinc.shape)) / 8388608.0
+        path_b1 = self.base_path / "upscale_quiet_44_96_sinc.flac"
+        sf.write(
+            path_b1,
+            np.clip(up_sinc + dither_b1, -1.0, 8388607.0 / 8388608.0),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_b1 = motor_flac.analyze_file_data(str(path_b1), use_cache=False)
+
+        self.assertIs(res_b1["esp"]["muro_brickwall_nyquist"], True)
+        self.assertIs(res_b1["esp"]["rolloff_analogico_genuino"], False)
+        self.assertIn(res_b1["veredicto"], BAD_VERDICTS)
+
+        # Case B2: Quiet 44.1 -> 96 32-tap polyphase upscale -> must still be flagged.
+        h_poly = signal.firwin(32 * 320 + 1, 1.01 / 320.0, window=("kaiser", 9.5)) * 320.0
+        up_poly_raw = signal.upfirdn(h_poly, sig_44 * 2.5, up=320, down=147, axis=0)
+        delay = (len(h_poly) - 1) // (2 * 147)
+        up_poly = up_poly_raw[delay : delay + n_hi]
+        dither_b2 = (rng.random(up_poly.shape) - rng.random(up_poly.shape)) / 8388608.0
+        path_b2 = self.base_path / "upscale_quiet_44_96_poly32.flac"
+        sf.write(
+            path_b2,
+            np.clip(up_poly + dither_b2, -1.0, 8388607.0 / 8388608.0),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_b2 = motor_flac.analyze_file_data(str(path_b2), use_cache=False)
+
+        self.assertIs(res_b2["esp"]["muro_brickwall_nyquist"], True)
+        self.assertIs(res_b2["esp"]["rolloff_analogico_genuino"], False)
+        self.assertIn(res_b2["veredicto"], BAD_VERDICTS)
+
+        # Case C: 48 kHz mix stem embedded in 24/96 over an analog noise floor.
+        hf_48 = signal.sosfilt(
+            signal.butter(2, 12000.0, btype="high", fs=48000, output="sos"),
+            rng.standard_normal((int(48000 * dur), 2)),
+            axis=0,
+        )
+        src_48 = _create_track_reference(48000, duration=dur, seed=4203) + 0.25 * hf_48
+        h_48 = signal.firwin(161, 23200.0 / 48000.0, window=("kaiser", 10.0)) * 2.0
+        up_48 = signal.upfirdn(h_48, src_48, up=2, down=1, axis=0)[40 : 40 + n_hi]
+        analog_floor = rng.normal(0.0, 10.0 ** (-72.0 / 20.0), size=up_48.shape)
+        path_c = self.base_path / "stem_48k_in_96k_analog_floor.flac"
+        sf.write(
+            path_c,
+            np.clip(up_48 * 0.65 + analog_floor, -0.99, 0.99),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_c = motor_flac.analyze_file_data(str(path_c), use_cache=False)
+
+        self.assertIs(res_c["esp"]["muro_brickwall_nyquist"], True)
+        self.assertIs(res_c["esp"]["rolloff_analogico_genuino"], False)
+        self.assertIn(res_c["veredicto"], BAD_VERDICTS)
+
+        # Case D: True joint-stereo HF collapse (Mid full to 20 kHz, Side cut at 15.5 kHz)
+        # must still trigger sospecha_joint_stereo.
+        src_cd = _create_track_reference(sr_44, duration=dur, seed=4204)
+        mid_cd = 0.5 * (src_cd[:, 0] + src_cd[:, 1])
+        side_cd = 0.5 * (src_cd[:, 0] - src_cd[:, 1])
+        side_lp = signal.sosfilt(
+            signal.butter(12, 15500.0, btype="low", fs=sr_44, output="sos"),
+            side_cd,
+        )
+        joint_cd = np.column_stack([mid_cd + side_lp, mid_cd - side_lp])
+        path_d = self.base_path / "true_joint_stereo_collapse.flac"
+        sf.write(path_d, np.clip(joint_cd * 0.9, -0.99, 0.99), sr_44, subtype="PCM_16")
+        res_d = motor_flac.analyze_file_data(str(path_d), use_cache=False)
+
+        self.assertIs(res_d["esp"]["sospecha_joint_stereo"], True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

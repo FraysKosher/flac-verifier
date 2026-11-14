@@ -20,7 +20,7 @@ Say exactly what you ran. For anything touching the analysis, the useful evidenc
 a comparison against the fixtures: verdict, score, issues and MD5, before and after.
 -->
 
-- [ ] `python -m unittest discover -s tests` passes (351 tests)
+- [ ] `python -m unittest discover -s tests` passes (352 tests)
 - [ ] The change is covered by a test, or the reason it cannot be is written above
 - [ ] Any measurement quoted above was produced on this branch, not recalled
 

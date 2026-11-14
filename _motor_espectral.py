@@ -450,7 +450,15 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
     muro_brickwall = (
         (worse_slope < -28.0 and worse_slope < slope_base * 2.1
          and jump_db > 15.0)
-        or (jump_db > 21.0 and level_after_db < -125.0)
+        or (
+            jump_db > 21.0
+            and level_after_db < -125.0
+            and (
+                level_mid_44k_db < -120.0
+                or (drop_mid_44k_db > 21.0
+                    and min(worse_slope, slope_skirt_44k) < -18.5)
+            )
+        )
         or muro_24k
         or skirt_44k_brickwall
         or skirt_48k_brickwall
@@ -590,8 +598,24 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and fall_14_17k_db > 10.0
         and (level_14_17k - level_before_db) >= 1.5
     )
+    mask_ultra_pass = (freqs >= 25500.0) & (freqs <= 27500.0)
+    mask_ultra_stop = ((freqs >= 31000.0)
+                       & (freqs <= min(42000.0, sample_rate * 0.44)))
+    if np.any(mask_ultra_pass) and np.any(mask_ultra_stop):
+        snr_ultra_pass_db = (float(np.median(curva[mask_ultra_pass]))
+                             - float(np.median(curva[mask_ultra_stop])))
+    else:
+        snr_ultra_pass_db = 0.0
+    ultrasonic_studio_rolloff = (
+        worse_slope > -12.0
+        and slope_skirt_44k > -18.0
+        and 2.0 <= drop_mid_44k_db < 21.0
+        and snr_ultra_pass_db >= 20.0
+        and (level_14_17k - level_before_db) >= 1.5
+    )
     rolloff_analog = bool(
-        base_rolloff_ok and (gentle_rolloff or multipole_analog_rolloff)
+        base_rolloff_ok
+        and (gentle_rolloff or multipole_analog_rolloff or ultrasonic_studio_rolloff)
     )
 
     output.update({
@@ -605,6 +629,25 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         "perfil_dsd":               profile_dsd,
     })
     return output
+
+
+def _has_centered_upper_mid_vocal(freqs, diff_db):
+    """True when Mid already leads Side strongly in 9-13 kHz without a
+    further steep collapse into 15.5-19.8 kHz (typical of a dry wide-panned
+    instrument bed beneath a centered mono vocal)."""
+    mask_upper_mid = (freqs >= 9000.0) & (freqs <= 13000.0)
+    mask_high = (freqs >= 15500.0) & (freqs <= 19800.0)
+    if not np.any(mask_upper_mid) or not np.any(mask_high):
+        return False
+    diff_um = float(np.median(diff_db[mask_upper_mid]))
+    diff_hi = float(np.median(diff_db[mask_high]))
+    return bool(
+        math.isfinite(diff_um)
+        and math.isfinite(diff_hi)
+        and diff_um >= 22.0
+        and (diff_hi - diff_um) < 4.0
+    )
+
 
 def _analyze_mid_side_asymmetry(spectrum_mid_db, spectrum_side_db, freqs_hz,
                                  sample_rate, is_mono_real):
@@ -656,6 +699,7 @@ def _analyze_mid_side_asymmetry(spectrum_mid_db, spectrum_side_db, freqs_hz,
             and diff_mean_db > 24.0 and diff_high_db > 20.0):
         output["es_dual_mono"] = True
     collapse = diff_high_db - diff_mean_db
+    centered_upper_mid = _has_centered_upper_mid_vocal(freqs, diferencia)
 
     high_mask = (freqs >= 13000.0) & (freqs <= 21000.0)
     mask_pivote = (freqs >= 6000.0) & (freqs <= 10000.0)
@@ -677,7 +721,9 @@ def _analyze_mid_side_asymmetry(spectrum_mid_db, spectrum_side_db, freqs_hz,
         and mid_ceiling_hz >= 17500.0
         and (
             (collapse > 11.5 and delta_cutoff > 1100.0)
-            or (collapse > 16.5 and (delta_cutoff >= 900.0 or side_ceiling_hz < 17500.0))
+            or (collapse > 16.5
+                and (delta_cutoff >= 900.0
+                     or (side_ceiling_hz < 17500.0 and not centered_upper_mid)))
         )
     )
 
@@ -2282,9 +2328,18 @@ class _SpectralAccumulator:
         ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
         delta_cutoff = float(spectrum.get("delta_corte_ms_hz") or 0.0)
         collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
+        centered_hf_vocal = False
+        if (delta_cutoff < 800.0
+                and math.isfinite(ms_p95) and ms_p95 < 42.0
+                and mean_mid is not None and mean_side is not None):
+            diff_ms_db = 10.0 * np.log10(
+                np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
+            )
+            centered_hf_vocal = _has_centered_upper_mid_vocal(freqs, diff_ms_db)
         if (getattr(self._psycho, "_ms_dynamic_collapse", False)
                 and not spectrum.get("es_dual_mono")
                 and not spectrum.get("es_estacionario")
+                and not centered_hf_vocal
                 and (delta_cutoff >= 800.0
                      or (collapse >= 6.0 and math.isfinite(ms_p95) and ms_p95 >= 25.0))):
             spectrum["sospecha_joint_stereo"] = True

@@ -82,7 +82,9 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.6"
+ENGINE_VERSION = "13.7"
+# 13.7: Phase 13.7 quiet 24/96 studio roll-off vs ultrasonic stopband and
+#       centered upper-mid vocal M/S guard
 # 13.6: Phase 13.6 polyphase transition-skirt and ultrasonic stopband brickwall
 #       calibration for hot 0 dBFS 44.1/48 kHz -> Hi-Res upscales:
 #       - Added `skirt_44k_brickwall` (19.8-26.2 kHz skirt slope < -20.0 dB/kHz,
