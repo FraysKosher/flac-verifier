@@ -16,7 +16,7 @@ except ImportError:
     Image = ImageDraw = ImageFont = None
     PIL_OK = False
 
-from _motor_bits import FRAMES_BY_BLOCK, _classify_streaks
+from _motor_bits import AccumulatorState, FRAMES_BY_BLOCK, _classify_streaks
 
 WIDTH_PNG = 2100                    # total canvas width (14 in at 150 dpi)
 
@@ -402,14 +402,58 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and slope_24k < slope_base * 2.0
         and jump_24k_db > 22.0
     )
-    if muro_24k:
-        jump_db = max(jump_db, jump_24k_db)
+    # Short-kernel polyphase resamplers (e.g. 32-tap swresample or default Kaiser
+    # half-band filters) extend their anti-imaging transition skirt to ~0.585*fs_in
+    # (~25.8 kHz from 44.1 kHz, ~28.1 kHz from 48 kHz), while 0 dBFS inter-sample
+    # clipping caps can lift the ultrasonic stopband floor to -95..-124 dBFS.
+    # Requiring substantial attenuation already inside the Nyquist skirt midpoint
+    # (23.8-25.8 kHz for 44.1 kHz, 26.2-28.2 kHz for 48 kHz) separates genuine
+    # 24/96 studio masters that apply a ~29-31 kHz ultrasonic mastering filter.
+    mask_skirt_44k = (freqs >= 19800.0) & (freqs <= 26200.0)
+    mask_skirt_48k = (freqs >= 22500.0) & (freqs <= 28500.0)
+    mask_mid_44k = (freqs >= 23800.0) & (freqs <= 25800.0)
+    mask_mid_48k = (freqs >= 26200.0) & (freqs <= 28200.0)
+    mask_stopband = ((freqs >= 28500.0)
+                     & (freqs <= min(38500.0, sample_rate * 0.44)))
+    slope_skirt_44k = (float(np.min(grad_db_khz[mask_skirt_44k]))
+                       if np.any(mask_skirt_44k) else 0.0)
+    slope_skirt_48k = (float(np.min(grad_db_khz[mask_skirt_48k]))
+                       if np.any(mask_skirt_48k) else 0.0)
+    level_stopband_db = (float(np.median(curva[mask_stopband]))
+                         if np.any(mask_stopband) else level_after_db)
+    level_mid_44k_db = (float(np.median(curva[mask_mid_44k]))
+                        if np.any(mask_mid_44k) else level_stopband_db)
+    level_mid_48k_db = (float(np.median(curva[mask_mid_48k]))
+                        if np.any(mask_mid_48k) else level_stopband_db)
+    drop_mid_44k_db = level_before_db - level_mid_44k_db
+    drop_mid_48k_db = level_pre24_db - level_mid_48k_db
+    jump_stop_44k_db = level_before_db - level_stopband_db
+    jump_stop_48k_db = level_pre24_db - level_stopband_db
+
+    skirt_44k_brickwall = (
+        slope_skirt_44k < -21.5
+        and slope_skirt_44k < slope_base * 2.5
+        and drop_mid_44k_db > 32.0
+        and drop_mid_44k_db > jump_stop_44k_db * 0.38
+        and jump_stop_44k_db > 40.0
+        and level_stopband_db < -90.0
+    )
+    skirt_48k_brickwall = (
+        slope_skirt_48k < -21.5
+        and slope_skirt_48k < slope_base * 2.5
+        and drop_mid_48k_db > 32.0
+        and drop_mid_48k_db > jump_stop_48k_db * 0.38
+        and jump_stop_48k_db > 40.0
+        and level_stopband_db < -90.0
+    )
 
     muro_brickwall = (
         (worse_slope < -28.0 and worse_slope < slope_base * 2.1
          and jump_db > 15.0)
         or (jump_db > 21.0 and level_after_db < -125.0)
         or muro_24k
+        or skirt_44k_brickwall
+        or skirt_48k_brickwall
     )
 
     # DSD64/128 to PCM: rising noise-shaping ramp between 24 and 40 kHz. It is
@@ -480,6 +524,18 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         # A DSD transfer always has ultrasonic content: never a brickwall.
         muro_brickwall = False
 
+    reported_slope = worse_slope
+    reported_jump = jump_db
+    if muro_brickwall:
+        if muro_24k:
+            reported_jump = max(reported_jump, jump_24k_db)
+        if skirt_44k_brickwall:
+            reported_slope = min(reported_slope, slope_skirt_44k)
+            reported_jump = max(reported_jump, jump_stop_44k_db)
+        if skirt_48k_brickwall:
+            reported_slope = min(reported_slope, slope_skirt_48k)
+            reported_jump = max(reported_jump, jump_stop_48k_db)
+
     # Spectral mirror around the CD Nyquist (unfiltered interpolation). The fine
     # 250 Hz curve keeps the texture the mirror copies; the coarse curve is only
     # for slopes and levels.
@@ -542,8 +598,8 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         "muro_brickwall_nyquist":   bool(muro_brickwall),
         "espejo_aliasing_detectado": mirror_aliasing,
         "rolloff_analogico_genuino": rolloff_analog,
-        "gradiente_nyquist_db_khz": round(abs(worse_slope), 2),
-        "salto_ultrasonico_db":     round(jump_db, 2),
+        "gradiente_nyquist_db_khz": round(abs(reported_slope), 2),
+        "salto_ultrasonico_db":     round(reported_jump, 2),
         "correlacion_espejo_22k":   round(mirror_correlation, 3),
         "es_transferencia_dsd":     is_dsd,
         "perfil_dsd":               profile_dsd,
@@ -2023,9 +2079,25 @@ class _SpectralAccumulator:
         self._index = 0
         self._last = None
         self._error = None
+        self._state = AccumulatorState.COLLECTING
+        self._cached_result = None
         self._psycho = PsychoacousticSTFTAccumulator(self.sr)
 
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
+
+    def __repr__(self) -> str:
+        return (
+            f"_SpectralAccumulator(sr={self.sr}, mode={self.mode!r}, "
+            f"state={self._state.value!r}, blocks={self._index}, "
+            f"selected={len(self._seleccion)})"
+        )
+
     def add(self, block, start=0, mono=None):
+        if self._state is AccumulatorState.COMPLETED:
+            raise RuntimeError("cannot add audio blocks after completion")
         if self._error or block.shape[0] == 0:
             return
         try:
@@ -2070,12 +2142,17 @@ class _SpectralAccumulator:
                     heapq.heapreplace(self._seleccion, entry)
         except Exception as e:            # never abort the analysis of the file
             self._error = str(e)
+            self._state = AccumulatorState.FAILED
 
     def result(self):
+        if self._cached_result is not None:
+            return dict(self._cached_result)
         if self._error:
+            self._state = AccumulatorState.FAILED
             return {"error": self._error}
         chosen = self._seleccion or ([self._backup] if self._backup else [])
         if not chosen:
+            self._state = AccumulatorState.FAILED
             return {"error": "could not analyze the spectrum"}
         chosen = sorted(chosen, key=lambda item: item[2])   # chronological
 
@@ -2293,6 +2370,8 @@ class _SpectralAccumulator:
             spectrum["espectrograma"] = png_path
             if error:
                 spectrum["espectrograma_error"] = error
+        self._state = AccumulatorState.COMPLETED
+        self._cached_result = dict(spectrum)
         return spectrum
 
     def render_png_only(self, ceiling_hz=None, cutoff_hz=None):

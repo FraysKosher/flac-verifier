@@ -13,7 +13,7 @@ import time
 from _motor_bits import _normalize_path_fs
 
 
-class CacheLookupStatus(Enum):
+class CacheLookupStatus(str, Enum):
     FULL_HIT = "full_hit"
     METRICS_HIT_NEEDS_PNG = "metrics_hit_needs_png"
     MISS = "miss"

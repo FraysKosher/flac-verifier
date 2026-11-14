@@ -2519,6 +2519,131 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(verd_mod, "GENUINE LOSSLESS")
         self.assertAlmostEqual(score_mod, 0.80, places=4)
 
+    def test_41_polyphase_skirt_brickwall_hot_master_vs_steep_genuine_hires(self):
+        """Phase 13.6: polyphase transition-skirt brickwall on hot 0 dBFS upscales vs steep 24/96 controls."""
+        rng = np.random.default_rng(4101)
+
+        # Case A: 32-tap-per-phase 44.1 -> 96 kHz upscale of a hot bright master whose
+        # skirt extends past 22.05 kHz (worse_slope > -28 dB/kHz) and inter-sample
+        # clipping lifts the ultrasonic floor above -125 dBFS.
+        sr_44, sr_hi = 44100, 96000
+        dur = 4.0
+        n_44 = int(sr_44 * dur)
+        t_44 = np.arange(n_44, dtype=np.float64) / float(sr_44)
+        hf_44 = signal.sosfilt(
+            signal.butter(2, 4000.0, btype="high", fs=sr_44, output="sos"),
+            rng.standard_normal((n_44, 2)),
+            axis=0,
+        )
+        tonal_44 = (0.35 * np.sin(2.0 * np.pi * 220.0 * t_44)
+                    + 0.25 * np.cos(2.0 * np.pi * 880.0 * t_44))[:, None]
+        sig_44 = tonal_44 + 0.30 * hf_44
+        sig_44 /= np.max(np.abs(sig_44)) * 1.02
+
+        h_poly = signal.firwin(32 * 320 + 1, 1.01 / 320.0, window=("kaiser", 9.5)) * 320.0
+        up_raw = signal.upfirdn(h_poly, sig_44, up=320, down=147, axis=0)
+        delay = (len(h_poly) - 1) // (2 * 147)
+        n_hi = int(sr_hi * dur)
+        sig_up44 = up_raw[delay : delay + n_hi]
+        sig_up44 = np.clip(sig_up44 * 1.005, -1.0, 8388607.0 / 8388608.0)
+        dither_24 = (rng.random(sig_up44.shape) - rng.random(sig_up44.shape)) / 8388608.0
+        path_up44 = self.base_path / "upscale_32tap_hot_44_96.flac"
+        sf.write(path_up44, np.clip(sig_up44 + dither_24, -1.0, 8388607.0 / 8388608.0),
+                 sr_hi, subtype="PCM_24")
+        res_44 = motor_flac.analyze_file_data(str(path_up44), use_cache=False)
+
+        self.assertGreaterEqual(res_44["esp"]["techo_hz"], 22050)
+        self.assertIs(res_44["esp"]["muro_brickwall_nyquist"], True)
+        self.assertGreaterEqual(res_44["esp"]["gradiente_nyquist_db_khz"], 20.0)
+        self.assertGreaterEqual(res_44["esp"]["salto_ultrasonico_db"], 40.0)
+        self.assertIn(res_44["veredicto"], BAD_VERDICTS)
+
+        # Case B: 48 -> 96 kHz half-band resample_poly upscale of a hot master
+        src_48 = np.clip(_create_track_reference(48000, duration=dur, seed=4102) * 1.08,
+                         -0.999, 0.999)
+        sig_up48 = signal.resample_poly(src_48, 2, 1, axis=0)
+        sig_up48 = np.clip(sig_up48, -1.0, 8388607.0 / 8388608.0)
+        dither_48 = (rng.random(sig_up48.shape) - rng.random(sig_up48.shape)) / 8388608.0
+        path_up48 = self.base_path / "upscale_halfband_hot_48_96.flac"
+        sf.write(path_up48, np.clip(sig_up48 + dither_48, -1.0, 8388607.0 / 8388608.0),
+                 sr_hi, subtype="PCM_24")
+        res_48 = motor_flac.analyze_file_data(str(path_up48), use_cache=False)
+
+        self.assertGreaterEqual(res_48["esp"]["techo_hz"], 22050)
+        self.assertIs(res_48["esp"]["muro_brickwall_nyquist"], True)
+        self.assertIn(res_48["veredicto"], BAD_VERDICTS)
+
+        # Case C1: Genuine 24/96 controls with steep analogue/anti-alias roll-offs (24 & 36 dB/oct)
+        base_steep = _create_track_reference(sr_hi, duration=dur, seed=4103)
+        steep_24 = signal.sosfilt(
+            signal.butter(4, 21000.0, btype="low", fs=sr_hi, output="sos"),
+            base_steep,
+            axis=0,
+        )
+        steep_24 += rng.normal(0.0, 10.0 ** (-104.0 / 20.0), size=steep_24.shape)
+        path_steep24 = self.base_path / "genuine_steep_order4_21k_24_96.flac"
+        sf.write(path_steep24, np.clip(steep_24 / (np.max(np.abs(steep_24)) * 1.08), -0.99, 0.99),
+                 sr_hi, subtype="PCM_24")
+        res_steep24 = motor_flac.analyze_file_data(str(path_steep24), use_cache=False)
+
+        self.assertIs(res_steep24["esp"]["muro_brickwall_nyquist"], False)
+        self.assertIs(res_steep24["esp"]["rolloff_analogico_genuino"], True)
+        self.assertIn(res_steep24["veredicto"], GOOD_VERDICTS)
+
+        steep_36 = signal.sosfilt(
+            signal.butter(6, 22500.0, btype="low", fs=sr_hi, output="sos"),
+            base_steep,
+            axis=0,
+        )
+        steep_36 += rng.normal(0.0, 10.0 ** (-105.0 / 20.0), size=steep_36.shape)
+        path_steep36 = self.base_path / "genuine_steep_order6_22k5_24_96.flac"
+        sf.write(path_steep36, np.clip(steep_36 / (np.max(np.abs(steep_36)) * 1.08), -0.99, 0.99),
+                 sr_hi, subtype="PCM_24")
+        res_steep36 = motor_flac.analyze_file_data(str(path_steep36), use_cache=False)
+
+        self.assertIs(res_steep36["esp"]["muro_brickwall_nyquist"], False)
+        self.assertIn(res_steep36["veredicto"], GOOD_VERDICTS)
+
+        # Case C2: Genuine bright 24/96 studio control (4th-order 24.5 kHz + -112 dBFS floor)
+        base_bright = _create_track_reference(sr_hi, duration=dur, seed=4104)
+        bright = signal.sosfilt(
+            signal.butter(4, 24500.0, btype="low", fs=sr_hi, output="sos"),
+            base_bright,
+            axis=0,
+        )
+        bright += rng.normal(0.0, 10.0 ** (-112.0 / 20.0), size=bright.shape)
+        path_bright = self.base_path / "genuine_bright_order4_24k5_24_96.flac"
+        sf.write(path_bright, np.clip(bright / (np.max(np.abs(bright)) * 1.08), -0.99, 0.99),
+                 sr_hi, subtype="PCM_24")
+        res_bright = motor_flac.analyze_file_data(str(path_bright), use_cache=False)
+
+        self.assertGreaterEqual(res_bright["esp"]["techo_hz"], 23000)
+        self.assertIs(res_bright["esp"]["muro_brickwall_nyquist"], False)
+        self.assertEqual(res_bright["veredicto"], "GENUINE LOSSLESS")
+
+        # Case C3: Genuine 24/96 studio master with ~29.5 kHz ultrasonic mastering filter
+        # (Blu-ray / Hi-Res mastering DAC low-pass dropping into -144 dBFS 24-bit TPDF).
+        base_ultra = _create_track_reference(sr_hi, duration=dur, seed=4105)
+        ultra_master = signal.sosfilt(
+            signal.butter(10, 29500.0, btype="low", fs=sr_hi, output="sos"),
+            base_ultra,
+            axis=0,
+        )
+        ultra_master = ultra_master / (np.max(np.abs(ultra_master)) * 1.08)
+        dither_u30 = (rng.random(ultra_master.shape) - rng.random(ultra_master.shape)) / 8388608.0
+        path_u30 = self.base_path / "genuine_ultrasonic_30k_master_24_96.flac"
+        sf.write(
+            path_u30,
+            np.clip(ultra_master + dither_u30, -1.0, 8388607.0 / 8388608.0),
+            sr_hi,
+            subtype="PCM_24",
+        )
+        res_u30 = motor_flac.analyze_file_data(str(path_u30), use_cache=False)
+
+        self.assertGreaterEqual(res_u30["esp"]["techo_hz"], 25000)
+        self.assertIs(res_u30["esp"]["muro_brickwall_nyquist"], False)
+        self.assertEqual(res_u30["veredicto"], "GENUINE LOSSLESS")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -28,6 +28,7 @@ again, so the GUI multiplies without end.
 """
 from __future__ import annotations
 
+from enum import Enum
 import multiprocessing
 import os
 import sys
@@ -41,8 +42,20 @@ for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
     os.environ.setdefault(_variable_blas, "1")
 del _variable_blas
 
-VERSION = "2.9.5"
+VERSION = "2.9.6"
 ENGINE_EXE_NAME = "flac_motor.exe"
+
+
+class CliTarget(str, Enum):
+    """Explicit dispatch destinations resolved from CLI arguments."""
+
+    VERSION = "version"
+    HELP = "help"
+    ENGINE = "engine"
+    CLI = "cli"
+    GUI = "gui"
+
+
 ENGINE_OPTION_FLAGS = frozenset((
     "--path",
     "--mode",
@@ -93,32 +106,32 @@ def is_engine_exe() -> bool:
 def resolve_cli_dispatch(
     arguments: list[str],
     frozen_engine: bool = False,
-) -> tuple[str, list[str] | str | None]:
+) -> tuple[CliTarget, list[str] | str | None]:
     """Pure argument dispatcher returning (target, payload)."""
     args = list(arguments)
     if args and args[0] in ("--version", "-V"):
-        return ("version", None)
+        return (CliTarget.VERSION, None)
     if args and args[0] in ("--help", "-h", "/?"):
-        return ("help", None)
+        return (CliTarget.HELP, None)
     if args and args[0] == "--motor-cli":
-        return ("engine", args[1:])
+        return (CliTarget.ENGINE, args[1:])
     if args and args[0] == "--cli":
-        return ("cli", args[1:])
+        return (CliTarget.CLI, args[1:])
 
     explicit_gui = bool(args and args[0] in ("--gui", "-g"))
     if frozen_engine and not explicit_gui:
         if not args:
-            return ("help", None)
-        return ("engine", args)
+            return (CliTarget.HELP, None)
+        return (CliTarget.ENGINE, args)
 
     if args and not explicit_gui and any(
         token.split("=", 1)[0] in ENGINE_OPTION_FLAGS for token in args
     ):
-        return ("engine", args)
+        return (CliTarget.ENGINE, args)
 
     rest = args[1:] if explicit_gui else args
     path = rest[0] if (rest and not rest[0].startswith("-")) else None
-    return ("gui", path)
+    return (CliTarget.GUI, path)
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -126,16 +139,16 @@ def main(arguments: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if arguments is None else arguments)
     target, payload = resolve_cli_dispatch(raw_args, is_engine_exe())
 
-    if target == "version":
+    if target is CliTarget.VERSION:
         print(f"FLAC VERIFIER {VERSION}")
         return 0
-    if target == "help":
+    if target is CliTarget.HELP:
         print(HELP)
         return 0
-    if target == "engine":
+    if target is CliTarget.ENGINE:
         import motor_flac
         return motor_flac.main_cli(list(payload) if isinstance(payload, list) else [])
-    if target == "cli":
+    if target is CliTarget.CLI:
         import verificar_flac
         return verificar_flac.main(list(payload) if isinstance(payload, list) else [])
 

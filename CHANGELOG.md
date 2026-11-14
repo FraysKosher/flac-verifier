@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.6] - 2026-11-13
+
+### Changed & Fixed
+
+- Raised `ENGINE_VERSION` to `"13.6"` and expanded the automated test suite to
+  **351 tests** (`tests/test_forense_riguroso.py` Case `test_41`,
+  `tests/test_cache_y_paralelo.py` `TestStateMachines`, and `tests/test_gui.py`
+  `TestExplicitStateMachines`).
+- Added midpoint-anchored polyphase transition-skirt brickwall detection
+  (`skirt_44k_brickwall` across `19.8-26.2 kHz` anchored on the `23.8-25.8 kHz`
+  midpoint drop, and `skirt_48k_brickwall` across `22.5-26.8 kHz` anchored on
+  the `26.2-28.2 kHz` midpoint drop against the `28.5-38.5 kHz` ultrasonic
+  stopband) in `_diagnose_hires_authenticity` (`_motor_espectral.py`) so hot
+  `0 dBFS` short-kernel resampler upscales (`44.1/48 kHz -> 88.2/96+ kHz`) are
+  caught without false-positiving on genuine 24/96 studio masters with ~30 kHz
+  mastering filters, analogue roll-off, or DSD tracks.
+- Formalized internal lifecycle state machines using explicit `str, Enum` types:
+  - `CliTarget` (`main.py`), `AccumulatorState` across `ForensicBitsAccumulator`,
+    `_SpectralAccumulator`, and `_BlockAnalysis` with post-completion `.add()`
+    guards and idempotent `.result()` caching, `CacheLookupStatus` in
+    `_motor_cache.py`, and `StreamEvent`, `BatchDisposition`,
+    `plan_batch_cache()`, and `classify_batch_disposition()` in `motor_flac.py`
+    (wiring fast `METRICS_HIT_NEEDS_PNG` hydration into batch execution).
+  - `RunState`, `SurfaceMode`, `HeroMode`, `SpectrogramState`, `LOG_LEVEL_TAGS`,
+    monotonic `run_id` cancellation fencing in `output_reader`,
+    `ProcessManager`, `_process`, and `_finish`, plus `ui_snapshot()` and
+    strict `SpectrogramState.READY` gating on `btn_open_spectrogram` in `gui.py`.
+- Added repository security & automation infrastructure: `SECURITY.md`,
+  `.github/dependabot.yml` (`pip` and `github-actions`),
+  `.github/workflows/codeql.yml` (Python + GitHub Actions static analysis), and
+  explicit `permissions: contents: read` in `.github/workflows/ci.yml`.
+
 ## [2.9.5] - 2026-11-12
 
 ### Changed & Fixed

@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # A new push on the same branch cancels the previous run: intermediate results are
 # worth nothing and the queue does not fill up with them.
 concurrency:
@@ -62,5 +65,5 @@ jobs:
         shell: bash
         run: |
           echo "Suite finished on ${{ runner.os }} with Python ${{ matrix.python }}."
-          echo "Expected: 230 tests. Two are skipped when the platform cannot"
+          echo "Expected: 351 tests. Two are skipped when the platform cannot"
           echo "create processes or when ffmpeg is not on the PATH."

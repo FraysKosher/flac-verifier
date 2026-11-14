@@ -33,6 +33,7 @@ import threading
 import time
 import tkinter
 from collections import deque
+from enum import Enum
 from typing import Any, Callable, Iterable
 
 import informe_pdf
@@ -56,26 +57,76 @@ except ImportError:                      # optional: without this there is no dr
 Event = dict[str, Any]
 Message = tuple[str, Event]             # (channel, event) as it travels through the queue
 
-RUN_STATE_TRANSITIONS: dict[str, frozenset[str]] = {
-    "idle": frozenset(("running",)),
-    "running": frozenset(("finished", "cancelled", "error")),
-    "finished": frozenset(("running", "idle")),
-    "cancelled": frozenset(("running", "idle")),
-    "error": frozenset(("running", "idle")),
+
+class RunState(str, Enum):
+    """Explicit lifecycle states for a batch execution in the GUI."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    FINISHED = "finished"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
+class SurfaceMode(str, Enum):
+    """Workspace surface mode: onboarding placeholder vs live batch table."""
+
+    EMPTY = "empty"
+    RESULTS = "results"
+
+
+class HeroMode(str, Enum):
+    """Hero card mode: album summary overview vs single-track inspector."""
+
+    ALBUM = "album"
+    INSPECTOR = "inspector"
+
+
+class SpectrogramState(str, Enum):
+    """Visual state of the spectrogram preview and Open button."""
+
+    NONE = "none"
+    MISSING = "missing"
+    READY = "ready"
+
+
+LOG_LEVEL_TAGS: dict[str, str] = {
+    "info": "info",
+    "ok": "ok",
+    "warn": "warn",
+    "aviso": "warn",
+    "error": "error",
+}
+
+RUN_STATE_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
+    RunState.IDLE: frozenset((RunState.RUNNING,)),
+    RunState.RUNNING: frozenset((RunState.FINISHED, RunState.CANCELLED, RunState.ERROR)),
+    RunState.FINISHED: frozenset((RunState.RUNNING, RunState.IDLE)),
+    RunState.CANCELLED: frozenset((RunState.RUNNING, RunState.IDLE)),
+    RunState.ERROR: frozenset((RunState.RUNNING, RunState.IDLE)),
 }
 
 
-def transition_run_state(current: str, target: str) -> str:
+def _coerce_run_state(value: RunState | str) -> RunState:
+    if isinstance(value, RunState):
+        return value
+    return RunState(value)
+
+
+def transition_run_state(current: RunState | str, target: RunState | str) -> RunState:
     """Validates and executes a run_state transition.
 
     While a batch is `running`, only terminal batch events (`finished`,
     `cancelled`, `error`) can leave `running`, preventing intermediate
     `informe` or `aviso` events from prematurely unlocking controls.
     """
-    allowed = RUN_STATE_TRANSITIONS.get(current, frozenset(("running", "idle")))
-    if target == current or target in allowed:
-        return target
-    return current
+    current_state = _coerce_run_state(current)
+    target_state = _coerce_run_state(target)
+    allowed = RUN_STATE_TRANSITIONS.get(
+        current_state, frozenset((RunState.RUNNING, RunState.IDLE)))
+    if target_state == current_state or target_state in allowed:
+        return target_state
+    return current_state
 
 
 def event_logical_key(event: Event | None) -> tuple[Any, str] | None:
@@ -644,20 +695,26 @@ def finish_process(process: "subprocess.Popen[str] | None", wait_time: float = 3
 
 
 def output_reader(process: "subprocess.Popen[str]", message_queue: "queue.Queue[Message]",
-                  cancelled: Callable[[], bool] | None = None) -> None:
+                  cancelled: Callable[[], bool] | None = None,
+                  run_id: int | None = None) -> None:
     """Daemon thread: reads stdout and stderr and puts them into the queue.
 
     It always ends with a `__fin__` event so that the window knows the process
     finished, even if the read failed."""
+    def stamp(event: Event) -> Event:
+        if run_id is None:
+            return event
+        return {**event, "run_id": run_id}
+
     def read(stream: Any, channel: str) -> None:
         try:
             for line in stream:
                 event = parse_event(line)
                 if event is not None:
-                    message_queue.put((channel, event))
+                    message_queue.put((channel, stamp(event)))
         except Exception as e:                       # broken pipe, process killed…
-            message_queue.put((channel, {"tipo": "__aviso_lectura__",
-                              "mensaje": f"{type(e).__name__}: {e}"}))
+            message_queue.put((channel, stamp({"tipo": "__aviso_lectura__",
+                              "mensaje": f"{type(e).__name__}: {e}"})))
         finally:
             try:
                 stream.close()
@@ -672,8 +729,8 @@ def output_reader(process: "subprocess.Popen[str]", message_queue: "queue.Queue[
         code = process.wait(timeout=5.0)
     except Exception:
         code = None
-    message_queue.put(("fin", {"tipo": "__fin__", "codigo": code,
-                      "cancelado": bool(cancelled and cancelled())}))
+    message_queue.put(("fin", stamp({"tipo": "__fin__", "codigo": code,
+                      "cancelado": bool(cancelled and cancelled())})))
 
 
 class ProcessManager:
@@ -687,6 +744,7 @@ class ProcessManager:
         self.process: "subprocess.Popen[str] | None" = None
         self.thread: threading.Thread | None = None
         self.cancelled = False
+        self.run_id = 0
 
     @property
     def active(self) -> bool:
@@ -718,8 +776,11 @@ class ProcessManager:
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        self.run_id += 1
+        current_run = self.run_id
         self.thread = threading.Thread(
-            target=output_reader, args=(self.process, self.message_queue, lambda: self.cancelled),
+            target=output_reader,
+            args=(self.process, self.message_queue, lambda: self.cancelled, current_run),
             daemon=True, name="lector-motor")
         self.thread.start()
         return command
@@ -1011,7 +1072,12 @@ if CTK_OK:
 
             self.message_queue: "queue.Queue[Message]" = queue.Queue(maxsize=MAX_QUEUE)
             self.manager = ProcessManager(self.message_queue, engine=engine)
-            self.run_state = "idle"
+            self.run_state: RunState = RunState.IDLE
+            self.active_run_id = 0
+            self._cancelled_run_ids: set[int] = set()
+            self.surface_mode: SurfaceMode = SurfaceMode.EMPTY
+            self.hero_mode: HeroMode = HeroMode.ALBUM
+            self.spectrogram_state: SpectrogramState = SpectrogramState.NONE
             # Bounded: a very long batch must not grow the window's memory forever.
             self.events: "deque[Event]" = deque(maxlen=MAX_EVENTS_IN_MEMORY)
             self.total = 0
@@ -2049,6 +2115,7 @@ if CTK_OK:
 
         def _show_detail(self, visible: bool) -> None:
             """Shows or hides the inspector parts of the hero (7.8, phase 3)."""
+            self.hero_mode = HeroMode.INSPECTOR if visible else HeroMode.ALBUM
             widgets = (self.btn_close_detail, self.hero_evidence,
                        self.hero_problems, self.spectrogram_frame,
                        self.btn_open_spectrogram)
@@ -2180,10 +2247,14 @@ if CTK_OK:
             self._spectrogram_path_value = path
             image = self._spectrogram_image(path)
             if image is not None:
+                self.spectrogram_state = SpectrogramState.READY
                 self.spectrogram_label.configure(image=image, text="")
                 self.spectrogram_label.grid()
                 self.spectrogram_placeholder.grid_remove()
             else:
+                self.spectrogram_state = (
+                    SpectrogramState.MISSING if path else SpectrogramState.NONE
+                )
                 self.spectrogram_label.grid_remove()
                 self.spectrogram_placeholder.grid()
                 self.spectrogram_note.configure(
@@ -2191,7 +2262,7 @@ if CTK_OK:
                 self.spectrogram_hint.configure(
                     text="Enable the PDF report" if not path else "The file was moved")
             self._set_enabled(self.btn_open_spectrogram,
-                              bool(path and os.path.exists(path)))
+                              self.spectrogram_state is SpectrogramState.READY)
 
         def _spectrogram_image(self, path: str) -> Any:
             """Thumbnail of the track spectrogram, cached by path."""
@@ -2507,6 +2578,7 @@ if CTK_OK:
                             f"Open it manually:\n{folder}", error=True)
 
         def _set_results_visible(self, visible: bool) -> None:
+            self.surface_mode = SurfaceMode.RESULTS if visible else SurfaceMode.EMPTY
             if visible:
                 self.empty_state.grid_remove()
                 self.results.grid()
@@ -2520,10 +2592,9 @@ if CTK_OK:
                  result_event: Event | None = None) -> None:
             """One log line: timestamp in tertiary, text in the level colour."""
             stamp = time.strftime("%H:%M:%S")
-            # "aviso" is the label the engine callbacks still pass; the tag is
-            # "warn", and without this normalisation those lines were painted in
-            # the default colour instead of amber.
-            label = "warn" if label == "aviso" else label
+            # "aviso" is the legacy engine callback label mapped to "warn"
+            # so warning lines consistently pick up the amber tag colour.
+            label = LOG_LEVEL_TAGS.get(label, label)
             self._log_entries.append((stamp, text, label, result_event))
             if len(self._log_entries) > MAX_LINES_LOG:
                 del self._log_entries[:-MAX_LINES_LOG]
@@ -2652,14 +2723,30 @@ if CTK_OK:
             chosen = self.option_workers.get()
             return int(chosen) if chosen.isdigit() else 0   # 0 = automatic
 
-        def _set_run_state(self, target: str) -> str:
+        def _set_run_state(self, target: RunState | str) -> RunState:
             """Applies a guarded transition to `self.run_state`."""
             self.run_state = transition_run_state(self.run_state, target)
             return self.run_state
 
         def _is_busy(self) -> bool:
             """True while an analysis batch is active or draining its final events."""
-            return self.manager.active or self.run_state == "running"
+            return self.manager.active or self.run_state == RunState.RUNNING
+
+        def ui_snapshot(self) -> dict[str, Any]:
+            """Structured snapshot of the window's explicit UI and batch state."""
+            selected = self.selected_event or {}
+            return {
+                "run_state": self.run_state.value,
+                "active_run_id": self.active_run_id,
+                "surface_mode": self.surface_mode.value,
+                "hero_mode": self.hero_mode.value,
+                "spectrogram_state": self.spectrogram_state.value,
+                "busy": self._is_busy(),
+                "total": self.total,
+                "received": self.recibidos,
+                "selected_file": selected.get("archivo"),
+                "pdf_ready": bool(self.pdf_path and os.path.exists(self.pdf_path)),
+            }
 
         def _update_state(self) -> None:
             """Paints the idle/running state: Analyze becomes Cancel."""
@@ -2949,7 +3036,7 @@ if CTK_OK:
             self.label_progress.configure(text="")
             self.label_state.configure(text="Analyzing…")
             self.selected_event = None
-            self._set_run_state("running")
+            self._set_run_state(RunState.RUNNING)
             self._clear_table()
             self._render_hero()
             try:
@@ -2959,12 +3046,13 @@ if CTK_OK:
                     pdf=bool(self.var_pdf.get()), workers=self._workers(),
                     without_cache=bool(self.var_without_cache.get()))
             except Exception as e:
-                self._set_run_state("error")
+                self._set_run_state(RunState.ERROR)
                 self._log(f"Could not start the analysis: {e}", "error")
                 self._alert("Could not start the engine", str(e), error=True)
                 self._update_state()
                 self._render_hero()
                 return
+            self.active_run_id = getattr(self.manager, "run_id", self.active_run_id + 1)
             self._log("Running: " + " ".join(command[1:]))
             self._update_state()
             self._render_hero()
@@ -2973,9 +3061,11 @@ if CTK_OK:
         def _cancel(self) -> None:
             if not self.manager.active:
                 return
+            if self.active_run_id:
+                self._cancelled_run_ids.add(self.active_run_id)
             self._log("Cancelling the analysis and its child processes…", "aviso")
             self.manager.cancel()
-            self._set_run_state("cancelled")
+            self._set_run_state(RunState.CANCELLED)
             self.label_state.configure(text="Cancelled")
             self._update_state()
 
@@ -3037,6 +3127,12 @@ if CTK_OK:
         def _process(self, channel: str, event: Event,
                       update_progress: bool = True) -> None:
             kind = event.get("tipo")
+            event_run_id = event.get("run_id")
+            if event_run_id is not None:
+                if self.active_run_id and event_run_id != self.active_run_id:
+                    return
+                if event_run_id in self._cancelled_run_ids and kind != "__fin__":
+                    return
             if channel == "stderr" or kind == "__stderr__":
                 self._log(f"motor: {event.get('mensaje', '').strip()}", "aviso")
                 return
@@ -3101,18 +3197,21 @@ if CTK_OK:
             self._order_batch_results()
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
-            if event.get("cancelado"):
-                self._set_run_state("cancelled")
+            cancelled = bool(event.get("cancelado")) or (
+                event.get("run_id") in self._cancelled_run_ids
+            )
+            if cancelled:
+                self._set_run_state(RunState.CANCELLED)
                 self.label_state.configure(text="Cancelled")
                 self._log("Analysis cancelled.", "aviso")
             elif event.get("codigo") not in (0, None):
-                self._set_run_state("error")
+                self._set_run_state(RunState.ERROR)
                 self.label_state.configure(text=f"Finished with code {event['codigo']}")
                 self._log(f"The engine finished with code {event['codigo']}.", "error")
                 self._alert("The engine finished with an error",
                              f"Exit code: {event['codigo']}", error=True)
             else:
-                self._set_run_state("finished")
+                self._set_run_state(RunState.FINISHED)
                 self.label_state.configure(text="Finished")
                 self._log("Analysis finished.", "ok")
             self._render_hero()

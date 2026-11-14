@@ -492,5 +492,72 @@ class test_renderer(unittest.TestCase):
             engine.Image = original
 
 
+class TestStateMachines(unittest.TestCase):
+    """Explicit cache-planning, batch-disposition, and accumulator states."""
+
+    def test_plan_batch_cache_and_accumulator_state_guards(self):
+        import tempfile
+        import _motor_bits
+        import _motor_espectral
+        from _motor_cache import CacheLookupStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flac_path = os.path.join(tmpdir, "sample.flac")
+            rng = np.random.default_rng(7)
+            audio = rng.uniform(-0.25, 0.25, (8192, 2))
+            sf.write(flac_path, audio, 44100, subtype="PCM_16", format="FLAC")
+
+            plan_miss = engine.plan_batch_cache([flac_path], "center", 30, save_png=True, use_cache=True)
+            self.assertEqual(plan_miss[0][2], CacheLookupStatus.MISS)
+
+            gen1, _ = engine.analyze_files([flac_path], mode="center", seconds=30, save_png=False, workers=1, use_cache=True)
+            list(gen1)
+            plan_needs_png = engine.plan_batch_cache([flac_path], "center", 30, save_png=True, use_cache=True)
+            self.assertEqual(plan_needs_png[0][2], CacheLookupStatus.METRICS_HIT_NEEDS_PNG)
+
+            gen2, _ = engine.analyze_files([flac_path], mode="center", seconds=30, save_png=True, workers=1, use_cache=True)
+            list(gen2)
+            plan_full = engine.plan_batch_cache([flac_path], "center", 30, save_png=True, use_cache=True)
+            self.assertEqual(plan_full[0][2], CacheLookupStatus.FULL_HIT)
+
+            self.assertEqual(
+                engine.classify_batch_disposition({"veredicto": "ORIGINAL"}),
+                engine.BatchDisposition.IMMEDIATE,
+            )
+            with mock.patch.object(engine, "_deserves_album_coherence", return_value=True):
+                self.assertEqual(
+                    engine.classify_batch_disposition({"veredicto": "SUSPICIOUS"}),
+                    engine.BatchDisposition.DEFERRED,
+                )
+
+            bits_acc = _motor_bits.ForensicBitsAccumulator(16, 44100)
+            self.assertEqual(bits_acc.state, engine.AccumulatorState.COLLECTING)
+            bits_acc.add(audio)
+            bits_first = bits_acc.result()
+            self.assertEqual(bits_acc.state, engine.AccumulatorState.COMPLETED)
+            self.assertEqual(bits_acc.result(), bits_first)
+            with self.assertRaises(RuntimeError):
+                bits_acc.add(audio)
+
+            spec_acc = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+            self.assertEqual(spec_acc.state, engine.AccumulatorState.COLLECTING)
+            spec_acc.add(audio, 0)
+            spec_first = spec_acc.result()
+            self.assertEqual(spec_acc.state, engine.AccumulatorState.COMPLETED)
+            self.assertEqual(spec_acc.result(), spec_first)
+            with self.assertRaises(RuntimeError):
+                spec_acc.add(audio, 0)
+
+            meta = engine.verify_metadata(flac_path)
+            block_acc = engine._BlockAnalysis(meta, 44100, len(audio), "center", 30, save_png=False, path=flac_path)
+            self.assertEqual(block_acc.state, engine.AccumulatorState.COLLECTING)
+            block_acc.add(audio, 0)
+            block_first = block_acc.result()
+            self.assertEqual(block_acc.state, engine.AccumulatorState.COMPLETED)
+            self.assertEqual(block_acc.result(), block_first)
+            with self.assertRaises(RuntimeError):
+                block_acc.add(audio, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

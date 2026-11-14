@@ -1852,5 +1852,95 @@ class test_control_seconds(unittest.TestCase):
         self.assertEqual(self.window.seconds_row.grid_info(), {})
 
 
+@unittest.skipUnless(VISUAL, "customtkinter and a display are required")
+class TestExplicitStateMachines(unittest.TestCase):
+    """Explicit UI, hero, spectrogram, and run-id fencing state machines."""
+
+    def setUp(self):
+        self.window = gui.FlacVerifierWindow()
+        self.window.withdraw()
+        self.window.update_idletasks()
+        self.addCleanup(self.window.destroy)
+
+    def test_cancelled_run_id_fences_delayed_finish_after_restart(self):
+        self.window.active_run_id = 1
+        self.window.manager.run_id = 1
+        self.window._set_run_state(gui.RunState.RUNNING)
+        with mock.patch.object(
+            gui.ProcessManager, "active", new_callable=mock.PropertyMock, return_value=True
+        ), mock.patch.object(self.window.manager, "cancel"):
+            self.window._cancel()
+        self.assertEqual(self.window.run_state, gui.RunState.CANCELLED)
+
+        self.window._set_run_state(gui.RunState.RUNNING)
+        self.window.active_run_id = 2
+        self.window.manager.run_id = 2
+
+        # Delayed events from run 1 must be ignored once run 2 is active.
+        self.window._process(
+            "stdout",
+            {"tipo": "resultado", "archivo": "stale.flac", "veredicto": "ORIGINAL", "run_id": 1},
+        )
+        self.window._process(
+            "fin",
+            {"tipo": "__fin__", "codigo": 1, "cancelado": True, "run_id": 1},
+        )
+        self.assertEqual(self.window.run_state, gui.RunState.RUNNING)
+        self.assertEqual(self.window.recibidos, 0)
+
+        self.window._process(
+            "stdout",
+            {
+                "tipo": "resultado",
+                "archivo": "fresh.flac",
+                "veredicto": "ORIGINAL",
+                "ruta": "fresh.flac",
+                "puntaje_autenticidad": 0.99,
+                "duracion_seg": 10.0,
+                "sr": 44100,
+                "bps": 16,
+                "canales": 2,
+                "run_id": 2,
+            },
+        )
+        self.window._process(
+            "fin",
+            {"tipo": "__fin__", "codigo": 0, "cancelado": False, "run_id": 2},
+        )
+        self.assertEqual(self.window.run_state, gui.RunState.FINISHED)
+        self.assertEqual(self.window.recibidos, 1)
+
+    def test_ui_snapshot_tracks_surface_hero_and_spectrogram_states(self):
+        snap_initial = self.window.ui_snapshot()
+        self.assertEqual(snap_initial["run_state"], "idle")
+        self.assertEqual(snap_initial["surface_mode"], "empty")
+        self.assertEqual(snap_initial["hero_mode"], "album")
+        self.assertEqual(snap_initial["spectrogram_state"], "none")
+
+        self.window._set_results_visible(True)
+        self.window._show_detail(True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            corrupt_png = os.path.join(tmpdir, "corrupt.png")
+            with open(corrupt_png, "wb") as fh:
+                fh.write(b"not-a-valid-png")
+            self.window._show_spectrogram(corrupt_png)
+            snap_missing = self.window.ui_snapshot()
+            self.assertEqual(snap_missing["surface_mode"], "results")
+            self.assertEqual(snap_missing["hero_mode"], "inspector")
+            self.assertEqual(snap_missing["spectrogram_state"], "missing")
+            self.assertEqual(self.window.btn_open_spectrogram.cget("state"), "disabled")
+
+            good_png = os.path.join(tmpdir, "ok.png")
+            from PIL import Image
+            Image.new("RGB", (32, 32), (10, 20, 30)).save(good_png)
+            self.window._show_spectrogram(good_png)
+            snap_ready = self.window.ui_snapshot()
+            self.assertEqual(snap_ready["spectrogram_state"], "ready")
+            self.assertEqual(self.window.btn_open_spectrogram.cget("state"), "normal")
+
+        self.window._log("legacy tag check", "aviso", scroll=False)
+        self.assertEqual(self.window._log_entries[-1][2], "warn")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

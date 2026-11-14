@@ -20,7 +20,7 @@ Say exactly what you ran. For anything touching the analysis, the useful evidenc
 a comparison against the fixtures: verdict, score, issues and MD5, before and after.
 -->
 
-- [ ] `python -m unittest discover -s tests` passes (229 tests)
+- [ ] `python -m unittest discover -s tests` passes (351 tests)
 - [ ] The change is covered by a test, or the reason it cannot be is written above
 - [ ] Any measurement quoted above was produced on this branch, not recalled
 
@@ -36,7 +36,7 @@ These four have caused real bugs. Please confirm each one that applies:
 ## Packaging, only if the executable is affected
 
 - [ ] `python build.py` completes and both executables respond to `--version`
-- [ ] `python comprobar_ejecutable.py --album "<a small album>"` reports all 11 checks passed
+- [ ] `python comprobar_ejecutable.py --album "<a small album>"` reports all 12 checks passed
 
 ## Anything else
 

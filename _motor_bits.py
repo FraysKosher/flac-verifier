@@ -3,10 +3,19 @@
 Extracted from the motor facade in Phase 4. Nothing here imports the spectral
 or cache modules: this layer only needs NumPy, soundfile/mutagen and stdlib.
 """
+from enum import Enum
 import hashlib
 import os
 
 import numpy as np
+
+
+class AccumulatorState(str, Enum):
+    """Lifecycle phase for streaming forensic accumulators."""
+
+    COLLECTING = "collecting"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 FRAMES_BY_BLOCK = 1 << 18            # 262 144 frames (~6 s at 44.1 kHz) per read
 
@@ -389,6 +398,19 @@ class ForensicBitsAccumulator:
         self._dop_valid = 0
         self._dop_pares = 0
         self._dop_last = None
+        self._state = AccumulatorState.COLLECTING
+        self._cached_result = None
+
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
+
+    def __repr__(self) -> str:
+        return (
+            f"ForensicBitsAccumulator(bits={self.bits}, sr={self.sr}, "
+            f"state={self._state.value!r}, samples={self._samples})"
+        )
 
     def _follow_dop(self, q):
         """Counts DoP marker transitions in the top byte of consecutive samples.
@@ -416,6 +438,8 @@ class ForensicBitsAccumulator:
         self._dop_last = tops[-1, :].copy()
 
     def add(self, block, q_int=None):
+        if self._state is AccumulatorState.COMPLETED:
+            raise RuntimeError("cannot add audio blocks after completion")
         if self.bits not in (24, 32) or block.shape[0] == 0:
             return
         if q_int is None:
@@ -526,8 +550,12 @@ class ForensicBitsAccumulator:
         }
 
     def result(self):
+        if self._cached_result is not None:
+            return dict(self._cached_result)
         if self.bits not in (24, 32) or self._samples == 0:
-            return {"aplica": False}
+            self._state = AccumulatorState.COMPLETED
+            self._cached_result = {"aplica": False}
+            return dict(self._cached_result)
 
         value_or = int(self._or)
         if value_or == 0:                      # digital silence: no grid to judge
@@ -586,7 +614,7 @@ class ForensicBitsAccumulator:
         is_stream_dop = bool(self.bits == 24 and self.sr >= 176400
                             and dop_pares >= 100 and dop_ratio >= 0.90)
 
-        return {
+        output = {
             "aplica":                     True,
             "es_padded_16_en_24":         padded,
             "trailing_zeros_lsb":         int(zeros),
@@ -601,6 +629,9 @@ class ForensicBitsAccumulator:
             "dop_pares_inspeccionados":   dop_pares,
             "dop_ratio":                  round(dop_ratio, 4),
         }
+        self._state = AccumulatorState.COMPLETED
+        self._cached_result = dict(output)
+        return output
 
 def _analyze_forensic_bits(data, meta):
     """Array-path counterpart of ForensicBitsAccumulator (used by the oracle and

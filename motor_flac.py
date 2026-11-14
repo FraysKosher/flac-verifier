@@ -1,3 +1,4 @@
+from enum import Enum
 import hashlib
 import heapq
 import json
@@ -42,6 +43,7 @@ import _motor_veredicto
 from _motor_espectral import Image
 
 from _motor_bits import (
+    AccumulatorState,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
     _normalize_path_fs, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
     analyze_bit_depth, _streaks, detect_clipping, _classify_streaks,
@@ -80,7 +82,16 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "13.5"
+ENGINE_VERSION = "13.6"
+# 13.6: Phase 13.6 polyphase transition-skirt and ultrasonic stopband brickwall
+#       calibration for hot 0 dBFS 44.1/48 kHz -> Hi-Res upscales:
+#       - Added `skirt_44k_brickwall` (19.8-26.2 kHz skirt slope < -20.0 dB/kHz,
+#         < 2.5 * slope_base) and `skirt_48k_brickwall` (22.5-28.5 kHz skirt
+#         slope < -20.0 dB/kHz, < 2.5 * slope_base) paired with a > 40.0 dB drop
+#         to a 28.5-38.5 kHz stopband below -90.0 dBFS in `_diagnose_hires_authenticity`.
+#       - Computed reported `gradiente_nyquist_db_khz` / `salto_ultrasonico_db`
+#         after the DSD guard while keeping raw passband-transition metrics
+#         unmodified for DSD and analogue roll-off rules.
 # 13.5: Phase 13.5 1970s Hi-Res analogue roll-off calibration, 48 kHz PQMF-576 subband
 #       alignment, extreme cut-off jitter cap, and complementary 75% album coherence:
 #       - Added multi-pole 1970s analogue tape/console decay path (`14.5 <= jump_db < 22.5`,
@@ -246,6 +257,24 @@ def _ensure_streams():
         if stream is not None:
             setattr(sys, name, stream)
 
+
+
+class StreamEvent(str, Enum):
+    """NDJSON event types emitted by `motor_flac.py --path ...`."""
+
+    START = "inicio"
+    RESULT = "resultado"
+    REPORT = "informe"
+    WARNING = "aviso"
+    ERROR = "error"
+    END = "fin"
+
+
+class BatchDisposition(str, Enum):
+    """Streaming disposition for a finished track inside a directory batch."""
+
+    IMMEDIATE = "immediate"
+    DEFERRED = "deferred"
 
 
 # Verdict labels are defined in _motor_veredicto.py; the facade repeats the
@@ -534,8 +563,23 @@ class _BlockAnalysis:
             save_png=self.save_png, path=path,
             renderer=_save_spectrogram,
             mode=mode, seconds=seconds)
+        self._state = AccumulatorState.COLLECTING
+        self._cached_result = None
+
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
+
+    def __repr__(self) -> str:
+        return (
+            f"_BlockAnalysis(sr={self.sr}, bits={self.bits}, "
+            f"state={self._state.value!r}, path={self.path!r})"
+        )
 
     def add(self, block, offset):
+        if self._state is AccumulatorState.COMPLETED:
+            raise RuntimeError("cannot add audio blocks after completion")
         q_int = None
         if self.bits == 24 and (self._md5 is not None
                                 or self._forensic_bits is not None):
@@ -619,6 +663,8 @@ class _BlockAnalysis:
 
     # ── result ───────────────────────────────────────────────────────────────
     def result(self):
+        if self._cached_result is not None:
+            return dict(self._cached_result)
         closed_lengths = (
             self._clip_lengths + [self._clip_opened]
             if self._clip_opened
@@ -649,6 +695,8 @@ class _BlockAnalysis:
             bdi["forense_bits"] = {"aplica": False}
         output["bdi"] = bdi
         output["esp"] = self._spectral_result(closed_lengths)
+        self._state = AccumulatorState.COMPLETED
+        self._cached_result = dict(output)
         return output
 
     def _spectral_result(self, clip_lengths=None):
@@ -773,6 +821,43 @@ def _probe_processes():
 
 
 
+def plan_batch_cache(files, mode, seconds, save_png, use_cache=True):
+    """Classifies each batch input against the cache lookup state machine.
+
+    Returns a list of `(index, path, CacheLookupStatus, cached_or_none)` tuples:
+    - `FULL_HIT`: returned immediately from JSON cache (`desde_cache=True`)
+    - `METRICS_HIT_NEEDS_PNG`: scheduled for fast PNG hydration (no re-audit)
+    - `MISS`: scheduled for full single-pass streaming analysis
+    """
+    plan = []
+    for index, path in enumerate(files):
+        status = CacheLookupStatus.MISS
+        cached = None
+        if use_cache:
+            meta = verify_metadata(path)
+            if meta.get("valido"):
+                status, entry = read_cache_entry(
+                    path, meta, mode, seconds, requires_png=save_png
+                )
+                if status is CacheLookupStatus.FULL_HIT and entry is not None:
+                    entry = dict(entry)
+                    entry["desde_cache"] = True
+                    cached = entry
+                elif (status is CacheLookupStatus.METRICS_HIT_NEEDS_PNG
+                      and entry is not None):
+                    cached = dict(entry)
+        plan.append((index, path, status, cached))
+    return plan
+
+
+def classify_batch_disposition(result) -> BatchDisposition:
+    """Determines whether a track result streams right away or awaits quorum."""
+    if (result.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE", "PROBABLY LOSSLESS")
+            and _deserves_album_coherence(result)):
+        return BatchDisposition.DEFERRED
+    return BatchDisposition.IMMEDIATE
+
+
 def analyze_files(files, mode, seconds, save_png, workers=None,
                       use_cache=True):
     """Yields the results in order. Returns (generator, workers_efectivos).
@@ -782,19 +867,11 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
     processes. If a child process dies, that file is reported as an error and the
     batch continues."""
     # 1) What can be reused without analysing anything
-    plan = []
-    for index, path in enumerate(files):
-        cached = None
-        if use_cache:
-            meta = verify_metadata(path)
-            if meta.get("valido"):
-                cached = read_cache(path, meta, mode, seconds,
-                                      requires_png=save_png)
-                if cached is not None:
-                    cached["desde_cache"] = True
-        plan.append((index, path, cached))
-
-    pendientes = [path for _, path, cached in plan if cached is None]
+    plan = plan_batch_cache(files, mode, seconds, save_png, use_cache=use_cache)
+    pendientes = [
+        path for _, path, status, _ in plan
+        if status is not CacheLookupStatus.FULL_HIT
+    ]
     workers = workers if workers and workers > 0 else default_workers(len(files))
     parallel = (workers > 1 and len(pendientes) >= MIN_FILES_PARALLEL
                    and _probe_processes())
@@ -846,8 +923,8 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
         calculated = calculate_pending() if pendientes else None
         batch = []
         retenidas = []
-        for index, path, cached in plan:
-            if cached is not None:
+        for index, path, status, cached in plan:
+            if status is CacheLookupStatus.FULL_HIT and cached is not None:
                 result = dict(cached)
             else:
                 result = next(calculated, None) if calculated is not None else None
@@ -863,10 +940,7 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
             # elevate are held back until the whole batch is known: a low
             # ceiling is suspicious (SUSPICIOUS/PROBABLE UPSCALE) or already
             # excused on its own by the acoustic exemption (PROBABLY LOSSLESS).
-            candidate = (result.get("veredicto") in
-                         ("SUSPICIOUS", "PROBABLE UPSCALE", "PROBABLY LOSSLESS")
-                         and _deserves_album_coherence(result))
-            if candidate:
+            if classify_batch_disposition(result) is BatchDisposition.DEFERRED:
                 retenidas.append((path, result))
             else:
                 yield result

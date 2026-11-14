@@ -443,7 +443,7 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
   toggle with widget identity, scroll, focus, results and log preserved, a
   300-row retheme timing, a light window in every state, and a guard that
   `gui.py` contains no hard-coded colour.
-- Acceptance: both themes build and read; 347 tests; build READY;
+- Acceptance: both themes build and read; 351 tests; build READY;
   `comprobar_ejecutable` 12/12; screenshots at 100/125/150 % in both modes.
 
 ## 13. Guardrails
@@ -466,4 +466,4 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
 3. Every state (empty, loading, partial, error, cancelled, done) is designed.
 4. Buttons have hover, pressed, focus and disabled states and feel consistent.
 5. The PDF matches the GUI.
-6. 347 tests, 260-track validation benchmark, `comprobar_ejecutable` 12/12.
+6. 351 tests, 260-track validation benchmark, `comprobar_ejecutable` 12/12.
