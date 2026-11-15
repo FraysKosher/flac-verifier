@@ -201,14 +201,14 @@ main area flexible; activity log collapsible at the bottom of the main area.
 │ [ Browse ]       │  │ File        Verdict      Score  Depth  Rate │ │
 │                  │  │ 01.flac     ● OK            92   16/44.1    │ │
 │ ANALYSIS         │  │ 02.flac     ● OK?           78   24/96      │ │
-│ [ Spectral mode ]│  │ 03.flac     ● SUSPICIOUS    41   16/44.1    │ │
-│ [ Seconds  15  ] │  └─────────────────────────────────────────────┘ │
-│ [x] PDF report   │                                                  │
-│ [x] Parallel    │  Activity                                    [⌃]  │
-│ [ Workers   8  ] │  ┌─────────────────────────────────────────────┐ │
-│ [x] Ignore cache │  │ 12:04:11  Analyzing 03.flac…                │ │
+│ [x] PDF report   │  │ 03.flac     ● SUSPICIOUS    41   16/44.1    │ │
+│ [x] Parallel     │  └─────────────────────────────────────────────┘ │
+│ [ Workers   8  ] │                                                  │
+│ [x] Ignore cache │  Activity                                    [⌃]  │
+│                  │  ┌─────────────────────────────────────────────┐ │
+│ [   Analyze    ] │  │ 12:04:11  Analyzing 03.flac…                │ │
 │                  │  └─────────────────────────────────────────────┘ │
-│ [   Analyze    ] │                                                  │
+│                  │                                                  │
 └──────────────────┴─────────────────────────────────────────────────┘
 ```
 

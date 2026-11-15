@@ -116,7 +116,7 @@ Two more invariants worth knowing before you touch anything:
   `__main__` block of `main.py`. `tests/test_empaquetado.py` checks it.
 - `ENGINE_VERSION` in `motor_flac.py` must be raised whenever any analysis
   calculation changes: it is what invalidates the caches written by earlier
-  versions. It currently reads `ENGINE_VERSION = "14.1"`.
+  versions. It currently reads `ENGINE_VERSION = "14.2"`.
 
 ---
 
@@ -247,7 +247,7 @@ it changed.
 
 ## What to check before opening a PR
 
-1. `python -m unittest discover -s tests` passes. The suite is 338 tests; if the
+1. `python -m unittest discover -s tests` passes. The suite is 358 tests; if the
    count changed, say so in the PR description and update the README.
 2. `python -m unittest tests.test_idioma` passes: no Spanish text has leaked into
    anything the user sees.

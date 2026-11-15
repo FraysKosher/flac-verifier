@@ -83,6 +83,7 @@ with `error` and the process continues until it emits `fin`.
            "sbr_qmf_z": 0.0, "espectrograma": null },
   "score": 0.7, "veredicto": "PROBABLY LOSSLESS",
   "problemas": ["…"],
+  "notes": ["…"],
   "evidencias_forenses": ["Spectral ceiling 20.0 kHz (91% of Nyquist)",
                           "STREAMINFO MD5 verified (match)"]
 }
@@ -225,8 +226,8 @@ With `--pdf` (or by checking *Generate PDF report* in the GUI),
 
 | Page | Content |
 |---|---|
-| **Cover** | Title, album path, timestamp, spectral mode and **executive summary** (verdict counts and percentages) |
-| **One per song** | File name, verdict chip with score, technical data table (format, duration, size, MD5 integrity, clipping, dynamic range, LSB utilisation, spectral ceiling, cut-off, ratio, variance, stereo separation), detected issues and embedded spectrogram |
+| **Cover** | Title, album path, timestamp and **executive summary** (verdict counts and percentages) |
+| **One per song** | File name, verdict chip with score, technical data table (format, duration, size, MD5 integrity, clipping, dynamic range, LSB utilisation, spectral ceiling, cut-off, ratio, variance, stereo separation), detected issues (or technical notes when clean) and embedded spectrogram |
 | **Final** | Overall summary table with every track in natural numeric order |
 
 The spectrogram height is fitted dynamically (34–62 mm) so a track's card never
@@ -280,7 +281,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"14.1"`), spectral mode and seconds |
+| Analysis parameters | `ENGINE_VERSION` (`"14.2"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

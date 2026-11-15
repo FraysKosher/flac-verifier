@@ -832,7 +832,7 @@ def _detailed_validation_doc(section, rows):
     ).hexdigest()
 
     lines = [
-        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.9.7) — Validation Report (2026-11-14)",
+        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.9.8) — Validation Report (2026-11-15)",
         "",
         section,
         "",
@@ -918,10 +918,10 @@ def main():
              acoustic.get("veredicto"), acoustic.get("coherencia_album")))
 
     section = _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
-    with open(os.path.join(ROOT, "VALIDATION.md"), "w", encoding="utf-8", newline="\n") as f:
+    with open(os.path.join(ROOT, "docs", "VALIDATION.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(_detailed_validation_doc(section, rows))
     update_document(os.path.join(ROOT, "README.md"), section)
-    update_document(os.path.join(ROOT, "COMPARISON.md"), section)
+    update_document(os.path.join(ROOT, "docs", "COMPARISON.md"), section)
 
     if sens < THRESHOLD or spec < THRESHOLD or not coherence_ok:
         print("FAILED: metrics below 95% or album coherence did not elevate the track")
