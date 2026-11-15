@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.8] - 2026-11-15
+
+### Verdict Clarity, UI & Documentation
+
+- Raised `ENGINE_VERSION` to `"14.2"` (`motor_flac.py`): separated
+  informational/positive `notes` from real defects (`problemas`) across
+  `_motor_veredicto.py`, `_motor_bits.py`, and `motor_flac.py` while keeping
+  the NDJSON protocol backward-compatible, so clean or album-coherent tracks
+  display **Technical notes** instead of **Detected issues**.
+- Rewrote forensic findings and bit-depth conclusions in plain-English-first
+  language followed by exact physical metrics, removing internal development
+  prefixes (`Vector 4:` / `Vector 5:`) and grammar slips.
+- Polished `informe_pdf.py` and `verificar_flac.py` so `PROBABLY LOSSLESS` uses
+  an approving soft tone distinct from `SUSPICIOUS` warning amber, and per-track
+  PDF cards avoid repeating forensic evidence already covered in issues/notes.
+- Standardized the interactive GUI, CLI, and PDF cover on full-track analysis
+  mode (`mode="full"` default; removed spectral mode and seconds pickers from
+  the UI while silently retaining `--mode` and `--seconds` for scripts and
+  benchmarks).
+- Moved `DESIGN.md`, `COMPARISON.md`, and `VALIDATION.md` under `docs/` and
+  added automated screenshots of the batch inspector
+  (`docs/screenshots/batch_inspector.png`) and PDF report
+  (`docs/screenshots/pdf_report.png`).
+
 ### Forensic Calibration
 
 - Raised `ENGINE_VERSION` to `"14.1"` and expanded the automated test suite to

@@ -5,7 +5,7 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.9.7](https://img.shields.io/badge/version-2.9.7-blue)](CHANGELOG.md)
+[![Version: 2.9.8](https://img.shields.io/badge/version-2.9.8-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests: 358](https://img.shields.io/badge/tests-358-brightgreen)](#tests)
 
@@ -62,13 +62,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.9.7](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.9.7)**,
+Download **[FLAC Verifier 2.9.8](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.9.8)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.9.7.txt`:
+To verify the download with `SHA256SUMS_2.9.8.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.9.7-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.9.8-win64.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -94,8 +94,20 @@ python verificar_flac.py --gui "D:/Music/Album"
 Drop a folder or `.flac` file onto the window (or click **Browse**), choose
 your options on the left rail, and press **Analyze**. Click any row in the
 results table to open the track inspector with its spectrogram, technical metrics
-and detected issues. Use the top-right sun/moon button to switch between dark
-and light themes in place.
+and detected issues or technical notes. Use the top-right sun/moon button to
+switch between dark and light themes in place.
+
+<p align="center">
+  <img src="docs/screenshots/batch_inspector.png" alt="FLAC Verifier batch results and track inspector" width="900">
+</p>
+
+When **Generate PDF report** is checked, a self-contained `flac_verifier_report.pdf`
+is saved inside the analyzed folder with an executive cover, one page per song
+and an overall summary table:
+
+<p align="center">
+  <img src="docs/screenshots/pdf_report.png" alt="FLAC Verifier generated PDF verification report" width="900">
+</p>
 
 ### Interactive CLI & Engine CLI
 
@@ -104,15 +116,13 @@ and light themes in place.
 python verificar_flac.py
 
 # Non-interactive NDJSON engine (for scripts or automation)
-python motor_flac.py --path "C:/Music/Album" --mode center --pdf
+python motor_flac.py --path "C:/Music/Album" --pdf
 python motor_flac.py --path "track.flac" --png --no-cache
 ```
 
 | Option | Values | Description |
 |---|---|---|
 | `--path` | path | `.flac` file or album folder (required) |
-| `--mode` | `center` \| `full` \| `seconds` | Spectral window: `center` (default: 45 s of highest-energy active blocks), `full` (up to 60 s of active blocks across the whole track), or `seconds` (first N seconds) |
-| `--seconds` | integer | Prefix window in seconds when `--mode seconds` (default `15`) |
 | `--png` | — | Save spectrograms in `<folder>/_spectrograms/` |
 | `--pdf` | — | Generate `flac_verifier_report.pdf` in the album folder (implies `--png`) |
 | `--workers` | integer | Parallel processes (`0` = auto up to 8, `1` = sequential) |
@@ -151,6 +161,7 @@ FLAC VERIFIER/
 ├── informe_pdf.py            per-album PDF report generator
 ├── build.py                  PyInstaller builder & post-build verifier
 ├── comprobar_ejecutable.py   12-check verification suite for the frozen .exe
+├── docs/                     technical reference, design system, validation & comparison
 └── tests/                    358 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
@@ -185,10 +196,10 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.9.7`).
-- **[`VALIDATION.md`](VALIDATION.md)** — 260-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
-- **[`COMPARISON.md`](COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
-- **[`DESIGN.md`](DESIGN.md)** — UI/PDF design system and accessibility tokens.
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.9.8`).
+- **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 260-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
+- **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
+- **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Development workflow and invariants.
 
 ---
@@ -196,7 +207,7 @@ python build.py
 <!-- BENCHMARK:START -->
 ## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 260)
 
-Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `14.1`):
+Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `14.2`):
 - **110 authentic controls** across 11 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, and Stationary electronic synth drones & genuine 32-bit `PCM_32` masters.
 - **150 fake & adversarial tracks** across 21 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
