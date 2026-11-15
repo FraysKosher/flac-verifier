@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Forensic Calibration
 
+- Raised `ENGINE_VERSION` to `"14.1"` and expanded the automated test suite to
+  **358 tests** (`tests/test_forense_riguroso.py`).
+- Added hot `0 dBFS` clipped `44.1 -> 96 kHz` polyphase skirt upscale detection
+  (`clipped_skirt_44k` inside `_diagnose_hires_authenticity`) while widening the
+  genuine 3-pole analogue 24/96 roll-off ceiling guard (`jump_db < 23.2`).
+- Extended `CELT-960` (Opus) lapped-transform detection to `44.1 kHz` streams
+  above `14.5 kHz`, added sub-threshold (`mdct_lattice_snr >= 3.8`) corroboration
+  for `20.00 kHz` Opus/WMA brickwall shelves (`sospecha_corte_opus_20k`), and
+  caught `20.00 kHz` wide-modulation outliers (`brecha_modulacion_20k_db >= 25.0 dB`)
+  inside confirmed lossy-codec batches.
+- Refined static LTI / gentle TPDF dither floor clamping for
+  `modulacion_psicoacustica_20k`, narrow-midrange genuine stereo M/S guards,
+  post-ceiling smooth acoustic decay exemptions, `24/44.1` active-LSB ADC/acoustic
+  exemptions (including `--no-md5` album coherence), and mixed VHS/archival album
+  coherence (`40-74%` clean support with zero codec flags).
 - Raised `ENGINE_VERSION` to `"14.0"` and expanded the automated test suite to
   **357 tests** (`tests/test_forense_riguroso.py`).
 - Added `continuous_steep_rolloff` to `_diagnose_hires_authenticity` in

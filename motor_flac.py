@@ -84,7 +84,13 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.0"
+ENGINE_VERSION = "14.1"
+# 14.1: Hot 0 dBFS clipped 44.1->96 kHz polyphase skirt upscale detector,
+#       16-bit TPDF CELT-960 + flat-stopband 20.00 kHz libopus/WMA shelf
+#       corroboration, static LPF dither-floor clamp guard for mod20k,
+#       narrow-midrange stereo & post-ceiling smooth acoustic decay guards,
+#       24/44.1 active-LSB acoustic/ADC exemption with --no-md5 coherence, and
+#       mixed VHS/archival album coherence for zero-codec albums.
 # 14.0: Steep continuous 24/96 studio roll-off guard (24.5-28 kHz vs 34-42 kHz
 #       ultrasonic decay >= 7.5 dB), genuine Hi-Res ultrasonic stereo & low-LPF
 #       M/S + IQR guards, and confirmed lapped-codec batch quorum (>= 75%) for

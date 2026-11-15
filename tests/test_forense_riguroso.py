@@ -2993,6 +2993,357 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(intro_cliff_copy["veredicto"], "PROBABLE UPSCALE")
         self.assertIs(intro_cliff_copy["coherencia_album"], True)
 
+    def test_44_v298_hires_clipped_skirt_celt960_plantasia_mod20k_and_vhs_coherence(self):
+        """Phase 14.1: clipped 44.1->96k skirts, 44.1 kHz CELT-960 & sub-lattice
+        20 kHz Opus corroboration, 24/44.1 low-centroid archival masters, static
+        LTI/dither mod20k clamp, narrow-midrange M/S guard, and mixed VHS coherence."""
+        from _motor_espectral import _fast_mdct_f32, _get_celt_1920
+        import _motor_espectral
+        import _motor_veredicto
+
+        rng = np.random.default_rng(4401)
+
+        # Part A: Clipped 44.1 -> 96 kHz upscale with -76 dBFS stopband vs 3-pole analog 24/96
+        sr_hi = 96000
+        dur = 4.0
+        n_hi = int(sr_hi * dur)
+        sig_44 = _create_track_reference(44100, duration=dur, seed=4402)
+        sig_44 = np.clip(sig_44 * 1.35, -0.98, 0.98)
+        sig_44 = np.round(sig_44 * 32767.0) / 32767.0
+        up_96 = signal.resample_poly(sig_44, 320, 147, axis=0)[:n_hi]
+        up_96 += rng.normal(0.0, 10.0 ** (-76.0 / 20.0), size=up_96.shape)
+        path_clip_up = self.base_path / "clipped_44_to_96_upscale.flac"
+        sf.write(path_clip_up, np.clip(up_96 * 0.98, -0.99, 0.99), sr_hi, subtype="PCM_24")
+        res_clip_up = motor_flac.analyze_file_data(str(path_clip_up), use_cache=False)
+        self.assertIs(res_clip_up["esp"]["muro_brickwall_nyquist"], True)
+        self.assertNotIn(res_clip_up["veredicto"], GOOD_VERDICTS)
+
+        # Control: genuine 3-pole analog 24/96 profile with jump ~ 22.6 dB (< 23.2 dB)
+        freqs = np.linspace(10000.0, 46000.0, 1801)
+        curve = np.where(
+            freqs <= 21000.0,
+            -35.0 - 1.2 * (freqs - 14000.0) / 1000.0,
+            np.where(
+                freqs <= 24000.0,
+                -43.4 - 6.2 * (freqs - 21000.0) / 1000.0,
+                -62.0 - 0.35 * (freqs - 24000.0) / 1000.0,
+            ),
+        )
+        diag_analog = _motor_espectral._diagnose_hires_authenticity(
+            freqs, curve, 96000, ceiling_hz=23200.0
+        )
+        self.assertIs(diag_analog["rolloff_analogico_genuino"], True)
+        self.assertIs(diag_analog["muro_brickwall_nyquist"], False)
+
+        # Part B: 44.1 kHz CELT-960 lapped lattice at ~15.5 kHz ceiling (>= 14.5 kHz gate)
+        # + sub-threshold 20 kHz Opus corroboration
+        sr_cd = 44100
+        w_celt = _get_celt_1920()
+        c_frames = rng.standard_normal((160, 1920)).astype(np.float32)
+        c_mdct = _fast_mdct_f32(c_frames, w_celt)
+        c_mdct[:, 620:800] *= np.float32(0.08)
+        c_mdct[:, 800:] = 0.0
+        pre_celt = self._imdct_overlap_add(c_mdct, w_celt)
+        opus_48 = signal.lfilter([1.0], [1.0, -0.85], pre_celt).astype(np.float32)[53:]
+        celt_44 = signal.resample_poly(opus_48, 147, 160, window=("kaiser", 8.6)).astype(np.float32)
+        celt_44 /= float(np.max(np.abs(celt_44)) * 1.15)
+        det_celt = motor_flac._detect_lapped_codec_grid(celt_44, sr_cd, ceiling_hz=15500.0)
+        self.assertIs(det_celt["mdct_lattice_detected"], True)
+        self.assertIn("CELT-960", str(det_celt["mdct_lattice_family"]))
+
+        opus_dark_meta = {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2}
+        opus_dark_spec = {
+            "techo_hz": 20010,
+            "techo_rel_nyquist": 0.834,
+            "clase_corte": "near_nyquist_cutoff",
+            "corte_detectado": True,
+            "frecuencia_corte": 20010,
+            "distancia_nyquist": 0.834,
+            "corte_artificial": True,
+            "ratio_aplica": True,
+            "ratio": 0.002,
+            "var_alta_db": 12.0,
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 14.5,
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": 4.2,
+            "iqr_corte_hz": 180.0,
+            "ratio_huecos_mdct": 0.01,
+        }
+        sc, verd, probs = motor_flac.calculate_score(
+            opus_dark_meta, opus_dark_spec, {"aplica": False}
+        )
+        self.assertIn(verd, ("SUSPICIOUS", "PROBABLE UPSCALE"))
+        self.assertIs(
+            _motor_veredicto._is_lossy_codec_quorum_track(
+                {"meta": opus_dark_meta, "esp": opus_dark_spec, "veredicto": verd}
+            ),
+            True,
+        )
+
+        # Part C: 24/44.1 low-centroid Moog / archival master vs padded 16-in-24 control
+        t_cd = np.arange(int(sr_cd * 4.0), dtype=np.float64) / float(sr_cd)
+        moog = np.zeros((t_cd.size, 2), dtype=np.float64)
+        for harm in range(1, 9):
+            freq = 130.81 * harm
+            moog[:, 0] += (0.5 / harm) * np.sin(2.0 * np.pi * freq * t_cd)
+            moog[:, 1] += (0.5 / harm) * np.sin(2.0 * np.pi * (freq * 1.003) * t_cd + 0.4)
+        moog_noise = signal.sosfilt(
+            signal.butter(3, 12500.0, btype="low", fs=sr_cd, output="sos"),
+            rng.standard_normal((t_cd.size, 2)) * 0.03,
+            axis=0,
+        )
+        moog_24 = np.clip(moog * 0.25 + moog_noise + rng.normal(0.0, 2e-5, size=moog.shape), -0.99, 0.99)
+        moog_ok_dir = self.base_path / "moog_ok_album"
+        moog_bad_dir = self.base_path / "moog_bad_album"
+        moog_ok_dir.mkdir(parents=True, exist_ok=True)
+        moog_bad_dir.mkdir(parents=True, exist_ok=True)
+
+        path_moog = moog_ok_dir / "01_plantasia_24_44_archival.flac"
+        sf.write(path_moog, moog_24, sr_cd, subtype="PCM_24")
+        res_moog = motor_flac.analyze_file_data(str(path_moog), use_cache=False)
+        self.assertIn(res_moog["veredicto"], ("SUSPICIOUS", "PROBABLE UPSCALE"))
+
+        moog_sibs_ok = [
+            {
+                "archivo": f"0{i}_moog_sib.flac",
+                "ruta": str(moog_ok_dir / f"0{i}_moog_sib.flac"),
+                "veredicto": "PROBABLY LOSSLESS",
+                "score": 0.70,
+                "problemas": ["band cut at 21.2 kHz (96% of Nyquist): inconclusive"],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "absent"},
+                "meta": {"sample_rate": sr_cd, "bits_per_sample": 24, "canales": 2},
+                "esp": {
+                    "techo_hz": 21200,
+                    "techo_rel_nyquist": 0.96,
+                    "clase_corte": "near_nyquist_cutoff",
+                    "distancia_nyquist": 0.96,
+                    "familias_evidencia_lossy": [],
+                },
+                "bdi": {"aplica": True, "lsbs": "active", "forense_bits": {}},
+            }
+            for i in range(2, 7)
+        ]
+        self.assertEqual(motor_flac.apply_album_coherence([res_moog] + moog_sibs_ok), 1)
+        self.assertEqual(res_moog["veredicto"], "PROBABLY LOSSLESS")
+        self.assertIs(res_moog["coherencia_album"], True)
+
+        moog_16_pad = np.round(moog_24 * 32767.0) / 32767.0
+        path_moog_pad = moog_bad_dir / "01_plantasia_16in24_padded.flac"
+        sf.write(path_moog_pad, moog_16_pad, sr_cd, subtype="PCM_24")
+        res_moog_pad = motor_flac.analyze_file_data(str(path_moog_pad), use_cache=False)
+        self.assertNotIn(res_moog_pad["veredicto"], GOOD_VERDICTS)
+        moog_sibs_bad = [
+            dict(s, ruta=str(moog_bad_dir / s["archivo"]), coherencia_album=False)
+            for s in moog_sibs_ok
+        ]
+        self.assertEqual(motor_flac.apply_album_coherence([res_moog_pad] + moog_sibs_bad), 0)
+        self.assertNotIn(res_moog_pad["veredicto"], GOOD_VERDICTS)
+
+        # Narrow-midrange genuine stereo mix vs HF joint-stereo collapse
+        n_ms = sr_cd * 4
+        mid_narrow = signal.sosfilt(
+            signal.butter(4, [150.0, 20000.0], btype="band", fs=sr_cd, output="sos"),
+            rng.standard_normal(n_ms),
+        )
+        side_narrow = signal.sosfilt(
+            signal.butter(4, [150.0, 900.0], btype="band", fs=sr_cd, output="sos"),
+            rng.standard_normal(n_ms),
+        ) * 0.40 + rng.normal(0.0, 0.015, size=n_ms)
+        acc_narrow = motor_flac._SpectralAccumulator(sr_cd, 2)
+        acc_narrow.add(np.column_stack([(mid_narrow + side_narrow) * 0.4, (mid_narrow - side_narrow) * 0.4]), 0)
+        self.assertIs(acc_narrow.result()["sospecha_joint_stereo"], False)
+
+        # Part D: Static LTI filtered pink noise + gentle TPDF dither stays non-modulated
+        pink_b, pink_a = ([0.049922, -0.095993, 0.050612, -0.004408], [1.0, -2.494956, 2.017265, -0.522189])
+        static_noise = signal.lfilter(pink_b, pink_a, rng.standard_normal((sr_cd * 5, 2)), axis=0)
+        static_noise = signal.sosfilt(
+            signal.butter(4, 11800.0, btype="low", fs=sr_cd, output="sos"),
+            static_noise,
+            axis=0,
+        )
+        tpdf = (rng.uniform(-1.0, 1.0, size=static_noise.shape) + rng.uniform(-1.0, 1.0, size=static_noise.shape)) * (10.0 ** (-72.0 / 20.0))
+        acc_lti = motor_flac._SpectralAccumulator(sr_cd, 2)
+        acc_lti.add(np.clip(static_noise * 0.4 + tpdf, -0.99, 0.99), 0)
+        res_lti = acc_lti.result()
+        self.assertIs(res_lti["modulacion_psicoacustica_20k"], False)
+        self.assertLessEqual(res_lti["iqr_corte_hz"], 350.0)
+
+        # Part E: Mixed VHS/archival batch fallback (40..74% support) + tainted control
+        folder_clean = os.path.join(str(self.base_path), "vhs_clean_album")
+        folder_tainted = os.path.join(str(self.base_path), "vhs_tainted_album")
+        os.makedirs(folder_clean, exist_ok=True)
+        os.makedirs(folder_tainted, exist_ok=True)
+        clean_refs = [
+            {
+                "archivo": f"0{i}_ref.flac",
+                "ruta": os.path.join(folder_clean, f"0{i}_ref.flac"),
+                "veredicto": "GENUINE LOSSLESS",
+                "score": 0.92,
+                "problemas": [],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "absent"},
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "esp": {
+                    "techo_hz": 21200,
+                    "techo_rel_nyquist": 0.96,
+                    "clase_corte": "no_cutoff",
+                    "familias_evidencia_lossy": [],
+                },
+                "bdi": {"aplica": False},
+            }
+            for i in range(1, 5)
+        ]
+        dark_vhs = [
+            {
+                "archivo": f"0{i}_dark_vhs.flac",
+                "ruta": os.path.join(folder_clean, f"0{i}_dark_vhs.flac"),
+                "veredicto": "SUSPICIOUS",
+                "score": 0.50,
+                "problemas": ["low spectral ceiling"],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "absent"},
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "esp": {
+                    "techo_hz": 11500,
+                    "techo_rel_nyquist": 0.52,
+                    "clase_corte": "no_cutoff",
+                    "decaimiento_acustico_suave": True,
+                    "iqr_corte_hz": 120.0,
+                    "ratio_huecos_mdct": 0.0,
+                    "familias_evidencia_lossy": [],
+                },
+                "bdi": {"aplica": False},
+            }
+            for i in range(5, 9)
+        ]
+        rescued = motor_flac.apply_album_coherence(clean_refs + dark_vhs)
+        self.assertEqual(rescued, 4)
+        self.assertTrue(all(t["veredicto"] == "PROBABLY LOSSLESS" and t["coherencia_album"] for t in dark_vhs))
+
+        tainted_refs = [dict(t, ruta=os.path.join(folder_tainted, t["archivo"]), coherencia_album=False) for t in clean_refs]
+        tainted_dark = [
+            dict(
+                t,
+                ruta=os.path.join(folder_tainted, t["archivo"]),
+                veredicto="SUSPICIOUS",
+                score=0.50,
+                problemas=["low spectral ceiling"],
+                evidencias_forenses=[],
+                coherencia_album=False,
+                esp=dict(t["esp"]),
+            )
+            for t in dark_vhs
+        ]
+        tainted_dark[0]["esp"]["mdct_lattice_detected"] = True
+        tainted_dark[0]["esp"]["mdct_lattice_family"] = "MDCT-1024 (AAC/MP3/Vorbis)"
+        self.assertEqual(motor_flac.apply_album_coherence(tainted_refs + tainted_dark), 0)
+
+        # Part F: 20.00 kHz Opus cliff corroborated by sub-threshold CELT/MDCT lattice (Z >= 3.8)
+        opus_sub_meta = {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2}
+        opus_sub_spec = {
+            "techo_hz": 20060,
+            "techo_rel_nyquist": 0.8358,
+            "clase_corte": "no_cutoff",
+            "corte_detectado": False,
+            "corte_artificial": False,
+            "ratio_aplica": True,
+            "ratio": 0.025,
+            "var_alta_db": 18.0,
+            "separacion_stereo": 0.45,
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 28.0,
+            "modulacion_psicoacustica_20k": False,
+            "iqr_corte_hz": 180.0,
+            "ratio_huecos_mdct": 0.02,
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": 4.15,
+        }
+        _, verd_opus_sub, _ = motor_flac.calculate_score(
+            opus_sub_meta, opus_sub_spec, {"aplica": False}
+        )
+        self.assertNotIn(verd_opus_sub, GOOD_VERDICTS)
+
+        # Part G: 24/44.1 near-Nyquist ADC transition right at >= 94% ceiling / >= 96% cutoff with low IQR
+        adc_24_meta = {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2}
+        adc_24_spec = {
+            "techo_hz": 20930,
+            "techo_rel_nyquist": 0.9492,
+            "clase_corte": "near_nyquist_cutoff",
+            "corte_detectado": True,
+            "frecuencia_corte": 21275,
+            "distancia_nyquist": 0.9648,
+            "corte_artificial": False,
+            "ratio_aplica": True,
+            "ratio": 0.12,
+            "var_alta_db": 20.0,
+            "separacion_stereo": 0.55,
+            "gradiente_borde_db_khz": 46.7,
+            "iqr_corte_hz": 96.9,
+            "ratio_huecos_mdct": 0.0,
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": 4.0,
+        }
+        adc_24_bdi = {"aplica": True, "lsbs": "active", "forense_bits": {}}
+        _, verd_adc24, _ = motor_flac.calculate_score(
+            adc_24_meta, adc_24_spec, adc_24_bdi
+        )
+        self.assertEqual(verd_adc24, "PROBABLY LOSSLESS")
+
+        # Part H: Batch Opus lossy coherence catches 20 kHz cliff + high mod spread outliers
+        opus_batch_dir = str(self.base_path / "opus_20k_spread_batch")
+        os.makedirs(opus_batch_dir, exist_ok=True)
+        opus_sibs = [
+            {
+                "archivo": f"0{i}_opus.flac",
+                "ruta": os.path.join(opus_batch_dir, f"0{i}_opus.flac"),
+                "veredicto": "PROBABLE UPSCALE",
+                "score": 0.10,
+                "problemas": ["CELT-960"],
+                "evidencias_forenses": [],
+                "coherencia_album": False,
+                "md5": {"estado": "match"},
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "esp": {
+                    "techo_hz": 20020,
+                    "techo_rel_nyquist": 0.908,
+                    "mdct_lattice_detected": True,
+                    "mdct_lattice_family": "CELT-960 (Opus)",
+                    "mdct_lattice_snr": 9.5,
+                },
+                "bdi": {"aplica": False},
+            }
+            for i in range(1, 5)
+        ]
+        opus_outlier = {
+            "archivo": "05_opus_cliff_only.flac",
+            "ruta": os.path.join(opus_batch_dir, "05_opus_cliff_only.flac"),
+            "veredicto": "GENUINE LOSSLESS",
+            "score": 0.90,
+            "problemas": [],
+            "evidencias_forenses": [],
+            "coherencia_album": False,
+            "md5": {"estado": "match"},
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            "esp": {
+                "techo_hz": 20015,
+                "techo_rel_nyquist": 0.9077,
+                "sospecha_corte_opus_20k": True,
+                "brecha_modulacion_20k_db": 43.8,
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 3.18,
+            },
+            "bdi": {"aplica": False},
+        }
+        self.assertEqual(motor_flac.apply_album_coherence(opus_sibs + [opus_outlier]), 1)
+        self.assertEqual(opus_outlier["veredicto"], "PROBABLE UPSCALE")
+        self.assertIn("20.00 kHz cliff track", opus_outlier["album_coherence_note"])
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

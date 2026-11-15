@@ -408,7 +408,7 @@ def _spectrum_dbfs(power, gain_noise=1.0):
                                       1e-28) / gain)
 
 def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
-                                     cutoff_hz=None):
+                                     cutoff_hz=None, ceiling_hz=None):
     """Vector 3: morphology of a Hi-Res spectrum (>= 88.2 kHz).
 
     Distinguishes three physically different cases that the old CD-limit rule
@@ -510,13 +510,51 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
     jump_stop_44k_db = level_before_db - level_stopband_db
     jump_stop_48k_db = level_pre24_db - level_stopband_db
 
+    mask_ultra_hi_lo = (freqs >= 24500.0) & (freqs <= 28000.0)
+    mask_ultra_hi_top = ((freqs >= 34000.0)
+                         & (freqs <= min(42000.0, sample_rate * 0.44)))
+    if np.any(mask_ultra_hi_lo) and np.any(mask_ultra_hi_top):
+        level_ultra_lo_db = float(np.median(curva[mask_ultra_hi_lo]))
+        level_ultra_top_db = float(np.median(curva[mask_ultra_hi_top]))
+        decay_ultra_24_40k_db = level_ultra_lo_db - level_ultra_top_db
+    else:
+        level_ultra_top_db = -140.0
+        decay_ultra_24_40k_db = 0.0
+
+    # Clipped hot 0 dBFS 44.1->96 kHz polyphase upscales can lift the 28.5-38.5
+    # kHz stopband to -65..-88 dBFS and smooth the skirt to -10..-20 dB/kHz, but
+    # they drop >25 dB across 19.8-25.8 kHz and flatten completely past 24.5 kHz.
+    clipped_skirt_44k = (
+        (
+            ceiling_hz is not None
+            and 21200.0 <= float(ceiling_hz) < 24350.0
+            and slope_skirt_44k < -10.0
+            and slope_skirt_44k < slope_base * 2.2
+            and drop_mid_44k_db > 25.0
+            and jump_stop_44k_db > 29.5
+            and drop_mid_44k_db >= jump_stop_44k_db * 0.68
+            and decay_ultra_24_40k_db < 4.5
+            and level_stopband_db < -60.0
+        )
+        or (
+            ceiling_hz is not None
+            and 21200.0 <= float(ceiling_hz) < 25000.0
+            and jump_db > 42.0
+            and slope_skirt_44k < -20.0
+            and decay_ultra_24_40k_db < 2.5
+            and level_stopband_db < -60.0
+        )
+    )
     skirt_44k_brickwall = (
-        slope_skirt_44k < -21.5
-        and slope_skirt_44k < slope_base * 2.5
-        and drop_mid_44k_db > 32.0
-        and drop_mid_44k_db > jump_stop_44k_db * 0.38
-        and jump_stop_44k_db > 40.0
-        and level_stopband_db < -90.0
+        (
+            slope_skirt_44k < -21.5
+            and slope_skirt_44k < slope_base * 2.5
+            and drop_mid_44k_db > 32.0
+            and drop_mid_44k_db > jump_stop_44k_db * 0.38
+            and jump_stop_44k_db > 40.0
+            and level_stopband_db < -90.0
+        )
+        or clipped_skirt_44k
     )
     skirt_48k_brickwall = (
         slope_skirt_48k < -21.5
@@ -673,7 +711,7 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
     )
     multipole_analog_rolloff = (
         worse_slope > -12.0
-        and jump_db < 22.5
+        and jump_db < 23.2
         and level_after_db > -122.0
         and fall_14_17k_db > 10.0
         and (level_14_17k - level_before_db) >= 1.5
@@ -693,16 +731,6 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and snr_ultra_pass_db >= 20.0
         and (level_14_17k - level_before_db) >= 1.5
     )
-    mask_ultra_hi_lo = (freqs >= 24500.0) & (freqs <= 28000.0)
-    mask_ultra_hi_top = ((freqs >= 34000.0)
-                         & (freqs <= min(42000.0, sample_rate * 0.44)))
-    if np.any(mask_ultra_hi_lo) and np.any(mask_ultra_hi_top):
-        level_ultra_lo_db = float(np.median(curva[mask_ultra_hi_lo]))
-        level_ultra_top_db = float(np.median(curva[mask_ultra_hi_top]))
-        decay_ultra_24_40k_db = level_ultra_lo_db - level_ultra_top_db
-    else:
-        level_ultra_top_db = -140.0
-        decay_ultra_24_40k_db = 0.0
     continuous_steep_rolloff = (
         worse_slope > -15.0
         and slope_skirt_44k > -18.0
@@ -1008,7 +1036,8 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     else:
         spectrum_mid_db = mid_db
     hires = _diagnose_hires_authenticity(freqs, spectrum_mid_db, samplerate,
-                                             cutoff_hz=cutoff_hz)
+                                         cutoff_hz=cutoff_hz,
+                                         ceiling_hz=ceiling_hz)
 
     # A DSD transfer closes its musical band at the SACD passband (20 kHz) while
     # the noise-shaping ramp continues above it. That edge is the passband of the
@@ -1030,16 +1059,36 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     sum_power = float(np.sum(power))
     centroid_hz = (float(np.sum(freqs * power) / sum_power)
                     if sum_power > 1e-30 else 0.0)
+    near_nyq_high = (
+        cutoff_hz is None
+        or (category_cutoff == "near_nyquist_cutoff"
+            and distance is not None
+            and distance >= 0.94)
+    )
+    gentle_post_ceiling = False
+    if (samplerate <= 48000 and near_nyq_high
+            and 13500.0 <= ceiling_hz < 0.80 * nyquist
+            and gradient_edge < 33.0):
+        m_c_pre = (freqs >= max(4000.0, ceiling_hz - 800.0)) & (freqs <= ceiling_hz)
+        m_c_p1 = ((freqs >= ceiling_hz + 300.0)
+                  & (freqs <= min(nyquist - 200.0, ceiling_hz + 1300.0)))
+        m_c_p3 = ((freqs >= min(nyquist - 600.0, ceiling_hz + 2000.0))
+                  & (freqs <= min(nyquist - 100.0, ceiling_hz + 4000.0)))
+        if np.any(m_c_pre) and np.any(m_c_p1) and np.any(m_c_p3):
+            step_p1 = float(np.median(power_db_n[m_c_pre]) - np.median(power_db_n[m_c_p1]))
+            step_p3 = float(np.median(power_db_n[m_c_p1]) - np.median(power_db_n[m_c_p3]))
+            gentle_post_ceiling = (-3.0 <= step_p1 < 12.0) and (-3.0 <= step_p3 < 18.0)
+
     smooth_acoustic_decay = bool(
         0.0 < centroid_hz < 1800.0
-        and cutoff_hz is None
-        and ceiling_hz >= 11000.0
-        and gradient_edge < 20.0
+        and near_nyq_high
+        and ceiling_hz >= 10500.0
+        and (gradient_edge < 20.0 or gentle_post_ceiling)
     )
     smooth_band_limited_rolloff = False
-    if (samplerate <= 48000 and cutoff_hz is None
-            and 10000.0 <= ceiling_hz < 0.70 * nyquist
-            and 0.5 <= gradient_edge < 18.0):
+    if (samplerate <= 48000 and near_nyq_high
+            and 10000.0 <= ceiling_hz < 0.72 * nyquist
+            and (0.5 <= gradient_edge < 18.0 or gentle_post_ceiling)):
         mask_pre_lo = ((freqs >= max(5000.0, ceiling_hz - 4500.0))
                        & (freqs <= max(6500.0, ceiling_hz - 2200.0)))
         mask_pre_hi = ((freqs >= max(7500.0, ceiling_hz - 1400.0))
@@ -1512,6 +1561,27 @@ class PsychoacousticSTFTAccumulator:
                              - np.percentile(curva, 5) < 6.0)
             opus_suspicion = bool(fall_opus > 45.0 and plano
                                  and after < low - 40.0)
+            if not opus_suspicion and 41000 <= self.sr <= 48000:
+                pre_drop_20k = (level_db(18000.0, 19000.0)
+                                - level_db(19650.0, 19850.0))
+                cliff_20k = (level_db(19650.0, 19850.0)
+                             - level_db(20200.0, 20450.0))
+                post_drop_20k = (level_db(20450.0, 20900.0)
+                                 - level_db(21100.0, 21850.0))
+                opus_flat_shelf = bool(
+                    pre_drop_20k <= 4.2
+                    and cliff_20k >= 10.5
+                    and cliff_20k >= 3.0 * max(pre_drop_20k, 0.8)
+                    and (
+                        abs(post_drop_20k) <= 1.8
+                        or (cliff_20k >= 27.0
+                            and 0.0 <= post_drop_20k <= 9.0
+                            and cliff_20k >= 3.3 * post_drop_20k)
+                    )
+                )
+                if opus_flat_shelf:
+                    opus_suspicion = True
+                    fall_opus = max(fall_opus, cliff_20k)
 
         # sfb21 islands: a lowpass-disabled lossy codec (LAME -V 0, AAC without
         # lowpass) zeroes the top scalefactor band in some frames but not in
@@ -1591,6 +1661,30 @@ class PsychoacousticSTFTAccumulator:
                     or (drp_iqr >= 30.0 and top_iqr >= 30.0 and max(drp_med, float(np.mean(drp))) >= 24.0)
                     or (drp_med >= 48.0 and drp_iqr >= 12.0 and iqr > 550.0)
                 )
+                # Static LTI mastering LPFs around 19.5-20.3 kHz clamp quiet
+                # frames of arr_20 at the 16-bit dither floor while loud frames
+                # track arr_16 linearly (high corr(arr_16, drp), small loud spread);
+                # ultra-quiet thermal/dither >20.2 kHz tails (<-122 dB without an
+                # Opus cliff) also reflect dynamic acoustic fades rather than codecs.
+                if (psycho_mod_20k and iqr <= 350.0 and not islands_sfb21
+                        and ratio <= 0.05 and drp_med < 48.0 and drp_iqr < 28.0):
+                    if (not opus_suspicion
+                            and float(np.median(arr_20)) < -122.0
+                            and drp_iqr < 27.5):
+                        psycho_mod_20k = False
+                    else:
+                        hi_m = arr_16 >= float(np.median(arr_16))
+                        if (np.count_nonzero(hi_m) >= 8
+                                and float(np.std(arr_16)) > 1.5
+                                and float(np.std(drp)) > 1.5):
+                            loud_spread = float(
+                                np.percentile(drp[hi_m], 90)
+                                - np.percentile(drp[hi_m], 10)
+                            )
+                            corr_16_drp = float(np.corrcoef(arr_16, drp)[0, 1])
+                            if (loud_spread < 13.0 and math.isfinite(corr_16_drp)
+                                    and corr_16_drp > 0.40):
+                                psycho_mod_20k = False
 
         # Dynamic frame-by-frame Mid/Side stereo collapse in 13.5-16.5 kHz:
         # LAME/AAC Joint Stereo switches between LR and MS per frame, so the
@@ -2268,10 +2362,12 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
 
         # 3. CELT-960 (Opus 20.00 kHz TDAC stopband boundary cancellation)
         z_opus = 0.0
+        z_opus_sub = 0.0
         n_blocks_opus = 14
         need_48 = 16000
         need_src = (need_48 * sr) // 48000
-        if fullband_mode and mono.size >= need_src and sr in (44100, 48000):
+        if ((fullband_mode or (ceiling_hz is not None and ceiling_hz >= 14500.0))
+                and mono.size >= need_src and sr in (44100, 48000)):
             w_celt = _get_celt_1920()
             for seg_src in _select_hf_subwindow_candidates(mono, need_src, max_windows=3):
                 if sr == 44100:
@@ -2290,7 +2386,7 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
                 ep0 = float(np.mean(c0[:, 704:796] ** 2)) + 1e-28
                 es0 = float(np.mean(c0[:, 802:870] ** 2)) + 1e-28
                 emid0 = float(np.mean(c0[:, 160:440] ** 2)) + 1e-28
-                if 10.0 * math.log10(ep0 / es0) >= 20.0 and ep0 > emid0 * 1e-4 and ep0 > 1e-9:
+                if 10.0 * math.log10(ep0 / es0) >= 15.0 and ep0 > emid0 * 1e-4 and ep0 > 1e-9:
                     n_all = len(all_f)
                     drops_all = np.empty(n_all, dtype=np.float32)
                     for i in range(0, n_all, 960):
@@ -2301,19 +2397,24 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
                         drops_all[i : i + 960] = 10.0 * np.log10(e_pass / e_stop)
                     grid_d = drops_all.reshape(n_blocks_opus, 8, 120).mean(axis=0).max(axis=0)
                     z_cand_opus, med_d, mx_d = _robust_z_peak(grid_d, min_scale=0.25)
-                    if mx_d >= 38.0 and (mx_d - med_d) >= 6.0:
+                    if (
+                        (mx_d >= 38.0 and (mx_d - med_d) >= 6.0)
+                        or (mx_d >= 26.0 and (mx_d - med_d) >= 2.6 and z_cand_opus >= 6.2)
+                    ):
                         z_opus = max(z_opus, z_cand_opus)
-                        if z_opus >= 6.5:
+                        if z_opus >= 6.2:
                             break
+                    elif mx_d >= 24.0 and (mx_d - med_d) >= 2.0:
+                        z_opus_sub = max(z_opus_sub, min(z_cand_opus, 6.0))
 
-        if z_opus >= 6.5:
+        if z_opus >= 6.2:
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z_opus), 2),
                 "mdct_lattice_family": "CELT-960 (Opus)",
             }
 
-        best_z = max(z1024, z576, z_mpc, z_opus)
+        best_z = max(z1024, z576, z_mpc, z_opus, z_opus_sub)
         return {
             "mdct_lattice_detected": False,
             "mdct_lattice_snr": round(float(best_z), 2) if math.isfinite(best_z) else 0.0,
@@ -2634,11 +2735,18 @@ class _SpectralAccumulator:
         collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
         centered_hf_vocal = False
         hires_ultrasonic_stereo = False
+        narrow_midrange_stereo = False
         if mean_mid is not None and mean_side is not None:
-            if delta_cutoff < 800.0 and math.isfinite(ms_p95) and ms_p95 < 42.0:
-                diff_ms_db = 10.0 * np.log10(
-                    np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
+            diff_ms_db = 10.0 * np.log10(
+                np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
+            )
+            mask_midrange = (freqs >= 2000.0) & (freqs <= 8000.0)
+            if np.any(mask_midrange):
+                med_midrange = float(np.median(diff_ms_db[mask_midrange]))
+                narrow_midrange_stereo = bool(
+                    math.isfinite(med_midrange) and med_midrange >= 14.5
                 )
+            if delta_cutoff < 800.0 and math.isfinite(ms_p95) and ms_p95 < 42.0:
                 centered_hf_vocal = _has_centered_upper_mid_vocal(freqs, diff_ms_db)
             if hires_clean_rolloff and delta_cutoff < 500.0:
                 mask_us = ((freqs >= 24000.0)
@@ -2653,6 +2761,7 @@ class _SpectralAccumulator:
         if (getattr(self._psycho, "_ms_dynamic_collapse", False)
                 and not spectrum.get("es_dual_mono")
                 and not spectrum.get("es_estacionario")
+                and not narrow_midrange_stereo
                 and not centered_hf_vocal
                 and not hires_ultrasonic_stereo
                 and not (hires_clean_rolloff and ceiling_val < 13500)
@@ -2696,9 +2805,12 @@ class _SpectralAccumulator:
                 if (lat_mid.get("mdct_lattice_detected")
                         or lat_mid.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
                     lat = lat_mid
-            if (not lat.get("mdct_lattice_detected")
-                    and len(ranked_blks) > 1 and len(ranked_blks[1][4]) >= 24576):
-                sec_b = ranked_blks[1][4]
+            for sec_idx, sec_item in enumerate(ranked_blks[1:3]):
+                if lat.get("mdct_lattice_detected"):
+                    break
+                sec_b = sec_item[4]
+                if len(sec_b) < 24576:
+                    continue
                 if sec_b.ndim > 1 and sec_b.shape[1] >= 2:
                     dl2 = np.diff(sec_b[:, 0])
                     dr2 = np.diff(sec_b[:, 1])
@@ -2708,10 +2820,28 @@ class _SpectralAccumulator:
                 else:
                     sec_mono = sec_b[:, 0] if sec_b.ndim > 1 else sec_b
                 lat_sec = _detect_lapped_codec_grid(sec_mono, self.sr, ceiling_hz=ceiling_val)
-                if (lat_sec.get("mdct_lattice_detected")
-                        or lat_sec.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
+                if lat_sec.get("mdct_lattice_detected") and (
+                    sec_idx == 0
+                    or "CELT-960" in str(lat_sec.get("mdct_lattice_family") or "")
+                ):
                     lat = lat_sec
             spectrum.update(lat)
+        low_centroid_smooth_iqr = bool(
+            self.sr <= 48000
+            and ceiling_val >= 14000
+            and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 750.0
+            and not spectrum.get("corte_detectado")
+            and not spectrum.get("islas_mdct_sfb21")
+            and not spectrum.get("sospecha_corte_opus_20k")
+            and not spectrum.get("sospecha_joint_stereo")
+            and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
+            and not spectrum.get("mdct_lattice_detected")
+            and float(spectrum.get("iqr_corte_hz") or 0.0) <= 680.0
+        )
+        if low_centroid_smooth_iqr:
+            cur_iqr = float(spectrum.get("iqr_corte_hz") or 0.0)
+            if cur_iqr > 350.0:
+                spectrum["iqr_corte_hz"] = 350.0
         if (self.sr >= 32000
                 and ceiling_val >= 14500
                 and spectrum.get("clase_corte") != "far_cutoff"

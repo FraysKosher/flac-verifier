@@ -175,8 +175,12 @@ def calculate_score(meta, spectrum, bdi):
                 and not forensic_bdi.get("es_16bit_dither_en_24")
             )
         )
-        without_signatures_lossy = (
+        near_adc_edge = (
             category == "no_cutoff"
+            or (category == "near_nyquist_cutoff" and (rel_cutoff or 0.0) >= 0.94)
+        )
+        without_signatures_lossy = (
+            near_adc_edge
             and not spectrum.get("sospecha_joint_stereo")
             and not spectrum.get("sospecha_corte_opus_20k")
             and not spectrum.get("clipping_reconstruccion_lossy")
@@ -287,8 +291,13 @@ def calculate_score(meta, spectrum, bdi):
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
         elif category == "near_nyquist_cutoff":
-            # It is neither flagged nor rewarded: the anti-alias filter of a
-            # legitimate master lives here too. It is reported as inconclusive.
+            # It is neither flagged nor rewarded unless a genuinely band-limited
+            # ADC transition sits right on the Nyquist edge (>= 95%) with zero
+            # codec evidence; otherwise it stays inconclusive.
+            if (0.75 <= rel_ceiling < 0.88
+                    and (rel_cutoff or 0.0) >= 0.95
+                    and without_signatures_lossy):
+                ledger.add_votes(1.5)
             ledger.note(f"band cut at {spectrum['frecuencia_corte']/1000:.1f} kHz "
                         f"({rel_cutoff*100:.0f}% of Nyquist): consistent with the anti-alias "
                         f"filter of a legitimate master AND with a high-rate codec "
@@ -297,7 +306,9 @@ def calculate_score(meta, spectrum, bdi):
             ledger.add_votes(3.0)
 
         # 4. High-band metrics (not applicable if the file has no high band).
-        if spectrum.get("ratio_aplica") and not band_limited_exemption:
+        if (spectrum.get("ratio_aplica")
+                and not (band_limited_exemption
+                         or (acoustic_exemption and rel_ceiling < 0.70))):
             ledger.add_votes(0.0, 2.0)
             r = spectrum["ratio"]
             if r > 0.05:   ledger.add_votes(2.0)
@@ -433,20 +444,25 @@ def calculate_score(meta, spectrum, bdi):
         if (spectrum.get("sospecha_corte_opus_20k")
                 and not (spectrum.get("es_transferencia_dsd")
                          or spectrum.get("rolloff_analogico_genuino"))):
-            corroborado = bool(
+            other_corroboration = bool(
                 spectrum.get("sospecha_joint_stereo")
                 or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
                 or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
                 or spectrum.get("modulacion_psicoacustica_20k")
                 or spectrum.get("mdct_lattice_detected")
             )
+            sub_lattice = bool(
+                not other_corroboration
+                and (spectrum.get("mdct_lattice_snr") or 0.0) >= 3.8
+            )
+            corroborado = other_corroboration or sub_lattice
             if corroborado:
                 ledger.penalize(
                     f"20.00 kHz cliff of "
                     f"{spectrum.get('caida_opus_20k_db', 0.0):.0f} dB with other "
                     f"codec evidence: libopus fullband transcode signature",
-                    0.20,
-                    blocks_max_verdict=False,
+                    0.45 if sub_lattice else 0.20,
+                    blocks_max_verdict=sub_lattice,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
             else:
@@ -501,7 +517,7 @@ def calculate_score(meta, spectrum, bdi):
                     and not forensic.get("es_16bit_dither_en_24")
                 )
                 without_codec_nor_brickwall = (
-                    category == "no_cutoff"
+                    near_adc_edge
                     and not spectrum.get("sospecha_joint_stereo")
                     and not spectrum.get("sospecha_corte_opus_20k")
                     and not spectrum.get("sbr_qmf_detectado")
@@ -509,7 +525,14 @@ def calculate_score(meta, spectrum, bdi):
                     and not spectrum.get("mdct_lattice_detected")
                     and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
                     and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
-                    and (spectrum.get("gradiente_borde_db_khz") or 0.0) < 35.0
+                    and (
+                        (spectrum.get("gradiente_borde_db_khz") or 0.0) < 35.0
+                        or (
+                            rel_ceiling >= 0.94
+                            and (rel_cutoff or 0.0) >= 0.96
+                            and (spectrum.get("iqr_corte_hz") or 0.0) <= 150.0
+                        )
+                    )
                 )
                 if not (bits_clean and without_codec_nor_brickwall):
                     ledger.penalize(
@@ -604,11 +627,12 @@ def _deserves_album_coherence(result):
     bdi = result.get("bdi") or {}
     if spectrum.get("error"):
         return False
-    if (result.get("md5") or {}).get("estado") != "match":
+    if (result.get("md5") or {}).get("estado") not in ("match", "absent"):
         return False
     if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == "far_cutoff":
         return False                       # a below-Nyquist codec step is never rescued
-    if (spectrum.get("techo_rel_nyquist") or 1.0) >= 0.88:
+    max_coh_rel = 0.95 if (bits > 16 and sr <= 48000) else 0.88
+    if (spectrum.get("techo_rel_nyquist") or 1.0) >= max_coh_rel:
         return False
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
                   "sospecha_joint_stereo", "sospecha_corte_opus_20k",
@@ -617,7 +641,25 @@ def _deserves_album_coherence(result):
                   "modulacion_psicoacustica_20k", "mdct_lattice_detected"):
         if spectrum.get(key):
             return False
-    if (spectrum.get("iqr_corte_hz") or 0.0) > 550.0:
+    dark_sparse_iqr_ok = (
+        (result.get("md5") or {}).get("estado") == "match"
+        and sr <= 48000
+        and spectrum.get("clase_corte") == "no_cutoff"
+        and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 460.0
+        and (
+            (
+                (spectrum.get("iqr_corte_hz") or 0.0) <= 950.0
+                and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
+                and float(spectrum.get("mdct_lattice_snr") or 0.0) < 3.5
+            )
+            or (
+                float(spectrum.get("techo_hz") or 0.0) < 12500.0
+                and float(spectrum.get("gradiente_borde_db_khz") or 0.0) < 25.0
+                and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.05
+            )
+        )
+    )
+    if (spectrum.get("iqr_corte_hz") or 0.0) > 550.0 and not dark_sparse_iqr_ok:
         return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
         return False
@@ -639,9 +681,21 @@ def _deserves_album_coherence(result):
     ]
     if sr >= 88200 and (not bdi.get("aplica") or bdi.get("lsbs") == "active"):
         permitidos.extend(["below the cd band", "not backed by content"])
+    allow_24b_dark_vhs = (
+        sr <= 48000
+        and bits > 16
+        and bdi.get("lsbs") == "active"
+        and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 1800.0
+    )
     for problem in result.get("problemas") or []:
-        if not any(text in problem.lower() for text in permitidos):
-            return False
+        low = problem.lower()
+        if any(text in low for text in permitidos):
+            continue
+        if allow_24b_dark_vhs and "not backed by the content" in low:
+            continue
+        if dark_sparse_iqr_ok and "cut-off jitters" in low:
+            continue
+        return False
     return True
 
 
@@ -660,6 +714,9 @@ def _deserves_album_lossy_coherence(result):
     spectrum = result.get("esp") or {}
     if spectrum.get("error") or spectrum.get("mdct_lattice_detected"):
         return False
+    if (bool(spectrum.get("sospecha_corte_opus_20k"))
+            and float(spectrum.get("brecha_modulacion_20k_db") or 0.0) >= 25.0):
+        return True
     rel = spectrum.get("techo_rel_nyquist")
     if not isinstance(rel, (int, float)) or float(rel) >= 0.72:
         return False
@@ -672,6 +729,11 @@ def _is_lossy_codec_quorum_track(result):
     lattice or a sharp ~20 kHz (78-87% Nyquist) codec brickwall in 48 kHz."""
     spectrum = result.get("esp") or {}
     if spectrum.get("mdct_lattice_detected"):
+        return True
+    if (spectrum.get("sospecha_corte_opus_20k")
+            and result.get("veredicto") in (
+                "SUSPICIOUS", "PROBABLE UPSCALE", "CONFIRMED LOSSY"
+            )):
         return True
     if result.get("veredicto") not in ("CONFIRMED LOSSY", "PROBABLE UPSCALE"):
         return False
@@ -707,6 +769,65 @@ def _is_clean_quorum_track(result):
     score = float(result.get("score") or 0.0)
     fams = spectrum.get("familias_evidencia_lossy") or []
     return full_band and score >= 0.60 and len(fams) == 0
+
+
+def _is_clean_album_support_track(result, reference):
+    """True when a track provides clean lossless album quorum support."""
+    meta = result.get("meta") or {}
+    if (meta.get("sample_rate"), meta.get("bits_per_sample")) != reference:
+        return False
+    if _is_clean_quorum_track(result):
+        return True
+    if result.get("veredicto") != "PROBABLY LOSSLESS":
+        return False
+    if (result.get("md5") or {}).get("estado") not in ("match", "absent"):
+        return False
+    spectrum = result.get("esp") or {}
+    if spectrum.get("familias_evidencia_lossy") or []:
+        return False
+    if float(result.get("score") or 0.0) < 0.64:
+        return False
+    sr = int(meta.get("sample_rate") or 0)
+    rel = float(spectrum.get("techo_rel_nyquist") or 0.0)
+    if sr <= 48000:
+        return bool(
+            rel >= 0.80
+            or (spectrum.get("decaimiento_acustico_suave") and rel >= 0.55)
+        )
+    return bool(
+        (spectrum.get("techo_hz") or 0) >= LIMIT_CD_HZ
+        or spectrum.get("rolloff_analogico_genuino")
+        or spectrum.get("es_transferencia_dsd")
+        or rel >= 0.80
+    )
+
+
+def _is_clean_batch_track(result):
+    """True when a track shows zero codec, brickwall, or fake bit-depth flags."""
+    spectrum = result.get("esp") or {}
+    if spectrum.get("error"):
+        return False
+    if spectrum.get("familias_evidencia_lossy") or []:
+        return False
+    if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == "far_cutoff":
+        return False
+    for key in (
+        "muro_brickwall_nyquist", "espejo_aliasing_detectado",
+        "sospecha_joint_stereo", "sospecha_corte_opus_20k",
+        "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
+        "sospecha_excitador_armonico", "sbr_qmf_detectado",
+        "modulacion_psicoacustica_20k", "mdct_lattice_detected",
+    ):
+        if spectrum.get(key):
+            return False
+    bdi = result.get("bdi") or {}
+    forensic = bdi.get("forense_bits") or {}
+    if (forensic.get("es_padded_16_en_24")
+            or forensic.get("es_24bit_escalado_en_peine")
+            or forensic.get("es_16bit_dither_en_24")
+            or bdi.get("lsbs") == "empty"):
+        return False
+    return True
 
 
 def apply_album_coherence(results):
@@ -751,12 +872,46 @@ def apply_album_coherence(results):
             quorum_ref = [r for r in quorum_tracks
                           if (r["meta"]["sample_rate"],
                               r["meta"]["bits_per_sample"]) == reference]
+            support_ref = [
+                r for r in validas
+                if _is_clean_album_support_track(r, reference)
+            ]
             has_strong_anchor = any(
                 r.get("veredicto") == "GENUINE LOSSLESS"
                 or float(r.get("score") or 0.0) >= 0.75
+                or (
+                    (r.get("md5") or {}).get("estado") == "absent"
+                    and float(r.get("score") or 0.0) >= 0.70
+                    and float((r.get("esp") or {}).get("techo_rel_nyquist") or 0.0) >= 0.90
+                    and not ((r.get("esp") or {}).get("familias_evidencia_lossy") or [])
+                )
                 for r in quorum_ref
             )
-            if has_strong_anchor and len(quorum_ref) / float(len(validas)) >= 0.75:
+            support_ratio = len(support_ref) / float(len(validas))
+            mixed_vhs_ok = False
+            if not (has_strong_anchor and support_ratio >= 0.75):
+                non_verde = [
+                    r for r in validas
+                    if r.get("veredicto") not in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+                ]
+                verde = [
+                    r for r in validas
+                    if r.get("veredicto") in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+                ]
+                mixed_vhs_ok = bool(
+                    has_strong_anchor
+                    and len(validas) >= 6
+                    and len(support_ref) >= 3
+                    and support_ratio >= 0.40
+                    and non_verde
+                    and all(_is_clean_batch_track(r) for r in verde)
+                    and all(
+                        (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == reference
+                        and _deserves_album_coherence(r)
+                        for r in non_verde
+                    )
+                )
+            if (has_strong_anchor and support_ratio >= 0.75) or mixed_vhs_ok:
                 candidatos = []
                 for r in validas:
                     if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE",
@@ -767,8 +922,16 @@ def apply_album_coherence(results):
                         continue
                     if _deserves_album_coherence(r):
                         candidatos.append(r)
+                rescue_candidates = [
+                    r for r in candidatos
+                    if r.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE")
+                ]
                 max_candidates = max(2, len(validas) // 4)
-                if 1 <= len(candidatos) <= max_candidates:
+                within_cap = (
+                    True if mixed_vhs_ok
+                    else len(rescue_candidates) <= max_candidates
+                )
+                if candidatos and within_cap:
                     for r in candidatos:
                         r["veredicto"] = "PROBABLY LOSSLESS"
                         r["score"] = max(float(r.get("score") or 0.0), 0.60)
@@ -817,11 +980,19 @@ def apply_album_coherence(results):
         if not 1 <= len(lossy_candidates) <= max_lossy:
             continue
         for r in lossy_candidates:
-            snr_val = float((r.get("esp") or {}).get("mdct_lattice_snr") or 0.0)
-            note = (
-                f"Low-ceiling track in a confirmed {dominant_family} album batch "
-                f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
-            )
+            spec = r.get("esp") or {}
+            if spec.get("sospecha_corte_opus_20k"):
+                spread_db = float(spec.get("brecha_modulacion_20k_db") or 0.0)
+                note = (
+                    f"20.00 kHz cliff track in a confirmed {dominant_family} album batch "
+                    f"(upper-band spread {spread_db:.1f} dB)"
+                )
+            else:
+                snr_val = float(spec.get("mdct_lattice_snr") or 0.0)
+                note = (
+                    f"Low-ceiling track in a confirmed {dominant_family} album batch "
+                    f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
+                )
             r["veredicto"] = "PROBABLE UPSCALE"
             r["score"] = min(float(r.get("score") or 0.0), 0.35)
             r["problemas"] = list(r.get("problemas") or []) + [note]
