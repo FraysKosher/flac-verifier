@@ -40,7 +40,7 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
    the CLI, the GUI or the PDF. `tests/test_estructura.py` catches it.
 2. `multiprocessing.freeze_support()` stays the **first statement** of the `__main__`
    block in `main.py` (`tests/test_empaquetado.py`).
-3. **Raise `ENGINE_VERSION`** (currently `"14.2"` in `motor_flac.py`) whenever any
+3. **Raise `ENGINE_VERSION`** (currently `"14.3"` in `motor_flac.py`) whenever any
    analysis calculation changes: it is what invalidates existing caches.
 4. No new runtime dependencies without discussing it. `numpy`, `scipy`, `soundfile`,
    `mutagen`, `pillow` are required; `reportlab`, `customtkinter`, `tkinterdnd2` must stay
@@ -80,5 +80,5 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
 
 ## Known doc drift (trust the code, not the doc)
 
-- The suite is **358 tests** and `ENGINE_VERSION = "14.2"`; `README.md` and
+- The suite is **358 tests** and `ENGINE_VERSION = "14.3"`; `README.md` and
   `CONTRIBUTING.md` agree. Keep the number you touch in sync.

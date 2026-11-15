@@ -84,7 +84,11 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.2"
+ENGINE_VERSION = "14.3"
+# 14.3: Attribute 20.00 kHz brickwall shelves generically as codec low-pass
+#       shelves whenever a non-Opus filterbank/SBR/MP3 signature (e.g. PQMF-576
+#       on LAME 320 kbps) is already identified, avoiding contradictory Opus
+#       labels while preserving scores and verdicts.
 # 14.2: Split neutral/positive observations (`notes`) from actionable defects
 #       (`problemas`), rewrite findings plain-English-first with physical metrics
 #       and zero internal Vector jargon, and default spectral scans to `full`.

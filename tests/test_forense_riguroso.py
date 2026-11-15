@@ -3345,6 +3345,52 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(opus_outlier["veredicto"], "PROBABLE UPSCALE")
         self.assertIn("20.00 kHz shelf track", opus_outlier["album_coherence_note"])
 
+        # Part I: Non-Opus filterbank (e.g. LAME 320 PQMF-576) + 20.00 kHz shelf
+        # must report a generic codec low-pass shelf rather than claiming libopus,
+        # while CELT-960 (Opus) keeps the Opus (libopus) attribution.
+        mp3_20k_meta = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2}
+        mp3_20k_spec = {
+            "techo_hz": 20010,
+            "techo_rel_nyquist": 0.9075,
+            "clase_corte": "near_nyquist_cutoff",
+            "corte_detectado": True,
+            "frecuencia_corte": 19900,
+            "distancia_nyquist": 0.9025,
+            "corte_artificial": False,
+            "ratio_aplica": True,
+            "ratio": 0.08,
+            "var_alta_db": 14.0,
+            "separacion_stereo": 0.35,
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 43.0,
+            "mdct_lattice_detected": True,
+            "mdct_lattice_family": "PQMF-576 (MP3)",
+            "mdct_lattice_snr": 70.5,
+        }
+        sc_mp3_20k, verd_mp3_20k, probs_mp3_20k = motor_flac.calculate_score(
+            mp3_20k_meta, mp3_20k_spec, {"aplica": False}
+        )
+        ev_mp3_20k = motor_flac.forensic_evidence(
+            {"meta": mp3_20k_meta, "esp": mp3_20k_spec, "bdi": {"aplica": False}}
+        )
+        self.assertEqual(verd_mp3_20k, "PROBABLE UPSCALE")
+        self.assertTrue(any("PQMF-576 (MP3)" in p for p in probs_mp3_20k))
+        self.assertTrue(any("Steep 20.00 kHz codec low-pass shelf" in p for p in probs_mp3_20k))
+        self.assertTrue(any("steep codec low-pass shelf" in e for e in ev_mp3_20k))
+        self.assertNotIn("opus", " ".join(probs_mp3_20k + ev_mp3_20k).lower())
+
+        opus_20k_spec = dict(mp3_20k_spec, mdct_lattice_family="CELT-960 (Opus)", mdct_lattice_snr=12.4)
+        sc_opus_20k, verd_opus_20k, probs_opus_20k = motor_flac.calculate_score(
+            mp3_20k_meta, opus_20k_spec, {"aplica": False}
+        )
+        ev_opus_20k = motor_flac.forensic_evidence(
+            {"meta": mp3_20k_meta, "esp": opus_20k_spec, "bdi": {"aplica": False}}
+        )
+        self.assertAlmostEqual(sc_mp3_20k, sc_opus_20k)
+        self.assertEqual(verd_opus_20k, "PROBABLE UPSCALE")
+        self.assertTrue(any("Opus (libopus) fullband transcode signature" in p for p in probs_opus_20k))
+        self.assertTrue(any("libopus fullband signature" in e for e in ev_opus_20k))
+
 
 
 if __name__ == "__main__":

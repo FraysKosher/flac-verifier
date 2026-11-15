@@ -115,6 +115,20 @@ class _ScoreLedger:
         return score, verdict, self.problems
 
 
+def _has_non_opus_codec_signature(spectrum) -> bool:
+    """True when an explicit non-Opus filterbank, SBR, or MP3 sfb21 signature is present."""
+    lattice_family = spectrum.get("mdct_lattice_family") or ""
+    return bool(
+        (
+            spectrum.get("mdct_lattice_detected")
+            and lattice_family
+            and "Opus" not in lattice_family
+        )
+        or spectrum.get("islas_mdct_sfb21")
+        or spectrum.get("sbr_qmf_detectado")
+    )
+
+
 def calculate_score(meta, spectrum, bdi, include_notes=False):
     ledger = _ScoreLedger()
 
@@ -449,9 +463,10 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 family=EvidenceFamily.FILTERBANK_LATTICE,
             )
 
-        # libopus fullband cliff at 20.00 kHz. In isolation it is
-        # indistinguishable from a mastering anti-alias low-pass, so it is scored
-        # only together with another codec signature; on its own it stays a fact.
+        # Steep 20.00 kHz shelf (libopus fullband or high-rate codec low-pass).
+        # In isolation it is indistinguishable from a mastering anti-alias
+        # low-pass, so it is scored only together with another codec signature;
+        # on its own it stays a fact.
         if (spectrum.get("sospecha_corte_opus_20k")
                 and not (spectrum.get("es_transferencia_dsd")
                          or spectrum.get("rolloff_analogico_genuino"))):
@@ -468,10 +483,19 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
             )
             corroborado = other_corroboration or sub_lattice
             if corroborado:
+                drop_20k = spectrum.get("caida_opus_20k_db", 0.0)
+                if _has_non_opus_codec_signature(spectrum):
+                    msg_20k = (
+                        f"Steep 20.00 kHz codec low-pass shelf "
+                        f"({drop_20k:.0f} dB) corroborated by filterbank evidence"
+                    )
+                else:
+                    msg_20k = (
+                        f"Opus (libopus) fullband transcode signature: steep 20.00 kHz "
+                        f"shelf ({drop_20k:.0f} dB) corroborated by codec evidence"
+                    )
                 ledger.penalize(
-                    f"Opus (libopus) fullband transcode signature: steep 20.00 kHz "
-                    f"shelf ({spectrum.get('caida_opus_20k_db', 0.0):.0f} dB) "
-                    f"corroborated by codec evidence",
+                    msg_20k,
                     0.45 if sub_lattice else 0.20,
                     blocks_max_verdict=sub_lattice,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
@@ -1079,8 +1103,12 @@ def forensic_evidence(result):
         evidence.append(f"MDCT spectral holes in "
                           f"{(spectrum.get('ratio_huecos_mdct') or 0.0)*100:.0f}% of the frames")
     if spectrum.get("sospecha_corte_opus_20k"):
-        evidence.append(f"20.00 kHz cliff ({spectrum.get('caida_opus_20k_db', 0.0):.0f} dB): "
-                          f"libopus fullband signature")
+        if _has_non_opus_codec_signature(spectrum):
+            evidence.append(f"20.00 kHz cliff ({spectrum.get('caida_opus_20k_db', 0.0):.0f} dB): "
+                              f"steep codec low-pass shelf")
+        else:
+            evidence.append(f"20.00 kHz cliff ({spectrum.get('caida_opus_20k_db', 0.0):.0f} dB): "
+                              f"libopus fullband signature")
     if spectrum.get("clipping_reconstruccion_lossy"):
         evidence.append("Clipping: isolated 1-2 sample Gibbs overshoot")
     if spectrum.get("clipping_mastering_limitador"):
