@@ -141,9 +141,9 @@ class TestUTF8(unittest.TestCase):
         """CLI with stdin/stdout redirected and WITHOUT PYTHONIOENCODING.
 
         This is exactly the scenario where it used to die with UnicodeEncodeError.
-        The order of the answers is: mode, PNG, PDF report, path, another folder."""
+        The order of the answers is: PNG, PDF report, path, another folder."""
         environment = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
-        input = f"2\nn\n{'y' if pdf else 'n'}\n{folder}\nn\n"
+        input = f"n\n{'y' if pdf else 'n'}\n{folder}\nn\n"
         return subprocess.run([sys.executable, fx.CLI], input=input, cwd=fx.ROOT,
                               capture_output=True, text=True, encoding="utf-8",
                               timeout=900, env=environment)

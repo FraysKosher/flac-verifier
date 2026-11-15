@@ -46,8 +46,8 @@ AFFIRMATIVE = ("y", "yes")
 # diverge.
 VERDICTS = {
     "GENUINE LOSSLESS":       ("✅", "GENUINE LOSSLESS"),
-    "PROBABLY LOSSLESS": ("⚠️ ", "PROBABLY LOSSLESS"),
-    "SUSPICIOUS":                 ("🔶", "SUSPICIOUS — possible upscale"),
+    "PROBABLY LOSSLESS":      ("☑️", "PROBABLY LOSSLESS"),
+    "SUSPICIOUS":             ("⚠️ ", "SUSPICIOUS — possible upscale"),
     "PROBABLE UPSCALE":       ("❌", "PROBABLE UPSCALE / TRANSCODE"),
     "indeterminate":          ("❓", "indeterminate"),
 }
@@ -150,27 +150,12 @@ def _body(res):
 
     print(f"\n  {verdict_label(res['veredicto'])}  (score {res['score']:.0%})")
     for problem in res.get("problemas", []):
-        print(f"    → {problem}")
+        print(f"    ⚠️  {problem}")
+    for note in res.get("notes", []):
+        print(f"    ℹ️  {note}")
     return res["veredicto"]
 
 # ─── MENU ────────────────────────────────────────────────────────────────────
-
-def ask_mode():
-    print('\nHow do you want to analyze the spectrum?')
-    print("  [1] First N seconds (fast)")
-    print("  [2] 45 s of highest-energy active blocks (recommended)")
-    print("  [3] Full track (more accurate, slower)")
-    option = input("Choose an option (1/2/3): ").strip()
-    mode = "full"; seconds = None
-    if option == "1":
-        seg_input = input("How many seconds? (default 15): ").strip()
-        seconds = int(seg_input) if seg_input.isdigit() else 15
-        mode = "seconds"; print(f"\nMode: first {seconds} seconds")
-    elif option in ("", "2"):
-        mode = "center"; print("\nMode: 45 s of highest-energy active blocks")
-    else:
-        mode = "full"; print('\nMode: full track')
-    return mode, seconds
 
 def request_spectrogram():
     if not engine.PIL_OK:
@@ -184,7 +169,7 @@ def ask_report():
 
 # ─── EXECUTION ───────────────────────────────────────────────────────────────
 
-def analyze_file(path, mode, seconds=None, save_png=False, result=None):
+def analyze_file(path, mode="full", seconds=None, save_png=False, result=None):
     """Analyses a file (or presents one already computed) and returns the result.
 
     Returns the engine dict (for the PDF report) or None if it failed
@@ -203,7 +188,7 @@ def analyze_file(path, mode, seconds=None, save_png=False, result=None):
     _body(result)
     return result
 
-def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
+def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=False):
     is_folder = os.path.isdir(path)
     if os.path.isfile(path) and path.lower().endswith(".flac"):
         files = [path]
@@ -273,8 +258,10 @@ def execute_analysis(path, mode, seconds, save_png, save_pdf=False):
 
     if is_folder:
         print(f"\n{'═'*60}")
+        probable = f"{verdicts['PROBABLY LOSSLESS']} ☑️ PROBABLY  |  " if verdicts["PROBABLY LOSSLESS"] else ""
         print(f"SUMMARY: {verdicts['GENUINE LOSSLESS']} ✅ GENUINE  |  "
-              f"{verdicts['PROBABLY LOSSLESS'] + verdicts['SUSPICIOUS']} ⚠️  SUSPICIOUS  |  "
+              f"{probable}"
+              f"{verdicts['SUSPICIOUS']} ⚠️  SUSPICIOUS  |  "
               f"{verdicts['PROBABLE UPSCALE']} ❌ UPSCALE"
               + (f"  |  {failures} ❌ WITH ERRORS" if failures else ""))
         print(f"{'═'*60}")
@@ -325,7 +312,7 @@ def main(argv=None):
     print('ℹ️  For the graphical interface:  python verificar_flac.py --gui\n')
 
     try:
-        mode, seconds = ask_mode()
+        mode, seconds = "full", None
         save_png    = request_spectrogram()
         save_pdf    = ask_report()
 
@@ -341,11 +328,6 @@ def main(argv=None):
             if otra not in AFFIRMATIVE:
                 print('\nExiting. Goodbye!')
                 break
-            change = input("Change analysis mode? (y/N): ").strip().lower()
-            if change in AFFIRMATIVE:
-                mode, seconds = ask_mode()
-                save_png    = request_spectrogram()
-                save_pdf    = ask_report()
     except (EOFError, KeyboardInterrupt):
         # stdin closed (scripts, pipes) or Ctrl+C: exit without a traceback
         print('\n\nExiting. Goodbye!')

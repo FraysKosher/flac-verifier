@@ -84,7 +84,10 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.1"
+ENGINE_VERSION = "14.2"
+# 14.2: Split neutral/positive observations (`notes`) from actionable defects
+#       (`problemas`), rewrite findings plain-English-first with physical metrics
+#       and zero internal Vector jargon, and default spectral scans to `full`.
 # 14.1: Hot 0 dBFS clipped 44.1->96 kHz polyphase skirt upscale detector,
 #       16-bit TPDF CELT-960 + flat-stopband 20.00 kHz libopus/WMA shelf
 #       corroboration, static LPF dither-floor clamp guard for mod20k,
@@ -1159,7 +1162,7 @@ def _hydrate_cached_png(path, meta, mode, seconds, cached, save_png=True):
     return result
 
 
-def analyze_file_data(path, mode="center", seconds=None, save_png=False,
+def analyze_file_data(path, mode="full", seconds=None, save_png=False,
                            use_cache=True, _pre_meta=None,
                            _skip_cache_lookup=False):
     """Analyses one file and returns a dict. With `use_cache`, if the file has not
@@ -1228,10 +1231,22 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
         result["bdi"]  = payload["bdi"]
         result["esp"]  = payload["esp"]
 
-        score, verdict, problems = calculate_score(meta, result["esp"], result["bdi"])
+        score, verdict, problems, notes = calculate_score(
+            meta, result["esp"], result["bdi"], include_notes=True
+        )
+        forensic_bits = (result.get("bdi") or {}).get("forense_bits") or {}
+        if forensic_bits.get("es_flujo_dop"):
+            notes.append(
+                "DSD over PCM (DoP 1.0) stream: 0x05/0xFA framing markers detected in top byte"
+            )
+        if (result.get("esp") or {}).get("es_estacionario"):
+            notes.append(
+                "Stationary harmonic/tonal programme: sustained drone/synth guard active"
+            )
         result["score"]     = round(score, 4)
         result["veredicto"] = verdict
         result["problemas"] = problems
+        result["notes"]     = notes
         result["evidencias_forenses"] = forensic_evidence(result)
         if use_cache:
             result["desde_cache"] = False
@@ -1242,7 +1257,7 @@ def analyze_file_data(path, mode="center", seconds=None, save_png=False,
         return result
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
-# Usage: python motor_flac.py --path "C:/Music/album" --mode center --png --pdf
+# Usage: python motor_flac.py --path "C:/Music/album" --png --pdf
 # Protocol: one JSON line per event
 #   { tipo: "inicio"|"resultado"|"informe"|"aviso"|"fin"|"error" }
 # (_sanitize and _json_line live above, next to the cache, which also uses them.)
@@ -1297,11 +1312,11 @@ def main_cli(argv: "list[str] | None" = None) -> int:
     # `dest` keeps the internal names (the code inside is not translated):
     # what changes is the interface, which is in English.
     parser.add_argument("--path",  dest="path", required=True, help="Folder or .flac file")
-    parser.add_argument("--mode",  dest="mode", default="center",
+    parser.add_argument("--mode",  dest="mode", default="full",
                         choices=["seconds", "center", "full"],
-                        help="Spectral window: center (default), full or seconds")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--seconds", dest="seconds", type=int, default=15,
-                        help="Seconds when mode=seconds")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--png",   action="store_true", help="Save PNG spectrograms")
     parser.add_argument("--pdf",   action="store_true",
                         help="Generate an album PDF report (implies generating the "

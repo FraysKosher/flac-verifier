@@ -718,13 +718,14 @@ def evaluate_album_coherence(directory):
     files = [os.path.join(album, name) for name in sorted(os.listdir(album))
              if name.endswith(".flac")]
     analysis, _ = motor_flac.analyze_files(
-        files, "center", None, False, workers=1, use_cache=False)
+        files, "full", None, False, workers=1, use_cache=False)
     results = list(analysis)
     acoustic = next((r for r in results if r.get("archivo") == "acoustic.flac"), None)
     ok = bool(acoustic
               and acoustic.get("coherencia_album")
               and acoustic.get("veredicto") == "PROBABLY LOSSLESS"
-              and motor_flac.ALBUM_COHERENCE_NOTE in (acoustic.get("problemas") or []))
+              and not (acoustic.get("problemas") or [])
+              and motor_flac.ALBUM_COHERENCE_NOTE in (acoustic.get("notes") or []))
     return ok, results
 
 

@@ -1236,7 +1236,8 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertLess(spectrum["gradiente_borde_db_khz"], 20.0)
         self.assertIs(spectrum["decaimiento_acustico_suave"], True)
         self.assertEqual(res["veredicto"], "PROBABLY LOSSLESS")
-        self.assertIn("solo acoustic/low-centroid", " ".join(res["problemas"]))
+        self.assertEqual(res["problemas"], [])
+        self.assertIn("solo acoustic/low-centroid", " ".join(res["notes"]))
 
         # Rule 2, checked on the verdict tree directly. In the 0.70-0.88 band the
         # exemption must not add a single extra vote; below 0.70 it replaces the
@@ -1259,12 +1260,13 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(mid_with, mid_without)
         self.assertLess(mid_with, 0.80)          # 1.5 votes, never 3.0
 
-        low_with, _, prob_low_with = motor_flac.calculate_score(
-            meta, _spectrum_with_ceiling(13000, True), bdi)
+        low_with, _, prob_low_with, notes_low_with = motor_flac.calculate_score(
+            meta, _spectrum_with_ceiling(13000, True), bdi, include_notes=True)
         low_without, _, prob_low_without = motor_flac.calculate_score(
             meta, _spectrum_with_ceiling(13000, False), bdi)
         self.assertGreater(low_with, low_without)
-        self.assertIn("solo acoustic/low-centroid", " ".join(prob_low_with))
+        self.assertEqual(prob_low_with, [])
+        self.assertIn("solo acoustic/low-centroid", " ".join(notes_low_with))
         self.assertFalse(any("destroyed" in p for p in prob_low_with))
         self.assertTrue(any("destroyed" in p for p in prob_low_without))
 
@@ -1277,9 +1279,9 @@ class test_forensic_rigorous(unittest.TestCase):
                          "forense_bits": {"es_padded_16_en_24": False,
                                           "es_24bit_escalado_en_peine": False}}
         spectrum_13000 = _spectrum_with_ceiling(13000, True)
-        _, verdict, prob = motor_flac.calculate_score(
-            meta_24, spectrum_13000, bdi_24_clean)
-        self.assertIn("solo acoustic/low-centroid", " ".join(prob))
+        _, verdict, prob, notes = motor_flac.calculate_score(
+            meta_24, spectrum_13000, bdi_24_clean, include_notes=True)
+        self.assertIn("solo acoustic/low-centroid", " ".join(notes))
         self.assertFalse(any("destroyed" in p for p in prob))
         # Rule 5 is untouched by the exemption: 24 bits below 88 % of Nyquist
         # is not backed by the content and blocks the maximum verdict.
@@ -3341,7 +3343,7 @@ class test_forensic_rigorous(unittest.TestCase):
         }
         self.assertEqual(motor_flac.apply_album_coherence(opus_sibs + [opus_outlier]), 1)
         self.assertEqual(opus_outlier["veredicto"], "PROBABLE UPSCALE")
-        self.assertIn("20.00 kHz cliff track", opus_outlier["album_coherence_note"])
+        self.assertIn("20.00 kHz shelf track", opus_outlier["album_coherence_note"])
 
 
 

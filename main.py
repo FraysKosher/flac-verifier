@@ -81,8 +81,6 @@ Usage:
 
 Engine options (--motor-cli and flac_motor.exe):
   --path PATH       Folder or .flac file (required)
-  --mode MODE       center (default) | full | seconds
-  --seconds N       Starting seconds when --mode seconds
   --png             Save the spectrograms as PNG
   --pdf             Generate the album PDF report
   --workers N       Parallel processes (0 = automatic, 1 = sequential)

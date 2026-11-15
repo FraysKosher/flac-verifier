@@ -138,7 +138,7 @@ class test_command(unittest.TestCase):
     def test_options_by_default(self):
         command = gui.build_command("C:/Album")
         self.assertIn("--mode", command)
-        self.assertEqual(command[command.index("--mode") + 1], "center")
+        self.assertEqual(command[command.index("--mode") + 1], "full")
         self.assertIn("--pdf", command)
         self.assertNotIn("--workers", command)      # 0 = the engine chooses
         self.assertNotIn("--no-cache", command)
@@ -708,21 +708,25 @@ class test_window(unittest.TestCase):
                 self.assertTrue(str(widget.cget("text")).isascii())
 
     def test_controls_by_default(self):
-        self.assertEqual(self.window.var_mode.get(), "center")
+        self.assertFalse(hasattr(self.window, "option_mode"))
+        self.assertFalse(hasattr(self.window, "seconds_slider"))
         self.assertTrue(self.window.var_pdf.get())
         self.assertTrue(self.window.var_parallel.get())
         self.assertFalse(self.window.var_without_cache.get())
         self.assertEqual(self.window._workers(), 0)        # automatic
 
-    def test_slider_seconds_reflects_value(self):
-        """The control is no longer disabled: it appears and disappears from the
-        layout. What is checked here is that it still works when it is shown."""
-        self.window.var_mode.set("seconds")
-        self.window._change_mode()
-        self.window._change_seconds(30)
-        self.assertIn("30", self.window.label_seconds.cget("text"))
-        self.assertGreaterEqual(self.window.seconds_slider.get(), 5)
-        self.assertLessEqual(self.window.seconds_slider.get(), 120)
+    def test_workers_default_label(self):
+        self.assertEqual(self.window.option_workers.get(), "Automatic")
+
+    def test_analyze_dispatches_full_mode_by_default(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(self.window.manager, "start",
+                                  return_value=["python", "motor_flac.py", "--path", folder, "--mode", "full"]) as starter:
+            self.window.var_path.set(folder)
+            self.window._analyze()
+        starter.assert_called_once()
+        _args, kwargs = starter.call_args
+        self.assertEqual(kwargs.get("mode", "full"), "full")
 
     def test_turn_off_parallel_forces_process(self):
         self.window.option_workers.set("8")
@@ -1211,6 +1215,18 @@ class test_window(unittest.TestCase):
             self.assertIn(f"problem {index}", raw)
         self.assertIn("Show less", raw)
 
+    def test_inspector_shows_technical_notes_when_no_defects(self):
+        noted = self._track(
+            veredicto="GENUINE LOSSLESS",
+            problemas=[],
+            notes=["Genuine analogue/DSD master: smooth ultrasonic roll-off"],
+        )
+        self.window._select(noted)
+        self.window.update_idletasks()
+        texts = self._problem_texts()
+        self.assertIn("No anomalies detected", texts)
+        self.assertIn("Genuine analogue/DSD master: smooth ultrasonic roll-off", texts)
+
     def test_escape_and_a_second_click_close_the_inspector(self):
         event = self._track()
         self.window._select(event)
@@ -1249,8 +1265,6 @@ class test_window(unittest.TestCase):
             self.addCleanup(setattr, theme, "MODE", "dark")
             self.addCleanup(ctk.set_appearance_mode, "dark")
             self.window.var_path.set("C:/Music/Album")
-            self.window.var_mode.set("seconds")
-            self.window.seconds_slider.set(42)
             self.window.var_pdf.set(False)
             self.window.var_parallel.set(False)
             self.window.option_workers.set("8")
@@ -1287,9 +1301,6 @@ class test_window(unittest.TestCase):
             self.assertIn("a custom line", self.window.log.get("1.0", "end"))
             self.assertEqual(self.window.activity_panel.winfo_manager(), "grid")
             self.assertEqual(self.window.var_path.get(), "C:/Music/Album")
-            self.assertEqual(self.window.var_mode.get(), "seconds")
-            self.assertAlmostEqual(self.window.seconds_slider.get(), 40.0,
-                                   places=3)
             self.assertFalse(self.window.var_pdf.get())
             self.assertFalse(self.window.var_parallel.get())
             self.assertEqual(self.window.option_workers.get(), "8")
@@ -1753,15 +1764,8 @@ class test_logo(unittest.TestCase):
 
 
 @unittest.skipUnless(VISUAL, "customtkinter and a display are required")
-class test_control_seconds(unittest.TestCase):
-    """The seconds control only exists when the mode needs it.
-
-    It is removed from the grid instead of being disabled, so it frees its space
-    and no phantom row is left behind. The assertions are about existence, state
-    and grid structure rather than about pixel positions: where a control lands
-    is the business of the layout phase, and a pixel comparison of a withdrawn
-    window depended on Tk's first idle pass instead of on the code.
-    """
+class test_sidebar_compact_layout(unittest.TestCase):
+    """Streamlined sidebar layout without mode/seconds controls."""
 
     def setUp(self):
         self.window = gui.FlacVerifierWindow()
@@ -1769,87 +1773,30 @@ class test_control_seconds(unittest.TestCase):
         self.window.update_idletasks()
         self.addCleanup(self.window.destroy)
 
-    def _set_mode(self, mode):
-        self.window.var_mode.set(mode)
-        self.window._change_mode()
-        self.window.update_idletasks()
-
     def _rail(self):
-        return self.window.seconds_row.master
+        return self.window.check_cache.master
 
     def _gridded_rows(self):
-        """Rows of the rail that currently hold a widget (empty row = no gap)."""
-        return {int(widget.grid_info()["row"]) for widget in self._rail().grid_slaves()
-                if widget.grid_info()}
+        return sorted(
+            int(widget.grid_info()["row"])
+            for widget in self._rail().grid_slaves()
+            if widget.grid_info()
+        )
 
-    def _rail_height(self):
-        self.window.update_idletasks()
-        return self._rail().grid_bbox()[3]
+    def test_no_mode_or_seconds_controls_in_sidebar(self):
+        self.assertFalse(hasattr(self.window, "option_mode"))
+        self.assertFalse(hasattr(self.window, "seconds_row"))
+        self.assertFalse(hasattr(self.window, "seconds_slider"))
+        self.assertEqual(self._gridded_rows(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 10])
 
-    def _settle(self):
-        """One show/hide cycle: Tk's very first idle pass measures 4 px short."""
-        self._set_mode("seconds")
-        self._set_mode("center")
-
-    def test_center_no_sample(self):
-        self._set_mode("center")
-        self.assertEqual(self.window.seconds_row.grid_info(), {},
-                         "the seconds control still takes up space")
-        self.assertFalse(self.window.seconds_row.winfo_manager())
-
-    def test_full_neither(self):
-        self._set_mode("full")
-        self.assertEqual(self.window.seconds_row.grid_info(), {})
-
-    def test_seconds_if_sample(self):
-        self._set_mode("seconds")
-        info = self.window.seconds_row.grid_info()
-        self.assertTrue(info, "the seconds control does not appear")
-        self.assertGreater(int(info["row"]),
-                           int(self.window.option_mode.grid_info()["row"]),
-                           "the seconds control is not under the mode selector")
-        self.assertEqual(self.window.seconds_slider.cget("state"), "normal")
-
-    def test_widget_still_existing_when_hidden(self):
-        self._set_mode("center")
-        self.assertTrue(self.window.label_seconds.winfo_exists())
-        self.assertTrue(self.window.seconds_slider.winfo_exists())
-        self.window._change_seconds(45)
-        self.assertIn("45", self.window.label_seconds.cget("text"))
-
-    def test_show_it_makes_room_and_the_action_bar_stays_pinned(self):
-        self._set_mode("center")
-        self._settle()
-        hidden = self._rail_height()
-        self._set_mode("seconds")
-        self.assertGreater(self._rail_height(), hidden,
-                           "the rail did not make room for the seconds control")
-        # Analyze lives in the footer, below the flow, so it is always visible:
-        # it is not pushed down with the rest of the controls.
+    def test_action_bar_pinned_below_cache(self):
         footer = self.window.btn_analyze.master
         self.assertIsNot(footer, self._rail())
-        self.assertGreater(int(footer.grid_info()["row"]),
-                           int(self.window.check_cache.grid_info()["row"]))
+        self.assertGreater(
+            int(footer.grid_info()["row"]),
+            int(self.window.check_cache.grid_info()["row"]),
+        )
         self.assertTrue(self.window.btn_analyze.winfo_manager())
-
-    def test_hide_it_no_leaves_phantom_row(self):
-        self._set_mode("center")
-        reference = self._gridded_rows()
-        self._set_mode("seconds")
-        self.assertGreater(len(self._gridded_rows()), len(reference),
-                           "the seconds row is not in the grid")
-        self._set_mode("full")
-        self.assertEqual(self._gridded_rows(), reference,
-                         "hiding the seconds control left a phantom row behind")
-
-    def test_hidden_shown_several_times_no_accumulates_rows(self):
-        self._set_mode("center")
-        reference = self._gridded_rows()
-        for _ in range(3):
-            self._set_mode("seconds")
-            self._set_mode("center")
-        self.assertEqual(self._gridded_rows(), reference)
-        self.assertEqual(self.window.seconds_row.grid_info(), {})
 
 
 @unittest.skipUnless(VISUAL, "customtkinter and a display are required")

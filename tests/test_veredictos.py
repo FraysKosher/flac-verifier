@@ -70,6 +70,30 @@ class test_verdict(unittest.TestCase):
                           "lossy", "artificial cut-off"):
             self.assertNotIn(acusacion, text, f"unwarranted accusation: {acusacion}")
         self.assertNotIn(res["veredicto"], ("PROBABLE UPSCALE",))
+        self.assertEqual(res["problemas"], [])
+        self.assertTrue(any("inconclusive" in n.lower() for n in res["notes"]))
+
+    def test_positive_observations_go_to_notes_without_jargon(self):
+        spectrum = dict(
+            PERFECT_SPECTRUM,
+            clipping_mastering_limitador=True,
+            es_dual_mono=True,
+            es_transferencia_dsd=True,
+            rolloff_analogico_genuino=True,
+        )
+        score, verdict, problems, notes = engine.calculate_score(
+            {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2, "duracion": 100.0},
+            spectrum,
+            {"aplica": True, "lsbs": "active"},
+            include_notes=True,
+        )
+        self.assertEqual(verdict, "GENUINE LOSSLESS")
+        self.assertEqual(problems, [])
+        joined = "\n".join(notes)
+        self.assertIn("mastering brickwall limiter", joined.lower())
+        self.assertIn("dual-mono", joined.lower())
+        self.assertIn("dsd/sacd", joined.lower())
+        self.assertNotIn("Vector ", joined)
 
     def test_cutoff_very_by_below_nyquist_if_accuses(self):
         res = self.analyze("corte_16k")
@@ -112,19 +136,21 @@ class test_verdict(unittest.TestCase):
         without_cutoff = dict(near, clase_corte="no_cutoff", corte_detectado=False,
                          frecuencia_corte=None, distancia_nyquist=None)
 
-        s_near, v_near, probs_near = engine.calculate_score(CD_META, near, NO_BITDEPTH)
+        s_near, v_near, probs_near, notes_near = engine.calculate_score(
+            CD_META, near, NO_BITDEPTH, include_notes=True
+        )
         s_without, v_without, _               = engine.calculate_score(CD_META, without_cutoff, NO_BITDEPTH)
 
         # the ambiguous one cannot reach the maximum verdict...
         self.assertEqual(v_without, "GENUINE LOSSLESS")
         self.assertNotEqual(v_near, "GENUINE LOSSLESS")
         self.assertLess(s_near, s_without)
-        # ...and nothing is accused
-        text = " ".join(probs_near).lower()
+        # ...and nothing is accused; the observation lives in notes
+        self.assertEqual(probs_near, [])
+        text = " ".join(notes_near).lower()
         self.assertNotIn("artificial cut-off", text)
         self.assertNotIn("codec signature", text)
-        self.assertNotIn("codec signature", text)
-        self.assertTrue(any("inconclusive" in p for p in probs_near))
+        self.assertTrue(any("inconclusive" in n for n in notes_near))
 
     # ── Block 4: bit depth only penalises ───────────────────────────────────
     def test_lsb_usage_does_not_reward(self):

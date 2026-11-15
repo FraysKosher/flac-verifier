@@ -261,7 +261,6 @@ TABLE_COLUMNS = (
     ("dr", 0, 44, "w"),
     ("md5", 0, 48, "w"),
 )
-MODES = ["center", "full", "seconds"]
 WORKER_OPTIONS = ["Automatic", "1", "2", "4", "8"]
 
 # ─── UI throughput and memory limits ─────────────────────────────────────────
@@ -388,7 +387,7 @@ BUTTON_VARIANTS = {
 
 # ─── LOGIC (usable without a window) ─────────────────────────────────────────
 
-def build_command(path: str, mode: str = "center", seconds: int | None = None,
+def build_command(path: str, mode: str = "full", seconds: int | None = None,
                       pdf: bool = True, workers: int = 0, without_cache: bool = False,
                       engine: str | None = None) -> list[str]:
     """Engine command for the subprocess.
@@ -753,7 +752,7 @@ class ProcessManager:
         lost."""
         return self.thread is not None and self.thread.is_alive()
 
-    def start(self, path: str, mode: str = "center", seconds: int | None = None,
+    def start(self, path: str, mode: str = "full", seconds: int | None = None,
                 pdf: bool = True, workers: int = 0, without_cache: bool = False) -> list[str]:
         """Launches the analysis. Returns the command used (useful for the log)."""
         if self.active:
@@ -1594,7 +1593,7 @@ if CTK_OK:
             rail.grid_propagate(False)
             rail.grid_columnconfigure(0, weight=1)
             # The spacer row is what pins the action bar to the bottom of the rail.
-            rail.grid_rowconfigure(11, weight=1)
+            rail.grid_rowconfigure(9, weight=1)
 
             # Header: logo mark, wordmark and caption (DESIGN.md 6).
             header = ctk.CTkFrame(rail, fg_color="transparent")
@@ -1641,47 +1640,8 @@ if CTK_OK:
                                  pady=(theme.SPACE["xs"], theme.SPACE["md"]),
                                  sticky="ew")
 
-            # ANALYSIS
+            # ANALYSIS (always scans in `full` mode)
             self._section_label(rail, "Analysis", row=4)
-            self.var_mode = ctk.StringVar(value="center")
-            self.option_mode = ctk.CTkOptionMenu(
-                rail, values=MODES, variable=self.var_mode,
-                command=lambda _: self._change_mode(), height=40,
-                corner_radius=theme.RADIUS["md"], fg_color=c("bg.raised"),
-                button_color=c("bg.raised"), button_hover_color=c("bg.hover"),
-                text_color=c("text.primary"),
-                text_color_disabled=c("text.tertiary"),
-                dropdown_fg_color=c("bg.raised"),
-                dropdown_hover_color=c("bg.hover"),
-                dropdown_text_color=c("text.primary"), font=theme.font(13),
-                dropdown_font=theme.font(13), anchor="w")
-            self.option_mode.grid(row=5, column=0, padx=theme.SPACE["lg"],
-                                  sticky="ew")
-            self._ring_highlight(self.option_mode, "bg.surface")
-
-            # The seconds only make sense in "seconds" mode: the control is
-            # removed from the grid (not disabled) so that it leaves no gap and
-            # the controls below move up.
-            self.seconds_row = ctk.CTkFrame(rail, fg_color="transparent")
-            self.seconds_row.grid(row=6, column=0, padx=theme.SPACE["lg"],
-                                  pady=(theme.SPACE["xs"], 0), sticky="ew")
-            self.seconds_row.grid_columnconfigure(0, weight=1)
-            self.label_seconds = ctk.CTkLabel(self.seconds_row, text="Seconds: 15",
-                                              anchor="w", font=theme.font(12),
-                                              text_color=c("text.secondary"))
-            self.label_seconds.grid(row=0, column=0, sticky="w")
-            self.seconds_slider = ctk.CTkSlider(
-                self.seconds_row, from_=5, to=120, number_of_steps=23,
-                command=self._change_seconds, height=16, corner_radius=8,
-                button_length=14, button_corner_radius=7,
-                fg_color=c("border.subtle"), progress_color=c("accent"),
-                button_color=c("accent"), button_hover_color=c("accent.hover"),
-                border_width=2, border_color=c("border.subtle"))
-            self.seconds_slider.set(15)
-            self.seconds_slider.grid(row=1, column=0, sticky="ew",
-                                     pady=(theme.SPACE["2xs"], 0))
-            self._ring_border(self.seconds_slider, 2, "border.subtle")
-
             self.var_pdf = ctk.BooleanVar(value=True)
             self.check_pdf = ctk.CTkCheckBox(
                 rail, text="Generate PDF report", variable=self.var_pdf,
@@ -1691,8 +1651,8 @@ if CTK_OK:
                 hover_color=c("accent.hover"), checkmark_color=c("on.accent"),
                 text_color=c("text.primary"),
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
-            self.check_pdf.grid(row=7, column=0, padx=theme.SPACE["lg"],
-                                pady=(theme.SPACE["sm"], theme.SPACE["xs"]),
+            self.check_pdf.grid(row=5, column=0, padx=theme.SPACE["lg"],
+                                pady=(0, theme.SPACE["xs"]),
                                 sticky="w")
             self._ring_highlight(self.check_pdf, "bg.surface")
             self._toggle_on_space(self.check_pdf, self.var_pdf)
@@ -1707,7 +1667,7 @@ if CTK_OK:
                 button_hover_color=c("knob"),
                 text_color=c("text.primary"),
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
-            self.parallel_switch.grid(row=8, column=0, padx=theme.SPACE["lg"],
+            self.parallel_switch.grid(row=6, column=0, padx=theme.SPACE["lg"],
                                       pady=(theme.SPACE["xs"], theme.SPACE["2xs"]),
                                       sticky="w")
             self._ring_highlight(self.parallel_switch, "bg.surface")
@@ -1725,7 +1685,7 @@ if CTK_OK:
                 dropdown_text_color=c("text.primary"), font=theme.font(13),
                 dropdown_font=theme.font(13), anchor="w")
             self.option_workers.set(WORKER_OPTIONS[0])
-            self.option_workers.grid(row=9, column=0, padx=theme.SPACE["lg"],
+            self.option_workers.grid(row=7, column=0, padx=theme.SPACE["lg"],
                                      pady=(theme.SPACE["2xs"], theme.SPACE["xs"]),
                                      sticky="w")
             self._ring_highlight(self.option_workers, "bg.surface")
@@ -1739,7 +1699,7 @@ if CTK_OK:
                 hover_color=c("accent.hover"), checkmark_color=c("on.accent"),
                 text_color=c("text.primary"),
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
-            self.check_cache.grid(row=10, column=0, padx=theme.SPACE["lg"],
+            self.check_cache.grid(row=8, column=0, padx=theme.SPACE["lg"],
                                   pady=(theme.SPACE["xs"], 0), sticky="w")
             self._ring_highlight(self.check_cache, "bg.surface")
             self._toggle_on_space(self.check_cache, self.var_without_cache)
@@ -1747,7 +1707,7 @@ if CTK_OK:
             # Pinned action bar: the primary action, always visible at the
             # bottom of the rail (DESIGN.md 6).
             footer = ctk.CTkFrame(rail, fg_color="transparent")
-            footer.grid(row=12, column=0, padx=theme.SPACE["lg"],
+            footer.grid(row=10, column=0, padx=theme.SPACE["lg"],
                         pady=(theme.SPACE["sm"], theme.SPACE["lg"]),
                         sticky="sew")
             footer.grid_columnconfigure(0, weight=1)
@@ -2553,34 +2513,48 @@ if CTK_OK:
             self._place_evidence()
 
         def _render_problems(self, event: Event | None) -> None:
-            """Issue text lines (warn/bad), wrapped in full and never truncated.
-
-            A chip is a label, not a sentence: cutting the only message and
-            hiding the rest in a tooltip leaves the user without the reason the
-            track was flagged. The text wraps; more than MAX_VISIBLE_PROBLEMS
-            are folded behind "Show all (N)" instead of being dropped.
-            """
+            """Issue and technical note lines, wrapped in full and never truncated."""
             for child in self.hero_problems.winfo_children():
                 child.destroy()
             if event is None:
                 return
             problems = [str(item) for item in (event.get("problemas") or [])]
+            notes = [str(item) for item in (event.get("notes") or [])]
             if event.get("error"):
                 problems = [str(event["error"])]
+                notes = []
+            available = max(220, self._usable_width(self.hero_problems, 420))
+            expanded = self._problems_expanded
             if not problems:
                 self._chip(self.hero_problems, "No anomalies detected",
-                           "ok").grid(row=0, column=0, sticky="w")
+                           "ok").grid(row=0, column=0, sticky="w",
+                                      pady=(0, 4 if notes else 0))
+                if not notes:
+                    return
+                visible = notes if expanded else notes[:self.MAX_VISIBLE_PROBLEMS]
+                for index, note in enumerate(visible, start=1):
+                    self._problem_line(index, note, "accent", available)
+                if len(notes) > self.MAX_VISIBLE_PROBLEMS:
+                    label = "Show less" if expanded else f"Show all ({len(notes)})"
+                    link = ctk.CTkButton(
+                        self.hero_problems, text=label, height=24, width=120,
+                        fg_color="transparent", hover_color=c("bg.hover"),
+                        text_color=c("accent"), font=theme.font(11, 600),
+                        border_width=0, anchor="w", command=self._toggle_problems)
+                    link.grid(row=len(visible) + 1, column=0, sticky="w",
+                              padx=(14, 0), pady=(2, 0))
                 return
             tone = ("danger" if event.get("error")
                     else "bad" if event.get("veredicto") == "PROBABLE UPSCALE"
                     else "warn")
-            available = max(220, self._usable_width(self.hero_problems, 420))
-            expanded = self._problems_expanded
-            visible = problems if expanded else problems[:self.MAX_VISIBLE_PROBLEMS]
-            for index, problem in enumerate(visible):
-                self._problem_line(index, problem, tone, available)
-            if len(problems) > self.MAX_VISIBLE_PROBLEMS:
-                label = "Show less" if expanded else f"Show all ({len(problems)})"
+            items = [(item, tone) for item in problems] + [
+                (item, "accent") for item in notes
+            ]
+            visible = items if expanded else items[:self.MAX_VISIBLE_PROBLEMS]
+            for index, (item, item_tone) in enumerate(visible):
+                self._problem_line(index, item, item_tone, available)
+            if len(items) > self.MAX_VISIBLE_PROBLEMS:
+                label = "Show less" if expanded else f"Show all ({len(items)})"
                 link = ctk.CTkButton(
                     self.hero_problems, text=label, height=24, width=120,
                     fg_color="transparent", hover_color=c("bg.hover"),
@@ -3156,25 +3130,6 @@ if CTK_OK:
                 self.var_path.set(chosen)
                 self._log(f"Folder selected: {chosen}")
 
-        def _change_mode(self) -> None:
-            """Shows or hides the seconds control depending on the mode.
-
-            `grid_remove()`/`grid()` is used and not `configure(state=...)`: this
-            way the control releases its space, the row collapses and everything
-            below moves up, without leaving ghost gaps. The widget still exists,
-            ready to come back."""
-            if self.var_mode.get() == "seconds":
-                self.seconds_row.grid()
-                self.seconds_row.grid_configure(row=6, column=0,
-                                                padx=theme.SPACE["lg"],
-                                                pady=(theme.SPACE["xs"], 0),
-                                                sticky="ew")
-            else:
-                self.seconds_row.grid_remove()
-
-        def _change_seconds(self, value: float) -> None:
-            self.label_seconds.configure(text=f"Seconds: {int(value)}")
-
         def _change_parallel(self) -> None:
             active = bool(self.var_parallel.get())
             self.option_workers.configure(state="normal" if active else "disabled")
@@ -3216,14 +3171,12 @@ if CTK_OK:
             self._set_enabled(self.btn_analyze, not active)
             self._set_enabled(self.btn_cancel, active)
             self._show_action(self.btn_cancel if active else self.btn_analyze)
-            for widget in (self.input, self.btn_browse, self.option_mode,
-                           self.check_pdf, self.parallel_switch, self.check_cache,
-                           self.seconds_slider):
+            for widget in (self.input, self.btn_browse,
+                           self.check_pdf, self.parallel_switch, self.check_cache):
                 widget.configure(state="disabled" if active else "normal")
             self._set_enabled(self.btn_folder, not active)
             self._set_enabled(self.btn_theme, not active)
             if not active:
-                self._change_mode()
                 self._change_parallel()
             there_is_pdf = bool(self.pdf_path and os.path.exists(self.pdf_path))
             self._set_enabled(self.btn_open_pdf, there_is_pdf)
@@ -3533,8 +3486,7 @@ if CTK_OK:
             self._render_hero()
             try:
                 command = self.manager.start(
-                    path, mode=self.var_mode.get(),
-                    seconds=int(self.seconds_slider.get()),
+                    path,
                     pdf=bool(self.var_pdf.get()), workers=self._workers(),
                     without_cache=bool(self.var_without_cache.get()))
             except Exception as e:

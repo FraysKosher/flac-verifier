@@ -47,6 +47,7 @@ class _ScoreLedger:
         self.blocks = False
         self.cap = VerdictCap.GENUINE_LOSSLESS
         self.problems = []
+        self.notes = []
         self.families = []
 
     def add_votes(self, votes_val, max_val=0.0):
@@ -54,7 +55,7 @@ class _ScoreLedger:
         self.max_votes += float(max_val)
 
     def note(self, text):
-        self.problems.append(text)
+        self.notes.append(text)
 
     def add_family(self, family):
         if not family:
@@ -83,7 +84,7 @@ class _ScoreLedger:
             self.blocks = True
             self.lower_cap(VerdictCap.SUSPICIOUS)
 
-    def finalize(self, spectrum):
+    def finalize(self, spectrum, include_notes=False):
         hard_proof = any(f in HARD_PROOF_FAMILIES for f in self.families)
         corroborated = bool(len(self.families) >= 2 or hard_proof)
         if not spectrum.get("error"):
@@ -91,6 +92,8 @@ class _ScoreLedger:
             spectrum["corroboracion_multifamilia"] = corroborated
 
         if self.max_votes == 0:
+            if include_notes:
+                return 0.0, "indeterminate", self.problems, self.notes
             return 0.0, "indeterminate", self.problems
 
         score = max(0.0, self.votes / self.max_votes - self.penalty)
@@ -107,10 +110,12 @@ class _ScoreLedger:
             verdict = "SUSPICIOUS"
         else:
             verdict = "PROBABLE UPSCALE" if corroborated else "SUSPICIOUS"
+        if include_notes:
+            return score, verdict, self.problems, self.notes
         return score, verdict, self.problems
 
 
-def calculate_score(meta, spectrum, bdi):
+def calculate_score(meta, spectrum, bdi, include_notes=False):
     ledger = _ScoreLedger()
 
     sr      = meta["sample_rate"]
@@ -135,16 +140,16 @@ def calculate_score(meta, spectrum, bdi):
                 ledger.add_votes(3.0)
             elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
                 ledger.add_votes(3.0)
-                ledger.note("hi-res morphology consistent with an analogue/DSD "
-                            "master (smooth roll-off and continuous ultrasonic floor)")
+                ledger.note("Genuine analogue/DSD master: smooth ultrasonic "
+                            "roll-off with a continuous floor")
             elif ceiling >= 18000:
                 ledger.add_votes(1.5)
-                ledger.note(f"partial hi-res content: ceiling of {ceiling/1000:.1f} kHz "
-                            f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})")
+                ledger.note(f"Partial high-res content: spectral ceiling at "
+                            f"{ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})")
             else:
                 ledger.penalize(
-                    f"claims {sr/1000:.1f} kHz but the ceiling is {ceiling/1000:.1f} kHz, "
-                    f"below the CD band: upscaled from 44.1/48 kHz",
+                    f"Likely upscaled from 44.1/48 kHz: declares {sr/1000:.1f} kHz "
+                    f"but its spectral ceiling sits at {ceiling/1000:.1f} kHz (below the CD band)",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
@@ -209,13 +214,14 @@ def calculate_score(meta, spectrum, bdi):
                 ledger.add_votes(3.0)
             elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
                 ledger.add_votes(3.0)
-                ledger.note("hi-res ceiling explained by an analogue/DSD master: "
-                            "the declared band is backed by the morphology")
+                ledger.note("Genuine analogue/DSD master: the declared high-res "
+                            "band is backed by smooth ultrasonic morphology")
             else:
                 ledger.penalize(
-                    f"spectral ceiling {ceiling/1000:.1f} kHz: there is no content above "
-                    f"the CD limit ({LIMIT_CD_HZ/1000:.2f} kHz), so "
-                    f"the band of {sr/1000:.1f} kHz is not backed by content",
+                    f"No ultrasonic content for {sr/1000:.1f} kHz high-res: "
+                    f"spectral ceiling is {ceiling/1000:.1f} kHz (below the "
+                    f"{LIMIT_CD_HZ/1000:.2f} kHz CD limit, so the declared "
+                    f"{sr/1000:.1f} kHz band is not backed by content)",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
@@ -224,54 +230,54 @@ def calculate_score(meta, spectrum, bdi):
         elif rel_ceiling >= 0.70:
             ledger.add_votes(1.5)
             if acoustic_exemption:
-                ledger.note(f"spectral ceiling {ceiling/1000:.1f} kHz "
-                            f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
-                            f"low spectral ceiling consistent with solo "
+                ledger.note(f"Acoustic or low-brightness mix: spectral ceiling "
+                            f"at {ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist "
+                            f"of {nyq_txt}), consistent with solo "
                             f"acoustic/low-centroid instrumentation")
             else:
-                ledger.note(f"spectral ceiling {ceiling/1000:.1f} kHz "
-                            f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
-                            f"reduced high band")
+                ledger.note(f"Reduced high-frequency band: spectral ceiling at "
+                            f"{ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})")
         elif acoustic_exemption:
             ledger.add_votes(1.5)
-            ledger.note(f"spectral ceiling {ceiling/1000:.1f} kHz "
-                        f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
-                        f"low spectral ceiling consistent with solo "
+            ledger.note(f"Acoustic or low-brightness mix: low spectral ceiling "
+                        f"at {ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist "
+                        f"of {nyq_txt}), consistent with solo "
                         f"acoustic/low-centroid instrumentation")
         elif band_limited_exemption:
             ledger.add_votes(1.5)
-            ledger.note(f"spectral ceiling {ceiling/1000:.1f} kHz "
-                        f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt}): "
-                        f"smooth analogue/archival roll-off with no codec signature")
+            ledger.note(f"Genuine analogue/archival transfer: smooth high-frequency "
+                        f"roll-off with no codec signature (spectral ceiling "
+                        f"{ceiling/1000:.1f} kHz, {rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})")
         else:
             ledger.penalize(
-                f"spectral ceiling {ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist "
-                f"of {nyq_txt}): the high band is destroyed",
+                f"Severely truncated high frequencies (the high band is destroyed): "
+                f"spectral ceiling drops to {ceiling/1000:.1f} kHz "
+                f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
             )
 
-        # 3b. Vector 3: morphology that no legitimate master produces.
+        # 3b. Morphology that no legitimate master produces.
         if spectrum.get("muro_brickwall_nyquist"):
             ledger.penalize(
-                f"Hi-Res container with a brickwall at the CD/DAT Nyquist "
+                f"Upscaled from a 44.1/48 kHz source into a high-res container: "
+                f"abrupt brickwall drop at the CD/DAT Nyquist "
                 f"({spectrum.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz, "
-                f"{spectrum.get('salto_ultrasonico_db', 0.0):.1f} dB into the digital void): "
-                f"upscaled from a 44.1/48 kHz source",
+                f"{spectrum.get('salto_ultrasonico_db', 0.0):.1f} dB step into silence)",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
             )
         if spectrum.get("espejo_aliasing_detectado"):
             ledger.penalize(
-                f"ultrasonic band mirrors the content below 22.05 kHz "
-                f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f}): "
-                f"unfiltered-interpolator upscale (spectral aliasing)",
+                f"Unfiltered-interpolator upscale (spectral aliasing): "
+                f"ultrasonic band mirrors content below 22.05 kHz "
+                f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f})",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
             )
         if spectrum.get("es_transferencia_dsd"):
-            ledger.note("DSD/SACD noise-shaping profile detected in 24-40 kHz "
-                        "(legitimate hi-res transfer)")
+            ledger.note("Genuine DSD/SACD transfer: characteristic ultrasonic "
+                        "noise-shaping profile detected in 24-40 kHz")
 
         # 3. Cut-off: it is only flagged if it is clearly below the Nyquist.
         # A prior cut plus a flat dither floor is never an analogue roll-off:
@@ -280,13 +286,15 @@ def calculate_score(meta, spectrum, bdi):
         ledger.add_votes(0.0, 3.0)
         if category == "far_cutoff":
             if spectrum.get("es_transferencia_dsd") or spectrum.get("rolloff_analogico_genuino"):
-                ledger.note(f"band edge at {spectrum['frecuencia_corte']/1000:.1f} kHz "
-                            f"({rel_cutoff*100:.0f}% of Nyquist): the musical band ends "
-                            f"there, consistent with an analogue/DSD master")
+                ledger.note(f"Genuine analogue/DSD master roll-off: musical "
+                            f"band ends naturally at {spectrum['frecuencia_corte']/1000:.1f} kHz "
+                            f"({rel_cutoff*100:.0f}% of Nyquist)")
             else:
                 ledger.penalize(
-                    f"artificial cut-off at {spectrum['frecuencia_corte']/1000:.1f} kHz "
-                    f"({rel_cutoff*100:.0f}% of Nyquist of {nyq_txt}): lossy codec signature",
+                    f"Lossy codec signature (artificial cut-off at "
+                    f"{spectrum['frecuencia_corte']/1000:.1f} kHz, "
+                    f"{rel_cutoff*100:.0f}% of Nyquist of {nyq_txt}): "
+                    f"high frequencies are sharply cut off",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
@@ -298,10 +306,11 @@ def calculate_score(meta, spectrum, bdi):
                     and (rel_cutoff or 0.0) >= 0.95
                     and without_signatures_lossy):
                 ledger.add_votes(1.5)
-            ledger.note(f"band cut at {spectrum['frecuencia_corte']/1000:.1f} kHz "
-                        f"({rel_cutoff*100:.0f}% of Nyquist): consistent with the anti-alias "
-                        f"filter of a legitimate master AND with a high-rate codec "
-                        f"— inconclusive")
+            ledger.note(f"Ambiguous near-Nyquist transition at "
+                        f"{spectrum['frecuencia_corte']/1000:.1f} kHz "
+                        f"({rel_cutoff*100:.0f}% of Nyquist): consistent with the "
+                        f"anti-alias filter of a legitimate master AND with a "
+                        f"high-rate codec — inconclusive")
         else:
             ledger.add_votes(3.0)
 
@@ -313,7 +322,8 @@ def calculate_score(meta, spectrum, bdi):
             r = spectrum["ratio"]
             if r > 0.05:   ledger.add_votes(2.0)
             elif r > 0.01: ledger.add_votes(1.0)
-            else:          ledger.note(f"high/mid ratio very low ({r:.5f})")
+            else:          ledger.note(f"Very low high-to-mid energy balance "
+                                       f"(high/mid ratio {r:.5f})")
 
             ledger.add_votes(0.0, 1.0)
             if spectrum.get("var_alta_db", 0) > 3:
@@ -325,18 +335,18 @@ def calculate_score(meta, spectrum, bdi):
             if sep > 0.1:
                 ledger.add_votes(1.0)
 
-        # 4b. Vector 1 (Mid/Side) and Vector 2 (cut-off jitter + MDCT holes).
+        # 4b. Mid/Side, cut-off jitter, and MDCT subband holes.
         # Only ADD penalties when the signature is present: existing keys, votes
         # and verdicts of files without it stay exactly as they were.
         if spectrum.get("es_dual_mono"):
-            ledger.note("dual-mono (left and right carry the same programme): "
-                        "stereo separation is not informative")
+            ledger.note("Dual-mono programme: left and right channels carry the same "
+                        "audio, so stereo separation is not informative")
         if spectrum.get("sospecha_joint_stereo"):
             ledger.penalize(
-                f"the Side channel (L-R) collapses at high frequency "
-                f"(Mid-Side drop {spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, "
-                f"cut-off delta {spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz): "
-                f"joint-stereo lossy codec signature",
+                f"Lossy joint-stereo signature (MP3/AAC): Side channel (L-R) "
+                f"collapses at high frequencies (Mid-Side drop "
+                f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, cut-off delta "
+                f"{spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz)",
                 0.30,
                 family=EvidenceFamily.STEREO_COLLAPSE,
             )
@@ -357,16 +367,16 @@ def calculate_score(meta, spectrum, bdi):
             )
             if extreme_jitter:
                 ledger.penalize(
-                    f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
-                    f"severe frame-adaptive codec signature",
+                    f"Severe frame-adaptive lossy codec signature: instantaneous "
+                    f"cut-off jitters strongly across frames (IQR {iqr:.0f} Hz)",
                     0.30,
                     blocks_max_verdict=True,
                     family=EvidenceFamily.TEMPORAL_MODULATION,
                 )
             else:
                 ledger.penalize(
-                    f"the instantaneous cut-off jitters (IQR {iqr:.0f} Hz): "
-                    f"frame-adaptive codec signature",
+                    f"Frame-adaptive lossy codec signature: instantaneous "
+                    f"cut-off jitters across frames (IQR {iqr:.0f} Hz)",
                     0.20,
                     blocks_max_verdict=False,
                     family=EvidenceFamily.TEMPORAL_MODULATION,
@@ -374,43 +384,44 @@ def calculate_score(meta, spectrum, bdi):
         huecos = spectrum.get("ratio_huecos_mdct") or 0.0
         if huecos > 0.10:
             ledger.penalize(
-                f"MDCT spectral holes in {huecos*100:.0f}% of the high-energy "
-                f"frames: lossy codec signature",
+                f"Lossy codec MDCT spectral holes: zeroed-out high-frequency "
+                f"subbands in {huecos*100:.0f}% of loud frames",
                 0.25,
                 blocks_max_verdict=False,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
             )
 
-        # Vector 7: sfb21 islands and harmonic-exciter / SBR signature. Both are
+        # Top-band islands (sfb21) and harmonic-exciter / SBR reconstruction. Both are
         # positive proof of a codec: the top scalefactor band switches on and off
         # frame by frame, or the high band is rebuilt from the 8-14 kHz envelope
         # and leaves a notch where the original band was cut.
         if spectrum.get("islas_mdct_sfb21"):
             ledger.penalize(
-                f"intermittent MDCT spectral islands in 16-20.5 kHz "
+                f"Lowpass-disabled lossy codec signature (MP3 sfb21): "
+                f"intermittent spectral islands in 16-20.5 kHz "
                 f"(P90-P10 gap {spectrum.get('brecha_p90_p10_agudos_db', 0.0):.1f} dB, "
                 f"{(spectrum.get('ratio_huecos_sfb21') or spectrum.get('ratio_apagado_sfb21') or 0.0)*100:.0f}% "
-                f"of frames zeroed): lowpass-disabled lossy codec signature",
+                f"of frames zeroed)",
                 0.25,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
             )
         if spectrum.get("sospecha_excitador_armonico"):
             ledger.penalize(
-                f"synthetic high-frequency harmonic exciter / SBR signature "
-                f"(envelope correlation r = {spectrum.get('corr_env_excitador', 0.0):.2f}, "
-                f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch): "
-                f"adversarial bandwidth extension",
+                f"Artificial high-frequency reconstruction (harmonic exciter / SBR): "
+                f"synthetic upper band tracks lower-band envelope "
+                f"(r = {spectrum.get('corr_env_excitador', 0.0):.2f}, "
+                f"{spectrum.get('muesca_excitador_db', 0.0):.1f} dB notch)",
                 0.30,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.SPECTRAL_ENVELOPE,
             )
         elif spectrum.get("sbr_qmf_detectado"):
             ledger.penalize(
-                f"seamless QMF subband replication detected "
-                f"(additive patch correlation r = {spectrum.get('sbr_qmf_correlacion', 0.0):.2f}, "
-                f"Z = {spectrum.get('sbr_qmf_z', 0.0):.1f} sigma): "
-                f"HE-AAC / SBR bandwidth extension signature",
+                f"HE-AAC / SBR bandwidth extension transcode: seamless QMF "
+                f"subband replication detected (patch correlation "
+                f"r = {spectrum.get('sbr_qmf_correlacion', 0.0):.2f}, "
+                f"Z = {spectrum.get('sbr_qmf_z', 0.0):.1f} sigma)",
                 0.55,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.FILTERBANK_LATTICE,
@@ -418,10 +429,10 @@ def calculate_score(meta, spectrum, bdi):
         if (spectrum.get("modulacion_psicoacustica_20k")
                 and not (spectrum.get("sospecha_corte_opus_20k") and iqr > 550.0)):
             ledger.penalize(
-                f"upper-band psychoacoustic modulation above 20 kHz "
-                f"(median drop {spectrum.get('caida_modulacion_20k_db', 0.0):.1f} dB, "
-                f"P95-P05 spread {spectrum.get('brecha_modulacion_20k_db', 0.0):.1f} dB): "
-                f"frame-adaptive lossy codec signature",
+                f"Frame-adaptive lossy codec modulation above 20 kHz: "
+                f"upper band pumps with signal frames (median drop "
+                f"{spectrum.get('caida_modulacion_20k_db', 0.0):.1f} dB, "
+                f"P95-P05 spread {spectrum.get('brecha_modulacion_20k_db', 0.0):.1f} dB)",
                 0.30,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
@@ -430,15 +441,15 @@ def calculate_score(meta, spectrum, bdi):
             family = spectrum.get("mdct_lattice_family") or "MDCT"
             snr_grid = spectrum.get("mdct_lattice_snr") or 0.0
             ledger.penalize(
-                f"phase-locked lapped transform quantization lattice detected "
-                f"({family}, Z = {snr_grid:.1f} sigma): "
-                f"full-bandwidth lossy codec signature",
+                f"Full-bandwidth lossy transcode signature: phase-locked lapped "
+                f"transform quantization lattice detected "
+                f"({family}, Z = {snr_grid:.1f} sigma)",
                 0.55,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.FILTERBANK_LATTICE,
             )
 
-        # Vector 5: libopus fullband cliff at 20.00 kHz. In isolation it is
+        # libopus fullband cliff at 20.00 kHz. In isolation it is
         # indistinguishable from a mastering anti-alias low-pass, so it is scored
         # only together with another codec signature; on its own it stays a fact.
         if (spectrum.get("sospecha_corte_opus_20k")
@@ -458,34 +469,33 @@ def calculate_score(meta, spectrum, bdi):
             corroborado = other_corroboration or sub_lattice
             if corroborado:
                 ledger.penalize(
-                    f"20.00 kHz cliff of "
-                    f"{spectrum.get('caida_opus_20k_db', 0.0):.0f} dB with other "
-                    f"codec evidence: libopus fullband transcode signature",
+                    f"Opus (libopus) fullband transcode signature: steep 20.00 kHz "
+                    f"shelf ({spectrum.get('caida_opus_20k_db', 0.0):.0f} dB) "
+                    f"corroborated by codec evidence",
                     0.45 if sub_lattice else 0.20,
                     blocks_max_verdict=sub_lattice,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
             else:
-                ledger.note("a 20.00 kHz cliff is consistent with libopus fullband "
-                            "and also with a mastering low-pass: inconclusive "
-                            "without other codec evidence")
+                ledger.note("Inconclusive 20.00 kHz shelf: consistent with both a "
+                            "libopus fullband encode and a mastering low-pass filter "
+                            "(no other codec signature found)")
 
-        # Vector 6: nature of the clipping. Only Gibbs overshoot is evidence of
+        # Nature of the clipping. Only Gibbs overshoot is evidence of
         # lossy reconstruction; a mastering limiter is reported, never penalised.
         if spectrum.get("clipping_reconstruccion_lossy"):
             ledger.penalize(
-                f"clipping made of isolated 1-2 sample events "
-                f"({spectrum.get('clipping_fraccion_cortos', 0.0)*100:.0f}% of them) "
-                f"with a band limit below 20.5 kHz: Gibbs overshoot from lossy "
-                f"reconstruction",
+                f"Lossy decoding overshoot (Gibbs ringing): "
+                f"{spectrum.get('clipping_fraccion_cortos', 0.0)*100:.0f}% of clipping "
+                f"events are isolated 1-2 sample spikes under a <20.5 kHz band limit",
                 0.25,
                 blocks_max_verdict=False,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
             )
         if spectrum.get("clipping_mastering_limitador"):
-            ledger.note("clipping runs of 4+ consecutive samples with content up to "
-                        "Nyquist: mastering brickwall limiter (observation, not an "
-                        "authenticity defect)")
+            ledger.note("Mastering brickwall limiter peaks: 4+ consecutive clipped "
+                        "samples with full-bandwidth content up to Nyquist "
+                        "(loudness mastering observation, not an authenticity defect)")
 
         # 5. Format/content coherence: claiming 24 bits at a CD sample rate
         #    demands some content above the CD band. It is the only signal that
@@ -502,9 +512,9 @@ def calculate_score(meta, spectrum, bdi):
             forensic = bdi.get("forense_bits") or {}
             if category == "far_cutoff" or rel_ceiling < 0.88:
                 ledger.penalize(
-                    f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
-                    f"{cutoff_txt}: the declared resolution is not backed by the "
-                    f"content (consistent with a repackaged high-rate transcode)",
+                    f"Repackaged {bits}-bit container from a band-limited/lossy source: "
+                    f"declares {bits} bits at {sr/1000:.1f} kHz but high frequencies are "
+                    f"{cutoff_txt} (declared resolution is not backed by the content)",
                     0.25,
                     blocks_max_verdict=True,
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
@@ -536,53 +546,64 @@ def calculate_score(meta, spectrum, bdi):
                 )
                 if not (bits_clean and without_codec_nor_brickwall):
                     ledger.penalize(
-                        f"declares {bits} bits at {sr/1000:.1f} kHz but its high band is "
-                        f"{cutoff_txt}: the declared resolution is not backed by the "
-                        f"content (consistent with a repackaged high-rate transcode)",
+                        f"Repackaged {bits}-bit container from a band-limited/lossy source: "
+                        f"declares {bits} bits at {sr/1000:.1f} kHz but high frequencies are "
+                        f"{cutoff_txt} (declared resolution is not backed by the content)",
                         0.25,
                         blocks_max_verdict=True,
                         family=EvidenceFamily.BIT_DEPTH_CONTAINER,
                     )
                 else:
-                    ledger.note("Vector 5: 24-bit master with studio anti-aliasing transition band "
-                                f"({rel_ceiling*100:.0f}% of Nyquist, clean LSB lattice and no lossy signature)")
+                    ledger.note(f"Genuine {bits}-bit master with studio anti-aliasing filter: "
+                                f"smooth transition band ({rel_ceiling*100:.0f}% of Nyquist, "
+                                f"active LSB lattice and no lossy signature)")
 
     # 6. LSB utilisation: it ONLY penalises (Block 4).
     if bdi.get("aplica"):
         lsbs = bdi.get("lsbs")
+        forensic = bdi.get("forense_bits") or {}
         if lsbs == "empty":
-            ledger.penalize(
-                f"the LSBs are empty ({bdi.get('fraccion_16bit_grid','?')}% of samples "
-                f"on the 16-bit grid): effective resolution of "
-                f"{bdi.get('resolucion_efectiva_bits','?')} bits in a "
-                f"{bits} bits — bit-depth upscale",
-                0.40,
-                family=EvidenceFamily.BIT_DEPTH_CONTAINER,
-            )
+            if forensic.get("es_padded_16_en_24"):
+                ledger.penalize(
+                    f"16-bit audio zero-padded inside a {bits}-bit container "
+                    f"(LSBs are empty: {bdi.get('fraccion_16bit_grid','?')}% of samples "
+                    f"on the 16-bit grid, {forensic.get('trailing_zeros_lsb', 8)} "
+                    f"trailing zero bits; effective resolution "
+                    f"{bdi.get('resolucion_efectiva_bits','?')} bits)",
+                    0.40,
+                    family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                )
+            else:
+                ledger.penalize(
+                    f"Bit-depth upscale from a 16-bit source (LSBs are empty: "
+                    f"{bdi.get('fraccion_16bit_grid','?')}% of samples on the 16-bit grid; "
+                    f"effective resolution {bdi.get('resolucion_efectiva_bits','?')} bits "
+                    f"in a {bits}-bit container)",
+                    0.40,
+                    family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                )
         elif lsbs == "partial":
             ledger.penalize(
-                f"LSBs partially inactive ({bdi.get('fraccion_16bit_grid','?')}% on the "
-                f"16-bit grid): upscale with later processing",
+                f"Bit-depth upscale with later processing: LSBs partially inactive "
+                f"({bdi.get('fraccion_16bit_grid','?')}% on the 16-bit grid; "
+                f"effective resolution ~{bdi.get('resolucion_efectiva_bits','?')} bits "
+                f"in a {bits}-bit container)",
                 0.15,
                 blocks_max_verdict=False,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
             )
         elif lsbs == "indeterminate" and bdi.get("error"):
-            ledger.note(f"could not evaluate the LSB utilization: {bdi['error']}")
+            ledger.note(f"Bit-depth LSB check skipped: {bdi['error']}")
 
-        # Vector 4: native-integer audit (zero padding and quantisation comb).
-        forensic = bdi.get("forense_bits") or {}
-        if forensic.get("es_padded_16_en_24"):
-            ledger.note(f"Vector 4: every sample has "
-                        f"{forensic.get('trailing_zeros_lsb', 0)} trailing zero bits "
-                        f"(16-bit zero-padded into 24 bits)")
-            if lsbs != "empty":
-                ledger.penalize(
-                    f"the 8 low bits are always zero in the whole file: "
-                    f"16-bit content zero-padded into a {bits}-bit container",
-                    0.40,
-                    family=EvidenceFamily.BIT_DEPTH_CONTAINER,
-                )
+        # Native-integer audit (zero padding and quantisation comb).
+        if forensic.get("es_padded_16_en_24") and lsbs != "empty":
+            ledger.penalize(
+                f"16-bit audio zero-padded inside a {bits}-bit container "
+                f"(the lowest {forensic.get('trailing_zeros_lsb', 8)} bits are always "
+                f"zero across the whole file)",
+                0.40,
+                family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+            )
         if forensic.get("es_24bit_escalado_en_peine"):
             step_size = forensic.get("paso_reticula_mediano")
             bins = forensic.get("lsb8_cajones_ocupados")
@@ -596,24 +617,23 @@ def calculate_score(meta, spectrum, bdi):
             else:
                 comb_detail = f"global lattice step {step_size} integers"
             ledger.penalize(
-                f"24-bit container with a quantisation comb in the 8 LSBs "
-                f"({comb_detail}): a 16-bit source scaled into 24 bits",
+                f"16-bit source gain-scaled into a {bits}-bit container "
+                f"(quantisation comb in the lowest 8 bits: {comb_detail})",
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
             )
         if forensic.get("es_16bit_dither_en_24"):
             occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
             ledger.penalize(
-                f"24-bit container with a 16-bit grid and boundary micro-dither "
-                f"(interior LSB8 occupancy {occ:.2f}%): "
-                f"16-bit source with synthetic dither in the lowest bits",
+                f"16-bit source padded with synthetic boundary micro-dither "
+                f"inside a {bits}-bit container (interior LSB8 occupancy {occ:.2f}%)",
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
             )
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
     # resultado["md5"] (verify_md5), and an MD5 that does not match is a hard error.
-    return ledger.finalize(spectrum)
+    return ledger.finalize(spectrum, include_notes=include_notes)
 
 ALBUM_COHERENCE_NOTE = ("Acoustic/low-HF track validated by album-level "
                         "master consistency")
@@ -672,12 +692,13 @@ def _deserves_album_coherence(result):
             or bdi.get("lsbs") == "empty"):
         return False
     permitidos = [
-        "spectral ceiling", "partial hi-res content",
-        "reduced high band", "high band is destroyed",
-        "smooth analogue/archival roll-off", "dual-mono",
-        "high/mid ratio", "mastering brickwall limiter",
+        "spectral ceiling", "partial hi-res content", "partial high-res content",
+        "reduced high band", "reduced high-frequency band",
+        "high band is destroyed", "severely truncated high frequencies",
+        "smooth analogue/archival roll-off", "smooth high-frequency roll-off",
+        "dual-mono", "high/mid ratio", "mastering brickwall limiter",
         "studio anti-aliasing", "anti-alias filter of a legitimate master",
-        "analogue/dsd master", "dsd/sacd noise-shaping",
+        "analogue/dsd master", "dsd/sacd noise-shaping", "dsd/sacd transfer",
     ]
     if sr >= 88200 and (not bdi.get("aplica") or bdi.get("lsbs") == "active"):
         permitidos.extend(["below the cd band", "not backed by content"])
@@ -935,9 +956,21 @@ def apply_album_coherence(results):
                     for r in candidatos:
                         r["veredicto"] = "PROBABLY LOSSLESS"
                         r["score"] = max(float(r.get("score") or 0.0), 0.60)
-                        r["problemas"] = list(r.get("problemas") or []) + [ALBUM_COHERENCE_NOTE]
-                        r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [ALBUM_COHERENCE_NOTE]
+                        old_problems = list(r.get("problemas") or [])
+                        notes = list(r.get("notes") or [])
+                        for item in old_problems:
+                            if item not in notes:
+                                notes.append(item)
+                        if ALBUM_COHERENCE_NOTE not in notes:
+                            notes.append(ALBUM_COHERENCE_NOTE)
+                        r["problemas"] = []
+                        r["notes"] = notes
+                        evid = list(r.get("evidencias_forenses") or [])
+                        if ALBUM_COHERENCE_NOTE not in evid:
+                            evid.append(ALBUM_COHERENCE_NOTE)
+                        r["evidencias_forenses"] = evid
                         r["coherencia_album"] = True
+                        r["album_coherence_note"] = ALBUM_COHERENCE_NOTE
                         elevados += 1
                     continue
 
@@ -984,13 +1017,15 @@ def apply_album_coherence(results):
             if spec.get("sospecha_corte_opus_20k"):
                 spread_db = float(spec.get("brecha_modulacion_20k_db") or 0.0)
                 note = (
-                    f"20.00 kHz cliff track in a confirmed {dominant_family} album batch "
+                    f"Likely {dominant_family} transcode by album consistency: "
+                    f"20.00 kHz shelf track in a confirmed lossy batch "
                     f"(upper-band spread {spread_db:.1f} dB)"
                 )
             else:
                 snr_val = float(spec.get("mdct_lattice_snr") or 0.0)
                 note = (
-                    f"Low-ceiling track in a confirmed {dominant_family} album batch "
+                    f"Likely {dominant_family} transcode by album consistency: "
+                    f"low-ceiling track in a confirmed lossy batch "
                     f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
                 )
             r["veredicto"] = "PROBABLE UPSCALE"

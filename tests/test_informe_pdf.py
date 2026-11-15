@@ -214,7 +214,12 @@ class test_report_pdf(unittest.TestCase):
         text = text_pdf(report["ruta"])
         self.assertIn("FLAC VERIFIER", text)                       # wordmark
         self.assertIn("Authenticity and lossless verification", text)
-        self.assertIn("engine 14.1", text)                         # footer
+        self.assertIn("engine 14.2", text)                         # footer
+        self.assertNotEqual(
+            pdf.STYLE_VERDICT["PROBABLY LOSSLESS"],
+            pdf.STYLE_VERDICT["SUSPICIOUS"],
+        )
+        self.assertNotIn("Spectral analysis mode:", text)
         self.assertIsNotNone(pdf._logo_image(), "the logo is missing")
 
     def test_every_style_is_readable_on_paper(self):
@@ -250,6 +255,36 @@ class test_report_pdf(unittest.TestCase):
         self.assertIn("Not analyzed: no issues were evaluated.", text)
         # A record that failed is never described as clean.
         self.assertEqual(text.count("No issues detected."), 1)
+
+    def test_clean_track_with_notes_shows_technical_notes_not_detected_issues(self):
+        clean_with_notes = {
+            "archivo": "piano_interlude.flac",
+            "ruta": self.fx["ok16"],
+            "veredicto": "PROBABLY LOSSLESS",
+            "score": 0.72,
+            "problemas": [],
+            "notes": ["Acoustic or low-brightness mix: spectral ceiling at 14.0 kHz"],
+            "evidencias_forenses": ["Spectral ceiling 14.0 kHz (63% of Nyquist)"],
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2, "duracion": 4.0},
+            "esp": {"techo_hz": 14000, "techo_rel_nyquist": 0.635, "clase_corte": "no_cutoff"},
+            "bdi": {"aplica": False},
+            "md5": {"estado": "match", "calculado": "a" * 32, "almacenado": "a" * 32},
+            "clip": {"hay_clipping": False, "runs_clip": 0},
+        }
+        destination = os.path.join(self.fx.dir, "notes_only.pdf")
+        report = pdf.generate(self.album, [clean_with_notes], destination=destination)
+        self.assertTrue(report["ok"], report.get("error"))
+        text = text_pdf(destination)
+        self.assertIn("Technical notes", text)
+        self.assertIn("Acoustic or low-brightness mix", text)
+        self.assertNotIn("Detected issues", text)
+        self.assertNotIn("Forensic evidence", text)
+
+    def test_probably_lossless_badge_differs_from_suspicious(self):
+        self.assertNotEqual(
+            pdf.STYLE_VERDICT["PROBABLY LOSSLESS"][1:],
+            pdf.STYLE_VERDICT["SUSPICIOUS"][1:],
+        )
 
     def test_styles_never_fall_back_to_black(self):
         for name, style in pdf._styles().items():
@@ -461,7 +496,7 @@ class test_report_pdf(unittest.TestCase):
         # the report destination is a DIRECTORY: writing into it is bound to fail
         os.makedirs(os.path.join(probe, pdf.REPORT_NAME), exist_ok=True)
         environment = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
-        p = subprocess.run([sys.executable, fx.CLI], input=f"2\nn\ny\n{probe}\nn\n",
+        p = subprocess.run([sys.executable, fx.CLI], input=f"n\ny\n{probe}\nn\n",
                            cwd=fx.ROOT, capture_output=True, text=True,
                            encoding="utf-8", timeout=900, env=environment)
         self.assertEqual(p.returncode, 0, p.stderr[-1500:])
@@ -498,7 +533,7 @@ class test_report_pdf(unittest.TestCase):
     def test_cli_interactive_also_generates_report(self):
         probe = self.fx.subfolder("album_interactivo", ("ok16", "ok24"))
         environment = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
-        p = subprocess.run([sys.executable, fx.CLI], input=f"2\nn\ny\n{probe}\nn\n",
+        p = subprocess.run([sys.executable, fx.CLI], input=f"n\ny\n{probe}\nn\n",
                            cwd=fx.ROOT, capture_output=True, text=True,
                            encoding="utf-8", timeout=900, env=environment)
         self.assertEqual(p.returncode, 0, p.stderr[-1500:])

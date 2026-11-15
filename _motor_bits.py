@@ -221,17 +221,16 @@ def _format_bit_depth_result(bits, n_active, n_grid16, counts_idx, forensic=None
     pct = f"{fraction * 100:.1f}%"
     if fraction > 0.97:
         lsbs = "empty"
-        conclusion = (f"the LSBs are empty ({pct} of samples on the 16-bit grid): "
-                      f"effective resolution of {effective} bits in a {bits}-bit container "
-                      f"— bit-depth upscale")
+        conclusion = (f"16-bit content inside a {bits}-bit container: LSBs are empty "
+                      f"({pct} of samples on the 16-bit grid; effective resolution {effective} bits)")
     elif fraction > 0.80:
         lsbs = "partial"
-        conclusion = (f"LSBs partially inactive ({pct} on the 16-bit grid), "
-                      f"effective resolution ~{effective} bits — upscale with later processing")
+        conclusion = (f"Bit-depth upscale with later processing: LSBs partially inactive "
+                      f"({pct} on the 16-bit grid; effective resolution ~{effective} bits)")
     else:
         lsbs = "active"
-        conclusion = (f"LSBs active, effective resolution ~{effective} of {bits} bits: "
-                      f"rules out grid upscaling, but does NOT prove the origin")
+        conclusion = (f"Active LSBs (~{effective} of {bits} effective bits): rules out "
+                      f"grid upscaling, though bit activity alone does not prove lossless origin")
     output = {
         "aplica":                   True,
         "fraccion_16bit_grid":      round(fraction * 100, 1),

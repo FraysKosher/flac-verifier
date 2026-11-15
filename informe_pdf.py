@@ -71,6 +71,9 @@ def _tone(hue: str) -> tuple[str, str, str]:
 
 
 OK_TONE = _tone(theme.color("ok"))
+PROBABLE_TONE = _tone(
+    theme.mix(theme.color("ok", "dark"), theme.color("accent", "dark"), 0.55)
+)
 WARN_TONE = _tone(theme.color("warn"))
 BAD_TONE = _tone(theme.color("bad"))
 UNKNOWN_TONE = _tone(theme.color("unknown"))
@@ -80,10 +83,10 @@ DANGER_TONE = _tone(theme.color("danger"))
 # three entries are the ones the interface uses; the fourth is the badge border.
 STYLE_VERDICT = {
     "GENUINE LOSSLESS":       ("GENUINE LOSSLESS",) + OK_TONE,
-    "PROBABLY LOSSLESS": ("PROBABLY LOSSLESS",) + WARN_TONE,
-    "SUSPICIOUS":                 ("SUSPICIOUS",) + WARN_TONE,
-    "PROBABLE UPSCALE":       ("PROBABLE UPSCALE",) + BAD_TONE,
-    "indeterminate":          ("INDETERMINATE",) + UNKNOWN_TONE,
+    "PROBABLY LOSSLESS":     ("PROBABLY LOSSLESS",) + PROBABLE_TONE,
+    "SUSPICIOUS":                   ("SUSPICIOUS",) + WARN_TONE,
+    "PROBABLE UPSCALE":         ("PROBABLE UPSCALE",) + BAD_TONE,
+    "indeterminate":            ("INDETERMINATE",) + UNKNOWN_TONE,
 }
 STYLE_ERROR = ("NO VERDICT (ERROR)",) + DANGER_TONE
 
@@ -430,28 +433,39 @@ def _song_card(index, total, res, styles, temporal):
     element.append(Spacer(1, 4 * mm))
 
     problems = res.get("problemas") or []
-    element.append(Paragraph("Detected issues", styles["seccion"]))
+    notes = res.get("notes") or []
     if problems:
+        element.append(Paragraph("Detected issues", styles["seccion"]))
         for problem in problems:
             element.append(Paragraph(
                 f"• {html.escape(str(problem))}", styles["problema"]))
+        secondary_notes = (
+            notes if "notes" in res else (res.get("evidencias_forenses") or [])
+        )
+        if secondary_notes and len(problems) < 8:
+            element.append(Spacer(1, 3 * mm))
+            element.append(Paragraph("Technical notes", styles["seccion"]))
+            for note_item in secondary_notes:
+                element.append(Paragraph(
+                    f"• {html.escape(str(note_item))}", styles["problema"]))
     elif res.get("error"):
         # A file that could not be analyzed was never evaluated: saying "no
         # issues" would read as a clean result.
+        element.append(Paragraph("Detected issues", styles["seccion"]))
         element.append(Paragraph("Not analyzed: no issues were evaluated.",
                                  styles["normal"]))
     else:
-        element.append(Paragraph("No issues detected.", styles["normal"]))
-
-    evidence = res.get("evidencias_forenses") or []
-    # With a very long issue list the page budget is already at its limit: the
-    # issues themselves are the evidence then, so the duplicate block is skipped.
-    if evidence and len(problems) < 8:
-        element.append(Spacer(1, 3 * mm))
-        element.append(Paragraph("Forensic evidence", styles["seccion"]))
-        for evidence_item in evidence:
-            element.append(Paragraph(
-                f"• {html.escape(str(evidence_item))}", styles["problema"]))
+        element.append(Paragraph("Technical notes", styles["seccion"]))
+        if notes:
+            for note_item in notes:
+                element.append(Paragraph(
+                    f"• {html.escape(str(note_item))}", styles["problema"]))
+        elif "notes" not in res and res.get("evidencias_forenses"):
+            for evidence_item in res["evidencias_forenses"]:
+                element.append(Paragraph(
+                    f"• {html.escape(str(evidence_item))}", styles["problema"]))
+        else:
+            element.append(Paragraph("No issues detected.", styles["normal"]))
     element.append(Spacer(1, 4 * mm))
 
     # The image is measured and adjusted so that the heading and the spectrogram
@@ -534,10 +548,6 @@ def _cover(album_path, results, mode, styles):
                   f"{time.strftime('%Y-%m-%d %H:%M:%S')}", styles["normal"]),
         Paragraph(f"<b>Files analyzed:</b> {total}", styles["normal"]),
     ]
-    if mode:
-        element.append(Paragraph(
-            f"<b>Spectral analysis mode:</b> {html.escape(str(mode))}",
-            styles["normal"]))
     element += [Spacer(1, 6 * mm),
                  Paragraph("Executive summary", styles["seccion"]),
                  _table(rows, [72 * mm, 30 * mm, 30 * mm], styles, comandos),
