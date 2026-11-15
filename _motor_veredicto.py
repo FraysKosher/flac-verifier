@@ -303,6 +303,15 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 ledger.note(f"Genuine analogue/DSD master roll-off: musical "
                             f"band ends naturally at {spectrum['frecuencia_corte']/1000:.1f} kHz "
                             f"({rel_cutoff*100:.0f}% of Nyquist)")
+            elif is_hires and spectrum.get("muro_brickwall_nyquist"):
+                ledger.penalize(
+                    f"Upscaled lower-rate source (artificial cut-off at "
+                    f"{spectrum['frecuencia_corte']/1000:.1f} kHz, "
+                    f"{rel_cutoff*100:.0f}% of Nyquist of {nyq_txt}): "
+                    f"high frequencies stop at the source Nyquist",
+                    0.40,
+                    family=EvidenceFamily.SPECTRAL_CUTOFF,
+                )
             else:
                 ledger.penalize(
                     f"Lossy codec signature (artificial cut-off at "
@@ -500,7 +509,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     blocks_max_verdict=sub_lattice,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                 )
-            else:
+            elif category != "far_cutoff":
                 ledger.note("Inconclusive 20.00 kHz shelf: consistent with both a "
                             "libopus fullband encode and a mastering low-pass filter "
                             "(no other codec signature found)")
@@ -597,6 +606,16 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     0.40,
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
                 )
+            elif forensic.get("es_16bit_dither_en_24"):
+                occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
+                ledger.penalize(
+                    f"16-bit source padded with synthetic boundary micro-dither "
+                    f"inside a {bits}-bit container ({bdi.get('fraccion_16bit_grid','?')}% "
+                    f"of samples hug the 16-bit grid, interior LSB8 occupancy {occ:.2f}%; "
+                    f"effective resolution ~16 bits)",
+                    0.80,
+                    family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                )
             else:
                 ledger.penalize(
                     f"Bit-depth upscale from a 16-bit source (LSBs are empty: "
@@ -646,7 +665,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
             )
-        if forensic.get("es_16bit_dither_en_24"):
+        if forensic.get("es_16bit_dither_en_24") and lsbs != "empty":
             occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
             ledger.penalize(
                 f"16-bit source padded with synthetic boundary micro-dither "

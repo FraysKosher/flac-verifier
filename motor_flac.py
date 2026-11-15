@@ -84,7 +84,12 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.3"
+ENGINE_VERSION = "14.4"
+# 14.4: Cap effective resolution at 16 bits when >97% of active samples sit on
+#       the 16-bit grid (`es_16bit_dither_en_24`), consolidate boundary
+#       micro-dither wording, avoid contradictory 48 kHz `far_cutoff` 20 kHz
+#       notes and convicted-track stationarity notes, and close parallel worker
+#       generators deterministically before album coherence.
 # 14.3: Attribute 20.00 kHz brickwall shelves generically as codec low-pass
 #       shelves whenever a non-Opus filterbank/SBR/MP3 signature (e.g. PQMF-576
 #       on LAME 320 kbps) is already identified, avoiding contradictory Opus
@@ -1123,6 +1128,9 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
             else:
                 yield result
 
+        if calculated is not None:
+            calculated.close()
+
         # Album-level consistency needs the whole directory before deciding.
         apply_album_coherence(batch)
         for _path, result in retenidas:
@@ -1243,7 +1251,10 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
             notes.append(
                 "DSD over PCM (DoP 1.0) stream: 0x05/0xFA framing markers detected in top byte"
             )
-        if (result.get("esp") or {}).get("es_estacionario"):
+        if (
+            (result.get("esp") or {}).get("es_estacionario")
+            and verdict in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+        ):
             notes.append(
                 "Stationary harmonic/tonal programme: sustained drone/synth guard active"
             )

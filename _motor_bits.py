@@ -220,6 +220,7 @@ def _format_bit_depth_result(bits, n_active, n_grid16, counts_idx, forensic=None
 
     pct = f"{fraction * 100:.1f}%"
     if fraction > 0.97:
+        effective = min(effective, 16)
         lsbs = "empty"
         conclusion = (f"16-bit content inside a {bits}-bit container: LSBs are empty "
                       f"({pct} of samples on the 16-bit grid; effective resolution {effective} bits)")

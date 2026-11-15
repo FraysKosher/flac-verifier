@@ -1935,6 +1935,57 @@ class TestExplicitStateMachines(unittest.TestCase):
             self.window._select(self.window.table_rows[7]["event"])
             self.assertEqual(spy_paint.call_count, 2)
 
+        # GUI always requests spectrograms (`--png`) when `--pdf` is disabled.
+        cmd_no_pdf = gui.build_command("C:/Album", pdf=False, png=True)
+        self.assertIn("--png", cmd_no_pdf)
+        self.assertNotIn("--pdf", cmd_no_pdf)
+        cmd_with_pdf = gui.build_command("C:/Album", pdf=True, png=True)
+        self.assertIn("--pdf", cmd_with_pdf)
+        self.assertNotIn("--png", cmd_with_pdf)
+
+        # TOCTOU regression: `__fin__` arriving during `_render_hero` after the
+        # reader thread exits must still schedule another `_drain_queue` tick.
+        self.window.active_run_id = 8
+        self.window._set_run_state(gui.RunState.RUNNING)
+        self.window.selected_event = None
+        self.window.message_queue.put((
+            "stdout",
+            {
+                "tipo": "resultado",
+                "indice": 1,
+                "indice_original": 0,
+                "total": 1,
+                "archivo": "last.flac",
+                "ruta": "C:/Album/last.flac",
+                "veredicto": "PROBABLE UPSCALE",
+                "score": 0.0,
+                "problemas": ["defect"],
+                "meta": {"bits_per_sample": 16, "sample_rate": 44100},
+                "md5": {"estado": "match"},
+                "run_id": 8,
+            },
+        ))
+        orig_render = self.window._render_hero
+
+        def inject_late_finish():
+            orig_render()
+            self.window.message_queue.put(
+                ("fin", {"tipo": "__fin__", "codigo": 0, "cancelado": False, "run_id": 8})
+            )
+
+        with mock.patch.object(self.window, "_render_hero", side_effect=inject_late_finish), \
+             mock.patch.object(self.window, "after") as spy_after:
+            self.window._drain_queue()
+            self.assertTrue(spy_after.called, "late __fin__ would be stranded in message_queue")
+        self.window._drain_queue()
+        self.assertEqual(self.window.run_state, gui.RunState.FINISHED)
+
+        # Cancel must still leave RUNNING even if the subprocess already exited.
+        self.window.active_run_id = 9
+        self.window._set_run_state(gui.RunState.RUNNING)
+        self.window._cancel()
+        self.assertEqual(self.window.run_state, gui.RunState.CANCELLED)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

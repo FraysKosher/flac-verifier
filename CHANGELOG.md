@@ -11,13 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verdict Clarity, UI & Documentation
 
-- Raised `ENGINE_VERSION` to `"14.3"` (`motor_flac.py`): separated
+- Raised `ENGINE_VERSION` to `"14.4"` (`motor_flac.py`): separated
   informational/positive `notes` from real defects (`problemas`) across
   `_motor_veredicto.py`, `_motor_bits.py`, and `motor_flac.py` while keeping
   the NDJSON protocol backward-compatible, so clean or album-coherent tracks
-  display **Technical notes** instead of **Detected issues**, and avoided
-  labeling `20.00 kHz` shelves as `Opus (libopus)` when a non-Opus filterbank
-  (such as `PQMF-576 (MP3)` on LAME 320 kbps) is already identified.
+  display **Technical notes** instead of **Detected issues**; avoided labeling
+  `20.00 kHz` shelves as `Opus (libopus)` when a non-Opus filterbank is
+  identified; consolidated 16-in-24 boundary micro-dither reporting (`~16`
+  effective bits); and closed parallel worker pools deterministically.
+- Fixed a GUI queue-draining TOCTOU race (`gui.py`) that could strand the final
+  `__fin__` event at `N / N` with an unresponsive `Cancel` button, and ensured
+  the GUI always generates and displays PNG spectrograms (`--png`) even when
+  PDF report generation is unchecked.
 - Rewrote forensic findings and bit-depth conclusions in plain-English-first
   language followed by exact physical metrics, removing internal development
   prefixes (`Vector 4:` / `Vector 5:`) and grammar slips.

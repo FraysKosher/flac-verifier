@@ -3391,6 +3391,65 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertTrue(any("Opus (libopus) fullband transcode signature" in p for p in probs_opus_20k))
         self.assertTrue(any("libopus fullband signature" in e for e in ev_opus_20k))
 
+        # Part J: 16-in-24 boundary micro-dither caps effective bits at 16 and
+        # emits a single consolidated message without claiming 24 effective bits;
+        # 48 kHz far_cutoff omits the inconclusive 20.00 kHz note; Hi-Res
+        # brickwall upscales attribute far_cutoff to a lower-rate source.
+        import _motor_bits
+        dither_bdi = _motor_bits._format_bit_depth_result(
+            24, 10000, 10000, np.array([10000] + [0] * 31, dtype=np.int64),
+            forensic={"es_16bit_dither_en_24": True, "lsb8_ocupacion_interior": 0.0},
+        )
+        self.assertEqual(dither_bdi["resolucion_efectiva_bits"], 16)
+        _, verd_dith, probs_dith = motor_flac.calculate_score(
+            {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2},
+            mp3_20k_spec,
+            dither_bdi,
+        )
+        self.assertEqual(verd_dith, "PROBABLE UPSCALE")
+        self.assertEqual(sum("micro-dither" in p for p in probs_dith), 1)
+        self.assertFalse(any("effective resolution 24 bits" in p for p in probs_dith))
+
+        opus48_spec = {
+            "techo_hz": 20010,
+            "techo_rel_nyquist": 20010 / 24000.0,
+            "clase_corte": "far_cutoff",
+            "corte_detectado": True,
+            "frecuencia_corte": 19980,
+            "distancia_nyquist": 19980 / 24000.0,
+            "corte_artificial": True,
+            "ratio_aplica": True,
+            "ratio": 0.06,
+            "var_alta_db": 12.0,
+            "separacion_stereo": 0.30,
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 48.0,
+        }
+        _, _, probs_op48, notes_op48 = motor_flac.calculate_score(
+            {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2},
+            opus48_spec,
+            {"aplica": False},
+            include_notes=True,
+        )
+        self.assertTrue(any("artificial cut-off" in p for p in probs_op48))
+        self.assertFalse(any("Inconclusive 20.00 kHz shelf" in n for n in notes_op48))
+
+        up96_spec = dict(
+            opus48_spec,
+            techo_rel_nyquist=20010 / 48000.0,
+            distancia_nyquist=19980 / 48000.0,
+            muro_brickwall_nyquist=True,
+            gradiente_nyquist_db_khz=53.4,
+            salto_ultrasonico_db=85.1,
+            sospecha_corte_opus_20k=False,
+        )
+        _, _, probs_up96 = motor_flac.calculate_score(
+            {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2},
+            up96_spec,
+            {"aplica": True, "lsbs": "active", "forense_bits": {}},
+        )
+        self.assertTrue(any("Upscaled lower-rate source (artificial cut-off" in p for p in probs_up96))
+
 
 
 if __name__ == "__main__":

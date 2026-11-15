@@ -389,7 +389,7 @@ BUTTON_VARIANTS = {
 
 def build_command(path: str, mode: str = "full", seconds: int | None = None,
                       pdf: bool = True, workers: int = 0, without_cache: bool = False,
-                      engine: str | None = None) -> list[str]:
+                      engine: str | None = None, png: bool = False) -> list[str]:
     """Engine command for the subprocess.
 
     From the source code `-u` is added (without it, the stdout buffer would hold
@@ -407,6 +407,8 @@ def build_command(path: str, mode: str = "full", seconds: int | None = None,
         command += ["--seconds", str(int(seconds or 15))]
     if pdf:
         command.append("--pdf")
+    elif png:
+        command.append("--png")
     if workers and workers > 0:
         command += ["--workers", str(int(workers))]
     if without_cache:
@@ -713,16 +715,19 @@ def output_reader(process: "subprocess.Popen[str]", message_queue: "queue.Queue[
             except Exception:
                 pass
 
-    thread_error = threading.Thread(target=read, args=(process.stderr, "stderr"), daemon=True)
-    thread_error.start()
-    read(process.stdout, "stdout")
-    thread_error.join(timeout=2.0)
+    code: int | None = None
     try:
-        code = process.wait(timeout=5.0)
-    except Exception:
-        code = None
-    message_queue.put(("fin", stamp({"tipo": "__fin__", "codigo": code,
-                      "cancelado": bool(cancelled and cancelled())})))
+        thread_error = threading.Thread(target=read, args=(process.stderr, "stderr"), daemon=True)
+        thread_error.start()
+        read(process.stdout, "stdout")
+        thread_error.join(timeout=2.0)
+        try:
+            code = process.wait(timeout=5.0)
+        except Exception:
+            code = None
+    finally:
+        message_queue.put(("fin", stamp({"tipo": "__fin__", "codigo": code,
+                          "cancelado": bool(cancelled and cancelled())})))
 
 
 class ProcessManager:
@@ -753,13 +758,14 @@ class ProcessManager:
         return self.thread is not None and self.thread.is_alive()
 
     def start(self, path: str, mode: str = "full", seconds: int | None = None,
-                pdf: bool = True, workers: int = 0, without_cache: bool = False) -> list[str]:
+                pdf: bool = True, workers: int = 0, without_cache: bool = False,
+                png: bool = False) -> list[str]:
         """Launches the analysis. Returns the command used (useful for the log)."""
         if self.active:
             raise RuntimeError("an analysis is already running")
         command = build_command(path, mode=mode, seconds=seconds, pdf=pdf,
                                     workers=workers, without_cache=without_cache,
-                                    engine=self.engine)
+                                    engine=self.engine, png=png)
         self.cancelled = False
         # CREATE_NO_WINDOW stops a console from flashing when the engine starts.
         self.process = self._lanzador(
@@ -780,6 +786,13 @@ class ProcessManager:
     def cancel(self) -> None:
         self.cancelled = True
         finish_process(self.process)
+        if self.process is not None:
+            for stream in (self.process.stdout, self.process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
 
     def wait(self, duration: float = 5.0) -> None:
         if self.thread is not None:
@@ -1898,7 +1911,7 @@ if CTK_OK:
                 font=theme.font(12), text_color=c("text.secondary"))
             self.spectrogram_note.grid(row=1, column=0)
             self.spectrogram_hint = ctk.CTkLabel(
-                self.spectrogram_placeholder, text="Enable the PDF report",
+                self.spectrogram_placeholder, text="Spectrogram not available",
                 font=theme.font(11), text_color=c("text.tertiary"))
             self.spectrogram_hint.grid(row=2, column=0,
                                        pady=(0, theme.SPACE["xs"]))
@@ -2602,7 +2615,7 @@ if CTK_OK:
                 self.spectrogram_note.configure(
                     text="No spectrogram" if not path else "Image not available")
                 self.spectrogram_hint.configure(
-                    text="Enable the PDF report" if not path else "The file was moved")
+                    text="Spectrogram not available" if not path else "The file was moved")
             self._set_enabled(self.btn_open_spectrogram,
                               self.spectrogram_state is SpectrogramState.READY)
 
@@ -3488,7 +3501,8 @@ if CTK_OK:
                 command = self.manager.start(
                     path,
                     pdf=bool(self.var_pdf.get()), workers=self._workers(),
-                    without_cache=bool(self.var_without_cache.get()))
+                    without_cache=bool(self.var_without_cache.get()),
+                    png=True)
             except Exception as e:
                 self._set_run_state(RunState.ERROR)
                 self._log(f"Could not start the analysis: {e}", "error")
@@ -3503,8 +3517,16 @@ if CTK_OK:
             self.after(100, self._drain_queue)
 
         def _cancel(self) -> None:
-            if not self.manager.active:
+            if (not self.manager.active
+                    and not self.manager.active_thread
+                    and self.run_state != RunState.RUNNING):
                 return
+            if (not self.manager.active
+                    and not self.manager.active_thread
+                    and not self.message_queue.empty()):
+                self._drain_queue()
+                if self.run_state != RunState.RUNNING:
+                    return
             if self.active_run_id:
                 self._cancelled_run_ids.add(self.active_run_id)
             self._log("Cancelling the analysis and its child processes…", "aviso")
@@ -3523,8 +3545,10 @@ if CTK_OK:
             freeze the window, because Tk regains control between batches and the
             Cancel button stays responsive. It is rescheduled while the engine is
             alive, while the reader thread is still alive (it may not have queued
-            the final `__fin__` yet) or while a full batch was just processed."""
+            the final `__fin__` yet), while items remain in `message_queue`, or
+            while a full batch was just processed."""
             if self._retheming:
+                self.after(IDLE_INTERVAL_MS, self._drain_queue)
                 return
             processed = 0
             results = 0
@@ -3566,9 +3590,16 @@ if CTK_OK:
             except Exception:
                 return
             backlog = results >= MAX_RESULTS_BY_TICK or processed >= BATCH_DRAINED
-            if backlog or self.manager.active or self.manager.active_thread:
-                self.after(ACTIVE_INTERVAL_MS if backlog else IDLE_INTERVAL_MS,
-                           self._drain_queue)
+            # Check `still_running` BEFORE `has_pending` so a reader thread that
+            # pushes `__fin__` and exits during widget updates above is guaranteed
+            # to trigger `has_pending == True`.
+            still_running = self.manager.active or self.manager.active_thread
+            has_pending = not self.message_queue.empty()
+            if backlog or has_pending or still_running:
+                self.after(
+                    ACTIVE_INTERVAL_MS if (backlog or has_pending) else IDLE_INTERVAL_MS,
+                    self._drain_queue,
+                )
 
         def _update_progress(self) -> None:
             """One redraw of the bar and the counter per drained batch."""

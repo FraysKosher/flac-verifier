@@ -116,7 +116,7 @@ Two more invariants worth knowing before you touch anything:
   `__main__` block of `main.py`. `tests/test_empaquetado.py` checks it.
 - `ENGINE_VERSION` in `motor_flac.py` must be raised whenever any analysis
   calculation changes: it is what invalidates the caches written by earlier
-  versions. It currently reads `ENGINE_VERSION = "14.3"`.
+  versions. It currently reads `ENGINE_VERSION = "14.4"`.
 
 ---
 
