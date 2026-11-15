@@ -360,9 +360,36 @@ class TestNativeFastPathEquivalence(unittest.TestCase):
         got_dct = spectral._dct4_ortho_f32(dct_in, axis=-1)
         self.assertLess(float(np.max(np.abs(got_dct - ref_dct))), 1e-4)
 
-        # 3) Frozen-mode isolation: _MEIPASS direct pypocketfft load pulls zero scipy subpackages.
+        # 2b) Public scipy.fft fallback adapter (used on SciPy >= 1.16) matches pypocketfft/scipy.fft.
+        adapter = spectral._ScipyFftAdapter(sp_fft)
+        out_buf = np.empty((2, 6, 2049), dtype=np.complex64)
+        sig_stereo = sig.reshape(2, 6, 4096)
+        ret_buf = adapter.r2c(sig_stereo, (2,), True, 0, out_buf, 1)
+        self.assertIs(ret_buf, out_buf)
+        self.assertEqual(out_buf.dtype, np.complex64)
+        self.assertLess(
+            float(np.max(np.abs(out_buf.reshape(12, 2049) - ref_rfft))), 1e-4
+        )
+        c2r_out = np.empty((12, 4096), dtype=np.float32)
+        adapter.c2r(got_rfft, (1,), 4096, False, 2, c2r_out, 1)
+        self.assertLess(float(np.max(np.abs(c2r_out - ref_irfft))), 1e-5)
+        dct_copy = dct_in.copy()
+        dct_res = adapter.dct(dct_copy, 4, (1,), 1, dct_copy, 1, True)
+        self.assertEqual(dct_res.dtype, np.float32)
+        self.assertLess(float(np.max(np.abs(dct_res - ref_dct))), 1e-4)
+
+        # 3) Frozen-mode isolation: _MEIPASS direct pypocketfft load pulls zero scipy subpackages
+        # when SciPy ships pypocketfft (SciPy < 1.16), and falls back cleanly to _ScipyFftAdapter
+        # on newer SciPy releases where _pocketfft was removed.
+        has_pocketfft = importlib.util.find_spec("scipy.fft._pocketfft") is not None
         scipy_root = os.path.dirname(
             os.path.dirname(importlib.util.find_spec("scipy").origin)
+        )
+        tail_check = (
+            "leaked = [m for m in sys.modules if m == 'scipy' or m.startswith('scipy.')]; "
+            "assert not leaked, f'scipy leaked in frozen mode: {leaked}'"
+            if has_pocketfft
+            else "assert isinstance(spectral._get_pocketfft(), spectral._ScipyFftAdapter)"
         )
         probe = (
             "import sys, numpy as np; "
@@ -372,8 +399,7 @@ class TestNativeFastPathEquivalence(unittest.TestCase):
             "x = np.random.default_rng(7).standard_normal((96000, 2)).astype(np.float32) * 0.1; "
             "acc.add(x, 0); res = acc.result(); "
             "assert res['error'] is None; "
-            "leaked = [m for m in sys.modules if m == 'scipy' or m.startswith('scipy.')]; "
-            "assert not leaked, f'scipy leaked in frozen mode: {leaked}'"
+            + tail_check
         )
         subprocess.run([sys.executable, "-c", probe], check=True)
 

@@ -15,9 +15,57 @@ import numpy as np
 _POCKETFFT_MOD = None
 
 
+class _ScipyFftAdapter:
+    """Public `scipy.fft` fallback exposing pypocketfft's r2c/c2r/dct calls
+    for SciPy >= 1.16, where `scipy.fft._pocketfft` was removed."""
+
+    def __init__(self, sp_fft):
+        self._fft = sp_fft
+
+    def r2c(self, arr, axes, forward, fct, out, nthreads):
+        norm = "backward" if fct == 0 else ("ortho" if fct == 1 else "forward")
+        fn = self._fft.rfft if forward else self._fft.ihfft
+        res = fn(arr, axis=axes[0], norm=norm, workers=nthreads)
+        if res.dtype != np.complex64:
+            res = res.astype(np.complex64, copy=False)
+        if out is not None:
+            np.copyto(out, res)
+            return out
+        return res
+
+    def c2r(self, arr, axes, lastsize, forward, fct, out, nthreads):
+        norm = "backward" if fct == 2 else ("ortho" if fct == 1 else "forward")
+        res = self._fft.irfft(
+            arr, n=int(lastsize), axis=axes[0], norm=norm, workers=nthreads
+        )
+        if res.dtype != np.float32:
+            res = res.astype(np.float32, copy=False)
+        if out is not None:
+            np.copyto(out, res)
+            return out
+        return res
+
+    def dct(self, arr, dct_type, axes, fct, out, nthreads, ortho):
+        res = self._fft.dct(
+            arr,
+            type=int(dct_type),
+            norm="ortho" if ortho else "backward",
+            axis=axes[0],
+            workers=nthreads,
+            overwrite_x=(out is arr),
+        )
+        if res.dtype != np.float32:
+            res = res.astype(np.float32, copy=False)
+        if out is not None and out is not res:
+            np.copyto(out, res)
+            return out
+        return res
+
+
 def _get_pocketfft():
     """Returns SciPy's compiled C++ pypocketfft extension without importing
-    scipy.fft / scipy.special / scipy.linalg when running frozen."""
+    scipy.fft / scipy.special / scipy.linalg when running frozen, or a public
+    scipy.fft adapter on SciPy >= 1.16 where _pocketfft was removed."""
     global _POCKETFFT_MOD
     if _POCKETFFT_MOD is not None:
         return _POCKETFFT_MOD
@@ -44,7 +92,11 @@ def _get_pocketfft():
                         spec.loader.exec_module(mod)
                         _POCKETFFT_MOD = mod
                         return mod
-    from scipy.fft._pocketfft import pypocketfft as mod
+    try:
+        from scipy.fft._pocketfft import pypocketfft as mod
+    except ModuleNotFoundError:
+        from scipy import fft as sp_fft
+        mod = _ScipyFftAdapter(sp_fft)
     _POCKETFFT_MOD = mod
     return mod
 
