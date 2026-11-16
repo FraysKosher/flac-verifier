@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-11-16
+
+### Storage & PDF Output
+
+- Moved default per-track cache entries (`CACHE_SCHEMA_VERSION = "2.4.0"`,
+  `ENGINE_VERSION = "14.5"` unchanged) and working PNG spectrograms out of music
+  folders into the OS user cache directory (`%LOCALAPPDATA%\FLAC_Verifier\cache\`,
+  `~/Library/Caches/FLAC_Verifier/cache/`, or
+  `$XDG_CACHE_HOME/flac-verifier/cache/`), keyed by a 16-char SHA-256 hash of the
+  normalized album path so identically named tracks from different albums never
+  collide (`_motor_cache.py`, `_motor_espectral.py`, `motor_flac.py`). Added
+  `FLAC_VERIFIER_CACHE_DIR` to redirect the cache root when needed.
+- Added `--output-dir PATH` across `motor_flac.py`, `main.py`, `informe_pdf.py`,
+  and the left sidebar in `gui.py` so PDF reports can be written outside
+  read-only NAS/ZFS/seedbox folders using disambiguated filenames
+  (`<Album>_flac_verifier_report.pdf`, falling back to `<Parent>_<Album>` and
+  numeric suffixes on collision). In the GUI, **Generate PDF report** now starts
+  unchecked by default and reveals explicit **Save in each album folder** vs
+  **Save in custom folder...** destination options when enabled. Read-only
+  album PDF write errors continue to emit non-blocking `aviso` events without
+  aborting batches.
+
+### GUI Multi-Album Queue, Live Filters & Viewport Virtualization
+
+- Added recursive folder-tree discovery (`discover_album_queue`) sorted with
+  `natural_sort_key` and pruning hidden/system folders (`.git`, `_spectrograms`,
+  `__pycache__`, `$RECYCLE.BIN`, `System Volume Information`, `@eaDir`,
+  `#recycle`) so dropping an artist or boxset tree onto `gui.py` scans
+  album-by-album sequentially while keeping `motor_flac.py`'s single-album Unix
+  CLI contract intact (`Album X / Y` progress, relative folder context in table
+  rows, tooltips, inspector header, and summary card, plus immediate full-queue
+  termination on **Cancel**).
+- Added a theme-aware live quick-filter bar above the results table (`All (N)`,
+  `Flagged (N)`, `Suspicious (N)`, `Errors (N)`) that updates counts in real
+  time as tracks arrive and switches row visibility immediately without
+  re-running the engine.
+- Eliminated multi-second UI freezes on large batches (2,000+ tracks) through
+  `O(visible_rows)` canvas viewport virtualization, a pooled inspector issue row
+  list (removing duplicate widget rebuilds on selection), and non-blocking
+  priority async spectrogram decoding with pre-scaled preview thumbnails
+  (`MAX_PIL_SPECTROGRAM_CACHE = 512`, `MAX_SPECTROGRAM_CACHE = 256`).
+
+### I/O Resilience & Packaging
+
+- Added bounded retry backoff (`retry_io`, `IO_RETRY_DELAYS = (0.25, 0.75)`, 3
+  attempts) for transient NAS/SMB/NFS spin-down `OSError`, `MutagenError`
+  (`__cause__` `OSError`), and `LibsndfileError(code=2)` failures when opening or
+  streaming audio (`_motor_bits.py`, `motor_flac.py`, `_motor_cache.py`),
+  reopening stale file handles at exact frame offsets to preserve bit-exact
+  `STREAMINFO MD5` verification while failing fast on logical header/format
+  errors.
+- Added PEP 621 `pyproject.toml` (`flac-verifier` and `flac-motor` console
+  scripts, `gui`/`pdf`/`all` extras mirroring `requirements.txt`, and `Logo` /
+  `Logo.icons` package data) for `uv tool install`, `uvx`, and `pipx`, updating
+  `main.VERSION` and `version_info.txt` to `2.10.0` and expanding the test
+  suite from **359** to **383 tests**.
+
 ## [2.9.9] - 2026-11-16
 
 ### Forensic Calibration

@@ -6,15 +6,15 @@ Security fixes and forensic false-positive/false-negative patches are provided f
 
 | Version | Supported | Notes |
 | --- | --- | --- |
-| `2.9.x` | Yes | Active development and security fixes (current: `2.9.9`) |
-| `< 2.9` | No | Unsupported; upgrade to the latest `2.9.x` release |
+| `2.10.x` | Yes | Active development and security fixes (current: `2.10.0`) |
+| `< 2.10` | No | Unsupported; upgrade to the latest `2.10.x` release |
 
 ## Scope & Threat Model
 
 FLAC VERIFIER runs completely offline and processes untrusted local audio files (`.flac` containers, Vorbis/ID3/PICTURE metadata blocks, and filenames) inside user-selected folders:
 
 - **Parser & codec inputs**: Crafted `.flac` headers, malformed metadata tags, extreme sample rates or channel layouts parsed via `soundfile`, `mutagen`, `numpy`, and `scipy`.
-- **Filesystem outputs**: Cache files (`.flac_verifier_cache.json`), rendered spectrograms (`_spectrograms/`), and album PDF reports (`_report.pdf`) derived from input paths.
+- **Filesystem outputs**: Cache JSON entries and rendered PNG spectrograms inside the OS user cache directory (`FLAC_VERIFIER_CACHE_DIR` override), plus optional per-album PDF reports (`flac_verifier_report.pdf` or `<Album>_flac_verifier_report.pdf` inside `--output-dir`).
 - **Process execution**: The GUI spawns the engine subprocess (`flac_motor.exe` / `main.py --motor-cli`) and `build.py` bundles frozen Windows executables verified with SHA-256 checksums (`SHA256SUMS_<version>.txt`).
 
 Out of scope: vulnerabilities requiring prior local code execution by the user, or third-party upstream media players used solely to open generated PDF/PNG outputs.
@@ -36,5 +36,5 @@ Do **not** open a public GitHub issue for security vulnerabilities.
 Always verify downloaded Windows release archives against the `SHA256SUMS_<version>.txt` file published on the corresponding GitHub Release before running the executable:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.9.9-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.10.0-win64.zip -Algorithm SHA256
 ```

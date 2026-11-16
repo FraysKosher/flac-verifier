@@ -223,7 +223,11 @@ isolated, uncorroborated soft heuristic is capped at `SUSPICIOUS` (`score ≥ 0.
 ## Per-album PDF report
 
 With `--pdf` (or by checking *Generate PDF report* in the GUI),
-`flac_verifier_report.pdf` is generated in the album folder:
+`flac_verifier_report.pdf` is generated in the album folder by default. Passing
+`--output-dir PATH` (or setting **PDF folder** in the GUI) writes reports to
+that directory as `<Album>_flac_verifier_report.pdf` (adding parent-folder or
+numeric suffixes on name collisions) so read-only music folders remain
+untouched:
 
 | Page | Content |
 |---|---|
@@ -275,14 +279,21 @@ memory (`FRAMES_BY_BLOCK = 262144` (`1 << 18`), `SPECTRO_SECONDS = 45`):
 
 ## Cache architecture
 
-Each analysed track stores its result in
-`<folder>/_spectrograms/_cache/<file>.<mode>.json`. An entry is reused only if
-all three fingerprints match:
+Working PNG spectrograms and per-track cache entries live outside the music
+folder by default inside a centralized OS user cache bucket keyed by a 16-char
+SHA-256 hash of the normalized album directory (`FLAC_VERIFIER_CACHE_DIR`
+overrides the root):
+
+- Windows: `%LOCALAPPDATA%\FLAC_Verifier\cache\<bucket_hash>\_cache\<file>.<mode>.json`
+- macOS: `~/Library/Caches/FLAC_Verifier/cache/<bucket_hash>/_cache/<file>.<mode>.json`
+- Linux / POSIX: `$XDG_CACHE_HOME/flac-verifier/cache/<bucket_hash>/_cache/<file>.<mode>.json` (or `~/.cache/flac-verifier/cache/...`)
+
+An entry is reused only if all three fingerprints match:
 
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"14.5"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"14.5"`), `CACHE_SCHEMA_VERSION` (`"2.4.0"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

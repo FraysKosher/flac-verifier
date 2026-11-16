@@ -3,7 +3,7 @@
 Both **FLAC VERIFIER** and **[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)**
 answer the same question — *is this lossless file genuinely lossless, or a
 lossy transcode / inflated container in disguise?* — from two different
-engineering philosophies. This page compares **FLAC VERIFIER `v2.9.9`** (`engine
+engineering philosophies. This page compares **FLAC VERIFIER `v2.10.0`** (`engine
 14.5`) and **FLAC Detective `v2.6.0`**, with the exact commands used to obtain
 every figure, so you can choose the one that fits your workflow (or use both).
 
@@ -23,10 +23,10 @@ every figure, so you can choose the one that fits your workflow (or use both).
 
 ## Side by side
 
-| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.9.9`, engine `14.5`) |
+| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.10.0`, engine `14.5`) |
 |---|---|---|
-| **Primary shape** | Python library + CLI + `beets` plugin + optional PySide6 GUI | Standalone Windows desktop app (`FLAC_Verifier.exe` + `flac_motor.exe`), interactive CLI & NDJSON engine |
-| **Installation** | `pip install flac-detective` (`[gui]`, `[ml]`, `[beets]`), Docker (`amd64`/`arm64`), built-in `--update` | Portable Windows ZIP (extract and double-click `FLAC_Verifier.exe`; no Python required) or `pip install -r requirements.txt` |
+| **Primary shape** | Python library + CLI + `beets` plugin + optional PySide6 GUI | Standalone Windows desktop app (`FLAC_Verifier.exe` + `flac_motor.exe`), `uv`/`pipx` CLI entry points & NDJSON engine |
+| **Installation** | `pip install flac-detective` (`[gui]`, `[ml]`, `[beets]`), Docker (`amd64`/`arm64`), built-in `--update` | Portable Windows ZIP (no Python required), `uv tool install ".[all]"`, or `pip install -r requirements.txt` |
 | **OS shell integration** | Windows Explorer right-click menu (`--install-context-menu`) | Drag-and-drop folder/file target (`tkinterdnd2`), dark/light live in-place theme switch |
 | **Input formats** | FLAC (8/16/24/32-bit), WAV, ALAC (`.m4a`), APE (`.ape`), Musepack | FLAC (8/16/24/32-bit, CD and Hi-Res up to 192 kHz) |
 | **Bit-exact integrity (`STREAMINFO MD5`)** | Not checked (`0` matches in `src/`); offers a separate FLAC stream repair tool (`flac_detective.repair`) | Reconstructs decoded PCM bytes and verifies the 128-bit `STREAMINFO MD5` in the same pass; mismatch is a hard error outside scoring |
@@ -37,8 +37,8 @@ every figure, so you can choose the one that fits your workflow (or use both).
 | **Reports** | Text, CSV, JSON and self-contained HTML triage report with spectrum curves | Per-album PDF report (`flac_verifier_report.pdf`: executive cover, one page per song with embedded Pillow spectrogram and detected issues or technical notes, overall summary table) + NDJSON stream |
 | **Parallelism & caching** | Process pool (`cli/pool.py`) and in-run audio/window cache | Process pool (up to 8 workers) + persistent on-disk per-track JSON cache keyed by size, `mtime_ns`, `STREAMINFO MD5`, `ENGINE_VERSION` and render fingerprint |
 | **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (8,780 lines), or 12 modules (9,580 lines) including build/verification scripts |
-| **Automated tests** | 772 test functions across 82 files (`pytest`) | 359 test functions across 13 files (`unittest`, zero external audio files) + 260-track real-encoder benchmark + 12-check frozen `.exe` gate |
-| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.9.9` (`ENGINE_VERSION = "14.5"`, 2026-11-16) |
+| **Automated tests** | 772 test functions across 82 files (`pytest`) | 383 test functions across 13 files (`unittest`, zero external audio files) + 260-track real-encoder benchmark + 12-check frozen `.exe` gate |
+| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.10.0` (`ENGINE_VERSION = "14.5"`, 2026-11-16) |
 | **Licence** | MIT | MIT |
 
 ---
@@ -104,11 +104,11 @@ and an archival album PDF**:
    `20.2–21.8 kHz` (`modulacion_psicoacustica_20k`), `22.05/24.0 kHz` Nyquist
    brickwalls, `23–29 kHz` aliasing mirrors, and genuine SACD/DSD ultrasonic
    noise-shaping ramps (`direct_24_40k`, `scarlet_30k`, `dsd128_40_80k`).
-6. **Persistent per-track disk cache & archival PDF report:** Re-verifying an
-   already analysed album takes seconds via `_spectrograms/_cache/`, and `--pdf`
-   produces a print-ready `flac_verifier_report.pdf` with one page per track
-   (in natural track order `1, 2, …, 10, …, 100`) and its full-resolution
-   spectrogram.
+6. **Zero-footprint OS user cache & archival PDF reports:** Re-verifying an
+   already analysed album takes seconds via the centralized OS user cache
+   (leaving music folders untouched by default), while `--pdf` and optional
+   `--output-dir PATH` produce print-ready reports with one page per track (in
+   natural track order `1, 2, …, 10, …, 100`) and full-resolution spectrograms.
 
 ---
 

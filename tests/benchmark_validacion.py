@@ -831,8 +831,9 @@ def _detailed_validation_doc(section, rows):
         "\n".join(f"{r['archivo']}:{r['sha256']}" for r in sorted(rows, key=lambda x: x["archivo"])).encode("utf-8")
     ).hexdigest()
 
+    from main import VERSION as APP_VERSION
     lines = [
-        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.9.9) — Validation Report (2026-11-16)",
+        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v{APP_VERSION}) — Validation Report (2026-11-16)",
         "",
         section,
         "",
@@ -880,10 +881,16 @@ def update_document(path, section):
 
 def main():
     directory = tempfile.mkdtemp(prefix="flac_verifier_benchmark_")
+    old_cache_env = os.environ.get("FLAC_VERIFIER_CACHE_DIR")
+    os.environ["FLAC_VERIFIER_CACHE_DIR"] = os.path.join(directory, "_cache")
     try:
         rows = evaluate(directory)
         coherence_ok, album = evaluate_album_coherence(directory)
     finally:
+        if old_cache_env is None:
+            os.environ.pop("FLAC_VERIFIER_CACHE_DIR", None)
+        else:
+            os.environ["FLAC_VERIFIER_CACHE_DIR"] = old_cache_env
         shutil.rmtree(directory, ignore_errors=True)
 
     tp, tn, fp, fn = matriz(rows)

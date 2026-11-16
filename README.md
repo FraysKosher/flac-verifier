@@ -5,9 +5,9 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.9.9](https://img.shields.io/badge/version-2.9.9-blue)](CHANGELOG.md)
+[![Version: 2.10.0](https://img.shields.io/badge/version-2.10.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 359](https://img.shields.io/badge/tests-359-brightgreen)](#tests)
+[![Tests: 383](https://img.shields.io/badge/tests-383-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
 lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
@@ -62,18 +62,23 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.9.9](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.9.9)**,
+Download **[FLAC Verifier 2.10.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.10.0)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.9.9.txt`:
+To verify the download with `SHA256SUMS_2.10.0.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.9.9-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.10.0-win64.zip -Algorithm SHA256
 ```
 
 ### From source
 
 ```bash
+# With uv (recommended for CLI/GUI tools) or pipx
+uv tool install ".[all]"
+flac-verifier
+
+# Or traditional pip in a virtual environment
 pip install -r requirements.txt
 ```
 
@@ -87,23 +92,29 @@ drop) are optional; the engine and CLI work without them.
 ### Graphical interface
 
 ```bash
+flac-verifier                            # when installed via uv / pipx
 python gui.py
 python verificar_flac.py --gui "D:/Music/Album"
 ```
 
-Drop a folder or `.flac` file onto the window (or click **Browse**), choose
-your options on the left rail, and press **Analyze**. Click any row in the
-results table to open the track inspector with its spectrogram, technical metrics
-and detected issues or technical notes. Use the top-right sun/moon button to
-switch between dark and light themes in place.
+Drop a `.flac` file, a single album folder, or a whole artist/library tree onto
+the window (or click **Browse folder**), choose your options on the left rail,
+and press **Analyze**. Multi-album folder trees are queued album-by-album
+automatically, leaving music directories untouched by default while storing
+working cache and PNG spectrograms in your OS user cache directory. Filter the
+results live (`All`, `Flagged`, `Suspicious`, `Errors`), click any row to open
+the track inspector, and use the top-right sun/moon button to switch between
+dark and light themes in place.
 
 <p align="center">
   <img src="docs/screenshots/batch_inspector.png" alt="FLAC Verifier batch results and track inspector" width="900">
 </p>
 
-When **Generate PDF report** is checked, a self-contained `flac_verifier_report.pdf`
-is saved inside the analyzed folder with an executive cover, one page per song
-and an overall summary table:
+**Generate PDF report** starts unchecked by default to avoid unexpected writes
+during bulk or read-only scans. When enabled, a **PDF destination** selector lets
+you choose explicitly between **Save in each album folder** (default) or **Save in
+custom folder...** (using `<Album>_flac_verifier_report.pdf` filenames so
+multi-album runs never overwrite earlier reports):
 
 <p align="center">
   <img src="docs/screenshots/pdf_report.png" alt="FLAC Verifier generated PDF verification report" width="900">
@@ -117,14 +128,16 @@ python verificar_flac.py
 
 # Non-interactive NDJSON engine (for scripts or automation)
 python motor_flac.py --path "C:/Music/Album" --pdf
+python motor_flac.py --path "C:/Music/Album" --pdf --output-dir "D:/Reports"
 python motor_flac.py --path "track.flac" --png --no-cache
 ```
 
 | Option | Values | Description |
 |---|---|---|
 | `--path` | path | `.flac` file or album folder (required) |
-| `--png` | — | Save spectrograms in `<folder>/_spectrograms/` |
-| `--pdf` | — | Generate `flac_verifier_report.pdf` in the album folder (implies `--png`) |
+| `--png` | — | Save PNG spectrograms in the OS user cache directory (`FLAC_VERIFIER_CACHE_DIR` override) |
+| `--pdf` | — | Generate the per-album PDF report (implies `--png`) |
+| `--output-dir` | path | Destination folder for generated PDF reports (`<Album>_flac_verifier_report.pdf`) |
 | `--workers` | integer | Parallel processes (`0` = auto up to 8, `1` = sequential) |
 | `--no-cache` | — | Ignore and do not write the per-track result cache |
 
@@ -161,8 +174,9 @@ FLAC VERIFIER/
 ├── informe_pdf.py            per-album PDF report generator
 ├── build.py                  PyInstaller builder & post-build verifier
 ├── comprobar_ejecutable.py   12-check verification suite for the frozen .exe
+├── pyproject.toml            PEP 621 metadata & uv / pipx console scripts
 ├── docs/                     technical reference, design system, validation & comparison
-└── tests/                    359 unit tests (stdlib unittest, synthetic fixtures)
+└── tests/                    383 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -173,7 +187,7 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 359-test suite (~65 s, no external audio files needed)
+# Run the full 383-test suite (~70 s, no external audio files needed)
 python -m unittest discover -s tests
 
 # Skip GUI tests in headless environments
@@ -196,7 +210,7 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.9.9`).
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.10.0`).
 - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 260-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
 - **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.
