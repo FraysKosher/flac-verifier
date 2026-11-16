@@ -14,6 +14,7 @@ Report structure:
 """
 import html
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -114,11 +115,47 @@ def available():
     return REPORTLAB_OK
 
 
-def report_path(analyzed_path):
-    """The report goes into the album folder; if that is a file, next to it."""
+def _sanitize_label(text: str) -> str:
+    """Normalises an album or track name into a safe cross-platform filename stem."""
+    cleaned = "".join(
+        "_" if (ord(ch) < 32 or ch in '<>:"/\\|?*') else ch
+        for ch in str(text or "")
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned or "album"
+
+
+def report_path(analyzed_path, output_dir=None):
+    """Returns the PDF destination path (album folder by default, or `output_dir`)."""
     absolute = os.path.abspath(analyzed_path)
-    base = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
-    return os.path.join(base, REPORT_NAME)
+    if not output_dir:
+        base = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
+        return os.path.join(base, REPORT_NAME)
+
+    out_base = os.path.abspath(output_dir)
+    if os.path.isdir(absolute) or not absolute.lower().endswith(".flac"):
+        raw_name = os.path.basename(os.path.normpath(absolute))
+    else:
+        raw_name = os.path.splitext(os.path.basename(absolute))[0]
+    safe_name = _sanitize_label(raw_name)
+    primary = os.path.join(out_base, f"{safe_name}_{REPORT_NAME}")
+    if not os.path.exists(primary):
+        return primary
+
+    parent_raw = os.path.basename(os.path.dirname(os.path.normpath(absolute)))
+    if parent_raw:
+        with_parent = os.path.join(
+            out_base, f"{_sanitize_label(parent_raw)}_{safe_name}_{REPORT_NAME}"
+        )
+        if not os.path.exists(with_parent):
+            return with_parent
+
+    suffix_num = 2
+    while True:
+        candidate = os.path.join(out_base, f"{safe_name}_{suffix_num}_{REPORT_NAME}")
+        if not os.path.exists(candidate):
+            return candidate
+        suffix_num += 1
 
 
 # ─── FORMAT HELPERS ──────────────────────────────────────────────────────────
@@ -689,7 +726,7 @@ def _elements(analyzed_path, results, mode, styles, temporal):
     yield _final_table(results, styles)
 
 
-def generate(analyzed_path, results, destination=None, mode=None):
+def generate(analyzed_path, results, destination=None, mode=None, output_dir=None):
     """Writes the PDF report. NEVER raises.
 
     Returns {"ok": bool, "ruta": str|None, "error": str|None, "paginas": int}.
@@ -706,11 +743,14 @@ def generate(analyzed_path, results, destination=None, mode=None):
         enumerate(results),
         key=lambda par: par[1].get("indice_original", par[0]))]
 
-    destination = destination or report_path(analyzed_path)
+    destination = destination or report_path(analyzed_path, output_dir=output_dir)
     styles = _styles()
     counter = {"paginas": 0}
     temporal = None
     try:
+        target_parent = os.path.dirname(os.path.abspath(destination))
+        if target_parent:
+            os.makedirs(target_parent, exist_ok=True)
         # The recompressed images live here and are deleted when the build ends.
         temporal = tempfile.mkdtemp(prefix="flac_verifier_report_")
         document = SimpleDocTemplate(

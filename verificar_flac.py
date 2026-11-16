@@ -265,8 +265,8 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
               f"{verdicts['PROBABLE UPSCALE']} ❌ UPSCALE"
               + (f"  |  {failures} ❌ WITH ERRORS" if failures else ""))
         print(f"{'═'*60}")
-        if save_png and engine.PIL_OK:
-            print(f"📊 Spectrograms in: {os.path.join(path, '_spectrograms')}")
+        if save_png and engine.PIL_OK and files:
+            print(f"📊 Spectrograms in: {engine._png_folder(files[0])}")
 
     if save_pdf:
         # Sort by original track index so held-back coherence tracks appear

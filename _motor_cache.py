@@ -5,12 +5,14 @@ fingerprint are passed by the facade, so mutating `motor_flac.ENGINE_VERSION`
 still invalidates the cache (the tests rely on that).
 """
 from enum import Enum
+import hashlib
 import json
 import math
 import os
+import sys
 import time
 
-from _motor_bits import _normalize_path_fs
+from _motor_bits import _normalize_path_fs, retry_io
 
 
 class CacheLookupStatus(str, Enum):
@@ -31,9 +33,44 @@ def _sanitize(obj):
     return obj
 
 PNG_FOLDER_NAME = "_spectrograms"
+CACHE_ENV_VAR = "FLAC_VERIFIER_CACHE_DIR"
+
+
+def cache_root() -> str:
+    """Centralized OS user cache root so music folders stay completely untouched."""
+    env_dir = os.environ.get(CACHE_ENV_VAR, "").strip()
+    if env_dir:
+        return os.path.abspath(env_dir)
+    if sys.platform.startswith("win"):
+        base = (
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        )
+        return os.path.join(base, "FLAC_Verifier", "cache")
+    if sys.platform == "darwin":
+        return os.path.join(
+            os.path.expanduser("~"), "Library", "Caches", "FLAC_Verifier", "cache"
+        )
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip() or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    return os.path.join(xdg, "flac-verifier", "cache")
+
+
+def _album_bucket_hash(audio_path: str) -> str:
+    """Stable hash of the normalized album folder path to isolate colliding names."""
+    album_dir = os.path.normcase(
+        os.path.normpath(os.path.abspath(os.path.dirname(os.path.abspath(audio_path))))
+    )
+    return hashlib.sha256(
+        album_dir.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:16]
+
 
 def _png_folder(audio_path):
-    return os.path.join(os.path.dirname(os.path.abspath(audio_path)), PNG_FOLDER_NAME)
+    return os.path.join(cache_root(), _album_bucket_hash(audio_path))
+
 
 def _cache_path(audio_path, mode, seconds):
     """One entry per file AND per mode: analysing in 'center' does not erase the
@@ -46,7 +83,7 @@ def _cache_path(audio_path, mode, seconds):
 def _identity(path, meta):
     """Cheap and robust fingerprint of the file: size, date and STREAMINFO MD5."""
     try:
-        info = os.stat(_normalize_path_fs(path))
+        info = retry_io(lambda: os.stat(_normalize_path_fs(path)))
         return {"tamano": info.st_size, "mtime_ns": info.st_mtime_ns,
                 "md5": meta.get("md5") if isinstance(meta.get("md5"), int) else None}
     except OSError:

@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 
 import numpy as np
 import soundfile as sf
@@ -557,6 +558,168 @@ class TestStateMachines(unittest.TestCase):
             self.assertEqual(block_acc.result(), block_first)
             with self.assertRaises(RuntimeError):
                 block_acc.add(audio, 0)
+
+
+class TestCentralizedCacheIsolation(unittest.TestCase):
+    """OS user cache root, album-bucket isolation, and zero-write guarantees."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = fx.Fixtures()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_cache_root_platform_defaults_and_env_override(self):
+        with tempfile.TemporaryDirectory() as custom_dir:
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": custom_dir}, clear=False
+            ):
+                self.assertEqual(engine.cache_root(), os.path.abspath(custom_dir))
+
+        home = os.path.expanduser("~")
+        with mock.patch.object(engine._motor_cache.sys, "platform", "win32"):
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FLAC_VERIFIER_CACHE_DIR": "",
+                    "LOCALAPPDATA": "C:/Users/TestUser/AppData/Local",
+                },
+                clear=False,
+            ):
+                self.assertEqual(
+                    engine.cache_root(),
+                    os.path.join("C:/Users/TestUser/AppData/Local", "FLAC_Verifier", "cache"),
+                )
+
+        with mock.patch.object(engine._motor_cache.sys, "platform", "darwin"):
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": ""}, clear=False
+            ):
+                self.assertEqual(
+                    engine.cache_root(),
+                    os.path.join(home, "Library", "Caches", "FLAC_Verifier", "cache"),
+                )
+
+        with mock.patch.object(engine._motor_cache.sys, "platform", "linux"):
+            with mock.patch.dict(
+                os.environ,
+                {"FLAC_VERIFIER_CACHE_DIR": "", "XDG_CACHE_HOME": "/tmp/custom_xdg"},
+                clear=False,
+            ):
+                self.assertEqual(
+                    engine.cache_root(),
+                    os.path.join("/tmp/custom_xdg", "flac-verifier", "cache"),
+                )
+            with mock.patch.dict(
+                os.environ,
+                {"FLAC_VERIFIER_CACHE_DIR": "", "XDG_CACHE_HOME": ""},
+                clear=False,
+            ):
+                self.assertEqual(
+                    engine.cache_root(),
+                    os.path.join(home, ".cache", "flac-verifier", "cache"),
+                )
+
+    def test_bucket_hash_isolates_colliding_track_names_across_folders(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache_store")
+            folder_a = os.path.join(tmpdir, "Album_A")
+            folder_b = os.path.join(tmpdir, "Album_B")
+            os.makedirs(folder_a)
+            os.makedirs(folder_b)
+            track_a = os.path.join(folder_a, "01 - Intro.flac")
+            track_b = os.path.join(folder_b, "01 - Intro.flac")
+            shutil.copy(self.fx["ok16"], track_a)
+            shutil.copy(self.fx["corte_16k"], track_b)
+
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                self.assertNotEqual(
+                    engine._png_folder(track_a), engine._png_folder(track_b)
+                )
+                self.assertNotEqual(
+                    engine._cache_path(track_a, "center", None),
+                    engine._cache_path(track_b, "center", None),
+                )
+                first_a = engine.analyze_file_data(
+                    track_a, "center", None, True, use_cache=True
+                )
+                first_b = engine.analyze_file_data(
+                    track_b, "center", None, True, use_cache=True
+                )
+                self.assertEqual(first_a["veredicto"], "GENUINE LOSSLESS")
+                self.assertEqual(first_b["veredicto"], "PROBABLE UPSCALE")
+                png_a = first_a["esp"]["espectrograma"]
+                png_b = first_b["esp"]["espectrograma"]
+                self.assertTrue(png_a and os.path.isfile(png_a))
+                self.assertTrue(png_b and os.path.isfile(png_b))
+                self.assertNotEqual(png_a, png_b)
+
+                second_a = engine.analyze_file_data(
+                    track_a, "center", None, True, use_cache=True
+                )
+                second_b = engine.analyze_file_data(
+                    track_b, "center", None, True, use_cache=True
+                )
+                self.assertTrue(second_a.get("desde_cache"))
+                self.assertTrue(second_b.get("desde_cache"))
+                self.assertEqual(second_a["veredicto"], "GENUINE LOSSLESS")
+                self.assertEqual(second_b["veredicto"], "PROBABLE UPSCALE")
+                self.assertEqual(second_a["esp"]["espectrograma"], png_a)
+                self.assertEqual(second_b["esp"]["espectrograma"], png_b)
+
+    def test_music_folder_stays_completely_untouched_with_cache_and_png(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache_store")
+            album_dir = os.path.join(tmpdir, "ReadOnlyCandidate")
+            os.makedirs(album_dir)
+            shutil.copy(self.fx["ok16"], os.path.join(album_dir, "01_ok16.flac"))
+            shutil.copy(self.fx["ok24"], os.path.join(album_dir, "02_ok24.flac"))
+            before_list = sorted(os.listdir(album_dir))
+
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                proc = fx.run_engine(
+                    album_dir, mode="full", extra=("--png", "--workers", "1")
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                events = [
+                    json.loads(line)
+                    for line in proc.stdout.splitlines()
+                    if line.strip()
+                ]
+                result_events = [e for e in events if e.get("tipo") == "resultado"]
+                self.assertEqual(len(result_events), 2)
+                for ev in result_events:
+                    png_path = (ev.get("esp") or {}).get("espectrograma")
+                    self.assertTrue(png_path and os.path.isfile(png_path))
+                    self.assertTrue(
+                        os.path.abspath(png_path).startswith(os.path.abspath(isolated_cache))
+                    )
+                    cache_file = engine._cache_path(ev["ruta"], "full", None)
+                    self.assertTrue(os.path.isfile(cache_file))
+
+            self.assertEqual(sorted(os.listdir(album_dir)), before_list)
+            self.assertFalse(os.path.exists(os.path.join(album_dir, "_spectrograms")))
+
+    def test_schema_version_invalidation(self):
+        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.4.0")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "schema_probe.flac")
+            shutil.copy(self.fx["ok16"], path)
+            first_result = engine.analyze_file_data(path, "center", None, False)
+            self.assertFalse(first_result.get("desde_cache"))
+            original_schema = engine.CACHE_SCHEMA_VERSION
+            engine.CACHE_SCHEMA_VERSION = original_schema + "-test"
+            try:
+                second_result = engine.analyze_file_data(path, "center", None, False)
+            finally:
+                engine.CACHE_SCHEMA_VERSION = original_schema
+            self.assertFalse(second_result.get("desde_cache"))
 
 
 if __name__ == "__main__":

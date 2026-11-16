@@ -5,9 +5,14 @@ Covers the failures reproduced in the audit:
   - verificar_metadatos raised MutagenError on a path that does not exist.
   - an unexpected exception escaped from analizar_archivo_datos.
 """
+import builtins
 import os
 import sys
 import unittest
+from unittest import mock
+
+import soundfile as sf
+from mutagen import MutagenError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
@@ -86,6 +91,185 @@ class test_files_broken(unittest.TestCase):
         self.assertIn("veredicto", res)
         self.assertIn("esp", res)
         self.assertIn("score", res)
+
+
+class TestTransientIoRetry(unittest.TestCase):
+    """Bounded retry on transient NAS/SMB spin-down OS errors."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = fx.Fixtures()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_retry_io_recovers_on_second_attempt_and_stops_after_budget(self):
+        waits = []
+        calls = 0
+
+        def _flaky_once():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("NAS spin-up")
+            return "ready"
+
+        self.assertEqual(engine.retry_io(_flaky_once, sleep_fn=waits.append), "ready")
+        self.assertEqual(calls, 2)
+        self.assertEqual(waits, [0.25])
+
+        waits_exhausted = []
+        fail_calls = 0
+
+        def _always_fails():
+            nonlocal fail_calls
+            fail_calls += 1
+            raise OSError("network down")
+
+        with self.assertRaises(OSError):
+            engine.retry_io(_always_fails, sleep_fn=waits_exhausted.append)
+        self.assertEqual(fail_calls, 3)
+        self.assertEqual(waits_exhausted, [0.25, 0.75])
+
+    def test_retry_io_does_not_retry_logical_format_errors(self):
+        for exc in (
+            ValueError("bad value"),
+            engine.FLACNoHeaderError("not flac"),
+            sf.LibsndfileError(158, "unrecognised format"),
+        ):
+            with self.subTest(exc=type(exc).__name__):
+                waits = []
+                calls = 0
+
+                def _bad_format(err=exc):
+                    nonlocal calls
+                    calls += 1
+                    raise err
+
+                with self.assertRaises(type(exc)):
+                    engine.retry_io(_bad_format, sleep_fn=waits.append)
+                self.assertEqual(calls, 1)
+                self.assertEqual(waits, [])
+
+        io_waits = []
+        io_calls = 0
+
+        def _system_io_err():
+            nonlocal io_calls
+            io_calls += 1
+            raise sf.LibsndfileError(2, "system I/O")
+
+        with self.assertRaises(sf.LibsndfileError):
+            engine.retry_io(_system_io_err, sleep_fn=io_waits.append)
+        self.assertEqual(io_calls, 3)
+        self.assertEqual(io_waits, [0.25, 0.75])
+
+        real_open = builtins.open
+        open_calls = 0
+        target = os.path.abspath(self.fx["texto"])
+
+        def _counting_open(path, *args, **kwargs):
+            nonlocal open_calls
+            if isinstance(path, str) and os.path.abspath(path.lstrip("\\\\?\\")) == target:
+                open_calls += 1
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=_counting_open), \
+             mock.patch("time.sleep") as mock_sleep:
+            self.assertFalse(engine.verify_signature(self.fx["texto"]))
+        self.assertEqual(open_calls, 1)
+        mock_sleep.assert_not_called()
+
+    def test_metadata_and_signature_recover_from_transient_os_error(self):
+        ok_path = self.fx["ok16"]
+        target = os.path.abspath(ok_path)
+        real_open = builtins.open
+        open_attempts = 0
+
+        def _flaky_open(path, *args, **kwargs):
+            nonlocal open_attempts
+            if (isinstance(path, str)
+                    and os.path.abspath(path.lstrip("\\\\?\\")) == target):
+                open_attempts += 1
+                if open_attempts == 1:
+                    raise OSError(5, "Input/output error")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=_flaky_open), \
+             mock.patch("time.sleep") as mock_sleep:
+            self.assertTrue(engine.verify_signature(ok_path))
+        self.assertEqual(open_attempts, 2)
+        mock_sleep.assert_called_once_with(0.25)
+
+        real_flac = engine.FLAC
+        flac_attempts = 0
+
+        def _flaky_flac(path):
+            nonlocal flac_attempts
+            flac_attempts += 1
+            if flac_attempts == 1:
+                err = MutagenError("read failed")
+                err.__cause__ = OSError("SMB wake")
+                raise err
+            return real_flac(path)
+
+        with mock.patch.object(engine, "FLAC", side_effect=_flaky_flac), \
+             mock.patch("time.sleep") as mock_sleep_meta:
+            meta = engine.verify_metadata(ok_path)
+        self.assertTrue(meta["valido"])
+        self.assertEqual(flac_attempts, 2)
+        mock_sleep_meta.assert_called_once_with(0.25)
+
+    def test_streaming_block_read_recovers_mid_file_with_bit_exact_md5(self):
+        path = self.fx["ok24"]
+        expected = engine.analyze_file_data(path, "center", None, False, use_cache=False)
+        self.assertEqual(expected["md5"]["estado"], "match")
+
+        real_soundfile = sf.SoundFile
+        block_size = 16384
+
+        for fail_seek in (False, True):
+            with self.subTest(reopen=fail_seek):
+                state = {"tripped": False, "seek_failed": False}
+
+                class _FlakySoundFileProxy:
+                    def __init__(self, inner_path):
+                        self._sf = real_soundfile(inner_path)
+
+                    def __getattr__(self, name):
+                        return getattr(self._sf, name)
+
+                    def seek(self, offset):
+                        if fail_seek and state["tripped"] and not state["seek_failed"]:
+                            state["seek_failed"] = True
+                            raise OSError("stale file handle")
+                        return self._sf.seek(offset)
+
+                    def read(self, *args, **kwargs):
+                        if not state["tripped"] and self._sf.tell() == block_size:
+                            state["tripped"] = True
+                            raise sf.LibsndfileError(2, "transient SMB read")
+                        return self._sf.read(*args, **kwargs)
+
+                    def close(self):
+                        return self._sf.close()
+
+                with mock.patch.object(engine, "FRAMES_BY_BLOCK", block_size), \
+                     mock.patch.object(engine.sf, "SoundFile", side_effect=_FlakySoundFileProxy), \
+                     mock.patch("time.sleep") as mock_sleep:
+                    recovered = engine.analyze_file_data(
+                        path, "center", None, False, use_cache=False
+                    )
+                self.assertEqual(recovered["md5"]["estado"], "match")
+                self.assertEqual(
+                    recovered["md5"]["calculado"], expected["md5"]["calculado"]
+                )
+                self.assertEqual(recovered["veredicto"], expected["veredicto"])
+                self.assertTrue(state["tripped"])
+                if fail_seek:
+                    self.assertTrue(state["seek_failed"])
+                mock_sleep.assert_called()
 
 
 if __name__ == "__main__":

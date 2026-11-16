@@ -5,12 +5,16 @@ streams and check the TEXT it contains, the number of pages and that every song
 appears. PyMuPDF is used only to verify; it is not a dependency of the project.
 """
 import base64
+import contextlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -543,11 +547,97 @@ class test_report_pdf(unittest.TestCase):
     def test_pdf_png_are_combinable(self):
         probe = self.fx.subfolder("album_combinado", ("ok16",))
         p = fx.run_engine(probe, extra=("--png", "--pdf"))
-        tipos = [json.loads(l)["tipo"] for l in p.stdout.splitlines() if l.strip()]
+        events = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+        tipos = [e["tipo"] for e in events]
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("informe", tipos)
-        self.assertTrue(os.path.isdir(os.path.join(probe, "_spectrograms")))
+        self.assertFalse(os.path.exists(os.path.join(probe, "_spectrograms")))
+        result_ev = next(e for e in events if e["tipo"] == "resultado")
+        png_path = (result_ev.get("esp") or {}).get("espectrograma")
+        self.assertTrue(png_path and os.path.exists(png_path))
         self.assertTrue(os.path.exists(os.path.join(probe, pdf.REPORT_NAME)))
+
+    def test_output_dir_writes_pdf_outside_music_folder(self):
+        album_dir = os.path.join(self.fx.dir, "Dark Side")
+        os.makedirs(album_dir, exist_ok=True)
+        shutil.copy(self.fx["ok16"], os.path.join(album_dir, "01_ok16.flac"))
+        shutil.copy(self.fx["corte_16k"], os.path.join(album_dir, "02_corte.flac"))
+        before_list = sorted(os.listdir(album_dir))
+        out_dir = os.path.join(self.fx.dir, "pdf_exports")
+
+        p = fx.run_engine(album_dir, extra=("--pdf", "--output-dir", out_dir))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        events = [json.loads(line) for line in p.stdout.splitlines() if line.strip()]
+        report_events = [e for e in events if e.get("tipo") == "informe"]
+        self.assertEqual(len(report_events), 1)
+        expected_pdf = os.path.join(
+            os.path.abspath(out_dir), f"Dark Side_{pdf.REPORT_NAME}"
+        )
+        self.assertEqual(report_events[0]["ruta"], expected_pdf)
+        self.assertTrue(os.path.isfile(expected_pdf))
+        self.assertGreater(os.path.getsize(expected_pdf), 10 * 1024)
+        self.assertEqual(sorted(os.listdir(album_dir)), before_list)
+
+    def test_output_dir_disambiguates_multiple_album_reports(self):
+        shared_out = os.path.join(self.fx.dir, "shared_pdf_out")
+        os.makedirs(shared_out, exist_ok=True)
+        results = analyze_album(self.album, save_png=False)
+
+        one_dir = os.path.join(self.fx.dir, "Artist", "AlbumOne")
+        two_dir = os.path.join(self.fx.dir, "Artist", "AlbumTwo")
+        os.makedirs(one_dir, exist_ok=True)
+        os.makedirs(two_dir, exist_ok=True)
+        rep_one = pdf.generate(one_dir, results, output_dir=shared_out)
+        rep_two = pdf.generate(two_dir, results, output_dir=shared_out)
+        self.assertTrue(rep_one["ok"], rep_one.get("error"))
+        self.assertTrue(rep_two["ok"], rep_two.get("error"))
+        self.assertEqual(
+            os.path.basename(rep_one["ruta"]), f"AlbumOne_{pdf.REPORT_NAME}"
+        )
+        self.assertEqual(
+            os.path.basename(rep_two["ruta"]), f"AlbumTwo_{pdf.REPORT_NAME}"
+        )
+
+        box_a = os.path.join(self.fx.dir, "BoxA", "CD1")
+        box_b = os.path.join(self.fx.dir, "BoxB", "CD1")
+        os.makedirs(box_a, exist_ok=True)
+        os.makedirs(box_b, exist_ok=True)
+        rep_a = pdf.generate(box_a, results, output_dir=shared_out)
+        rep_b = pdf.generate(box_b, results, output_dir=shared_out)
+        rep_b_again = pdf.generate(box_b, results, output_dir=shared_out)
+        self.assertTrue(rep_a["ok"], rep_a.get("error"))
+        self.assertTrue(rep_b["ok"], rep_b.get("error"))
+        self.assertTrue(rep_b_again["ok"], rep_b_again.get("error"))
+        self.assertEqual(
+            os.path.basename(rep_a["ruta"]), f"CD1_{pdf.REPORT_NAME}"
+        )
+        self.assertEqual(
+            os.path.basename(rep_b["ruta"]), f"BoxB_CD1_{pdf.REPORT_NAME}"
+        )
+        self.assertEqual(
+            os.path.basename(rep_b_again["ruta"]), f"CD1_2_{pdf.REPORT_NAME}"
+        )
+
+    def test_read_only_album_folder_pdf_emits_warning_without_aborting(self):
+        probe = self.fx.subfolder("readonly_pdf_sim", ("ok16",))
+        stream = io.StringIO()
+        with mock.patch.object(
+            pdf,
+            "SimpleDocTemplate",
+            side_effect=PermissionError("Read-only file system"),
+        ):
+            with contextlib.redirect_stdout(stream):
+                code = engine.main_cli(["--path", probe, "--pdf", "--workers", "1"])
+        self.assertEqual(code, 0)
+        events = [
+            json.loads(line) for line in stream.getvalue().splitlines() if line.strip()
+        ]
+        self.assertEqual(events[-1]["tipo"], "fin")
+        self.assertTrue(any(e.get("tipo") == "resultado" for e in events))
+        warnings = [e for e in events if e.get("tipo") == "aviso"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("could not generate the PDF report", warnings[0]["mensaje"])
+        self.assertIn("Read-only file system", warnings[0]["mensaje"])
 
 
 if __name__ == "__main__":

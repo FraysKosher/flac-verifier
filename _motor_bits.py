@@ -6,8 +6,41 @@ or cache modules: this layer only needs NumPy, soundfile/mutagen and stdlib.
 from enum import Enum
 import hashlib
 import os
+import time
 
 import numpy as np
+
+
+IO_RETRY_DELAYS = (0.25, 0.75)
+
+
+def _is_transient_io_error(exc: BaseException) -> bool:
+    """True when `exc` represents a transient OS/filesystem/NAS I/O error.
+
+    Logical format errors (invalid FLAC header, bitstream sync loss, or
+    unrecognised file format) fail immediately without retrying.
+    """
+    if isinstance(exc, OSError):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, OSError):
+        return True
+    if type(exc).__name__ == "LibsndfileError" and getattr(exc, "code", None) == 2:
+        return True
+    return False
+
+
+def retry_io(operation, delays=IO_RETRY_DELAYS, sleep_fn=None):
+    """Runs `operation()` with short bounded backoff on transient I/O errors."""
+    wait = time.sleep if sleep_fn is None else sleep_fn
+    total_delays = tuple(delays)
+    for attempt in range(len(total_delays) + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if attempt >= len(total_delays) or not _is_transient_io_error(exc):
+                raise
+            wait(total_delays[attempt])
 
 
 class AccumulatorState(str, Enum):

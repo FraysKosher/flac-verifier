@@ -4,6 +4,7 @@ Derived from the audit scripts (_audit_flac/sondas*.py): it builds synthetic
 FLAC files and corrupt variants, and runs the engine as a subprocess to
 validate the JSON protocol.
 """
+import atexit
 import json
 import os
 import shutil
@@ -20,6 +21,11 @@ CLI   = os.path.join(ROOT, "verificar_flac.py")
 
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+if not os.environ.get("FLAC_VERIFIER_CACHE_DIR"):
+    _SUITE_CACHE_DIR = tempfile.mkdtemp(prefix="flac_verifier_test_cache_")
+    os.environ["FLAC_VERIFIER_CACHE_DIR"] = _SUITE_CACHE_DIR
+    atexit.register(shutil.rmtree, _SUITE_CACHE_DIR, True)
 
 
 # ─── SIGNALS ─────────────────────────────────────────────────────────────────

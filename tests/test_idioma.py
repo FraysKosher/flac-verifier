@@ -351,7 +351,7 @@ class TestLanguage(unittest.TestCase):
         import motor_flac
         source = Path(ROOT, "motor_flac.py").read_text(encoding="utf-8")
         for flag in ("--path", "--mode", "--seconds", "--png", "--pdf",
-                        "--workers", "--no-cache"):
+                        "--output-dir", "--workers", "--no-cache"):
             with self.subTest(flag=flag):
                 self.assertIn(f'"{flag}"', source)
         for antigua in ("--ruta", "--modo", "--seg", "--sin-cache"):

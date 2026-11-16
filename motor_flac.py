@@ -44,6 +44,7 @@ from _motor_espectral import Image
 
 from _motor_bits import (
     AccumulatorState,
+    IO_RETRY_DELAYS, _is_transient_io_error, retry_io,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
     _normalize_path_fs, _Int24Packer, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
     _StreamingBitDepthAccumulator,
@@ -72,7 +73,8 @@ from _motor_veredicto import (
     apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (
-    PNG_FOLDER_NAME, CacheLookupStatus, _png_folder, _cache_path, _identity,
+    PNG_FOLDER_NAME, CACHE_ENV_VAR, cache_root, _album_bucket_hash,
+    CacheLookupStatus, _png_folder, _cache_path, _identity,
     _analysis_key, _replace_with_retries, _sanitize,
     read_cache_entry as _cache_read_entry,
     read_cache as _cache_read, write_cache as _cache_write,
@@ -249,7 +251,7 @@ ENGINE_VERSION = "14.5"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.3.0"
+CACHE_SCHEMA_VERSION = "2.4.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 
@@ -353,15 +355,21 @@ def write_cache(path, meta, mode, seconds, result):
                            ENGINE_VERSION, CACHE_SCHEMA_VERSION, render_fingerprint())
 
 def verify_signature(path):
+    norm_path = _normalize_path_fs(path)
+
+    def _read_magic():
+        with open(norm_path, "rb") as f:
+            return f.read(4)
+
     try:
-        with open(_normalize_path_fs(path), "rb") as f:
-            return f.read(4) == b"fLaC"
-    except (FileNotFoundError, PermissionError):
+        return retry_io(_read_magic) == b"fLaC"
+    except OSError:
         return False
 
 def verify_metadata(path):
+    norm_path = _normalize_path_fs(path)
     try:
-        audio = FLAC(_normalize_path_fs(path))
+        audio = retry_io(lambda: FLAC(norm_path))
         info  = audio.info
         return {
             "valido":           True,
@@ -445,8 +453,11 @@ def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
 
 
 def read_audio(path):
+    norm_path = _normalize_path_fs(path)
     try:
-        data, sr = sf.read(_normalize_path_fs(path), dtype="float64", always_2d=True)
+        data, sr = retry_io(
+            lambda: sf.read(norm_path, dtype="float64", always_2d=True)
+        )
         return data, sr
     except Exception:
         try:
@@ -520,15 +531,65 @@ def read_audio(path):
 # float64 and the whole STFT was built: a 10-minute 24/96 asked for ~2.8 GB.
 
 
+def _read_sf_block_with_retry(
+    sf_handle, norm_path, offset, read_call, delays=IO_RETRY_DELAYS, sleep_fn=None
+):
+    """Reads a block from an open SoundFile, retrying transient NAS/I/O failures."""
+    try:
+        return sf_handle, read_call(sf_handle)
+    except Exception as exc:
+        if not _is_transient_io_error(exc):
+            raise
+        wait = time.sleep if sleep_fn is None else sleep_fn
+        last_exc = exc
+        for delay in tuple(delays):
+            wait(delay)
+            try:
+                sf_handle.seek(offset)
+                return sf_handle, read_call(sf_handle)
+            except Exception as retry_exc:
+                if not _is_transient_io_error(retry_exc):
+                    raise
+                last_exc = retry_exc
+            try:
+                sf_handle.close()
+            except Exception:
+                pass
+            try:
+                sf_handle = sf.SoundFile(norm_path)
+                if offset:
+                    sf_handle.seek(offset)
+                return sf_handle, read_call(sf_handle)
+            except Exception as reopen_exc:
+                if not _is_transient_io_error(reopen_exc):
+                    raise
+                last_exc = reopen_exc
+        raise last_exc
+
+
 def _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
     """Generator of blocks: it never loads the whole track into memory."""
+    norm_path = _normalize_path_fs(path)
     try:
-        with sf.SoundFile(_normalize_path_fs(path)) as f:
+        f = retry_io(lambda: sf.SoundFile(norm_path))
+        offset = 0
+        try:
             while True:
-                block = f.read(frames_by_block, dtype="float64", always_2d=True)
+                f, block = _read_sf_block_with_retry(
+                    f, norm_path, offset,
+                    lambda handle: handle.read(
+                        frames_by_block, dtype="float64", always_2d=True
+                    ),
+                )
                 if block.shape[0] == 0:
                     return
+                offset += block.shape[0]
                 yield block
+        finally:
+            try:
+                f.close()
+            except Exception:
+                pass
     except Exception:
         meta = verify_metadata(path)
         if meta.get("valido") and meta.get("bits_per_sample") == 32:
@@ -843,8 +904,10 @@ class _BlockAnalysis:
 
 def _analyze_streaming(path, meta, mode, seconds, save_png):
     """A single read of the file, with memory bounded per block."""
+    norm_path = _normalize_path_fs(path)
     try:
-        with sf.SoundFile(_normalize_path_fs(path)) as f:
+        f = retry_io(lambda: sf.SoundFile(norm_path))
+        try:
             sr    = f.samplerate
             total = f.frames
             accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
@@ -855,7 +918,9 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
             if bits == 16 and subtype == "PCM_16":
                 buf = np.empty((FRAMES_BY_BLOCK, f.channels), dtype="<i2")
                 while True:
-                    block = f.read(out=buf)
+                    f, block = _read_sf_block_with_retry(
+                        f, norm_path, offset, lambda handle: handle.read(out=buf)
+                    )
                     if block.shape[0] == 0:
                         break
                     accumulator.add_int16(block, offset)
@@ -864,7 +929,9 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
                 buf = np.empty((FRAMES_BY_BLOCK, f.channels), dtype="<i4")
                 q_buf = np.empty((FRAMES_BY_BLOCK, f.channels), dtype="<i4")
                 while True:
-                    block = f.read(out=buf)
+                    f, block = _read_sf_block_with_retry(
+                        f, norm_path, offset, lambda handle: handle.read(out=buf)
+                    )
                     if block.shape[0] == 0:
                         break
                     q_view = q_buf[: block.shape[0]]
@@ -873,11 +940,21 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
                     offset += block.shape[0]
             else:
                 while True:
-                    block = f.read(FRAMES_BY_BLOCK, dtype="float64", always_2d=True)
+                    f, block = _read_sf_block_with_retry(
+                        f, norm_path, offset,
+                        lambda handle: handle.read(
+                            FRAMES_BY_BLOCK, dtype="float64", always_2d=True
+                        ),
+                    )
                     if block.shape[0] == 0:
                         break
                     accumulator.add(block, offset)
                     offset += block.shape[0]
+        finally:
+            try:
+                f.close()
+            except Exception:
+                pass
     except Exception:
         if meta.get("bits_per_sample") != 32:
             raise
@@ -1296,7 +1373,7 @@ def natural_sort_key(path_or_name: str) -> tuple:
     return (parts, name.casefold(), name)
 
 
-def generate_pdf_report(analyzed_path, results, mode=None):
+def generate_pdf_report(analyzed_path, results, mode=None, output_dir=None):
     """Generates the PDF report and is unable to abort anything.
 
     It returns the same dict as informe_pdf.generate(), and if the module is not
@@ -1317,7 +1394,7 @@ def generate_pdf_report(analyzed_path, results, mode=None):
             ),
         )
     ]
-    return informe_pdf.generate(analyzed_path, ordered, mode=mode)
+    return informe_pdf.generate(analyzed_path, ordered, mode=mode, output_dir=output_dir)
 
 def main_cli(argv: "list[str] | None" = None) -> int:
     """Engine CLI. Returns the exit code (0 = OK).
@@ -1343,6 +1420,8 @@ def main_cli(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--pdf",   action="store_true",
                         help="Generate an album PDF report (implies generating the "
                              "spectrograms; requires reportlab)")
+    parser.add_argument("--output-dir", dest="output_dir", default=None,
+                        help="Destination folder for the generated PDF report")
     parser.add_argument("--workers", type=int, default=0,
                         help=f"Parallel processes. 0 = automatic "
                              f"(up to {MAX_WORKERS}), 1 = sequential")
@@ -1351,6 +1430,8 @@ def main_cli(argv: "list[str] | None" = None) -> int:
     args = parser.parse_args(argv)
 
     path     = args.path.strip().strip('"')
+    output_dir = args.output_dir.strip().strip('"') if args.output_dir else None
+    output_dir = output_dir or None
     seconds = args.seconds if args.mode == "seconds" else None
     # The report needs the spectrograms, so --pdf generates them even when --png
     # was not requested: the user does not have to remember to combine flags.
@@ -1360,9 +1441,16 @@ def main_cli(argv: "list[str] | None" = None) -> int:
     if os.path.isfile(path) and path.lower().endswith(".flac"):
         files = [path]
     elif os.path.isdir(path):
+        try:
+            entries = retry_io(lambda: os.listdir(_normalize_path_fs(path)))
+        except OSError as exc:
+            print(_json_line({"tipo": "error",
+                              "mensaje": f"Could not list folder ({type(exc).__name__}: {exc})"}),
+                  flush=True)
+            return 1
         files = [
             os.path.join(path, f)
-            for f in sorted(os.listdir(path), key=natural_sort_key)
+            for f in sorted(entries, key=natural_sort_key)
             if f.lower().endswith(".flac")
         ]
     else:
@@ -1393,7 +1481,8 @@ def main_cli(argv: "list[str] | None" = None) -> int:
 
     # Album report: the failure is reported, it never aborts the batch.
     if args.pdf:
-        report = generate_pdf_report(path, results, mode=args.mode)
+        report = generate_pdf_report(path, results, mode=args.mode,
+                                     output_dir=output_dir)
         if report["ok"]:
             print(_json_line({"tipo": "informe", "ruta": report["ruta"],
                                "paginas": report["paginas"], "total": total,

@@ -145,7 +145,13 @@ except ImportError:
     Image = ImageDraw = ImageFont = None
     PIL_OK = False
 
-from _motor_bits import AccumulatorState, FRAMES_BY_BLOCK, _classify_streaks
+from _motor_bits import (
+    AccumulatorState,
+    FRAMES_BY_BLOCK,
+    _classify_streaks,
+    _normalize_path_fs,
+)
+from _motor_cache import _png_folder
 
 WIDTH_PNG = 2100                    # total canvas width (14 in at 150 dpi)
 
@@ -408,10 +414,9 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, fre
     try:
         if not PIL_OK:
             return None, "Pillow is not available: PNG spectrograms are disabled"
-        folder        = os.path.dirname(audio_path)
-        name         = os.path.splitext(os.path.basename(audio_path))[0]
-        png_directory = os.path.join(folder, "_spectrograms")
-        os.makedirs(png_directory, exist_ok=True)   # race-safe across processes
+        name = os.path.splitext(os.path.basename(audio_path))[0]
+        png_directory = _png_folder(audio_path)
+        os.makedirs(_normalize_path_fs(png_directory), exist_ok=True)   # race-safe across processes
 
         png_path = os.path.join(png_directory, name + "_espectrograma.png")
 
@@ -430,7 +435,7 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, fre
         db -= float(np.max(db))
 
         render_spectrogram_fast(
-            db, samplerate, png_path, db_min=-80.0, db_max=0.0,
+            db, samplerate, _normalize_path_fs(png_path), db_min=-80.0, db_max=0.0,
             title=f"Spectrogram — {os.path.basename(audio_path)}",
             ceiling_hz=ceiling_hz, frequency_cutoff=frequency_cutoff,
             times=times)
