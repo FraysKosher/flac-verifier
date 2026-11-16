@@ -3450,6 +3450,99 @@ class test_forensic_rigorous(unittest.TestCase):
         )
         self.assertTrue(any("Upscaled lower-rate source (artificial cut-off" in p for p in probs_up96))
 
+    def test_45_high_dr_24bit_converter_tail_exemption(self):
+        """Genuine high-DR 24/48 warm studio masters pass Rule 5 via sub-ceiling
+        converter tail while 16/44.1 -> 24/48 upscales and band-limited 24-bit
+        repackages remain caught."""
+        sr = 48000
+        n = sr * 7
+        rng = np.random.default_rng(2029)
+        t = np.arange(n, dtype=np.float64) / sr
+
+        # Warm dynamic mix (centroid < 1800 Hz, -60 dB ceiling around 14-18 kHz)
+        # recorded through a genuine 24-bit / 48 kHz studio chain: body + subtle
+        # room/cymbal overtones rolling through a 22.8 kHz converter filter into
+        # a realistic -95 dBFS analog preamp floor.
+        white = rng.standard_normal((n, 2))
+        body = signal.sosfilt(
+            signal.butter(2, 2200.0, btype="low", fs=sr, output="sos"),
+            white * 0.14,
+            axis=0,
+        )
+        strum_env = (0.25 + 0.75 * (np.sin(2.0 * np.pi * 1.8 * t) ** 2))[:, None]
+        warm_air = signal.sosfilt(
+            signal.butter(3, 14500.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)) * 0.0045,
+            axis=0,
+        ) * strum_env
+        converter_tail = signal.sosfilt(
+            signal.butter(3, 21200.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)) * 0.0012,
+            axis=0,
+        ) * strum_env
+        preamp_floor = signal.sosfilt(
+            signal.butter(2, 23200.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)) * 0.000045,
+            axis=0,
+        )
+        chords = sum(
+            0.055 * np.sin(2.0 * np.pi * f0 * t)[:, None]
+            for f0 in (164.81, 246.94, 329.63, 493.88)
+        )
+        master_24_48 = np.clip(
+            body + chords + warm_air + converter_tail + preamp_floor,
+            -0.85,
+            0.85,
+        )
+        path_gen = self.base_path / "genuine_high_dr_dark_24_48.flac"
+        sf.write(path_gen, master_24_48, sr, subtype="PCM_24")
+
+        res_gen = motor_flac.analyze_file_data(str(path_gen), use_cache=False)
+        self.assertIs(res_gen["esp"]["decaimiento_acustico_suave"], True)
+        self.assertIs(res_gen["esp"]["native_24bit_hf_tail"], True)
+        self.assertEqual(res_gen["bdi"]["lsbs"], "active")
+        self.assertLess(res_gen["esp"]["techo_rel_nyquist"], 0.88)
+        self.assertIn(res_gen["veredicto"], GOOD_VERDICTS)
+        self.assertEqual(res_gen["problemas"], [])
+        self.assertTrue(
+            any("high-headroom master" in note for note in res_gen["notes"]),
+            res_gen["notes"],
+        )
+
+        # Counterexample 1: 16/44.1 CD downsample upscaled back to 24/48 + TPDF
+        cd_44 = signal.resample_poly(master_24_48, 147, 160, axis=0)
+        cd_16 = np.round(np.clip(cd_44, -0.99, 0.99) * 32768.0) / 32768.0
+        up_48 = signal.resample_poly(cd_16, 160, 147, axis=0)
+        lsb24 = 1.0 / float(1 << 23)
+        tpdf = (rng.random(up_48.shape) - rng.random(up_48.shape)) * lsb24
+        path_up = self.base_path / "cd44_upscaled_to_24_48.flac"
+        sf.write(path_up, np.clip(up_48 + tpdf, -0.99, 0.99), sr, subtype="PCM_24")
+
+        res_up = motor_flac.analyze_file_data(str(path_up), use_cache=False)
+        self.assertIs(res_up["esp"]["native_24bit_hf_tail"], False)
+        self.assertNotIn(res_up["veredicto"], GOOD_VERDICTS)
+        self.assertTrue(
+            any("not backed by the content" in p for p in res_up["problemas"]),
+            res_up["problemas"],
+        )
+
+        # Counterexample 2: band-limited signal + digital 24-bit TPDF silence floor
+        bandlim = signal.sosfilt(
+            signal.butter(5, 14000.0, btype="low", fs=sr, output="sos"),
+            body + chords + warm_air,
+            axis=0,
+        )
+        tpdf2 = (rng.random(bandlim.shape) - rng.random(bandlim.shape)) * lsb24
+        path_bl = self.base_path / "bandlimited_redither_24_48.flac"
+        sf.write(path_bl, np.clip(bandlim + tpdf2, -0.99, 0.99), sr, subtype="PCM_24")
+
+        res_bl = motor_flac.analyze_file_data(str(path_bl), use_cache=False)
+        self.assertIs(res_bl["esp"]["native_24bit_hf_tail"], False)
+        self.assertNotIn(res_bl["veredicto"], GOOD_VERDICTS)
+        self.assertTrue(
+            any("not backed by the content" in p for p in res_bl["problemas"]),
+            res_bl["problemas"],
+        )
 
 
 if __name__ == "__main__":

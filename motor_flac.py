@@ -84,7 +84,14 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.4"
+ENGINE_VERSION = "14.5"
+# 14.5: Exempt genuine high-headroom 24-bit <= 48 kHz studio masters from Rule 5
+#       ("not backed by the content") when smooth acoustic/band-limited decay is
+#       backed by clean active 24-bit LSBs, zero lossy signatures, and a
+#       continuous sub-ceiling converter roll-off into the Nyquist stopband
+#       (`native_24bit_hf_tail`), preventing false flags on dynamic 24/48 indie/
+#       acoustic recordings while still catching 44.1 -> 48 kHz upscales and
+#       dithered lossy repackages.
 # 14.4: Cap effective resolution at 16 bits when >97% of active samples sit on
 #       the 16-bit grid (`es_16bit_dither_en_24`), consolidate boundary
 #       micro-dither wording, avoid contradictory 48 kHz `far_cutoff` 20 kHz

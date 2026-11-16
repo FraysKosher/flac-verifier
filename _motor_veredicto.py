@@ -543,7 +543,18 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                          f"limited to {rel_ceiling*100:.0f}% of Nyquist "
                          f"({ceiling/1000:.1f} kHz)")
             forensic = bdi.get("forense_bits") or {}
-            if category == "far_cutoff" or rel_ceiling < 0.88:
+            native_24b_tail_ok = bool(
+                category != "far_cutoff"
+                and (acoustic_exemption or band_limited_exemption)
+                and spectrum.get("native_24bit_hf_tail")
+            )
+            if native_24b_tail_ok:
+                ledger.note(
+                    f"Genuine {bits}-bit high-headroom master: continuous sub-ceiling "
+                    f"converter roll-off up to Nyquist backs the declared "
+                    f"{bits}-bit/{sr/1000:.1f} kHz format"
+                )
+            elif category == "far_cutoff" or rel_ceiling < 0.88:
                 ledger.penalize(
                     f"Repackaged {bits}-bit container from a band-limited/lossy source: "
                     f"declares {bits} bits at {sr/1000:.1f} kHz but high frequencies are "
@@ -856,7 +867,10 @@ def _is_clean_album_support_track(result, reference):
     if sr <= 48000:
         return bool(
             rel >= 0.80
-            or (spectrum.get("decaimiento_acustico_suave") and rel >= 0.55)
+            or (
+                spectrum.get("decaimiento_acustico_suave")
+                and (rel >= 0.55 or spectrum.get("native_24bit_hf_tail"))
+            )
         )
     return bool(
         (spectrum.get("techo_hz") or 0) >= LIMIT_CD_HZ

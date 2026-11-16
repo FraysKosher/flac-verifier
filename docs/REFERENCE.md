@@ -129,6 +129,7 @@ with `error` and the process continues until it emits `fin`.
 | `esp.centroide_hz` | Spectral centroid: a low-centroid acoustic mix sits below 1800 Hz |
 | `esp.decaimiento_acustico_suave` | `true` for a low-centroid, no-cutoff, ≥ 11 kHz ceiling with a gentle (< 20 dB/kHz) edge: the acoustic exemption candidate |
 | `esp.rolloff_banda_limitada_genuina` | `true` for a smooth (< 18 dB/kHz), no-cutoff, 10–15.4 kHz ceiling with an analogue noise floor: vintage/archival/vinyl band-limited roll-off candidate |
+| `esp.native_24bit_hf_tail` | `true` on > 44.1 to 48 kHz streams when sub-ceiling high-frequency energy tapers monotonically above the 22.05 kHz CD band into a genuine 24-bit studio converter stopband floor |
 | `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
 | `esp.ratio_apagado_sfb21` | Fraction of high-energy frames whose sfb21 band is switched off |
 | `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
@@ -194,7 +195,7 @@ contribute.
 | Hi-res with no high content | 0.40 | ≥ 88.2 kHz and ceiling < 18 kHz (blocks) |
 | Empty LSBs | 0.40 | > 97 % of samples on the 16-bit grid (blocks) |
 | Partially inactive LSBs | 0.15 | 80–97 % (does not block) |
-| Declared resolution with no support | 0.25 | Claims > 16 bits at CD rate with no content above the CD band (blocks) |
+| Declared resolution with no support | 0.25 | Claims > 16 bits at CD/48 kHz rate with no content above the CD band (blocks, unless backed by active 24-bit LSBs, smooth acoustic decay and `native_24bit_hf_tail`) |
 | Joint-stereo collapse | 0.30 | Side channel drops at HF (`sospecha_joint_stereo`, blocks) |
 | Cut-off jitter | 0.20 / 0.30 | Moderate (550–1800 Hz): 0.20 advisory. Extreme (> 1800 Hz without stationarity, analogue roll-off or DSD): 0.30 (blocks at `SUSPICIOUS`) |
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
@@ -281,7 +282,7 @@ all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"14.4"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"14.5"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

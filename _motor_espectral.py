@@ -1155,6 +1155,33 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
                 3.5 <= drop_pre <= 42.0 and floor_post > -125.0
             )
 
+    # Sub-ceiling 24-bit converter roll-off: on high-DR (DR 13-16+) or warm
+    # acoustic/indie 24-bit studio masters at <= 48 kHz, the -60 dB activity
+    # contour (`ceiling_hz`) can cross early around 13-19 kHz while genuine
+    # musical overtones and studio room/tape air continue below -60 dB right up
+    # to the ADC anti-aliasing filter near Nyquist. A 44.1 -> 48 kHz CD upscale
+    # or a band-limited lossy source repackaged with 24-bit dither flattens out
+    # into its stopband floor instead of tapering monotonically through 0.84-0.96
+    # of Nyquist (above the 22.05 kHz CD limit on 48 kHz streams).
+    native_24bit_hf_tail = False
+    if 44100 < samplerate <= 48000 and near_nyq_high and ceiling_hz >= 10500.0:
+        s_hi, ok_hi = _freq_slice(freqs, 0.84 * nyquist, 0.90 * nyquist)
+        s_vhi, ok_vhi = _freq_slice(freqs, 0.90 * nyquist, 0.94 * nyquist)
+        s_acd, ok_acd = _freq_slice(freqs, 0.925 * nyquist, 0.958 * nyquist)
+        s_stop, ok_stop = _freq_slice(freqs, 0.975 * nyquist, 0.995 * nyquist)
+        if ok_hi and ok_vhi and ok_acd and ok_stop:
+            e_hi = float(np.median(spectrum_mid_db[s_hi]))
+            e_vhi = float(np.median(spectrum_mid_db[s_vhi]))
+            e_acd = float(np.median(spectrum_mid_db[s_acd]))
+            e_stop = float(np.median(spectrum_mid_db[s_stop]))
+            native_24bit_hf_tail = bool(
+                -125.0 <= e_stop <= -90.0
+                and (e_hi - e_stop) >= 12.0
+                and (e_vhi - e_stop) >= 6.0
+                and (e_acd - e_stop) >= 2.8
+                and e_hi > e_vhi > (e_stop + 5.0)
+            )
+
     return {
         "error":              None,
         "techo_hz":           round(ceiling_hz),
@@ -1191,6 +1218,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
                                      if math.isfinite(centroid_hz) else 0.0),
         "decaimiento_acustico_suave": smooth_acoustic_decay,
         "rolloff_banda_limitada_genuina": smooth_band_limited_rolloff,
+        "native_24bit_hf_tail":     native_24bit_hf_tail,
         # Psychoacoustic metrics: the streaming path overwrites them with
         # _psycho.resultado(). Direct callers get the neutral default so every key
         # exists without an STFT-driven accumulator.
