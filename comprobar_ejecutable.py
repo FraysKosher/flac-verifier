@@ -256,11 +256,14 @@ class Checker:
                label: str = "output") -> tuple[int | None, str]:
         """Runs with the output to a file and returns (code, text)."""
         path = os.path.join(self.temporal, f"{label}.txt")
+        env = {**os.environ,
+               "FLAC_VERIFIER_CACHE_DIR": os.path.join(self.temporal, "cache")}
         with open(path, "w", encoding="utf-8", errors="replace") as output:
             try:
                 process = subprocess.run(command, stdout=output,
                                          stderr=subprocess.STDOUT, timeout=limit,
-                                         creationflags=NO_WINDOW, cwd=HERE)
+                                         creationflags=NO_WINDOW, cwd=HERE,
+                                         env=env)
                 code = process.returncode
             except subprocess.TimeoutExpired:
                 return None, f"TIMED OUT ({limit} s)"
@@ -376,9 +379,11 @@ class Checker:
 
     def step_4_pdf(self, album: str) -> None:
         print("\n[4] Spectrograms and PDF report from the executable")
+        pdf_out_dir = os.path.join(self.temporal, "pdf_out")
         start = time.perf_counter()
         code, text = self.launch([self.engine, "--path", album, "--mode", "center",
-                                     "--pdf", "--workers", "2", "--no-cache"],
+                                     "--pdf", "--output-dir", pdf_out_dir,
+                                     "--workers", "2", "--no-cache"],
                                     label="pdf")
         seconds = time.perf_counter() - start
         events = self.events(text)
@@ -399,10 +404,15 @@ class Checker:
                     f"{os.path.basename(pdf_path)} "
                     f"({os.path.getsize(pdf_path) / 1e6:.2f} MB, "
                     f"{report.get('paginas')} pages, {seconds:.1f} s)" if exists else pdf_path)
-        png_folder = os.path.join(album, "_spectrograms")
-        pngs = [f for f in os.listdir(png_folder)] if os.path.isdir(png_folder) else []
+        pngs = [
+            p for p in (
+                (e.get("esp") or {}).get("espectrograma")
+                for e in events if e.get("tipo") == "resultado"
+            )
+            if p and os.path.isfile(p) and p.lower().endswith(".png")
+        ]
         self.annotate("PNG spectrograms (Pillow packaged)",
-                    any(f.endswith(".png") for f in pngs), f"{len(pngs)} file(s)")
+                    bool(pngs), f"{len(pngs)} file(s)")
 
     def step_5_flag_internal(self, album: str) -> None:
         print("\n[5] The command the packaged GUI builds, and the --motor-cli flag")

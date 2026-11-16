@@ -11,12 +11,14 @@ What matters and is pinned down here:
   - The `.spec` really collects everything that is needed and does not depend on
     absolute paths.
 """
+import importlib
 import json
 import os
 import re
 import sys
 import unittest
 from unittest import mock
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
@@ -451,6 +453,123 @@ class test_renderer_without_matplotlib(unittest.TestCase):
         with open(SPEC, encoding="utf-8") as f:
             source = f.read()
         self.assertIn('"PIL"', source)
+
+
+class TestPyprojectToml(unittest.TestCase):
+    """PEP 621 metadata and uv / pipx entry points stay aligned with source."""
+
+    @staticmethod
+    def _load_pyproject():
+        for mod_name in ("tomllib", "tomli", "setuptools._vendor.tomli", "pip._vendor.tomli"):
+            try:
+                parser = importlib.import_module(mod_name)
+                break
+            except ImportError:
+                continue
+        else:
+            raise AssertionError("No TOML parser available in this Python environment")
+        with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
+            return parser.load(fh)
+
+    def test_metadata_version_and_dependencies_match_project(self):
+        data = self._load_pyproject()
+        project = data["project"]
+        self.assertEqual(project["name"], "flac-verifier")
+        self.assertEqual(project["version"], main.VERSION)
+        self.assertEqual(project["requires-python"], ">=3.10")
+        self.assertEqual(project["license"], {"text": "MIT"})
+
+        req_path = os.path.join(ROOT, "requirements.txt")
+        core_deps = []
+        opt_deps = []
+        in_optional = False
+        with open(req_path, encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if "# ─── OPTIONAL" in line:
+                    in_optional = True
+                    continue
+                if not line or line.startswith("#"):
+                    continue
+                (opt_deps if in_optional else core_deps).append(line)
+
+        self.assertEqual(set(project["dependencies"]), set(core_deps))
+        opt = project["optional-dependencies"]
+        self.assertEqual(set(opt["all"]), set(opt_deps))
+        self.assertEqual(set(opt["gui"]) | set(opt["pdf"]), set(opt_deps))
+
+    def test_console_scripts_and_output_dir_dispatch(self):
+        data = self._load_pyproject()
+        scripts = data["project"]["scripts"]
+        self.assertEqual(
+            scripts,
+            {"flac-verifier": "main:main", "flac-motor": "motor_flac:main_cli"},
+        )
+        for target in scripts.values():
+            mod_name, attr_name = target.split(":", 1)
+            mod = importlib.import_module(mod_name)
+            self.assertTrue(callable(getattr(mod, attr_name)))
+
+        self.assertEqual(
+            main.resolve_cli_dispatch(
+                ["--path", "C:/Album", "--pdf", "--output-dir", "D:/Reports"], False
+            ),
+            ("engine", ["--path", "C:/Album", "--pdf", "--output-dir", "D:/Reports"]),
+        )
+        self.assertIn("--output-dir", main.HELP)
+
+    def test_flat_modules_and_logo_package_data_are_complete(self):
+        from setuptools.command.build_py import build_py
+        from setuptools.config import pyprojecttoml
+        from setuptools.dist import Distribution
+
+        data = self._load_pyproject()
+        expected_mods = {
+            "main",
+            "motor_flac",
+            "_motor_bits",
+            "_motor_espectral",
+            "_motor_veredicto",
+            "_motor_cache",
+            "verificar_flac",
+            "gui",
+            "theme",
+            "informe_pdf",
+        }
+        py_modules = set(data["tool"]["setuptools"]["py-modules"])
+        self.assertEqual(py_modules, expected_mods)
+        for mod_name in py_modules:
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, f"{mod_name}.py")))
+
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(ROOT)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                dist = pyprojecttoml.apply_configuration(
+                    Distribution(), os.path.join(ROOT, "pyproject.toml")
+                )
+                cmd = build_py(dist)
+                cmd.finalize_options()
+                pkg_files = {
+                    pkg_name: set(files)
+                    for pkg_name, _, _, files in cmd.get_data_files_without_manifest()
+                }
+        finally:
+            os.chdir(prev_cwd)
+
+        self.assertEqual(set(pkg_files), {"Logo", "Logo.icons"})
+        self.assertTrue(
+            {
+                "icono_app.ico",
+                "logo_flac_verifier.png",
+                "logo_flac_verifier_128.png",
+                "logo_flac_verifier_transparente.png",
+                "logo_flac_verifier.svg",
+            }.issubset(pkg_files["Logo"])
+        )
+        self.assertGreaterEqual(len(pkg_files["Logo.icons"]), 51)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

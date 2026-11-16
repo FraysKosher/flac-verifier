@@ -42,7 +42,7 @@ for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
     os.environ.setdefault(_variable_blas, "1")
 del _variable_blas
 
-VERSION = "2.9.9"
+VERSION = "2.10.0"
 ENGINE_EXE_NAME = "flac_motor.exe"
 
 
@@ -62,6 +62,7 @@ ENGINE_OPTION_FLAGS = frozenset((
     "--seconds",
     "--png",
     "--pdf",
+    "--output-dir",
     "--workers",
     "--no-cache",
 ))
@@ -80,11 +81,12 @@ Usage:
   flac_motor.exe --path "D:/Music/album" --pdf
 
 Engine options (--motor-cli and flac_motor.exe):
-  --path PATH       Folder or .flac file (required)
-  --png             Save the spectrograms as PNG
-  --pdf             Generate the album PDF report
-  --workers N       Parallel processes (0 = automatic, 1 = sequential)
-  --no-cache        Ignore and do not write the results cache
+  --path PATH        Folder or .flac file (required)
+  --png              Save the spectrograms as PNG
+  --pdf              Generate the album PDF report
+  --output-dir PATH  Destination folder for the PDF report
+  --workers N        Parallel processes (0 = automatic, 1 = sequential)
+  --no-cache         Ignore and do not write the results cache
 """
 
 

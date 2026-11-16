@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flac-verifier"
+version = "2.10.0"
+description = "Forensic FLAC authenticity verifier for detecting lossy transcodes and inflated containers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "FLAC VERIFIER Contributors"},
+]
+keywords = ["flac", "lossless", "audio", "forensics", "spectrogram", "transcode"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "soundfile>=0.12",
+    "mutagen>=1.46",
+    "pillow>=9.1",
+]
+
+[project.optional-dependencies]
+gui = [
+    "customtkinter>=5.2",
+    "tkinterdnd2>=0.4",
+]
+pdf = [
+    "reportlab>=4.0",
+]
+all = [
+    "customtkinter>=5.2",
+    "tkinterdnd2>=0.4",
+    "reportlab>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/FraysKosher/flac-verifier"
+Repository = "https://github.com/FraysKosher/flac-verifier"
+Issues = "https://github.com/FraysKosher/flac-verifier/issues"
+Changelog = "https://github.com/FraysKosher/flac-verifier/blob/main/CHANGELOG.md"
+
+[project.scripts]
+flac-verifier = "main:main"
+flac-motor = "motor_flac:main_cli"
+
+[tool.setuptools]
+py-modules = [
+    "main",
+    "motor_flac",
+    "_motor_bits",
+    "_motor_espectral",
+    "_motor_veredicto",
+    "_motor_cache",
+    "verificar_flac",
+    "gui",
+    "theme",
+    "informe_pdf",
+]
+packages = ["Logo", "Logo.icons"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+"Logo" = ["*.png", "*.ico", "*.svg"]
+"Logo.icons" = ["*.png"]
