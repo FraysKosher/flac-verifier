@@ -832,7 +832,7 @@ def _detailed_validation_doc(section, rows):
     ).hexdigest()
 
     lines = [
-        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.9.8) — Validation Report (2026-11-15)",
+        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v2.9.9) — Validation Report (2026-11-16)",
         "",
         section,
         "",

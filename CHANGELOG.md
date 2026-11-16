@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.9] - 2026-11-16
+
+### Forensic Calibration
+
+- Raised `ENGINE_VERSION` to `"14.5"` (`motor_flac.py`) and expanded the
+  automated test suite to **359 tests** (`tests/test_forense_riguroso.py`).
+- Added sub-ceiling 24-bit converter roll-off detection (`native_24bit_hf_tail`
+  in `_motor_espectral.py`) and exempted genuine high-headroom `24-bit / 48 kHz`
+  studio masters from the Rule 5 container penalty (`"not backed by the content"`
+  in `_motor_veredicto.py`) when smooth acoustic/low-brightness decay, active
+  native 24-bit LSB entropy, zero lossy codec signatures, and a continuous
+  post-CD (`22.2-23.8 kHz`) converter roll-off into the Nyquist stopband are
+  simultaneously verified, while continuing to flag `16/44.1 -> 24/48` dithered
+  upscales and lossy repackages. Thanks to `@cizzop` for reporting and providing
+  the high-DR `24-bit / 48 kHz` Bandcamp studio master (*Pile - Green and Gray*)
+  that exposed this interaction.
+
 ## [2.9.8] - 2026-11-15
 
 ### Verdict Clarity, UI & Documentation
