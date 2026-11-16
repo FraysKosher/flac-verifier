@@ -710,7 +710,8 @@ class test_window(unittest.TestCase):
     def test_controls_by_default(self):
         self.assertFalse(hasattr(self.window, "option_mode"))
         self.assertFalse(hasattr(self.window, "seconds_slider"))
-        self.assertTrue(self.window.var_pdf.get())
+        self.assertFalse(self.window.var_pdf.get())
+        self.assertEqual(self.window.pdf_output_row.winfo_manager(), "")
         self.assertTrue(self.window.var_parallel.get())
         self.assertFalse(self.window.var_without_cache.get())
         self.assertEqual(self.window._workers(), 0)        # automatic
@@ -1147,7 +1148,11 @@ class test_window(unittest.TestCase):
                                      "espectrograma": path})
             self.window._process("stdout", event)
             self.window._select(event)
-            self.window.update_idletasks()
+            deadline = time.perf_counter() + 2.0
+            while (time.perf_counter() < deadline
+                   and self.window.spectrogram_label.cget("image") is None):
+                self.window.update()
+                time.sleep(0.01)
             self.assertIsNotNone(self.window.spectrogram_label.cget("image"))
             self.assertFalse(self.window.spectrogram_placeholder.winfo_manager())
             self.assertEqual(self.window.btn_open_spectrogram.cget("state"),
@@ -1985,6 +1990,596 @@ class TestExplicitStateMachines(unittest.TestCase):
         self.window._set_run_state(gui.RunState.RUNNING)
         self.window._cancel()
         self.assertEqual(self.window.run_state, gui.RunState.CANCELLED)
+
+
+class TestAlbumQueueAndQuickFilters(unittest.TestCase):
+    """Pure logic for recursive album queue discovery and live table filters."""
+
+    def test_discover_album_queue_single_file_and_flat_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flac_file = os.path.join(tmpdir, "single.flac")
+            txt_file = os.path.join(tmpdir, "notes.txt")
+            flat_dir = os.path.join(tmpdir, "flat_album")
+            os.makedirs(flat_dir)
+            with open(flac_file, "wb") as fh:
+                fh.write(b"fLaC")
+            with open(txt_file, "w", encoding="utf-8") as fh:
+                fh.write("readme")
+            for track_name in ("01.flac", "02.flac"):
+                with open(os.path.join(flat_dir, track_name), "wb") as fh:
+                    fh.write(b"fLaC")
+
+            self.assertEqual(
+                gui.discover_album_queue(flac_file), [os.path.abspath(flac_file)]
+            )
+            self.assertEqual(gui.discover_album_queue(txt_file), [])
+            self.assertEqual(
+                gui.discover_album_queue(os.path.join(tmpdir, "missing")), []
+            )
+            self.assertEqual(
+                gui.discover_album_queue(flat_dir), [os.path.abspath(flat_dir)]
+            )
+
+    def test_discover_album_queue_nested_tree_natural_order_and_ignored_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ordered_dirs = [
+                os.path.join(tmpdir, "Artist", "CD1"),
+                os.path.join(tmpdir, "Artist", "CD2"),
+                os.path.join(tmpdir, "Artist", "CD10"),
+                os.path.join(tmpdir, "Box", "Disc 1"),
+            ]
+            for folder in ordered_dirs:
+                os.makedirs(folder)
+                with open(os.path.join(folder, "01.flac"), "wb") as fh:
+                    fh.write(b"fLaC")
+
+            for ignored in (
+                ".git",
+                "_spectrograms",
+                "__pycache__",
+                "$RECYCLE.BIN",
+                "System Volume Information",
+                "@eaDir",
+                "#recycle",
+            ):
+                ignored_path = os.path.join(tmpdir, ignored)
+                os.makedirs(ignored_path)
+                with open(os.path.join(ignored_path, "ignored.flac"), "wb") as fh:
+                    fh.write(b"fLaC")
+
+            self.assertEqual(
+                gui.discover_album_queue(tmpdir),
+                [os.path.abspath(path) for path in ordered_dirs],
+            )
+
+    def test_relative_album_context_formats_clean_labels(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested_track = os.path.join(tmpdir, "Artist", "CD1", "01.flac")
+            flat_dir = os.path.join(tmpdir, "Album")
+            flat_track = os.path.join(flat_dir, "01.flac")
+            self.assertEqual(
+                gui.relative_album_context(nested_track, tmpdir), "Artist/CD1"
+            )
+            self.assertEqual(
+                gui.relative_album_context(flat_track, flat_dir), "Album"
+            )
+
+    def test_verdict_filter_matching_bucket_counts_and_output_dir_command(self):
+        sample_events = [
+            {"tipo": "inicio", "total": 6},
+            {
+                "tipo": "resultado",
+                "archivo": "01.flac",
+                "veredicto": "GENUINE LOSSLESS",
+                "md5": {"estado": "match"},
+            },
+            {
+                "tipo": "resultado",
+                "archivo": "02.flac",
+                "veredicto": "PROBABLY LOSSLESS",
+                "md5": {"estado": "match"},
+            },
+            {
+                "tipo": "resultado",
+                "archivo": "03.flac",
+                "veredicto": "PROBABLE UPSCALE",
+                "md5": {"estado": "match"},
+            },
+            {
+                "tipo": "resultado",
+                "archivo": "04.flac",
+                "veredicto": "SUSPICIOUS",
+                "md5": {"estado": "match"},
+            },
+            {
+                "tipo": "resultado",
+                "archivo": "05.flac",
+                "error": "Not a valid FLAC signature",
+            },
+            {
+                "tipo": "resultado",
+                "archivo": "06.flac",
+                "veredicto": "GENUINE LOSSLESS",
+                "md5": {"estado": "mismatch"},
+            },
+        ]
+        self.assertEqual(
+            gui.count_filter_buckets(sample_events),
+            {"all": 6, "flagged": 1, "suspicious": 1, "errors": 2},
+        )
+        rows_only = [e for e in sample_events if e["tipo"] == "resultado"]
+        self.assertEqual(
+            [e["archivo"] for e in rows_only if gui.matches_verdict_filter(e, gui.VerdictFilter.ALL)],
+            ["01.flac", "02.flac", "03.flac", "04.flac", "05.flac", "06.flac"],
+        )
+        self.assertEqual(
+            [e["archivo"] for e in rows_only if gui.matches_verdict_filter(e, gui.VerdictFilter.FLAGGED)],
+            ["03.flac"],
+        )
+        self.assertEqual(
+            [e["archivo"] for e in rows_only if gui.matches_verdict_filter(e, gui.VerdictFilter.SUSPICIOUS)],
+            ["04.flac"],
+        )
+        self.assertEqual(
+            [e["archivo"] for e in rows_only if gui.matches_verdict_filter(e, gui.VerdictFilter.ERRORS)],
+            ["05.flac", "06.flac"],
+        )
+
+        with mock.patch.object(gui, "packaging", return_value=False):
+            cmd_with = gui.build_command("C:/Album", pdf=True, output_dir="D:/Out")
+            cmd_none = gui.build_command("C:/Album", pdf=True, output_dir=None)
+            cmd_blank = gui.build_command("C:/Album", pdf=True, output_dir="   ")
+        idx = cmd_with.index("--output-dir")
+        self.assertEqual(cmd_with[idx + 1], "D:/Out")
+        self.assertNotIn("--output-dir", cmd_none)
+        self.assertNotIn("--output-dir", cmd_blank)
+
+
+@unittest.skipUnless(VISUAL, "customtkinter and a display are required")
+class TestMultiAlbumFilterAndOutputDirWindow(unittest.TestCase):
+    """Window integration for multi-album queue, live filters, and output dir."""
+
+    def setUp(self):
+        self.window = gui.FlacVerifierWindow()
+        self.window.withdraw()
+        self.window.update_idletasks()
+        self.addCleanup(self.window.destroy)
+
+    @staticmethod
+    def _sample_result(idx, name, verdict, error=None, run_id=None, track_path=None):
+        ev = {
+            "tipo": "resultado",
+            "indice": idx + 1,
+            "indice_original": idx,
+            "total": 1,
+            "archivo": name,
+            "ruta": track_path or f"C:/Album/{name}",
+            "meta": {"bits_per_sample": 16, "sample_rate": 44100},
+            "md5": {"estado": "match"},
+            "dr": 12.0,
+        }
+        if error:
+            ev["error"] = error
+        else:
+            ev["veredicto"] = verdict
+            ev["score"] = 0.95 if verdict == "GENUINE LOSSLESS" else 0.25
+            ev["problemas"] = []
+        if run_id is not None:
+            ev["run_id"] = run_id
+        return ev
+
+    def test_pdf_output_dir_controls_toggle_and_pass_to_command(self):
+        self.assertFalse(self.window.var_pdf.get())
+        self.assertEqual(self.window.pdf_output_row.winfo_manager(), "")
+        self.window.var_pdf.set(True)
+        self.window._change_pdf()
+        self.assertEqual(self.window.pdf_output_row.winfo_manager(), "grid")
+        self.assertEqual(self.window.var_pdf_dest_mode.get(), "album")
+        self.assertEqual(self.window.pdf_custom_dir_row.winfo_manager(), "")
+        self.assertEqual(
+            self.window.radio_pdf_album.cget("text"), "Save in each album folder"
+        )
+        self.assertEqual(
+            self.window.radio_pdf_custom.cget("text"), "Save in custom folder..."
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            album_dir = os.path.join(tmpdir, "Album")
+            os.makedirs(album_dir)
+            with open(os.path.join(album_dir, "01.flac"), "wb") as fh:
+                fh.write(b"fLaC")
+            self.window.var_path.set(album_dir)
+
+            self.window.var_pdf_dest_mode.set("custom")
+            self.window._change_pdf_dest_mode()
+            self.assertEqual(self.window.pdf_custom_dir_row.winfo_manager(), "grid")
+            with mock.patch.object(
+                self.window.manager, "start", return_value=["python", "-u", "motor_flac.py"]
+            ) as mock_start, mock.patch("tkinter.messagebox.showwarning"):
+                self.window._analyze()
+            self.assertEqual(mock_start.call_count, 0)
+            self.assertIn("PDF folder missing", self.window.log.get("1.0", "end"))
+
+            self.window.var_output_dir.set("D:/Reports")
+            with mock.patch.object(
+                self.window.manager, "start", return_value=["python", "-u", "motor_flac.py"]
+            ) as mock_start, mock.patch.object(self.window, "after"):
+                self.window._analyze()
+            self.assertEqual(mock_start.call_count, 1)
+            self.assertEqual(mock_start.call_args.kwargs.get("output_dir"), "D:/Reports")
+
+        self.window._clear_output_dir()
+        self.assertEqual(self.window.var_pdf_dest_mode.get(), "album")
+        self.assertEqual(self.window.pdf_custom_dir_row.winfo_manager(), "")
+        self.assertIsNone(self.window._effective_output_dir())
+
+        self.window.var_pdf.set(False)
+        self.window._change_pdf()
+        self.assertEqual(self.window.pdf_output_row.winfo_manager(), "")
+
+    def test_multi_album_queue_accumulates_rows_and_disambiguates_context(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cd1_dir = os.path.join(tmpdir, "CD1")
+            cd2_dir = os.path.join(tmpdir, "CD2")
+            for folder in (cd1_dir, cd2_dir):
+                os.makedirs(folder)
+                with open(os.path.join(folder, "01.flac"), "wb") as fh:
+                    fh.write(b"fLaC")
+
+            def _fake_start(batch_path, **_kwargs):
+                self.window.manager.run_id += 1
+                rid = self.window.manager.run_id
+                self.window.message_queue.put(
+                    ("stdout", {"tipo": "inicio", "total": 1, "workers": 1, "run_id": rid})
+                )
+                self.window.message_queue.put(
+                    (
+                        "stdout",
+                        self._sample_result(
+                            0,
+                            "01.flac",
+                            "GENUINE LOSSLESS",
+                            run_id=rid,
+                            track_path=os.path.join(batch_path, "01.flac"),
+                        ),
+                    )
+                )
+                self.window.message_queue.put(
+                    ("fin", {"tipo": "__fin__", "codigo": 0, "cancelado": False, "run_id": rid})
+                )
+                return ["python", "-u", "motor_flac.py", "--path", batch_path]
+
+            self.window.var_path.set(tmpdir)
+            with mock.patch.object(
+                self.window.manager, "start", side_effect=_fake_start
+            ) as mock_start, mock.patch.object(self.window, "after"):
+                self.window._analyze()
+                while not self.window.message_queue.empty():
+                    self.window._drain_queue()
+
+            self.assertEqual(mock_start.call_count, 2)
+            self.assertEqual(self.window.run_state, gui.RunState.FINISHED)
+            self.assertEqual(len(self.window.table_rows), 2)
+            self.assertEqual(
+                [row["file_label"].full_text for row in self.window.table_rows],
+                ["CD1 / 01.flac", "CD2 / 01.flac"],
+            )
+            self.assertEqual(self.window.label_state.cget("text"), "Finished (2 albums)")
+
+            self.window._select(self.window.table_rows[1]["event"])
+            self.assertEqual(self.window._eyebrow_full, "CD2 / 01.flac")
+            self.window._clear_selection()
+            self.assertIn("2 albums", self.window._eyebrow_full)
+
+    def test_multi_album_cancel_clears_remaining_queue_immediately(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for disc in ("CD1", "CD2", "CD3"):
+                folder = os.path.join(tmpdir, disc)
+                os.makedirs(folder)
+                with open(os.path.join(folder, "01.flac"), "wb") as fh:
+                    fh.write(b"fLaC")
+
+            def _fake_start_pending(batch_path, **_kwargs):
+                self.window.manager.run_id += 1
+                return ["python", "-u", "motor_flac.py", "--path", batch_path]
+
+            self.window.var_path.set(tmpdir)
+            with mock.patch.object(
+                self.window.manager, "start", side_effect=_fake_start_pending
+            ) as mock_start, mock.patch.object(
+                self.window.manager, "cancel"
+            ) as mock_cancel, mock.patch.object(self.window, "after"):
+                self.window._analyze()
+                snap = self.window.ui_snapshot()
+                self.assertEqual(snap["queued_batches"], 2)
+                self.assertEqual(snap["batch_total_count"], 3)
+
+                self.window._cancel()
+                snap_cancelled = self.window.ui_snapshot()
+                self.assertEqual(snap_cancelled["queued_batches"], 0)
+                self.assertEqual(self.window.run_state, gui.RunState.CANCELLED)
+                self.assertTrue(mock_cancel.called)
+
+                self.window._process(
+                    "fin",
+                    {
+                        "tipo": "__fin__",
+                        "codigo": 1,
+                        "cancelado": True,
+                        "run_id": self.window.active_run_id,
+                    },
+                )
+                self.assertEqual(mock_start.call_count, 1)
+
+    def test_live_verdict_filter_switches_views_streams_and_rethemes(self):
+        for idx, (fname, verdict, err) in enumerate((
+            ("01.flac", "GENUINE LOSSLESS", None),
+            ("02.flac", "PROBABLE UPSCALE", None),
+            ("03.flac", "SUSPICIOUS", None),
+            ("04.flac", None, "Not a valid FLAC signature"),
+        )):
+            self.window._add_row(self._sample_result(idx, fname, verdict, error=err))
+
+        self.assertEqual(self.window.filter_buttons["all"].cget("text"), "All (4)")
+        self.assertEqual(self.window.filter_buttons["flagged"].cget("text"), "Flagged (1)")
+        self.assertEqual(self.window.filter_buttons["suspicious"].cget("text"), "Suspicious (1)")
+        self.assertEqual(self.window.filter_buttons["errors"].cget("text"), "Errors (1)")
+
+        self.window.set_verdict_filter(gui.VerdictFilter.FLAGGED)
+        self.assertEqual(
+            [row["visible"] for row in self.window.table_rows],
+            [False, True, False, False],
+        )
+        self.assertEqual(
+            [row["frame"] for row in self.window.table_rows
+             if row["frame"] is not None and row["frame"].winfo_manager()],
+            [self.window.table_rows[1]["frame"]],
+        )
+        self.assertEqual(self.window.label_filter_status.cget("text"), "Showing 1 of 4")
+
+        self.window._add_row(self._sample_result(4, "05.flac", "GENUINE LOSSLESS"))
+        self.window._add_row(self._sample_result(5, "06.flac", "PROBABLE UPSCALE"))
+        self.assertFalse(self.window.table_rows[4]["visible"])
+        self.assertIsNone(self.window.table_rows[4]["frame"])
+        self.assertTrue(self.window.table_rows[5]["visible"])
+        self.assertIsNotNone(self.window.table_rows[5]["frame"])
+        self.assertEqual(self.window.table_rows[5]["frame"].winfo_manager(), "pack")
+        self.assertEqual(self.window.filter_buttons["flagged"].cget("text"), "Flagged (2)")
+        self.assertEqual(self.window.filter_buttons["all"].cget("text"), "All (6)")
+
+        self.window.set_verdict_filter(gui.VerdictFilter.ALL)
+        self.assertEqual(
+            list(self.window.table_body.pack_slaves()),
+            [row["frame"] for row in self.window.table_rows],
+        )
+        self.assertEqual(self.window.label_filter_status.cget("text"), "")
+
+        self.window._retheme("light")
+        self.window._retheme("dark")
+        self.assertEqual(self.window.ui_snapshot()["active_filter"], "all")
+
+        # Virtualized hover exclusivity and scroll-unbind reset (no ghost stripes).
+        for idx in range(6, 60):
+            self.window._add_row(self._sample_result(idx, f"{idx + 1:02d}.flac", "PROBABLE UPSCALE"))
+        self.window._sync_virtual_viewport()
+        first_entry = self.window.table_rows[0]
+        second_entry = self.window.table_rows[1]
+        self.window._hover_row(first_entry, True)
+        self.assertTrue(first_entry["hover"])
+        self.window._hover_row(second_entry, True)
+        self.assertFalse(first_entry["hover"])
+        self.assertTrue(second_entry["hover"])
+        self.assertEqual(sum(1 for row in self.window.table_rows if row["hover"]), 1)
+        self.window.table_canvas.yview_moveto(1.0)
+        self.window._sync_virtual_viewport()
+        self.assertFalse(second_entry["hover"])
+        self.assertIsNone(self.window._hovered_entry)
+        self.assertEqual(sum(1 for row in self.window.table_rows if row["hover"]), 0)
+
+    def test_async_spectrogram_never_overwrites_newer_selection(self):
+        from PIL import Image
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            png_a = os.path.join(folder, "slow.png")
+            arr = np.zeros((900, 2100, 3), dtype=np.uint8)
+            Image.fromarray(arr, mode="RGB").save(png_a, compress_level=1)
+
+            track_a = self._sample_result(0, "a.flac", "GENUINE LOSSLESS")
+            track_a["esp"] = {"corte_detectado": False, "espectrograma": png_a}
+            track_b = self._sample_result(1, "b.flac", "GENUINE LOSSLESS")
+            track_b["esp"] = {"corte_detectado": False, "espectrograma": None}
+
+            self.window._add_row(track_a)
+            self.window._add_row(track_b)
+            self.window._spectrograms.clear()
+            with self.window._spec_lock:
+                self.window._pil_spectrograms.clear()
+
+            t0 = time.perf_counter()
+            self.window._select(track_a)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            self.assertEqual(
+                self.window.spectrogram_state, gui.SpectrogramState.LOADING
+            )
+            self.assertLess(elapsed_ms, 50.0)
+
+            self.window._select(track_b)
+            deadline = time.perf_counter() + 2.0
+            while time.perf_counter() < deadline:
+                with self.window._spec_lock:
+                    done = png_a in self.window._pil_spectrograms
+                self.window.update()
+                if done:
+                    break
+                time.sleep(0.01)
+            self.window.update()
+            self.assertIs(self.window.selected_event, track_b)
+            self.assertEqual(
+                self.window.spectrogram_state, gui.SpectrogramState.NONE
+            )
+            self.assertIsNone(self.window.spectrogram_label.cget("image"))
+
+    def test_2000_track_selection_filter_and_retheme_latency(self):
+        from PIL import Image
+        import numpy as np
+
+        self.addCleanup(setattr, theme, "MODE", "dark")
+        self.addCleanup(ctk.set_appearance_mode, "dark")
+        self.window.geometry("1180x760+0+0")
+        self.window.update_idletasks()
+
+        with tempfile.TemporaryDirectory() as folder:
+            rng = np.random.default_rng(2026)
+            png_paths = []
+            for idx in range(12):
+                p = os.path.join(folder, f"spec_{idx:02d}.png")
+                arr = rng.integers(0, 255, size=(900, 2100, 3), dtype=np.uint8)
+                Image.fromarray(arr, mode="RGB").save(p, compress_level=1)
+                png_paths.append(p)
+
+            verdicts = (
+                "GENUINE LOSSLESS",
+                "PROBABLE UPSCALE",
+                "SUSPICIOUS",
+                "PROBABLY LOSSLESS",
+            )
+            events = []
+            picks = (0, 220, 440, 660, 880, 1100, 1320, 1540, 1760, 1999)
+            t_pop = time.perf_counter()
+            for idx in range(2000):
+                verd = verdicts[idx % 4]
+                err = "Not a valid FLAC signature" if idx % 17 == 0 else None
+                spec = (
+                    png_paths[idx % 10]
+                    if idx in picks
+                    else png_paths[10 + (idx % 2)]
+                )
+                ev = {
+                    "tipo": "resultado",
+                    "indice": idx + 1,
+                    "indice_original": idx,
+                    "total": 2000,
+                    "archivo": f"{idx + 1:04d} - Track Name Example.flac",
+                    "ruta": f"C:/Music/Album_{idx // 12:03d}/{idx + 1:04d}.flac",
+                    "meta": {"bits_per_sample": 24, "sample_rate": 96000},
+                    "md5": {
+                        "estado": "match",
+                        "calculado": "49f12971197ac578c7d0c9079247661c",
+                    },
+                    "dr": 13.5,
+                    "clip": {"runs_clip": 0, "hay_clipping": False},
+                    "bdi": {"aplica": True, "lsbs": "active"},
+                    "esp": {
+                        "corte_detectado": True,
+                        "clase_corte": "far_cutoff",
+                        "frecuencia_corte": 16000,
+                        "espectrograma": spec,
+                    },
+                }
+                if err:
+                    ev["error"] = err
+                else:
+                    ev["veredicto"] = verd
+                    ev["score"] = 0.92 if verd == "GENUINE LOSSLESS" else 0.22
+                    ev["problemas"] = (
+                        [
+                            "Spectral cut-off at 16.0 kHz",
+                            "Lapped MDCT-1024 quantization lattice",
+                        ]
+                        if verd != "GENUINE LOSSLESS"
+                        else []
+                    )
+                    ev["notes"] = (
+                        ["Smooth ultrasonic roll-off verified"]
+                        if verd == "GENUINE LOSSLESS"
+                        else []
+                    )
+                events.append(ev)
+                self.window._add_row(ev)
+            self.window.update_idletasks()
+            populate_ms = (time.perf_counter() - t_pop) * 1000
+
+            def _count_widgets(widget):
+                total = 1
+                for child in widget.winfo_children():
+                    total += _count_widgets(child)
+                return total
+
+            table_widgets = _count_widgets(self.window.table_body)
+            self.assertLessEqual(
+                table_widgets,
+                400,
+                f"virtualized table should keep <= 400 widgets (got {table_widgets})",
+            )
+
+            self.window._spectrograms.clear()
+            with self.window._spec_lock:
+                self.window._pil_spectrograms.clear()
+
+            select_times = []
+            for idx in picks:
+                t_sel = time.perf_counter()
+                self.window._select(events[idx])
+                self.window.update_idletasks()
+                if self.window._hero_layout_scheduled:
+                    self.window._apply_hero_layout()
+                    self.window.update_idletasks()
+                select_times.append((time.perf_counter() - t_sel) * 1000)
+            mean_select_ms = sum(select_times) / len(select_times)
+
+            deadline = time.perf_counter() + 2.0
+            while (time.perf_counter() < deadline
+                   and self.window.spectrogram_state is not gui.SpectrogramState.READY):
+                self.window.update()
+                time.sleep(0.01)
+            self.assertEqual(
+                self.window.spectrogram_state, gui.SpectrogramState.READY
+            )
+
+            filter_times = []
+            for fmode in (
+                gui.VerdictFilter.FLAGGED,
+                gui.VerdictFilter.SUSPICIOUS,
+                gui.VerdictFilter.ERRORS,
+                gui.VerdictFilter.ALL,
+            ):
+                t_flt = time.perf_counter()
+                self.window.set_verdict_filter(fmode)
+                self.window.update_idletasks()
+                filter_times.append((time.perf_counter() - t_flt) * 1000)
+
+            t_ret = time.perf_counter()
+            self.window._retheme("light")
+            self.window.update_idletasks()
+            retheme_light_ms = (time.perf_counter() - t_ret) * 1000
+
+            t_ret2 = time.perf_counter()
+            self.window._retheme("dark")
+            self.window.update_idletasks()
+            retheme_dark_ms = (time.perf_counter() - t_ret2) * 1000
+
+            print(
+                f"\n2000-row GUI benchmark: populate={populate_ms:.1f} ms | "
+                f"widgets={table_widgets} | select_mean={mean_select_ms:.2f} ms "
+                f"(max={max(select_times):.2f} ms) | "
+                f"filter={[round(x, 2) for x in filter_times]} | "
+                f"retheme={retheme_light_ms:.1f}/{retheme_dark_ms:.1f} ms",
+                flush=True,
+            )
+            self.assertLess(
+                mean_select_ms,
+                25.0,
+                f"mean track selection took {mean_select_ms:.2f} ms (limit 25 ms)",
+            )
+            for elapsed_flt in filter_times:
+                self.assertLess(
+                    elapsed_flt,
+                    35.0,
+                    f"filter switch took {elapsed_flt:.2f} ms (limit 35 ms)",
+                )
+            self.assertLess(retheme_light_ms, 1500.0)
+            self.assertLess(retheme_dark_ms, 1500.0)
 
 
 if __name__ == "__main__":

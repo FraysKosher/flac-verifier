@@ -25,8 +25,10 @@ Optional dependencies:
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -86,8 +88,18 @@ class SpectrogramState(str, Enum):
     """Visual state of the spectrogram preview and Open button."""
 
     NONE = "none"
+    LOADING = "loading"
     MISSING = "missing"
     READY = "ready"
+
+
+class VerdictFilter(str, Enum):
+    """Quick verdict filter modes for the live results table."""
+
+    ALL = "all"
+    FLAGGED = "flagged"
+    SUSPICIOUS = "suspicious"
+    ERRORS = "errors"
 
 
 LOG_LEVEL_TAGS: dict[str, str] = {
@@ -268,7 +280,7 @@ BATCH_DRAINED = 200             # hard cap of engine events per UI tick
 MAX_RESULTS_BY_TICK = 24   # redraw the progress bar once per batch
 ACTIVE_INTERVAL_MS = 30       # reschedule fast while events are pending
 IDLE_INTERVAL_MS = 100      # gentle polling while the engine works quietly
-MAX_EVENTS_IN_MEMORY = 5000  # result events kept on screen / for the final summary
+MAX_EVENTS_IN_MEMORY = 50000 # result events kept on screen / for the final summary
 MAX_LINES_LOG = 3000          # log lines kept in the text box
 MAX_QUEUE = 5000                # bounded queue: backpressure instead of unbounded growth
 # Log level -> design token used to paint the line (DESIGN.md 7.10).
@@ -387,9 +399,131 @@ BUTTON_VARIANTS = {
 
 # ─── LOGIC (usable without a window) ─────────────────────────────────────────
 
+IGNORED_SCAN_DIRS = frozenset((
+    "_spectrograms",
+    "__pycache__",
+    "system volume information",
+    "@eadir",
+    "#recycle",
+))
+
+
+def natural_sort_key(path_or_name: str) -> tuple[Any, ...]:
+    """Natural numeric sort key for folders and tracks."""
+    name = os.path.basename(str(path_or_name))
+    parts = [
+        (0, int(token), "") if token.isdigit() else (1, 0, token.casefold())
+        for token in re.split(r"(\d+)", name)
+        if token
+    ]
+    return (parts, name.casefold(), name)
+
+
+def discover_album_queue(target_path: str) -> list[str]:
+    """Builds an ordered album-by-album queue from a file or folder tree."""
+    clean = str(target_path or "").strip().strip('"')
+    if not clean or not os.path.exists(clean):
+        return []
+    if os.path.isfile(clean):
+        return [os.path.abspath(clean)] if clean.lower().endswith(".flac") else []
+    if not os.path.isdir(clean):
+        return []
+    batch_queue: list[str] = []
+    root_abs = os.path.abspath(clean)
+    for current_root, dirnames, filenames in os.walk(
+        root_abs, topdown=True, followlinks=False
+    ):
+        dirnames[:] = sorted(
+            (
+                name for name in dirnames
+                if not name.startswith((".", "$"))
+                and name.lower() not in IGNORED_SCAN_DIRS
+            ),
+            key=natural_sort_key,
+        )
+        if any(name.lower().endswith(".flac") for name in filenames):
+            batch_queue.append(current_root)
+    return batch_queue
+
+
+def relative_album_context(track_path: str, root_path: str) -> str:
+    """Compact album folder context for multi-album rows and track inspector."""
+    abs_track = os.path.abspath(track_path)
+    album_dir = os.path.dirname(abs_track)
+    abs_root = os.path.abspath(root_path) if root_path else album_dir
+    if os.path.isfile(abs_root):
+        abs_root = os.path.dirname(abs_root)
+    try:
+        rel = os.path.relpath(album_dir, abs_root).replace("\\", "/")
+    except ValueError:
+        rel = ""
+    if not rel or rel == ".":
+        return os.path.basename(os.path.normpath(album_dir)) or album_dir
+    return rel
+
+
+def matches_verdict_filter(
+    event: Event, active_filter: VerdictFilter | str
+) -> bool:
+    """True when a `resultado` event belongs to the active table filter."""
+    mode = (
+        active_filter
+        if isinstance(active_filter, VerdictFilter)
+        else VerdictFilter(active_filter)
+    )
+    if mode is VerdictFilter.ALL:
+        return True
+    md5 = event.get("md5") if isinstance(event.get("md5"), dict) else {}
+    failed = (
+        bool(event.get("error"))
+        or not event.get("veredicto")
+        or md5.get("estado") == "mismatch"
+    )
+    if mode is VerdictFilter.ERRORS:
+        return failed
+    if failed:
+        return False
+    verdict = str(event.get("veredicto") or "")
+    if mode is VerdictFilter.FLAGGED:
+        return verdict == "PROBABLE UPSCALE"
+    if mode is VerdictFilter.SUSPICIOUS:
+        return verdict == "SUSPICIOUS"
+    return True
+
+
+def count_filter_buckets(events: Iterable[Event]) -> dict[str, int]:
+    """Counts `resultado` events across all quick-filter buckets in one pass."""
+    counts = {
+        VerdictFilter.ALL.value: 0,
+        VerdictFilter.FLAGGED.value: 0,
+        VerdictFilter.SUSPICIOUS.value: 0,
+        VerdictFilter.ERRORS.value: 0,
+    }
+    for event in events:
+        if event.get("tipo") != "resultado":
+            continue
+        counts[VerdictFilter.ALL.value] += 1
+        md5 = event.get("md5") if isinstance(event.get("md5"), dict) else {}
+        failed = (
+            bool(event.get("error"))
+            or not event.get("veredicto")
+            or md5.get("estado") == "mismatch"
+        )
+        if failed:
+            counts[VerdictFilter.ERRORS.value] += 1
+            continue
+        verdict = str(event.get("veredicto") or "")
+        if verdict == "PROBABLE UPSCALE":
+            counts[VerdictFilter.FLAGGED.value] += 1
+        elif verdict == "SUSPICIOUS":
+            counts[VerdictFilter.SUSPICIOUS.value] += 1
+    return counts
+
+
 def build_command(path: str, mode: str = "full", seconds: int | None = None,
                       pdf: bool = True, workers: int = 0, without_cache: bool = False,
-                      engine: str | None = None, png: bool = False) -> list[str]:
+                      engine: str | None = None, png: bool = False,
+                      output_dir: str | None = None) -> list[str]:
     """Engine command for the subprocess.
 
     From the source code `-u` is added (without it, the stdout buffer would hold
@@ -409,6 +543,8 @@ def build_command(path: str, mode: str = "full", seconds: int | None = None,
         command.append("--pdf")
     elif png:
         command.append("--png")
+    if output_dir is not None and str(output_dir).strip():
+        command += ["--output-dir", str(output_dir).strip()]
     if workers and workers > 0:
         command += ["--workers", str(int(workers))]
     if without_cache:
@@ -759,13 +895,14 @@ class ProcessManager:
 
     def start(self, path: str, mode: str = "full", seconds: int | None = None,
                 pdf: bool = True, workers: int = 0, without_cache: bool = False,
-                png: bool = False) -> list[str]:
+                png: bool = False, output_dir: str | None = None) -> list[str]:
         """Launches the analysis. Returns the command used (useful for the log)."""
         if self.active:
             raise RuntimeError("an analysis is already running")
         command = build_command(path, mode=mode, seconds=seconds, pdf=pdf,
                                     workers=workers, without_cache=without_cache,
-                                    engine=self.engine, png=png)
+                                    engine=self.engine, png=png,
+                                    output_dir=output_dir)
         self.cancelled = False
         # CREATE_NO_WINDOW stops a console from flashing when the engine starts.
         self.process = self._lanzador(
@@ -814,12 +951,14 @@ class _Tooltip:
         self.text = text
         self._after: str | None = None
         self._window: Any = None
-        widget.bind("<Enter>", self._schedule)
-        widget.bind("<Leave>", self._hide)
-        widget.bind("<ButtonPress-1>", self._hide)
+        widget.bind("<Enter>", self._schedule, add=True)
+        widget.bind("<Leave>", self._hide, add=True)
+        widget.bind("<ButtonPress-1>", self._hide, add=True)
 
     def _schedule(self, _event: Any = None) -> None:
         self._cancel()
+        if not self.text:
+            return
         self._after = self.widget.after(self.DELAY_MS, self._show)
 
     def _cancel(self) -> None:
@@ -832,6 +971,8 @@ class _Tooltip:
 
     def _show(self) -> None:
         self._after = None
+        if not self.text:
+            return
         try:
             x = self.widget.winfo_rootx()
             y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
@@ -1198,8 +1339,8 @@ def _decode_spectrogram_pil(path: str, width_limit: int,
         return None
     try:
         from PIL import Image
-        target_w = width_limit * 2
-        target_h = height_limit * 2
+        target_w = max(1, round(width_limit * 1.5))
+        target_h = max(1, round(height_limit * 1.5))
         with Image.open(path) as source:
             src_w, src_h = source.size
             if src_w <= 0 or src_h <= 0:
@@ -1207,6 +1348,10 @@ def _decode_spectrogram_pil(path: str, width_limit: int,
             ratio = min(1.0, target_w / src_w, target_h / src_h)
             thumb_size = (max(1, round(src_w * ratio)),
                           max(1, round(src_h * ratio)))
+            try:
+                source.draft("RGB", thumb_size)
+            except Exception:
+                pass
             rgb = source.convert("RGB")
             if rgb.size != thumb_size:
                 picture = rgb.resize(thumb_size, Image.Resampling.BILINEAR)
@@ -1240,6 +1385,10 @@ if CTK_OK:
         # Thumbnail box inside the spectrogram frame of the hero (DESIGN.md 7.8).
         SPECTROGRAM_WIDTH = 212
         SPECTROGRAM_HEIGHT = 96
+        ROW_HEIGHT = 44
+        VIRTUAL_POOL_SIZE = 28
+        MAX_SPECTROGRAM_CACHE = 256
+        MAX_PIL_SPECTROGRAM_CACHE = 512
         # More issue lines than this are folded behind "Show all"; the text of
         # each issue is always shown in full, wrapped, never truncated.
         MAX_VISIBLE_PROBLEMS = 3
@@ -1261,22 +1410,56 @@ if CTK_OK:
             self._cancelled_run_ids: set[int] = set()
             self.surface_mode: SurfaceMode = SurfaceMode.EMPTY
             self.hero_mode: HeroMode = HeroMode.ALBUM
+            self._detail_visible: bool | None = None
             self.spectrogram_state: SpectrogramState = SpectrogramState.NONE
             # Bounded: a very long batch must not grow the window's memory forever.
             self.events: "deque[Event]" = deque(maxlen=MAX_EVENTS_IN_MEMORY)
             self.total = 0
             self.recibidos = 0
             self.pdf_path: str | None = None
+            self._batch_queue: deque[str] = deque()
+            self._batch_root = ""
+            self._batch_total_count = 1
+            self._batch_current_index = 1
+            self._batch_current_path = ""
+            self._album_total = 0
+            self._album_received = 0
+            self.active_filter: VerdictFilter = VerdictFilter.ALL
+            self._filter_counts: dict[str, int] = {
+                VerdictFilter.ALL.value: 0,
+                VerdictFilter.FLAGGED.value: 0,
+                VerdictFilter.SUSPICIOUS.value: 0,
+                VerdictFilter.ERRORS.value: 0,
+            }
+            self._filter_dirty = False
+            self._rendered_filter_style: tuple[str, str] | None = None
+            self._prev_filter_mode: str = VerdictFilter.ALL.value
+            self._rendered_filter_counts: dict[str, int] = {}
+            self._rendered_filter_status = ""
             # CTkImage and PhotoImage references must stay alive: a collected
             # image disappears from its widget silently.
             self._icons: dict[tuple[str, int, str], Any] = {}
             self._tk_icons: dict[tuple[str, int, str], Any] = {}
             self._chip_images: dict[tuple[str, str, str, float, str], Any] = {}
-            # Results surface: the selected row, its widgets and the text metrics
-            # used by the ellipsis.
+            # Results surface: logical track records (`table_rows`) + viewport pool.
             self.selected_event: Event | None = None
+            self._hovered_entry: dict[str, Any] | None = None
             self._problems_expanded = False
+            self._no_anomaly_chip: Any = None
+            self._no_anomaly_label: Any = None
+            self._problem_rows_pool: list[dict[str, Any]] = []
+            self._problem_toggle_btn: Any = None
+            self._last_problem_wrap = 0
             self.table_rows: list[dict[str, Any]] = []
+            self._filtered_rows: list[dict[str, Any]] = []
+            self._row_slots: list[dict[str, Any]] = []
+            self._virtual_start_index = 0
+            self._active_pool_cap = 18
+            self._syncing_viewport = False
+            self._viewport_dirty = False
+            self._viewport_flush_scheduled = False
+            self._last_scrollregion: tuple[int, int, int, int] | None = None
+            self._table_window_top_y = 0
             self._measures: dict[tuple[Any, ...], Any] = {}
             self._font_max_char: dict[tuple[Any, ...], int] = {}
             self._scaled_fonts: dict[tuple[Any, ...], tuple[Any, ...]] = {}
@@ -1302,8 +1485,15 @@ if CTK_OK:
             self._spectrograms: OrderedDict[str, Any] = OrderedDict()
             self._pil_spectrograms: OrderedDict[str, tuple[Any, tuple[int, int]]] = OrderedDict()
             self._spec_inflight: set[str] = set()
+            self._spec_queued: set[str] = set()
+            self._spec_priority: set[str] = set()
+            self._spec_bad_paths: set[str] = set()
+            self._spec_deque: deque[str] = deque()
             self._spec_lock = threading.Lock()
-            self._spec_queue: "queue.Queue[str | None]" = queue.Queue(maxsize=64)
+            self._spec_cond = threading.Condition(self._spec_lock)
+            self._spec_ready_queue: "queue.Queue[str]" = queue.Queue()
+            self._spec_poll_scheduled = False
+            self._spec_stop = False
             self._spec_worker: threading.Thread | None = None
             self._spectrogram_path_value = ""
             self._hero_layout_scheduled = False
@@ -1655,20 +1845,130 @@ if CTK_OK:
 
             # ANALYSIS (always scans in `full` mode)
             self._section_label(rail, "Analysis", row=4)
-            self.var_pdf = ctk.BooleanVar(value=True)
+            self.pdf_group = ctk.CTkFrame(rail, fg_color="transparent")
+            self.pdf_group.grid(row=5, column=0, padx=theme.SPACE["lg"],
+                                pady=(0, theme.SPACE["xs"]), sticky="ew")
+            self.pdf_group.grid_columnconfigure(0, weight=1)
+
+            self.var_pdf = ctk.BooleanVar(value=False)
             self.check_pdf = ctk.CTkCheckBox(
-                rail, text="Generate PDF report", variable=self.var_pdf,
+                self.pdf_group, text="Generate PDF report", variable=self.var_pdf,
+                command=self._change_pdf,
                 checkbox_width=18, checkbox_height=18,
                 corner_radius=theme.RADIUS["xs"], border_width=1,
                 border_color=c("border.strong"), fg_color=c("accent"),
                 hover_color=c("accent.hover"), checkmark_color=c("on.accent"),
                 text_color=c("text.primary"),
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
-            self.check_pdf.grid(row=5, column=0, padx=theme.SPACE["lg"],
-                                pady=(0, theme.SPACE["xs"]),
-                                sticky="w")
+            self.check_pdf.grid(row=0, column=0, sticky="w")
             self._ring_highlight(self.check_pdf, "bg.surface")
-            self._toggle_on_space(self.check_pdf, self.var_pdf)
+            self._toggle_on_space(self.check_pdf, self.var_pdf, self._change_pdf)
+
+            self.pdf_output_row = ctk.CTkFrame(
+                self.pdf_group, fg_color=c("bg.raised"),
+                corner_radius=theme.RADIUS["md"],
+                border_width=1, border_color=c("border.subtle"),
+            )
+            self.pdf_output_row.grid(row=1, column=0, pady=(theme.SPACE["xs"], 0),
+                                     sticky="ew")
+            self.pdf_output_row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                self.pdf_output_row, text="PDF destination", anchor="w",
+                font=theme.font(11, 600), text_color=c("text.secondary"),
+            ).grid(
+                row=0, column=0, sticky="ew",
+                padx=theme.SPACE["sm"], pady=(theme.SPACE["xs"], theme.SPACE["2xs"]),
+            )
+            self.var_pdf_dest_mode = ctk.StringVar(value="album")
+            self.radio_pdf_album = ctk.CTkRadioButton(
+                self.pdf_output_row,
+                text="Save in each album folder",
+                variable=self.var_pdf_dest_mode,
+                value="album",
+                command=self._change_pdf_dest_mode,
+                radiobutton_width=16,
+                radiobutton_height=16,
+                border_width_unchecked=2,
+                border_width_checked=5,
+                fg_color=c("accent"),
+                hover_color=c("accent.hover"),
+                border_color=c("border.strong"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"),
+                font=theme.font(12),
+            )
+            self.radio_pdf_album.grid(
+                row=1, column=0, sticky="w",
+                padx=theme.SPACE["sm"], pady=(0, theme.SPACE["2xs"]),
+            )
+            self.radio_pdf_custom = ctk.CTkRadioButton(
+                self.pdf_output_row,
+                text="Save in custom folder...",
+                variable=self.var_pdf_dest_mode,
+                value="custom",
+                command=self._change_pdf_dest_mode,
+                radiobutton_width=16,
+                radiobutton_height=16,
+                border_width_unchecked=2,
+                border_width_checked=5,
+                fg_color=c("accent"),
+                hover_color=c("accent.hover"),
+                border_color=c("border.strong"),
+                text_color=c("text.primary"),
+                text_color_disabled=c("text.tertiary"),
+                font=theme.font(12),
+            )
+            self.radio_pdf_custom.grid(
+                row=2, column=0, sticky="w",
+                padx=theme.SPACE["sm"], pady=(0, theme.SPACE["2xs"]),
+            )
+            self.pdf_custom_dir_row = ctk.CTkFrame(
+                self.pdf_output_row, fg_color="transparent"
+            )
+            self.pdf_custom_dir_row.grid(
+                row=3, column=0, sticky="ew",
+                padx=theme.SPACE["sm"], pady=(theme.SPACE["2xs"], theme.SPACE["2xs"]),
+            )
+            self.pdf_custom_dir_row.grid_columnconfigure(0, weight=1)
+            self.var_output_dir = ctk.StringVar(value="")
+            self.input_output_dir = ctk.CTkEntry(
+                self.pdf_custom_dir_row, textvariable=self.var_output_dir, height=32,
+                corner_radius=theme.RADIUS["md"], border_width=1,
+                border_color=c("border.subtle"), fg_color=c("bg.surface"),
+                text_color=c("text.primary"),
+                placeholder_text="Choose folder…",
+                placeholder_text_color=c("text.tertiary"), font=theme.font(12))
+            self.input_output_dir.grid(row=0, column=0, sticky="ew")
+            self._ring_border(self.input_output_dir, 1, "border.subtle")
+
+            self.btn_output_dir = self._button(
+                self.pdf_custom_dir_row, "icon", "", self._choose_output_dir,
+                icon="folder", icon_size=18, width=30, background="bg.raised")
+            self.btn_output_dir.grid(row=0, column=1, padx=(theme.SPACE["2xs"], 0))
+            self.output_dir_tooltip = _Tooltip(
+                self.btn_output_dir, "Choose PDF output folder")
+
+            self.btn_clear_output_dir = self._button(
+                self.pdf_custom_dir_row, "icon", "", self._clear_output_dir,
+                icon="x", icon_size=16, width=26, background="bg.raised")
+            self.btn_clear_output_dir.grid(row=0, column=2,
+                                           padx=(theme.SPACE["2xs"], 0))
+            self.clear_output_dir_tooltip = _Tooltip(
+                self.btn_clear_output_dir, "Save in each album folder")
+            self.label_pdf_dest_hint = ctk.CTkLabel(
+                self.pdf_output_row,
+                text="Writes flac_verifier_report.pdf inside each album",
+                anchor="w",
+                font=theme.font(11),
+                text_color=c("text.tertiary"),
+            )
+            self.label_pdf_dest_hint.grid(
+                row=4, column=0, sticky="ew",
+                padx=theme.SPACE["sm"], pady=(0, theme.SPACE["xs"]),
+            )
+            self.var_output_dir.trace_add("write", self._on_output_dir_var_changed)
+            self.var_pdf.trace_add("write", lambda *_args: self._change_pdf())
+            self._change_pdf()
 
             self.var_parallel = ctk.BooleanVar(value=True)
             self.parallel_switch = ctk.CTkSwitch(
@@ -1876,6 +2176,18 @@ if CTK_OK:
 
             self.hero_problems = ctk.CTkFrame(self.hero_left, fg_color="transparent")
             self.hero_problems.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+            self.hero_problems.grid_columnconfigure(0, weight=1)
+            self._no_anomaly_chip = self._chip(self.hero_problems, "", "ok")
+            self._no_anomaly_label = self._no_anomaly_chip._chip_parts[1]
+            self._no_anomaly_chip.grid_remove()
+            for _ in range(10):
+                self._problem_rows_pool.append(self._create_problem_pool_entry())
+            self._problem_toggle_btn = ctk.CTkButton(
+                self.hero_problems, text="", height=24, width=120,
+                fg_color="transparent", hover_color=c("bg.hover"),
+                text_color=c("accent"), font=theme.font(11, 600),
+                border_width=0, anchor="w", command=self._toggle_problems)
+            self._problem_toggle_btn.grid_remove()
 
             # Right column: spectrogram, its action, and the report actions. It
             # stays in place in the album state (only the actions are shown), so
@@ -1957,8 +2269,15 @@ if CTK_OK:
                                  font=theme.mono(12), text_color=c("text.primary"))
             return caption, value
 
+        FILTER_BUTTON_SPECS = (
+            (VerdictFilter.ALL.value, "All", "accent", "accent.hover", "accent", "on.accent"),
+            (VerdictFilter.FLAGGED.value, "Flagged", "bad.bg", "bg.hover", "bad.border", "bad"),
+            (VerdictFilter.SUSPICIOUS.value, "Suspicious", "warn.bg", "bg.hover", "warn.border", "warn"),
+            (VerdictFilter.ERRORS.value, "Errors", "danger.bg", "bg.hover", "danger", "danger"),
+        )
+
         def _build_table(self, parent: Any) -> None:
-            """Header and streaming rows (DESIGN.md 7.7)."""
+            """Filter bar, column header and streaming rows (DESIGN.md 7.7)."""
             self.table_panel = ctk.CTkFrame(parent, fg_color=c("bg.surface"),
                                             corner_radius=theme.RADIUS["lg"],
                                             border_width=1,
@@ -1967,11 +2286,66 @@ if CTK_OK:
                                   padx=theme.SPACE["xl"],
                                   pady=(0, theme.SPACE["md"]))
             self.table_panel.grid_columnconfigure(0, weight=1)
-            self.table_panel.grid_rowconfigure(1, weight=1)
+            self.table_panel.grid_rowconfigure(2, weight=1)
+
+            self.filter_bar = ctk.CTkFrame(self.table_panel, fg_color="transparent",
+                                           height=38, corner_radius=0)
+            self.filter_bar.grid(row=0, column=0, columnspan=2, sticky="ew",
+                                 padx=theme.SPACE["sm"],
+                                 pady=(theme.SPACE["xs"], theme.SPACE["2xs"]))
+            self.filter_bar.grid_columnconfigure(len(self.FILTER_BUTTON_SPECS), weight=1)
+            self.filter_buttons: dict[str, Any] = {}
+            for col_idx, (key, title, _fill, _hov, _bd, _ink) in enumerate(self.FILTER_BUTTON_SPECS):
+                button = ctk.CTkButton(
+                    self.filter_bar,
+                    text=f"{title} (0)",
+                    height=28,
+                    width=88,
+                    corner_radius=theme.RADIUS["sm"],
+                    border_width=1,
+                    border_color=c("border.subtle"),
+                    fg_color=c("bg.raised"),
+                    hover_color=c("bg.hover"),
+                    text_color=c("text.secondary"),
+                    font=theme.font(12, 600),
+                    cursor="hand2",
+                    command=lambda mode_key=key: self.set_verdict_filter(mode_key),
+                )
+                button.grid(row=0, column=col_idx, sticky="w",
+                            padx=(0, theme.SPACE["xs"]))
+                tkinter.Frame.configure(button, takefocus=True)
+                tkinter.Frame.bind(
+                    button, "<FocusIn>",
+                    lambda _ev, btn=button: btn.configure(
+                        border_width=2, border_color=c("focus")),
+                )
+                tkinter.Frame.bind(
+                    button, "<FocusOut>",
+                    lambda _ev, mode_key=key: self._style_filter_button(mode_key),
+                )
+                tkinter.Frame.bind(
+                    button, "<Return>",
+                    lambda _ev, mode_key=key: self._activate_filter_key(mode_key),
+                )
+                tkinter.Frame.bind(
+                    button, "<space>",
+                    lambda _ev, mode_key=key: self._activate_filter_key(mode_key),
+                )
+                self.filter_buttons[key] = button
+
+            self.label_filter_status = ctk.CTkLabel(
+                self.filter_bar, text="", anchor="e",
+                font=theme.font(11), text_color=c("text.tertiary"),
+            )
+            self.label_filter_status.grid(
+                row=0, column=len(self.FILTER_BUTTON_SPECS), sticky="e",
+                padx=(theme.SPACE["xs"], 0),
+            )
+            self._refresh_filter_bar(force=True)
 
             self.table_header = ctk.CTkFrame(self.table_panel, fg_color="transparent",
                                              height=36, corner_radius=0)
-            self.table_header.grid(row=0, column=0, sticky="ew")
+            self.table_header.grid(row=1, column=0, sticky="ew")
             self.table_header.grid_rowconfigure(0, minsize=36)
             self._configure_table_columns(self.table_header)
             for index, (name, _, _, anchor) in enumerate(TABLE_COLUMNS, start=1):
@@ -1984,13 +2358,14 @@ if CTK_OK:
 
             self.table_canvas = tkinter.Canvas(self.table_panel,
                                                background=c("bg.surface"),
-                                               highlightthickness=0, bd=0)
-            self.table_canvas.grid(row=1, column=0, sticky="nsew")
+                                               highlightthickness=0, bd=0,
+                                               yscrollincrement=self.ROW_HEIGHT // 2)
+            self.table_canvas.grid(row=2, column=0, sticky="nsew")
             self.table_scroll = _TableScrollbar(
-                self.table_panel, command=self.table_canvas.yview,
+                self.table_panel, command=self._on_scrollbar_command,
                 background=c("bg.surface"))
-            self.table_scroll.grid(row=1, column=1, sticky="ns")
-            self.table_canvas.configure(yscrollcommand=self.table_scroll.set)
+            self.table_scroll.grid(row=2, column=1, sticky="ns")
+            self.table_canvas.configure(yscrollcommand=self._on_canvas_yscroll)
 
             self.table_body = _FlatRowFrame(self.table_canvas, height=1,
                                             fg_color=c("bg.surface"))
@@ -1998,6 +2373,7 @@ if CTK_OK:
                 (0, 0), window=self.table_body, anchor="nw")
             self.table_body.bind("<Configure>", self._on_table_body)
             self.table_canvas.bind("<Configure>", self._on_table_canvas)
+            self.table_canvas.bind("<Leave>", self._on_table_canvas_leave, add=True)
             self.table_canvas.bind("<MouseWheel>", self._on_table_wheel)
             self.table_body.bind("<MouseWheel>", self._on_table_wheel)
 
@@ -2007,108 +2383,535 @@ if CTK_OK:
             for index, (_, weight, minsize, _) in enumerate(TABLE_COLUMNS, start=1):
                 frame.grid_columnconfigure(index, weight=weight, minsize=minsize)
 
-        # ── table rows ──────────────────────────────────────────────────────
-        def _add_row(self, event: Event) -> dict[str, Any]:
-            """One 44 px row, appended as the event arrives."""
-            follow = self._table_at_bottom()
-            values = result_row(event)
+        def _activate_filter_key(self, mode_key: str) -> str:
+            self.set_verdict_filter(mode_key)
+            return "break"
+
+        def _style_filter_button(self, mode_key: str) -> None:
+            button = self.filter_buttons.get(mode_key)
+            if button is None:
+                return
+            is_active = mode_key == self.active_filter.value
+            if is_active:
+                _, _, fill_t, hover_t, border_t, text_t = next(
+                    spec for spec in self.FILTER_BUTTON_SPECS if spec[0] == mode_key
+                )
+            else:
+                fill_t, hover_t, border_t, text_t = (
+                    "bg.raised", "bg.hover", "border.subtle", "text.secondary"
+                )
+            button.configure(
+                fg_color=c(fill_t),
+                hover_color=c(hover_t),
+                border_color=c(border_t),
+                border_width=1,
+                text_color=c(text_t),
+            )
+
+        def _reset_filter_counts(self) -> None:
+            for key in self._filter_counts:
+                self._filter_counts[key] = 0
+            self._filter_dirty = False
+            self._rendered_filter_style = None
+            self._rendered_filter_counts.clear()
+            self._rendered_filter_status = ""
+            if hasattr(self, "filter_buttons"):
+                self._refresh_filter_bar(force=True)
+
+        @staticmethod
+        def _event_filter_bucket(event: Event) -> str:
+            md5 = event.get("md5") if isinstance(event.get("md5"), dict) else {}
+            if (
+                bool(event.get("error"))
+                or not event.get("veredicto")
+                or md5.get("estado") == "mismatch"
+            ):
+                return VerdictFilter.ERRORS.value
+            verdict = str(event.get("veredicto") or "")
+            if verdict == "PROBABLE UPSCALE":
+                return VerdictFilter.FLAGGED.value
+            if verdict == "SUSPICIOUS":
+                return VerdictFilter.SUSPICIOUS.value
+            return "ok"
+
+        def _record_filter_event(self, event: Event, bucket: str | None = None) -> None:
+            self._filter_counts[VerdictFilter.ALL.value] += 1
+            resolved = bucket or self._event_filter_bucket(event)
+            if resolved in self._filter_counts:
+                self._filter_counts[resolved] += 1
+
+        def _refresh_filter_bar(self, force: bool = False) -> None:
+            if not hasattr(self, "filter_buttons"):
+                return
+            active_val = self.active_filter.value
+            style_sig = (theme.MODE, active_val)
+            style_dirty = force or (self._rendered_filter_style != style_sig)
+            theme_changed = (
+                self._rendered_filter_style is None
+                or self._rendered_filter_style[0] != theme.MODE
+            )
+            prev_active = self._prev_filter_mode
+            if style_dirty:
+                self._rendered_filter_style = style_sig
+                self._prev_filter_mode = active_val
+            for mode_key, title, *_ in self.FILTER_BUTTON_SPECS:
+                count = self._filter_counts.get(mode_key, 0)
+                button = self.filter_buttons[mode_key]
+                if force or self._rendered_filter_counts.get(mode_key) != count:
+                    self._rendered_filter_counts[mode_key] = count
+                    button.configure(text=f"{title} ({count})")
+                if force or theme_changed or (
+                    style_dirty and mode_key in (prev_active, active_val)
+                ):
+                    self._style_filter_button(mode_key)
+            total_all = self._filter_counts.get(VerdictFilter.ALL.value, 0)
+            if self.active_filter is VerdictFilter.ALL:
+                status_text = ""
+            else:
+                shown = self._filter_counts.get(active_val, 0)
+                status_text = f"Showing {shown} of {total_all}"
+            if force or self._rendered_filter_status != status_text:
+                self._rendered_filter_status = status_text
+                self.label_filter_status.configure(text=status_text)
+
+        def set_verdict_filter(self, filter_mode: VerdictFilter | str) -> None:
+            """Applies a live verdict filter across existing rows in O(visible) viewport."""
+            mode = (
+                filter_mode
+                if isinstance(filter_mode, VerdictFilter)
+                else VerdictFilter(filter_mode)
+            )
+            self.active_filter = mode
+            if mode is VerdictFilter.ALL:
+                for entry in self.table_rows:
+                    entry["visible"] = True
+                self._filtered_rows = list(self.table_rows)
+            else:
+                target_bucket = mode.value
+                filtered: list[dict[str, Any]] = []
+                for entry in self.table_rows:
+                    want = entry["filter_bucket"] == target_bucket
+                    entry["visible"] = want
+                    if want:
+                        filtered.append(entry)
+                self._filtered_rows = filtered
+            self._virtual_start_index = 0
+            self._syncing_viewport = True
+            try:
+                if self.table_canvas.yview()[0] != 0.0:
+                    self.table_canvas.yview_moveto(0.0)
+            finally:
+                self._syncing_viewport = False
+            self._sync_virtual_viewport(force=False)
+            self._clear_hover()
+            self._refresh_filter_bar(force=False)
+
+        def _display_file_name(self, event: Event, values: dict[str, Any]) -> str:
+            if self._batch_total_count > 1 and values.get("path"):
+                ctx = relative_album_context(values["path"], self._batch_root)
+                if ctx:
+                    return f"{ctx} / {values['file']}"
+            return values["file"]
+
+        # ── table rows (virtualized viewport pool) ──────────────────────────
+        def _on_scrollbar_command(self, *args: Any) -> None:
+            self.table_canvas.yview(*args)
+            self._sync_virtual_viewport()
+            self._clear_hover()
+
+        def _on_canvas_yscroll(self, first: Any, last: Any) -> None:
+            self.table_scroll.set(first, last)
+            if not self._syncing_viewport and not self._retheming:
+                self._sync_virtual_viewport()
+
+        def _set_scrollregion(self, region: tuple[int, int, int, int]) -> None:
+            if self._last_scrollregion != region:
+                self._last_scrollregion = region
+                self.table_canvas.configure(scrollregion=region)
+
+        def _create_row_slot(self) -> dict[str, Any]:
+            """Creates one reusable 44 px viewport row slot inside `table_body`."""
             mono = self._scaled_font(theme.mono(12))
             surface_bg = c("bg.surface")
-            row = _FlatRowFrame(self.table_body, height=44, fg_color=surface_bg)
-            insert_pos: int | None = None
-            original_index = event.get("indice_original")
-            if isinstance(original_index, int):
-                for idx, existing in enumerate(self.table_rows):
-                    existing_index = existing["event"].get("indice_original")
-                    if (isinstance(existing_index, int)
-                            and existing_index > original_index):
-                        insert_pos = idx
-                        break
-            if insert_pos is not None:
-                row.pack(fill="x", before=self.table_rows[insert_pos]["frame"])
-            else:
-                row.pack(fill="x")
-            # The row is 44 px: 43 for the content and 1 for the separator. The
-            # height comes from the grid rows, not from `pack_propagate` (which
-            # only governs packed children, not gridded ones).
-            row.grid_rowconfigure(0, minsize=43)
+            row = _FlatRowFrame(self.table_body, height=self.ROW_HEIGHT,
+                                fg_color=surface_bg)
+            row.grid_rowconfigure(0, minsize=self.ROW_HEIGHT - 1)
             row.grid_rowconfigure(1, minsize=1)
             self._configure_table_columns(row)
 
             bar = _FlatRowFrame(row, width=2, height=1, fg_color=surface_bg)
             bar.grid(row=0, column=0, sticky="ns")
 
-            plain: list[Any] = []
-            # A plain Tk label with width=1: its requested width does not depend
-            # on the file name, so a long name can never widen the column or
-            # feed a Configure loop; sticky="ew" stretches it to the cell and the
-            # ellipsis is applied on its own <Configure>.
             file_font = theme.font(13)
-            file_label = tkinter.Label(row, text=values["file"], anchor="w",
-                                       width=1, bd=0, highlightthickness=0,
-                                       background=surface_bg,
-                                       foreground=c("text.primary"),
-                                       font=self._scaled_font(file_font))
+            file_label = tkinter.Label(
+                row, text="", anchor="w", width=1, bd=0, highlightthickness=0,
+                background=surface_bg, foreground=c("text.primary"),
+                font=self._scaled_font(file_font),
+            )
             file_label.grid(row=0, column=1, sticky="ew",
                             padx=(theme.SPACE["sm"], theme.SPACE["xs"]))
-            file_label.full_text = values["file"]
+            file_label.full_text = ""
             file_label.ui_font = file_font
-            file_label.tooltip = None
+            file_label.tooltip = _Tooltip(file_label, "")
             file_label.fitted_width = 0
-            file_label.bind("<Configure>",
-                            lambda configure, label=file_label:
-                            self._refit_file_name(label, configure))
+            file_label.bind(
+                "<Configure>",
+                lambda configure, label=file_label: self._refit_file_name(label, configure),
+            )
 
-            chip = self._row_chip(row, values["label"], values["tone"], surface_bg)
+            chip = self._row_chip(row, "OK", "ok", surface_bg)
             chip.grid(row=0, column=2, sticky="w",
                       padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
 
-            score_text = "—" if values["score"] is None else str(values["score"])
+            plain: list[Any] = []
             text_sec = c("text.secondary")
-            for column, key, text, anchor in (
-                    (3, "score", score_text, "e"),
-                    (4, "depth", values["depth"], "w"),
-                    (5, "rate", values["rate"], "w"),
-                    (6, "dr", values["dr"], "w")):
+            for column, text, anchor in (
+                (3, "—", "e"),
+                (4, "—", "w"),
+                (5, "—", "w"),
+                (6, "—", "w"),
+            ):
                 label = _FlatRowLabel(row, text=text, anchor=anchor, font=mono,
                                       fg_color=surface_bg, text_color=text_sec)
                 label.grid(row=0, column=column, sticky="ew",
                            padx=(theme.SPACE["xs"], theme.SPACE["xs"]))
                 plain.append(label)
 
-            icon_spec = None
-            if values["md5"] == "—":
-                mark = _FlatRowLabel(row, text="—", font=mono,
-                                     fg_color=surface_bg,
-                                     text_color=c("text.tertiary"))
-            else:
-                icon_spec = (values["md5_icon"], 16, values["md5_tone"])
-                mark = _FlatRowLabel(row, text="", image=self._tk_icon(
-                    icon_spec[0], icon_spec[1], c(icon_spec[2])),
-                    fg_color=surface_bg)
-                _Tooltip(mark, f"MD5 {values['md5']}")
+            mark = _FlatRowLabel(row, text="—", font=mono, fg_color=surface_bg,
+                                 text_color=c("text.tertiary"))
             mark.grid(row=0, column=7, sticky="w",
                       padx=(theme.SPACE["xs"], theme.SPACE["sm"]))
             plain.append(mark)
+            mark_tooltip = _Tooltip(mark, "")
 
             separator = _FlatRowFrame(row, height=1, fg_color=c("border.subtle"))
             separator.grid(row=1, column=0, columnspan=len(TABLE_COLUMNS) + 1,
                            sticky="ew")
 
-            entry = {"event": event, "values": values, "frame": row, "bar": bar,
-                     "separator": separator,
-                     "cells": {"file": file_label, "verdict": chip,
-                               "score": plain[0], "depth": plain[1],
-                               "rate": plain[2], "dr": plain[3], "md5": mark},
-                     "file_label": file_label, "plain": plain,
-                     "icon_spec": icon_spec, "hover": False,
-                     "_was_selected": False, "_paint_state": None,
-                     "_chip_bg": str(surface_bg)}
+            slot: dict[str, Any] = {
+                "entry": None,
+                "packed": False,
+                "frame": row,
+                "bar": bar,
+                "separator": separator,
+                "cells": {
+                    "file": file_label,
+                    "verdict": chip,
+                    "score": plain[0],
+                    "depth": plain[1],
+                    "rate": plain[2],
+                    "dr": plain[3],
+                    "md5": mark,
+                },
+                "file_label": file_label,
+                "plain": plain,
+                "mark_tooltip": mark_tooltip,
+                "_file_text": "",
+                "_plain_texts": ["—", "—", "—", "—"],
+                "_md5_state": ("empty", None),
+                "_chip_sig": None,
+                "_row_bg_sig": None,
+            }
+            file_label._row_slot = slot
+            self._bind_slot(row, slot)
+            return slot
+
+        def _bind_slot(self, widget: Any, slot: dict[str, Any]) -> None:
+            widget._row_slot = slot
+            widget.bind(
+                "<Button-1>",
+                lambda _event, sl=slot: sl["entry"] is not None and self._select(sl["entry"]["event"]),
+                add=True,
+            )
+            widget.bind(
+                "<Enter>",
+                lambda _event, sl=slot: sl["entry"] is not None and self._hover_row(sl["entry"], True),
+                add=True,
+            )
+            widget.bind(
+                "<Leave>",
+                lambda event, sl=slot: sl["entry"] is not None and self._row_leave(sl["entry"], event),
+                add=True,
+            )
+            widget.bind("<MouseWheel>", self._on_table_wheel, add=True)
+            for child in widget.winfo_children():
+                self._bind_slot(child, slot)
+
+        def _unbind_slot(self, slot: dict[str, Any]) -> None:
+            old = slot.get("entry")
+            if old is not None and old.get("slot") is slot:
+                if self._hovered_entry is old:
+                    self._hovered_entry = None
+                old["hover"] = False
+                old["slot"] = None
+                old["frame"] = None
+                old["bar"] = None
+                old["separator"] = None
+                old["cells"] = None
+                old["file_label"] = None
+                old["plain"] = None
+                old["_was_selected"] = False
+                old["_paint_state"] = None
+            slot["entry"] = None
+
+        def _bind_slot_to_entry(
+            self, slot: dict[str, Any], entry: dict[str, Any], force: bool = False
+        ) -> None:
+            current_entry = slot.get("entry")
+            if current_entry is entry and not force:
+                return
+            if current_entry is not entry:
+                self._unbind_slot(slot)
+                prev_slot = entry.get("slot")
+                if prev_slot is not None and prev_slot is not slot:
+                    self._unbind_slot(prev_slot)
+                slot["entry"] = entry
+                entry["slot"] = slot
+                entry["frame"] = slot["frame"]
+                entry["bar"] = slot["bar"]
+                entry["separator"] = slot["separator"]
+                entry["cells"] = slot["cells"]
+                entry["file_label"] = slot["file_label"]
+                entry["plain"] = slot["plain"]
+
+            values = entry["values"]
+            display_name = values["display_file"]
+            file_lbl = slot["file_label"]
+            file_lbl.full_text = display_name
+            fit_w = file_lbl.fitted_width
+            if fit_w > 8:
+                cached_fit = entry.get("_fitted")
+                if cached_fit is not None and cached_fit[0] == fit_w:
+                    shown = cached_fit[1]
+                else:
+                    shown = self._fit(display_name, file_lbl.ui_font, fit_w - 4)
+                    entry["_fitted"] = (fit_w, shown)
+                file_lbl.tooltip.text = display_name if shown != display_name else ""
+            else:
+                shown = display_name
+                file_lbl.tooltip.text = ""
+            tk_call = self.tk.call
+            if force or slot["_file_text"] != shown:
+                slot["_file_text"] = shown
+                tk_call(file_lbl._w, "configure", "-text", shown)
+
+            score_text = "—" if values["score"] is None else str(values["score"])
+            plain_vals = (score_text, values["depth"], values["rate"], values["dr"])
+            prev_texts = slot["_plain_texts"]
+            for idx, new_txt in enumerate(plain_vals):
+                if force or prev_texts[idx] != new_txt:
+                    prev_texts[idx] = new_txt
+                    tk_call(slot["plain"][idx]._w, "configure", "-text", new_txt)
+
+            icon_spec = entry.get("icon_spec")
+            mark_lbl = slot["cells"]["md5"]
+            if icon_spec is None:
+                md5_key = ("dash", None)
+                if force or slot["_md5_state"] != md5_key:
+                    slot["_md5_state"] = md5_key
+                    mark_lbl._image_ref = None
+                    tk_call(
+                        mark_lbl._w, "configure",
+                        "-image", "", "-text", "—",
+                        "-foreground", str(c("text.tertiary")),
+                    )
+                    slot["mark_tooltip"].text = ""
+            else:
+                md5_key = ("icon", icon_spec)
+                if force or slot["_md5_state"] != md5_key:
+                    slot["_md5_state"] = md5_key
+                    photo = self._tk_icon(icon_spec[0], icon_spec[1], c(icon_spec[2]))
+                    mark_lbl._image_ref = photo
+                    tk_call(
+                        mark_lbl._w, "configure",
+                        "-text", "", "-image", "" if photo is None else photo,
+                    )
+                slot["mark_tooltip"].text = f"MD5 {values['md5']}"
+
+            verdict_cell = slot["cells"]["verdict"]
+            verdict_cell.chip_text = values["label"]
+            verdict_cell.chip_tone = values["tone"]
+            entry["_paint_state"] = None
+            self._paint_row(entry, force=force)
+
+        def _viewport_pool_size(self) -> int:
+            canvas_h = (
+                self.table_canvas.winfo_height()
+                if hasattr(self, "table_canvas")
+                else 0
+            )
+            if canvas_h <= 1:
+                return 18
+            return max(12, min(self.VIRTUAL_POOL_SIZE, (canvas_h // self.ROW_HEIGHT) + 4))
+
+        def _sync_virtual_viewport(self, force: bool = False) -> None:
+            if self._syncing_viewport:
+                return
+            self._syncing_viewport = True
+            self._viewport_dirty = False
+            try:
+                n_visible = len(self._filtered_rows)
+                pool_cap = self._viewport_pool_size()
+                self._active_pool_cap = pool_cap
+                target_slots = min(n_visible, pool_cap)
+                while len(self._row_slots) < target_slots:
+                    self._row_slots.append(self._create_row_slot())
+
+                for idx, slot in enumerate(self._row_slots):
+                    if idx < target_slots:
+                        if not slot["packed"]:
+                            slot["frame"].pack(fill="x")
+                            slot["packed"] = True
+                    else:
+                        self._unbind_slot(slot)
+                        if slot["packed"]:
+                            slot["frame"].pack_forget()
+                            slot["packed"] = False
+
+                cw = max(1, self._canvas_width or self.table_canvas.winfo_width())
+                if n_visible == 0:
+                    self._virtual_start_index = 0
+                    if self._table_window_top_y != 0:
+                        self.table_canvas.coords(self._table_window, 0, 0)
+                        self._table_window_top_y = 0
+                    tkinter.Frame.configure(self.table_body, height=1)
+                    self._set_scrollregion((0, 0, cw, 1))
+                    self.table_scroll.set(0.0, 1.0)
+                    return
+
+                if n_visible <= pool_cap:
+                    self._virtual_start_index = 0
+                    for idx in range(n_visible):
+                        self._bind_slot_to_entry(
+                            self._row_slots[idx], self._filtered_rows[idx], force=force
+                        )
+                    if self._table_window_top_y != 0:
+                        self.table_canvas.coords(self._table_window, 0, 0)
+                        self._table_window_top_y = 0
+                    req_h = max(1, int(self.table_body.winfo_reqheight()) or (n_visible * self.ROW_HEIGHT))
+                    if self.table_body.winfo_height() > req_h:
+                        tkinter.Frame.configure(self.table_body, height=req_h)
+                    self._set_scrollregion((0, 0, cw, req_h))
+                    return
+
+                total_height = n_visible * self.ROW_HEIGHT
+                self._set_scrollregion((0, 0, cw, total_height))
+                first_frac, _ = self.table_canvas.yview()
+                first_row = int((first_frac * total_height) // self.ROW_HEIGHT)
+                start_index = max(0, min(n_visible - pool_cap, first_row - 2))
+                self._virtual_start_index = start_index
+                top_y = start_index * self.ROW_HEIGHT
+                if self._table_window_top_y != top_y:
+                    self.table_canvas.coords(self._table_window, 0, top_y)
+                    self._table_window_top_y = top_y
+                for slot_idx in range(pool_cap):
+                    self._bind_slot_to_entry(
+                        self._row_slots[slot_idx],
+                        self._filtered_rows[start_index + slot_idx],
+                        force=force,
+                    )
+            finally:
+                self._syncing_viewport = False
+
+        def _schedule_viewport_flush(self) -> None:
+            if self._viewport_flush_scheduled:
+                return
+            self._viewport_flush_scheduled = True
+            self.after_idle(self._flush_viewport)
+
+        def _flush_viewport(self) -> None:
+            self._viewport_flush_scheduled = False
+            if self._viewport_dirty:
+                self._sync_virtual_viewport()
+
+        def _add_row(self, event: Event) -> dict[str, Any]:
+            """Records a result row and mounts it only when inside the visible viewport."""
+            follow = self._table_at_bottom()
+            values = result_row(event)
+            display_name = self._display_file_name(event, values)
+            values["display_file"] = display_name
+            batch_idx = self._batch_current_index
+            insert_pos: int | None = None
+            original_index = event.get("indice_original")
+            if isinstance(original_index, int) and self.table_rows:
+                idx = len(self.table_rows) - 1
+                while idx >= 0:
+                    existing = self.table_rows[idx]
+                    if existing.get("batch_index", 1) != batch_idx:
+                        break
+                    existing_index = existing["event"].get("indice_original")
+                    if (isinstance(existing_index, int)
+                            and existing_index > original_index):
+                        insert_pos = idx
+                        idx -= 1
+                        continue
+                    break
+
+            bucket = self._event_filter_bucket(event)
+            want_visible = (
+                self.active_filter is VerdictFilter.ALL
+                or bucket == self.active_filter.value
+            )
+            icon_spec = (
+                None if values["md5"] == "—"
+                else (values["md5_icon"], 16, values["md5_tone"])
+            )
+            entry: dict[str, Any] = {
+                "event": event,
+                "values": values,
+                "slot": None,
+                "frame": None,
+                "bar": None,
+                "separator": None,
+                "cells": None,
+                "file_label": None,
+                "plain": None,
+                "icon_spec": icon_spec,
+                "filter_bucket": bucket,
+                "hover": False,
+                "visible": want_visible,
+                "batch_index": batch_idx,
+                "_was_selected": False,
+                "_paint_state": None,
+            }
             if insert_pos is not None:
                 self.table_rows.insert(insert_pos, entry)
             else:
                 self.table_rows.append(entry)
-            self._bind_row(row, entry)
+
+            filt_pos: int | None = None
+            if want_visible:
+                if insert_pos is not None and self._filtered_rows:
+                    fidx = len(self._filtered_rows) - 1
+                    while fidx >= 0:
+                        fexisting = self._filtered_rows[fidx]
+                        if fexisting.get("batch_index", 1) != batch_idx:
+                            break
+                        f_orig = fexisting["event"].get("indice_original")
+                        if isinstance(f_orig, int) and f_orig > original_index:
+                            filt_pos = fidx
+                            fidx -= 1
+                            continue
+                        break
+                if filt_pos is not None:
+                    self._filtered_rows.insert(filt_pos, entry)
+                else:
+                    self._filtered_rows.append(entry)
+
+            self._record_filter_event(event, bucket=bucket)
+            if self._batch_draining:
+                self._filter_dirty = True
+                self._viewport_dirty = True
+            else:
+                self._refresh_filter_bar()
+                if (len(self._filtered_rows) <= self._active_pool_cap
+                        or (filt_pos is not None
+                            and filt_pos < self._virtual_start_index + self._active_pool_cap)):
+                    self._sync_virtual_viewport()
+                else:
+                    self._viewport_dirty = True
+                    self._schedule_viewport_flush()
+
             if (self.selected_event is not None
                     and same_logical_event(event, self.selected_event)):
                 self.selected_event = event
@@ -2117,35 +2920,84 @@ if CTK_OK:
                 else:
                     self._render_hero()
                     self._update_reveal()
-            self._paint_row(entry)
-            if follow:
+            if follow and want_visible:
                 self._schedule_table_scroll()
             return entry
 
-        def _bind_row(self, widget: Any, entry: dict[str, Any]) -> None:
-            """Click selects; hover paints; the wheel scrolls the table."""
-            widget.bind("<Button-1>", lambda _event: self._select(entry["event"]))
-            widget.bind("<Enter>", lambda _event: self._hover_row(entry, True))
-            widget.bind("<Leave>", lambda event: self._row_leave(entry, event))
-            widget.bind("<MouseWheel>", self._on_table_wheel)
-            for child in widget.winfo_children():
-                self._bind_row(child, entry)
+        def _clear_hover(self) -> None:
+            prev = self._hovered_entry
+            self._hovered_entry = None
+            if prev is not None and prev.get("hover"):
+                prev["hover"] = False
+                if prev.get("frame") is not None:
+                    self._paint_row(prev)
+
+        def _sync_hover_to_pointer(self) -> None:
+            try:
+                if not self.winfo_ismapped():
+                    self._clear_hover()
+                    return
+                px, py = self.winfo_pointerxy()
+                target = self.winfo_containing(px, py)
+            except Exception:
+                self._clear_hover()
+                return
+            slot = getattr(target, "_row_slot", None) if target is not None else None
+            entry = slot.get("entry") if slot is not None else None
+            if entry is not None:
+                self._hover_row(entry, True)
+            else:
+                self._clear_hover()
+
+        def _on_table_canvas_leave(self, event: Any) -> None:
+            try:
+                target = self.table_canvas.winfo_containing(event.x_root, event.y_root)
+                if target is not None:
+                    path = str(target)
+                    canvas_path = str(self.table_canvas)
+                    if path == canvas_path or path.startswith(canvas_path + "."):
+                        return
+            except Exception:
+                pass
+            self._clear_hover()
 
         def _hover_row(self, entry: dict[str, Any], hovering: bool) -> None:
-            if entry["hover"] == hovering:
+            if hovering:
+                prev = self._hovered_entry
+                if prev is not None and prev is not entry:
+                    prev["hover"] = False
+                    self._hovered_entry = None
+                    if prev.get("frame") is not None:
+                        self._paint_row(prev)
+                self._hovered_entry = entry
+                if entry["hover"]:
+                    return
+                entry["hover"] = True
+                if entry.get("frame") is not None:
+                    self._paint_row(entry)
                 return
-            entry["hover"] = hovering
-            self._paint_row(entry)
+            if self._hovered_entry is entry:
+                self._hovered_entry = None
+            if not entry["hover"]:
+                return
+            entry["hover"] = False
+            if entry.get("frame") is not None:
+                self._paint_row(entry)
 
         def _row_leave(self, entry: dict[str, Any], event: Any) -> None:
-            target = entry["frame"].winfo_containing(event.x_root, event.y_root)
-            if target is not None:
-                path = str(target)
-                if path == str(entry["frame"]) or path.startswith(str(entry["frame"]) + "."):
-                    return
+            frame = entry.get("frame")
+            if frame is not None:
+                target = frame.winfo_containing(event.x_root, event.y_root)
+                if target is not None:
+                    path = str(target)
+                    if path == str(frame) or path.startswith(str(frame) + "."):
+                        return
             self._hover_row(entry, False)
 
         def _paint_row(self, entry: dict[str, Any], force: bool = False) -> None:
+            slot = entry.get("slot")
+            if slot is None or entry.get("frame") is None:
+                return
             selected = same_logical_event(entry["event"], self.selected_event)
             entry["_was_selected"] = selected
             if selected:
@@ -2157,24 +3009,31 @@ if CTK_OK:
                 background, bar = c("bg.surface"), c("bg.surface")
             bg_str = str(background)
             paint_state = (theme.MODE, bg_str, str(bar))
-            if not force and entry.get("_paint_state") == paint_state:
-                return
+            bg_changed = force or (slot.get("_row_bg_sig") != paint_state)
             entry["_paint_state"] = paint_state
             tk_call = self.tk.call
-            bar_str = str(bar)
-            text_pri = str(c("text.primary"))
-            entry["frame"]._fg_color = background
-            tk_call(entry["frame"]._w, "configure", "-background", bg_str)
-            entry["bar"]._fg_color = bar
-            tk_call(entry["bar"]._w, "configure", "-background", bar_str)
-            tk_call(entry["file_label"]._w, "configure",
-                    "-background", bg_str, "-foreground", text_pri)
-            for label in entry["plain"]:
-                label._fg_color = background
-                tk_call(label._w, "configure", "-background", bg_str)
-            if force or entry.get("_chip_bg") != bg_str:
-                entry["_chip_bg"] = bg_str
-                verdict_cell = entry["cells"]["verdict"]
+            if bg_changed:
+                slot["_row_bg_sig"] = paint_state
+                bar_str = str(bar)
+                text_pri = str(c("text.primary"))
+                entry["frame"]._fg_color = background
+                tk_call(entry["frame"]._w, "configure", "-background", bg_str)
+                entry["bar"]._fg_color = bar
+                tk_call(entry["bar"]._w, "configure", "-background", bar_str)
+                tk_call(entry["file_label"]._w, "configure",
+                        "-background", bg_str, "-foreground", text_pri)
+                for label in entry["plain"]:
+                    label._fg_color = background
+                    tk_call(label._w, "configure", "-background", bg_str)
+            verdict_cell = entry["cells"]["verdict"]
+            chip_sig = (
+                verdict_cell.chip_text,
+                verdict_cell.chip_tone,
+                bg_str,
+                theme.MODE,
+            )
+            if force or slot.get("_chip_sig") != chip_sig:
+                slot["_chip_sig"] = chip_sig
                 if isinstance(verdict_cell, _VerdictChip):
                     ink_t, bg_t, bd_t = CHIP_STYLES.get(
                         verdict_cell.chip_tone, CHIP_STYLES["unknown"]
@@ -2192,9 +3051,17 @@ if CTK_OK:
                         pass
 
         def _clear_table(self) -> None:
-            for entry in self.table_rows:
-                entry["frame"].destroy()
+            self._hovered_entry = None
+            for slot in self._row_slots:
+                self._unbind_slot(slot)
+                if slot["packed"]:
+                    slot["frame"].pack_forget()
+                    slot["packed"] = False
             self.table_rows.clear()
+            self._filtered_rows.clear()
+            self._virtual_start_index = 0
+            self._reset_filter_counts()
+            self._sync_virtual_viewport()
             self.table_canvas.yview_moveto(0.0)
 
         def _select(self, event: Event) -> None:
@@ -2203,8 +3070,14 @@ if CTK_OK:
                 return
             self.selected_event = event
             self._problems_expanded = False
-            for entry in self.table_rows:
-                if entry.get("_was_selected") or same_logical_event(entry["event"], event):
+            if self._viewport_dirty:
+                self._sync_virtual_viewport()
+            for slot in self._row_slots:
+                entry = slot["entry"]
+                if entry is not None and (
+                    entry.get("_was_selected")
+                    or same_logical_event(entry["event"], event)
+                ):
                     self._paint_row(entry)
             self._render_hero()
             self._update_reveal()
@@ -2217,29 +3090,48 @@ if CTK_OK:
         def _clear_selection(self) -> None:
             self.selected_event = None
             self._problems_expanded = False
-            for entry in self.table_rows:
-                if entry.get("_was_selected"):
+            for slot in self._row_slots:
+                entry = slot["entry"]
+                if entry is not None and entry.get("_was_selected"):
                     self._paint_row(entry)
             self._render_hero()
             self._update_reveal()
 
         def _on_table_body(self, _event: Any = None) -> None:
-            req_height = self.table_body.winfo_reqheight()
-            if req_height > 1 and self.table_body.winfo_height() > req_height:
+            req_height = max(1, int(self.table_body.winfo_reqheight()))
+            if self.table_body.winfo_height() > req_height:
                 tkinter.Frame.configure(self.table_body, height=req_height)
+            if len(self._filtered_rows) > self._active_pool_cap:
+                cw = max(1, self._canvas_width or self.table_canvas.winfo_width())
+                self._set_scrollregion(
+                    (0, 0, cw, len(self._filtered_rows) * self.ROW_HEIGHT)
+                )
+                return
             bbox = self.table_canvas.bbox("all")
-            if bbox and req_height > 1:
-                bbox = (bbox[0], bbox[1], bbox[2], min(bbox[3], req_height))
-            self.table_canvas.configure(scrollregion=bbox)
+            if bbox:
+                self._set_scrollregion(
+                    (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(min(bbox[3], req_height)))
+                )
 
         def _on_table_canvas(self, event: Any) -> None:
             width = int(getattr(event, "width", 0) or 0)
+            height = int(getattr(event, "height", 0) or 0)
+            need_viewport = (
+                height > 1
+                and self._filtered_rows
+                and self._viewport_pool_size() != self._active_pool_cap
+            )
             if width <= 1 or width == self._canvas_width:
+                if need_viewport:
+                    self._sync_virtual_viewport()
                 return
             if self._canvas_width == 0:
                 self._canvas_width = width
                 self.table_canvas.itemconfigure(self._table_window, width=width)
-                self._on_table_body()
+                if need_viewport:
+                    self._sync_virtual_viewport()
+                else:
+                    self._on_table_body()
                 return
             self._pending_canvas_width = width
             if self._canvas_resize_after is None:
@@ -2248,12 +3140,19 @@ if CTK_OK:
         def _apply_canvas_width(self) -> None:
             self._canvas_resize_after = None
             width = self._pending_canvas_width
-            if width <= 1 or width == self._canvas_width:
+            if width <= 1:
                 return
-            self._canvas_width = width
+            changed_w = width != self._canvas_width
+            if changed_w:
+                self._canvas_width = width
             try:
-                self.table_canvas.itemconfigure(self._table_window, width=width)
-                self._on_table_body()
+                if changed_w:
+                    self.table_canvas.itemconfigure(self._table_window, width=width)
+                if (self._filtered_rows
+                        and self._viewport_pool_size() != self._active_pool_cap):
+                    self._sync_virtual_viewport()
+                elif changed_w:
+                    self._on_table_body()
             except Exception:
                 pass
 
@@ -2261,6 +3160,8 @@ if CTK_OK:
             if self.table_canvas.yview() != (0.0, 1.0):
                 step = -1 if getattr(event, "delta", 0) > 0 else 1
                 self.table_canvas.yview_scroll(step * 3, "units")
+                self._sync_virtual_viewport()
+                self._sync_hover_to_pointer()
             return "break"
 
         def _table_at_bottom(self) -> bool:
@@ -2270,12 +3171,7 @@ if CTK_OK:
                 return True
 
         def _schedule_table_scroll(self) -> None:
-            """One pending scroll per batch, never one per row.
-
-            Each `_add_row` used to schedule its own idle callback, and the
-            callback called `update_idletasks` from inside an idle task: with
-            three hundred rows that nested recursively and the window appeared
-            to hang."""
+            """One pending scroll per batch, never one per row."""
             if self._scroll_scheduled:
                 return
             self._scroll_scheduled = True
@@ -2286,8 +3182,12 @@ if CTK_OK:
                 return
             self._scroll_scheduled = False
             try:
-                self._on_table_body()
+                if self._viewport_dirty:
+                    self._sync_virtual_viewport()
+                else:
+                    self._on_table_body()
                 self.table_canvas.yview_moveto(1.0)
+                self._sync_virtual_viewport()
             except Exception:
                 pass
 
@@ -2412,6 +3312,12 @@ if CTK_OK:
             counts, errors, total = count_verdicts(self.events)
             cached = sum(1 for event in self.events if event.get("desde_cache"))
             colour, text = format_summary(self.events)
+            if self._batch_total_count > 1 and total > 0:
+                album_num = self._batch_current_index
+                text = (
+                    f"{album_num} album" + ("" if album_num == 1 else "s")
+                    + f" · {text}"
+                )
             kinds = [verdict for verdict in counts if counts[verdict]]
             if total == 0:
                 headline = "ANALYZING" if self._is_busy() else "NO RESULTS"
@@ -2435,9 +3341,10 @@ if CTK_OK:
 
         def _render_file_hero(self, event: Event) -> None:
             values = result_row(event)
+            eyebrow = self._display_file_name(event, values)
             self._show_detail(True)
             self._set_hero_headline(
-                values["file"],
+                eyebrow,
                 values["verdict"].upper() if values["verdict"] else "ERROR",
                 values["tone"])
             self._set_hero_number(
@@ -2451,12 +3358,16 @@ if CTK_OK:
                                 ("CLIPPING", clipping_text(event)),
                                 ("MD5", md5_detail(event))))
             self._render_problems(event)
-            self._show_spectrogram(spectrogram_path(event))
+            self._show_spectrogram(spectrogram_path(event), async_load=True)
             self._schedule_hero_layout()
 
         def _show_detail(self, visible: bool) -> None:
             """Shows or hides the inspector parts of the hero (7.8, phase 3)."""
-            self.hero_mode = HeroMode.INSPECTOR if visible else HeroMode.ALBUM
+            target_mode = HeroMode.INSPECTOR if visible else HeroMode.ALBUM
+            if self._detail_visible is visible and self.hero_mode is target_mode:
+                return
+            self._detail_visible = visible
+            self.hero_mode = target_mode
             widgets = (self.btn_close_detail, self.hero_evidence,
                        self.hero_problems, self.spectrogram_frame,
                        self.btn_open_spectrogram)
@@ -2525,71 +3436,127 @@ if CTK_OK:
             self._evidence_columns = columns
             self._place_evidence()
 
+        def _create_problem_pool_entry(self) -> dict[str, Any]:
+            """Pre-allocated reusable issue/note row inside `hero_problems`."""
+            row = ctk.CTkFrame(self.hero_problems, fg_color="transparent")
+            row.grid_columnconfigure(1, weight=1)
+            dot = ctk.CTkFrame(row, width=6, height=6, corner_radius=3,
+                               fg_color=c("warn"))
+            dot.grid(row=0, column=0, padx=(0, 8), pady=(7, 0), sticky="nw")
+            label = ctk.CTkLabel(
+                row, text="", font=theme.font(11),
+                text_color=c("text.secondary"), wraplength=396,
+                justify="left", anchor="w",
+            )
+            label.grid(row=0, column=1, sticky="ew")
+            row.grid_remove()
+            return {
+                "frame": row,
+                "dot": dot,
+                "label": label,
+                "visible": False,
+                "row_idx": -1,
+                "tone": "warn",
+                "text": "",
+                "wrap": 396,
+            }
+
+        def _ensure_problem_pool(self, needed: int) -> None:
+            while len(self._problem_rows_pool) < needed:
+                self._problem_rows_pool.append(self._create_problem_pool_entry())
+
         def _render_problems(self, event: Event | None) -> None:
-            """Issue and technical note lines, wrapped in full and never truncated."""
-            for child in self.hero_problems.winfo_children():
-                child.destroy()
+            """Reuses pooled issue/note rows in `hero_problems` without destroying widgets."""
+            available = max(220, self._usable_width(self.hero_problems, 420))
+            wrap_px = max(160, available - 24)
+            self._last_problem_wrap = wrap_px
             if event is None:
+                if self._no_anomaly_label is not None:
+                    self._no_anomaly_label.configure(text="")
+                    self._no_anomaly_chip.grid_remove()
+                for pool_item in self._problem_rows_pool:
+                    if pool_item["visible"]:
+                        pool_item["visible"] = False
+                        pool_item["row_idx"] = -1
+                        pool_item["text"] = ""
+                        pool_item["label"].configure(text="")
+                        pool_item["frame"].grid_remove()
+                if self._problem_toggle_btn is not None:
+                    self._problem_toggle_btn.configure(text="")
+                    self._problem_toggle_btn.grid_remove()
                 return
+
             problems = [str(item) for item in (event.get("problemas") or [])]
             notes = [str(item) for item in (event.get("notes") or [])]
             if event.get("error"):
                 problems = [str(event["error"])]
                 notes = []
-            available = max(220, self._usable_width(self.hero_problems, 420))
             expanded = self._problems_expanded
             if not problems:
-                self._chip(self.hero_problems, "No anomalies detected",
-                           "ok").grid(row=0, column=0, sticky="w",
-                                      pady=(0, 4 if notes else 0))
-                if not notes:
-                    return
-                visible = notes if expanded else notes[:self.MAX_VISIBLE_PROBLEMS]
-                for index, note in enumerate(visible, start=1):
-                    self._problem_line(index, note, "accent", available)
-                if len(notes) > self.MAX_VISIBLE_PROBLEMS:
-                    label = "Show less" if expanded else f"Show all ({len(notes)})"
-                    link = ctk.CTkButton(
-                        self.hero_problems, text=label, height=24, width=120,
-                        fg_color="transparent", hover_color=c("bg.hover"),
-                        text_color=c("accent"), font=theme.font(11, 600),
-                        border_width=0, anchor="w", command=self._toggle_problems)
-                    link.grid(row=len(visible) + 1, column=0, sticky="w",
-                              padx=(14, 0), pady=(2, 0))
-                return
-            tone = ("danger" if event.get("error")
-                    else "bad" if event.get("veredicto") == "PROBABLE UPSCALE"
-                    else "warn")
-            items = [(item, tone) for item in problems] + [
-                (item, "accent") for item in notes
-            ]
-            visible = items if expanded else items[:self.MAX_VISIBLE_PROBLEMS]
-            for index, (item, item_tone) in enumerate(visible):
-                self._problem_line(index, item, item_tone, available)
-            if len(items) > self.MAX_VISIBLE_PROBLEMS:
-                label = "Show less" if expanded else f"Show all ({len(items)})"
-                link = ctk.CTkButton(
-                    self.hero_problems, text=label, height=24, width=120,
-                    fg_color="transparent", hover_color=c("bg.hover"),
-                    text_color=c("accent"), font=theme.font(11, 600),
-                    border_width=0, anchor="w", command=self._toggle_problems)
-                link.grid(row=len(visible), column=0, sticky="w",
-                          padx=(14, 0), pady=(2, 0))
+                if self._no_anomaly_label.cget("text") != "No anomalies detected":
+                    self._no_anomaly_label.configure(text="No anomalies detected")
+                self._no_anomaly_chip.grid(
+                    row=0, column=0, sticky="w", pady=(0, 4 if notes else 0)
+                )
+                items = [(note, "accent") for note in notes]
+                row_offset = 1
+            else:
+                if self._no_anomaly_label.cget("text"):
+                    self._no_anomaly_label.configure(text="")
+                self._no_anomaly_chip.grid_remove()
+                tone = ("danger" if event.get("error")
+                        else "bad" if event.get("veredicto") == "PROBABLE UPSCALE"
+                        else "warn")
+                items = [(item, tone) for item in problems] + [
+                    (item, "accent") for item in notes
+                ]
+                row_offset = 0
 
-        def _problem_line(self, index: int, text: str, tone: str,
-                          available: int) -> None:
-            """One wrapped issue line: a severity dot and the full message."""
-            row = ctk.CTkFrame(self.hero_problems, fg_color="transparent")
-            row.grid(row=index, column=0, sticky="ew", pady=(0, 4))
-            row.grid_columnconfigure(1, weight=1)
-            dot = ctk.CTkFrame(row, width=6, height=6, corner_radius=3,
-                               fg_color=c(tone))
-            dot.grid(row=0, column=0, padx=(0, 8), pady=(7, 0), sticky="nw")
-            ctk.CTkLabel(row, text=text, font=theme.font(11),
-                         text_color=c("text.secondary"),
-                         wraplength=max(160, available - 24),
-                         justify="left", anchor="w").grid(
-                row=0, column=1, sticky="ew")
+            visible = items if expanded else items[:self.MAX_VISIBLE_PROBLEMS]
+            self._ensure_problem_pool(len(visible))
+            for idx, (item_text, item_tone) in enumerate(visible):
+                pool_item = self._problem_rows_pool[idx]
+                target_row = idx + row_offset
+                if not pool_item["visible"] or pool_item["row_idx"] != target_row:
+                    pool_item["frame"].grid(
+                        row=target_row, column=0, sticky="ew", pady=(0, 4)
+                    )
+                    pool_item["visible"] = True
+                    pool_item["row_idx"] = target_row
+                if pool_item["tone"] != item_tone:
+                    pool_item["tone"] = item_tone
+                    pool_item["dot"].configure(fg_color=c(item_tone))
+                lbl_updates: dict[str, Any] = {}
+                if pool_item["text"] != item_text:
+                    pool_item["text"] = item_text
+                    lbl_updates["text"] = item_text
+                if pool_item["wrap"] != wrap_px:
+                    pool_item["wrap"] = wrap_px
+                    lbl_updates["wraplength"] = wrap_px
+                if lbl_updates:
+                    pool_item["label"].configure(**lbl_updates)
+
+            for pool_item in self._problem_rows_pool[len(visible):]:
+                if pool_item["visible"]:
+                    pool_item["visible"] = False
+                    pool_item["row_idx"] = -1
+                    pool_item["text"] = ""
+                    pool_item["label"].configure(text="")
+                    pool_item["frame"].grid_remove()
+
+            if len(items) > self.MAX_VISIBLE_PROBLEMS:
+                toggle_label = "Show less" if expanded else f"Show all ({len(items)})"
+                toggle_row = len(visible) + row_offset
+                padx_left = 14
+                self._problem_toggle_btn.configure(text=toggle_label)
+                self._problem_toggle_btn.grid(
+                    row=toggle_row, column=0, sticky="w",
+                    padx=(padx_left, 0), pady=(2, 0),
+                )
+            else:
+                if self._problem_toggle_btn.cget("text"):
+                    self._problem_toggle_btn.configure(text="")
+                self._problem_toggle_btn.grid_remove()
 
         def _toggle_problems(self) -> None:
             self._problems_expanded = not self._problems_expanded
@@ -2597,66 +3564,193 @@ if CTK_OK:
                 self._render_problems(self.selected_event)
                 self._schedule_hero_layout()
 
-        def _show_spectrogram(self, path: str) -> None:
-            """Image, or a clean note when the analysis produced no PNG (7.8)."""
+        def _show_spectrogram(self, path: str, async_load: bool = False) -> None:
+            """Image preview with RAM cache hit, async loading state, or missing note."""
             self._spectrogram_path_value = path
-            image = self._spectrogram_image(path)
+            if not path:
+                self.spectrogram_state = SpectrogramState.NONE
+                self.spectrogram_label.configure(image=None, text="")
+                self.spectrogram_label.grid_remove()
+                self.spectrogram_placeholder.grid()
+                self.spectrogram_note.configure(text="No spectrogram")
+                self.spectrogram_hint.configure(text="Spectrogram not available")
+                self._set_enabled(self.btn_open_spectrogram, False)
+                return
+
+            image = self._spectrogram_image_cached(path)
             if image is not None:
                 self.spectrogram_state = SpectrogramState.READY
                 self.spectrogram_label.configure(image=image, text="")
                 self.spectrogram_label.grid()
                 self.spectrogram_placeholder.grid_remove()
-            else:
-                self.spectrogram_state = (
-                    SpectrogramState.MISSING if path else SpectrogramState.NONE
-                )
+                self._set_enabled(self.btn_open_spectrogram, True)
+                return
+
+            if path in self._spec_bad_paths or not os.path.exists(path):
+                self.spectrogram_state = SpectrogramState.MISSING
+                self.spectrogram_label.configure(image=None, text="")
                 self.spectrogram_label.grid_remove()
                 self.spectrogram_placeholder.grid()
-                self.spectrogram_note.configure(
-                    text="No spectrogram" if not path else "Image not available")
-                self.spectrogram_hint.configure(
-                    text="Spectrogram not available" if not path else "The file was moved")
-            self._set_enabled(self.btn_open_spectrogram,
-                              self.spectrogram_state is SpectrogramState.READY)
+                self.spectrogram_note.configure(text="Image not available")
+                self.spectrogram_hint.configure(text="The file was moved")
+                self._set_enabled(self.btn_open_spectrogram, False)
+                return
+
+            if async_load:
+                self.spectrogram_state = SpectrogramState.LOADING
+                self.spectrogram_label.configure(image=None, text="")
+                self.spectrogram_label.grid_remove()
+                self.spectrogram_placeholder.grid()
+                self.spectrogram_note.configure(text="Loading spectrogram…")
+                self.spectrogram_hint.configure(text="Rendering preview")
+                self._set_enabled(self.btn_open_spectrogram, False)
+                self._enqueue_spectrogram(path, priority=True)
+                self._schedule_spec_poll()
+                return
+
+            decoded = _decode_spectrogram_pil(
+                path, self.SPECTROGRAM_WIDTH, self.SPECTROGRAM_HEIGHT,
+            )
+            with self._spec_lock:
+                if decoded is not None:
+                    while len(self._pil_spectrograms) >= self.MAX_PIL_SPECTROGRAM_CACHE:
+                        self._pil_spectrograms.popitem(last=False)
+                    self._pil_spectrograms[path] = decoded
+                else:
+                    self._spec_bad_paths.add(path)
+            image = self._spectrogram_image_cached(path)
+            if image is not None:
+                self.spectrogram_state = SpectrogramState.READY
+                self.spectrogram_label.configure(image=image, text="")
+                self.spectrogram_label.grid()
+                self.spectrogram_placeholder.grid_remove()
+                self._set_enabled(self.btn_open_spectrogram, True)
+            else:
+                self.spectrogram_state = SpectrogramState.MISSING
+                self.spectrogram_label.configure(image=None, text="")
+                self.spectrogram_label.grid_remove()
+                self.spectrogram_placeholder.grid()
+                self.spectrogram_note.configure(text="Image not available")
+                self.spectrogram_hint.configure(text="The file was moved")
+                self._set_enabled(self.btn_open_spectrogram, False)
+
+        def _enqueue_spectrogram(self, path: str, priority: bool = False) -> None:
+            """Queues PNG decoding onto the background worker (LIFO priority on click)."""
+            if not path or path in self._spectrograms:
+                return
+            with self._spec_cond:
+                if (self._spec_stop or path in self._pil_spectrograms
+                        or path in self._spec_bad_paths):
+                    return
+                if priority:
+                    self._spec_priority.add(path)
+                    if path in self._spec_queued:
+                        try:
+                            self._spec_deque.remove(path)
+                        except ValueError:
+                            pass
+                        self._spec_deque.appendleft(path)
+                    elif path not in self._spec_inflight:
+                        self._spec_deque.appendleft(path)
+                        self._spec_queued.add(path)
+                else:
+                    if (path in self._spec_inflight or path in self._spec_queued
+                            or len(self._spec_deque) >= self.MAX_PIL_SPECTROGRAM_CACHE):
+                        return
+                    self._spec_deque.append(path)
+                    self._spec_queued.add(path)
+                if self._spec_worker is None or not self._spec_worker.is_alive():
+                    self._spec_worker = threading.Thread(
+                        target=self._spectrogram_worker_loop,
+                        daemon=True, name="spectrogram-prewarm",
+                    )
+                    self._spec_worker.start()
+                self._spec_cond.notify()
 
         def _prewarm_spectrogram(self, path: str) -> None:
             """Queues background PIL decoding so row selection hits RAM instead of disk."""
-            if not path or path in self._spectrograms:
-                return
-            with self._spec_lock:
-                if path in self._pil_spectrograms or path in self._spec_inflight:
-                    return
-                self._spec_inflight.add(path)
-            if self._spec_worker is None or not self._spec_worker.is_alive():
-                self._spec_worker = threading.Thread(
-                    target=self._spectrogram_worker_loop,
-                    daemon=True, name="spectrogram-prewarm",
-                )
-                self._spec_worker.start()
-            try:
-                self._spec_queue.put_nowait(path)
-            except queue.Full:
-                with self._spec_lock:
-                    self._spec_inflight.discard(path)
+            self._enqueue_spectrogram(path, priority=False)
 
         def _spectrogram_worker_loop(self) -> None:
             while True:
-                item = self._spec_queue.get()
-                if item is None:
-                    return
+                with self._spec_cond:
+                    while not self._spec_deque and not self._spec_stop:
+                        self._spec_cond.wait()
+                    if self._spec_stop:
+                        return
+                    item = self._spec_deque.popleft()
+                    self._spec_queued.discard(item)
+                    was_priority = item in self._spec_priority
+                    self._spec_inflight.add(item)
                 decoded = _decode_spectrogram_pil(
                     item, self.SPECTROGRAM_WIDTH, self.SPECTROGRAM_HEIGHT,
                 )
                 with self._spec_lock:
                     self._spec_inflight.discard(item)
+                    notify_ui = was_priority or (item in self._spec_priority)
+                    self._spec_priority.discard(item)
                     if decoded is not None:
-                        while len(self._pil_spectrograms) >= 64:
+                        while len(self._pil_spectrograms) >= self.MAX_PIL_SPECTROGRAM_CACHE:
                             self._pil_spectrograms.popitem(last=False)
                         self._pil_spectrograms[item] = decoded
+                    else:
+                        self._spec_bad_paths.add(item)
+                if notify_ui and not self._spec_stop:
+                    try:
+                        self._spec_ready_queue.put_nowait(item)
+                    except Exception:
+                        pass
 
-        def _spectrogram_image(self, path: str) -> Any:
-            """Thumbnail of the track spectrogram, cached by path."""
-            if not path or not os.path.exists(path):
+        def _schedule_spec_poll(self) -> None:
+            """Schedules main-thread polling for async spectrogram completion."""
+            if self._spec_poll_scheduled or self._spec_stop:
+                return
+            self._spec_poll_scheduled = True
+            self.after(16, self._poll_async_spectrogram)
+
+        def _poll_async_spectrogram(self) -> None:
+            """Checks background decoded thumbnails on the main UI thread only."""
+            self._spec_poll_scheduled = False
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            ready_paths: list[str] = []
+            while True:
+                try:
+                    ready_paths.append(self._spec_ready_queue.get_nowait())
+                except queue.Empty:
+                    break
+            if self.spectrogram_state is SpectrogramState.LOADING:
+                current_path = spectrogram_path(self.selected_event) if self.selected_event else ""
+                if not current_path:
+                    return
+                with self._spec_lock:
+                    done = (
+                        current_path in self._pil_spectrograms
+                        or current_path in self._spec_bad_paths
+                    )
+                if done or current_path in ready_paths:
+                    self._on_async_spectrogram_ready(current_path)
+                else:
+                    self._schedule_spec_poll()
+
+        def _on_async_spectrogram_ready(self, path: str) -> None:
+            """Paints the decoded thumbnail only if this track is still selected."""
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            if (self.selected_event is None
+                    or spectrogram_path(self.selected_event) != path):
+                return
+            self._show_spectrogram(path, async_load=False)
+
+        def _spectrogram_image_cached(self, path: str) -> Any:
+            """RAM-only spectrogram lookup; never blocks the UI thread on disk I/O."""
+            if not path:
                 return None
             if path in self._spectrograms:
                 self._spectrograms.move_to_end(path)
@@ -2667,21 +3761,35 @@ if CTK_OK:
                     self._pil_spectrograms.move_to_end(path)
                     decoded = self._pil_spectrograms[path]
             if decoded is None:
-                decoded = _decode_spectrogram_pil(
-                    path, self.SPECTROGRAM_WIDTH, self.SPECTROGRAM_HEIGHT,
-                )
+                return None
             image = None
-            if decoded is not None:
-                try:
-                    picture, display = decoded
-                    image = ctk.CTkImage(light_image=picture, dark_image=picture,
-                                         size=display)
-                except Exception:
-                    image = None
-            while len(self._spectrograms) >= 32:
-                self._spectrograms.popitem(last=False)
-            self._spectrograms[path] = image
+            try:
+                picture, display = decoded
+                image = ctk.CTkImage(light_image=picture, dark_image=picture,
+                                     size=display)
+            except Exception:
+                image = None
+            if image is not None:
+                while len(self._spectrograms) >= self.MAX_SPECTROGRAM_CACHE:
+                    self._spectrograms.popitem(last=False)
+                self._spectrograms[path] = image
             return image
+
+        def _spectrogram_image(self, path: str) -> Any:
+            """Compatibility helper returning a cached or decoded CTkImage."""
+            image = self._spectrogram_image_cached(path)
+            if image is not None or not path or not os.path.exists(path):
+                return image
+            decoded = _decode_spectrogram_pil(
+                path, self.SPECTROGRAM_WIDTH, self.SPECTROGRAM_HEIGHT,
+            )
+            if decoded is None:
+                return None
+            with self._spec_lock:
+                while len(self._pil_spectrograms) >= self.MAX_PIL_SPECTROGRAM_CACHE:
+                    self._pil_spectrograms.popitem(last=False)
+                self._pil_spectrograms[path] = decoded
+            return self._spectrogram_image_cached(path)
 
         def _open_spectrogram(self) -> None:
             path = self._spectrogram_path_value
@@ -2740,7 +3848,16 @@ if CTK_OK:
             self._reflow_facts(width)
             self._reflow_evidence(width)
             if self.selected_event is not None:
-                self._render_problems(self.selected_event)
+                new_wrap = max(
+                    160,
+                    max(220, self._usable_width(self.hero_problems, 420)) - 24,
+                )
+                if abs(new_wrap - self._last_problem_wrap) >= 4:
+                    self._last_problem_wrap = new_wrap
+                    for pool_item in self._problem_rows_pool:
+                        if pool_item["visible"]:
+                            pool_item["label"].configure(wraplength=new_wrap)
+                            pool_item["wrap"] = new_wrap
 
         def _refit_hero_texts(self) -> None:
             self.hero_eyebrow.configure(
@@ -2963,8 +4080,16 @@ if CTK_OK:
             label.fitted_width = event.width
             shown = self._fit(label.full_text, label.ui_font, event.width - 4)
             label.configure(text=shown)
-            if shown != label.full_text and label.tooltip is None:
-                label.tooltip = _Tooltip(label, label.full_text)
+            row_slot = getattr(label, "_row_slot", None)
+            if row_slot is not None:
+                row_slot["_file_text"] = shown
+            if shown != label.full_text:
+                if label.tooltip is None:
+                    label.tooltip = _Tooltip(label, label.full_text)
+                else:
+                    label.tooltip.text = label.full_text
+            elif label.tooltip is not None:
+                label.tooltip.text = ""
 
         # ── hero actions ────────────────────────────────────────────────────
         def _reveal_target(self) -> str:
@@ -3065,18 +4190,25 @@ if CTK_OK:
                 self.events.clear()
                 self.events.extend(ordered_events)
 
+            batch_idx = self._batch_current_index
+            batch_events = [
+                row["event"]
+                for row in self.table_rows
+                if row.get("batch_index", 1) == batch_idx
+            ]
+            batch_ids = {id(ev) for ev in batch_events}
             seen_order: list[int] = []
             blocks: dict[int, list[tuple[str, str, str, Event | None]]] = {}
             for entry in self._log_entries:
                 ev = entry[3]
-                if ev is not None:
+                if ev is not None and id(ev) in batch_ids:
                     ev_id = id(ev)
                     if ev_id not in blocks:
                         seen_order.append(ev_id)
                         blocks[ev_id] = []
                     blocks[ev_id].append(entry)
 
-            target_order = [id(ev) for ev in ordered_events if id(ev) in blocks]
+            target_order = [id(ev) for ev in batch_events if id(ev) in blocks]
             if len(target_order) <= 1 or seen_order == target_order:
                 return
 
@@ -3087,7 +4219,8 @@ if CTK_OK:
             rebuilt: list[tuple[str, str, str, Event | None]] = []
             inserted = False
             for entry in self._log_entries:
-                if entry[3] is not None:
+                ev = entry[3]
+                if ev is not None and id(ev) in batch_ids:
                     if not inserted:
                         rebuilt.extend(ordered_result_lines)
                         inserted = True
@@ -3143,6 +4276,73 @@ if CTK_OK:
                 self.var_path.set(chosen)
                 self._log(f"Folder selected: {chosen}")
 
+        def _choose_output_dir(self) -> None:
+            from tkinter import filedialog
+            initial = self._effective_output_dir() or self.var_path.get() or os.path.expanduser("~")
+            chosen = filedialog.askdirectory(
+                title="Choose PDF output folder",
+                initialdir=initial if os.path.isdir(initial) else None,
+            )
+            if chosen:
+                self.var_pdf_dest_mode.set("custom")
+                self.var_output_dir.set(chosen)
+                self._change_pdf_dest_mode()
+                self._log(f"PDF output folder: {chosen}")
+
+        def _clear_output_dir(self) -> None:
+            self.var_output_dir.set("")
+            self.var_pdf_dest_mode.set("album")
+            self._change_pdf_dest_mode()
+            self._log("PDF destination set to each album folder.")
+
+        def _on_output_dir_var_changed(self, *_args: Any) -> None:
+            if (self.var_output_dir.get().strip()
+                    and self.var_pdf_dest_mode.get() != "custom"):
+                self.var_pdf_dest_mode.set("custom")
+                self._change_pdf_dest_mode()
+
+        def _change_pdf_dest_mode(self) -> None:
+            if not hasattr(self, "pdf_custom_dir_row"):
+                return
+            is_custom = self.var_pdf_dest_mode.get() == "custom"
+            if is_custom:
+                self.pdf_custom_dir_row.grid()
+                self.label_pdf_dest_hint.configure(
+                    text="Writes <Album>_flac_verifier_report.pdf in custom folder"
+                )
+            else:
+                self.pdf_custom_dir_row.grid_remove()
+                self.label_pdf_dest_hint.configure(
+                    text="Writes flac_verifier_report.pdf inside each album"
+                )
+            allow_custom = (
+                bool(self.var_pdf.get()) and is_custom and not self._is_busy()
+            )
+            self.input_output_dir.configure(
+                state="normal" if allow_custom else "disabled"
+            )
+            self._set_enabled(self.btn_output_dir, allow_custom)
+            self._set_enabled(self.btn_clear_output_dir, allow_custom)
+
+        def _effective_output_dir(self) -> str | None:
+            if getattr(self, "var_pdf_dest_mode", None) is not None:
+                if self.var_pdf_dest_mode.get() != "custom":
+                    return None
+            raw = self.var_output_dir.get().strip().strip('"')
+            return raw or None
+
+        def _change_pdf(self) -> None:
+            enabled = bool(self.var_pdf.get())
+            if enabled:
+                self.pdf_output_row.grid()
+            else:
+                self.pdf_output_row.grid_remove()
+            allow_mode = enabled and not self._is_busy()
+            radio_state = "normal" if allow_mode else "disabled"
+            self.radio_pdf_album.configure(state=radio_state)
+            self.radio_pdf_custom.configure(state=radio_state)
+            self._change_pdf_dest_mode()
+
         def _change_parallel(self) -> None:
             active = bool(self.var_parallel.get())
             self.option_workers.configure(state="normal" if active else "disabled")
@@ -3176,6 +4376,12 @@ if CTK_OK:
                 "received": self.recibidos,
                 "selected_file": selected.get("archivo"),
                 "pdf_ready": bool(self.pdf_path and os.path.exists(self.pdf_path)),
+                "queued_batches": len(self._batch_queue),
+                "batch_total_count": self._batch_total_count,
+                "batch_current_index": self._batch_current_index,
+                "active_filter": self.active_filter.value,
+                "pdf_enabled": bool(self.var_pdf.get()),
+                "pdf_dest_mode": self.var_pdf_dest_mode.get(),
             }
 
         def _update_state(self) -> None:
@@ -3189,7 +4395,14 @@ if CTK_OK:
                 widget.configure(state="disabled" if active else "normal")
             self._set_enabled(self.btn_folder, not active)
             self._set_enabled(self.btn_theme, not active)
-            if not active:
+            if active:
+                self.radio_pdf_album.configure(state="disabled")
+                self.radio_pdf_custom.configure(state="disabled")
+                self.input_output_dir.configure(state="disabled")
+                self._set_enabled(self.btn_output_dir, False)
+                self._set_enabled(self.btn_clear_output_dir, False)
+            else:
+                self._change_pdf()
                 self._change_parallel()
             there_is_pdf = bool(self.pdf_path and os.path.exists(self.pdf_path))
             self._set_enabled(self.btn_open_pdf, there_is_pdf)
@@ -3291,36 +4504,67 @@ if CTK_OK:
                 self.table_scroll.retheme()
 
                 self._recolour_widget(self.shell)
+                self._refresh_filter_bar(force=True)
                 for widget, background in self._focus_rings:
                     tkinter.Frame.configure(widget,
                                             highlightbackground=c(background),
                                             highlightcolor=c("focus"))
+                if self._viewport_dirty:
+                    self._sync_virtual_viewport()
                 self.table_body.configure(fg_color=surface_bg)
                 sep_col = c("border.subtle")
                 sep_str = str(sep_col)
+                surf_str = str(surface_bg)
+                text_pri = str(c("text.primary"))
                 text_sec = c("text.secondary")
-                sec_str = str(text_sec)
                 text_ter = c("text.tertiary")
-                ter_str = str(text_ter)
                 tk_call = self.tk.call
-                chip_palette: dict[str, tuple[Any, Any, Any]] = {}
-                for entry in self.table_rows:
-                    self._paint_row(entry, force=True)
-                    row_bg = str(entry["frame"].cget("fg_color"))
-                    sep = entry["separator"]
+                for slot in self._row_slots:
+                    sep = slot["separator"]
                     sep._fg_color = sep_col
                     tk_call(sep._w, "configure", "-background", sep_str)
-                    for plain_lbl in entry["plain"][:4]:
-                        plain_lbl._text_color = text_sec
-                        tk_call(plain_lbl._w, "configure", "-foreground", sec_str)
-                    if entry.get("icon_spec"):
-                        self._refresh_row_icon(entry)
+                    for plain_lbl in slot["plain"][:4]:
+                        plain_lbl._text_color = c("text.secondary")
+                        tk_call(plain_lbl._w, "configure", "-foreground", text_sec)
+                    slot["_chip_sig"] = None
+                    slot["_row_bg_sig"] = None
+                    slot["_md5_state"] = ("retheme", None)
+                    entry = slot.get("entry")
+                    if entry is not None:
+                        icon_spec = entry.get("icon_spec")
+                        mark_lbl = slot["cells"]["md5"]
+                        if icon_spec:
+                            photo = self._tk_icon(
+                                icon_spec[0], icon_spec[1], c(icon_spec[2])
+                            )
+                            mark_lbl._image_ref = photo
+                            tk_call(
+                                mark_lbl._w, "configure",
+                                "-text", "", "-image", "" if photo is None else photo,
+                            )
+                            slot["_md5_state"] = ("icon", icon_spec)
+                        else:
+                            mark_lbl._text_color = c("text.tertiary")
+                            tk_call(mark_lbl._w, "configure", "-foreground", text_ter)
+                            slot["_md5_state"] = ("dash", None)
+                        self._paint_row(entry, force=True)
                     else:
-                        md5_lbl = entry["cells"]["md5"]
-                        md5_lbl._text_color = text_ter
-                        tk_call(md5_lbl._w, "configure", "-foreground", ter_str)
-                    if not isinstance(entry["cells"]["verdict"], _VerdictChip):
-                        self._recolour_chip(entry["cells"]["verdict"], row_bg, chip_palette)
+                        slot["frame"]._fg_color = surface_bg
+                        tk_call(slot["frame"]._w, "configure", "-background", surf_str)
+                        slot["bar"]._fg_color = surface_bg
+                        tk_call(slot["bar"]._w, "configure", "-background", surf_str)
+                        tk_call(slot["file_label"]._w, "configure",
+                                "-background", surf_str, "-foreground", text_pri)
+                        for plain_lbl in slot["plain"]:
+                            plain_lbl._fg_color = surface_bg
+                            tk_call(plain_lbl._w, "configure", "-background", surf_str)
+                        slot["cells"]["md5"]._text_color = c("text.tertiary")
+                        tk_call(slot["cells"]["md5"]._w, "configure",
+                                "-foreground", text_ter)
+                        verdict_cell = slot["cells"]["verdict"]
+                        if isinstance(verdict_cell, _VerdictChip):
+                            verdict_cell._fg_color = surface_bg
+                            tk_call(verdict_cell._w, "configure", "-background", surf_str)
                 if self._placeholder_icon_spec:
                     name, size, token = self._placeholder_icon_spec
                     self.spectrogram_icon.configure(
@@ -3481,6 +4725,18 @@ if CTK_OK:
             if not os.path.exists(path):
                 self._alert("Path does not exist", f"Not found:\n{path}", error=True)
                 return
+            if (bool(self.var_pdf.get())
+                    and self.var_pdf_dest_mode.get() == "custom"
+                    and not self._effective_output_dir()):
+                self._alert(
+                    "PDF folder missing",
+                    "Choose a custom PDF output folder, or select 'Save in each album folder'.",
+                )
+                return
+
+            discovered = discover_album_queue(path)
+            if not discovered:
+                discovered = [path]
 
             self.events.clear()
             self._log_entries = [
@@ -3490,33 +4746,90 @@ if CTK_OK:
             self.total = 0
             self.recibidos = 0
             self.pdf_path = None
+            self._batch_root = path
+            self._batch_queue = deque(discovered)
+            self._batch_total_count = len(discovered)
+            self._batch_current_index = 0
+            self._batch_current_path = ""
+            self._album_total = 0
+            self._album_received = 0
             self.barra.set(0)
             self.label_progress.configure(text="")
-            self.label_state.configure(text="Analyzing…")
             self.selected_event = None
             self._set_run_state(RunState.RUNNING)
             self._clear_table()
             self._render_hero()
-            try:
-                command = self.manager.start(
-                    path,
-                    pdf=bool(self.var_pdf.get()), workers=self._workers(),
-                    without_cache=bool(self.var_without_cache.get()),
-                    png=True)
-            except Exception as e:
-                self._set_run_state(RunState.ERROR)
-                self._log(f"Could not start the analysis: {e}", "error")
-                self._alert("Could not start the engine", str(e), error=True)
-                self._update_state()
-                self._render_hero()
+            if self._batch_total_count > 1:
+                self._log(
+                    f"Queued {self._batch_total_count} albums from {path}"
+                )
+            if not self._start_next_batch():
                 return
-            self.active_run_id = getattr(self.manager, "run_id", self.active_run_id + 1)
-            self._log("Running: " + " ".join(command[1:]))
             self._update_state()
             self._render_hero()
             self.after(100, self._drain_queue)
 
+        def _start_next_batch(self) -> bool:
+            """Starts the next album batch in `self._batch_queue`."""
+            while self._batch_queue:
+                next_path = self._batch_queue.popleft()
+                self._batch_current_index += 1
+                self._batch_current_path = next_path
+                self._album_total = 0
+                self._album_received = 0
+                # Ensure a finished fake or exited process does not trip start().
+                if not self.manager.active:
+                    self.manager.process = None
+                pdf_enabled = bool(self.var_pdf.get())
+                output_dir = self._effective_output_dir() if pdf_enabled else None
+                try:
+                    command = self.manager.start(
+                        next_path,
+                        mode="full",
+                        pdf=pdf_enabled,
+                        workers=self._workers(),
+                        without_cache=bool(self.var_without_cache.get()),
+                        png=True,
+                        output_dir=output_dir,
+                    )
+                except Exception as e:
+                    self._log(
+                        f"Could not start album {self._batch_current_index} / "
+                        f"{self._batch_total_count}: {e}",
+                        "error",
+                    )
+                    if self._batch_queue:
+                        continue
+                    self._set_run_state(RunState.ERROR)
+                    self._alert("Could not start the engine", str(e), error=True)
+                    self._update_state()
+                    self._render_hero()
+                    return False
+
+                self.active_run_id = getattr(
+                    self.manager, "run_id", self.active_run_id + 1
+                )
+                if self._batch_total_count > 1:
+                    album_name = (
+                        os.path.basename(os.path.normpath(next_path)) or next_path
+                    )
+                    self.label_state.configure(
+                        text=f"Analyzing album {self._batch_current_index} / "
+                             f"{self._batch_total_count} · {album_name}"
+                    )
+                    self._log(
+                        f"Album {self._batch_current_index} / "
+                        f"{self._batch_total_count}: {next_path}"
+                    )
+                else:
+                    self.label_state.configure(text="Analyzing…")
+                self._log("Running: " + " ".join(command[1:]))
+                self._update_progress()
+                return True
+            return False
+
         def _cancel(self) -> None:
+            self._batch_queue.clear()
             if (not self.manager.active
                     and not self.manager.active_thread
                     and self.run_state != RunState.RUNNING):
@@ -3577,6 +4890,11 @@ if CTK_OK:
                 self._batch_draining = False
                 self._flush_pending_logs()
 
+            if self._viewport_dirty:
+                self._sync_virtual_viewport()
+            if self._filter_dirty:
+                self._filter_dirty = False
+                self._refresh_filter_bar()
             if self._hero_dirty:
                 self._hero_dirty = False
                 self._render_hero()
@@ -3603,6 +4921,22 @@ if CTK_OK:
 
         def _update_progress(self) -> None:
             """One redraw of the bar and the counter per drained batch."""
+            if self._batch_total_count > 1:
+                album_frac = (
+                    (self._album_received / self._album_total)
+                    if self._album_total
+                    else 0.0
+                )
+                overall = (
+                    (max(0, self._batch_current_index - 1) + min(1.0, album_frac))
+                    / float(self._batch_total_count)
+                )
+                self.barra.set(min(1.0, overall))
+                self.label_progress.configure(
+                    text=f"Album {self._batch_current_index} / "
+                         f"{self._batch_total_count} · {self.recibidos} / {self.total}"
+                )
+                return
             if not self.total:
                 return
             self.barra.set(min(1.0, self.recibidos / self.total))
@@ -3626,17 +4960,27 @@ if CTK_OK:
                     (stamp, text, label, None)
                     for stamp, text, label, _ in self._log_entries
                 ]
-                self.total = int(event.get("total") or 0)
-                files = f"{self.total} file" + ("" if self.total == 1 else "s")
+                album_count = int(event.get("total") or 0)
+                self._album_total = album_count
+                self._album_received = 0
+                if self._batch_total_count > 1:
+                    self.total += album_count
+                else:
+                    self.total = album_count
+                files = f"{album_count} file" + ("" if album_count == 1 else "s")
                 workers = event.get("workers", "?")
                 processes = ("process" if str(workers) == "1"
                              else "processes")
                 self._log(f"Analyzing {files} · {workers} {processes}"
                           + ("" if event.get("cache", True) else " · no cache"))
-                self.label_progress.configure(text=f"0 / {self.total}")
+                if self._batch_total_count > 1:
+                    self._update_progress()
+                else:
+                    self.label_progress.configure(text=f"0 / {self.total}")
             elif kind == "resultado":
                 self.events.append(event)
                 self.recibidos += 1
+                self._album_received += 1
                 self._set_results_visible(True)
                 label = "ok"
                 if event.get("error"):
@@ -3650,10 +4994,10 @@ if CTK_OK:
                               scroll=False, result_event=event)
                 # A row per file, as the event arrives (DESIGN.md 7.7).
                 self._add_row(event)
+                spec_path = spectrogram_path(event)
+                if spec_path:
+                    self._prewarm_spectrogram(spec_path)
                 if batch_mode:
-                    spec_path = spectrogram_path(event)
-                    if spec_path:
-                        self._prewarm_spectrogram(spec_path)
                     self._pending_log_scroll = True
                     if self.selected_event is None:
                         self._hero_dirty = True
@@ -3689,11 +5033,28 @@ if CTK_OK:
         def _finish(self, event: Event) -> None:
             self._hero_dirty = False
             self._order_batch_results()
-            self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
-            color, text = format_summary(self.events)
             cancelled = bool(event.get("cancelado")) or (
                 event.get("run_id") in self._cancelled_run_ids
             )
+            if cancelled:
+                self._batch_queue.clear()
+            elif self._batch_queue:
+                if event.get("codigo") not in (0, None):
+                    self._log(
+                        f"Album {self._batch_current_index} / "
+                        f"{self._batch_total_count} finished with code "
+                        f"{event['codigo']}.",
+                        "error",
+                    )
+                if self._start_next_batch():
+                    self._update_state()
+                    self._render_hero()
+                    if not self._batch_draining:
+                        self.after(ACTIVE_INTERVAL_MS, self._drain_queue)
+                    return
+
+            self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
+            color, text = format_summary(self.events)
             if cancelled:
                 self._set_run_state(RunState.CANCELLED)
                 self.label_state.configure(text="Cancelled")
@@ -3706,8 +5067,17 @@ if CTK_OK:
                              f"Exit code: {event['codigo']}", error=True)
             else:
                 self._set_run_state(RunState.FINISHED)
-                self.label_state.configure(text="Finished")
-                self._log("Analysis finished.", "ok")
+                if self._batch_total_count > 1:
+                    self.label_state.configure(
+                        text=f"Finished ({self._batch_total_count} albums)"
+                    )
+                    self._log(
+                        f"Finished {self._batch_total_count} albums.", "ok"
+                    )
+                else:
+                    self.label_state.configure(text="Finished")
+                    self._log("Analysis finished.", "ok")
+            self._refresh_filter_bar(force=True)
             self._render_hero()
             self._set_activity(False)
             self._update_state()
@@ -3735,6 +5105,7 @@ if CTK_OK:
 
         def _on_close(self) -> None:
             """Closing the window must not leave live processes behind."""
+            self._batch_queue.clear()
             if self.manager.active:
                 self._log("Closing: cancelling the running analysis…", "aviso")
                 self.manager.cancel()
@@ -3742,12 +5113,12 @@ if CTK_OK:
             self.destroy()
 
         def destroy(self) -> None:
-            """Cancels pending Tcl `after` callbacks before tearing down the window."""
-            if self._spec_worker is not None and self._spec_worker.is_alive():
-                try:
-                    self._spec_queue.put_nowait(None)
-                except Exception:
-                    pass
+            """Stops background worker and cancels pending Tcl `after` callbacks."""
+            with self._spec_cond:
+                self._spec_stop = True
+                self._spec_deque.clear()
+                self._spec_queued.clear()
+                self._spec_cond.notify_all()
             try:
                 for after_id in self.tk.call("after", "info"):
                     try:
