@@ -4,6 +4,7 @@ Extracted from the motor facade in Phase 4. The STFT is float32 with
 sliding_window_view; the PNG is NumPy + Pillow (no matplotlib).
 """
 import heapq
+import inspect
 import importlib.machinery
 import importlib.util
 import math
@@ -151,7 +152,7 @@ from _motor_bits import (
     _classify_streaks,
     _normalize_path_fs,
 )
-from _motor_cache import _png_folder
+from _motor_cache import _png_folder, _png_path, _replace_with_retries
 
 WIDTH_PNG = 2100                    # total canvas width (14 in at 150 dpi)
 
@@ -408,17 +409,17 @@ def render_spectrogram_fast(matriz_db, sample_rate, output_png_path,
                 fill=text_color, font=source)
     canvas.convert("RGB").save(output_png_path, format="PNG", compress_level=4)
 
-def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, frequency_cutoff):
-    """Draws the spectrogram. Returns (png_path, error): it never raises, and the
-    reason for the failure is kept so that it can be reported."""
+def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, frequency_cutoff,
+                      mode="full", seconds=None):
+    """Draws the spectrogram atomically to a mode-scoped PNG. Returns
+    (png_path, error): it never raises, and the reason for any failure is kept."""
+    temp_fs = None
     try:
         if not PIL_OK:
             return None, "Pillow is not available: PNG spectrograms are disabled"
-        name = os.path.splitext(os.path.basename(audio_path))[0]
-        png_directory = _png_folder(audio_path)
+        png_path = _png_path(audio_path, mode=mode, seconds=seconds)
+        png_directory = os.path.dirname(png_path)
         os.makedirs(_normalize_path_fs(png_directory), exist_ok=True)   # race-safe across processes
-
-        png_path = os.path.join(png_directory, name + "_espectrograma.png")
 
         # Decimate before the transcendental step: log10 runs on far fewer cells
         # when the window has more frames than the PNG can show.
@@ -434,14 +435,24 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path, ceiling_hz, fre
         db *= 10.0
         db -= float(np.max(db))
 
+        dest_fs = _normalize_path_fs(png_path)
+        temp_fs = f"{dest_fs}.{os.getpid()}.tmp"
         render_spectrogram_fast(
-            db, samplerate, _normalize_path_fs(png_path), db_min=-80.0, db_max=0.0,
+            db, samplerate, temp_fs, db_min=-80.0, db_max=0.0,
             title=f"Spectrogram — {os.path.basename(audio_path)}",
             ceiling_hz=ceiling_hz, frequency_cutoff=frequency_cutoff,
             times=times)
+        _replace_with_retries(temp_fs, dest_fs)
+        temp_fs = None
         return png_path, None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
+    finally:
+        if temp_fs is not None:
+            try:
+                os.unlink(temp_fs)
+            except OSError:
+                pass
 
 def _white_noise_gain(nperseg, window):
     """Mean bin power of a unit-variance white noise through the normalised
@@ -990,6 +1001,12 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # exceed the [150, 6000] Hz peak by more than 6 dB. Ordinary bass never does.
     idx_max = int(np.argmax(power_db))
     max_global = float(power_db[idx_max])
+    floor_db = 10.0 * math.log10(max(float(_FLOOR_F32), 1e-28))
+    dynamic_span = max_global - float(np.min(power_db))
+    if (not math.isfinite(max_global)
+            or max_global <= floor_db + 10.0
+            or (max_global < -200.0 and dynamic_span <= 1e-3)):
+        return {"error": "insufficient signal energy for spectral analysis"}
     peak_freq = float(freqs[idx_max]) if freqs.size else 0.0
     mask_without_subbass = (freqs >= 150.0) & (freqs <= 6000.0)
     # The DC bin is not a sub-bass programme peak: a 1/f tilt puts the maximum at
@@ -1087,9 +1104,13 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
 
     # Vector 3: Hi-Res morphology, measured on the Mid spectrum calibrated to
     # dBFS per bin so the absolute thermal-floor thresholds are meaningful.
+    # For strictly out-of-phase signals (L = -R) Mid cancels to the floor, so
+    # fall back to total power when Mid holds no signal above the floor.
     if power_mid is None or power_side is None:
         spectrum_mid_db = _spectrum_dbfs(power_mid if power_mid is not None else power_l,
                                          gain_noise)
+    elif float(np.max(power_mid)) <= float(_FLOOR_F32) * 2.0:
+        spectrum_mid_db = _spectrum_dbfs(power, gain_noise)
     else:
         spectrum_mid_db = mid_db
     hires = _diagnose_hires_authenticity(freqs, spectrum_mid_db, samplerate,
@@ -1283,34 +1304,11 @@ def _needed_active_blocks(samplerate, mode="center", seconds=None):
         target_sec = float(SPECTRO_SECONDS)
     return max(1, int(math.ceil(target_sec * float(samplerate) / FRAMES_BY_BLOCK)))
 
-def _activity_score(block, last_sample=None, mono=None, diff_buf=None):
-    """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
-    cheap high-frequency/transient indicator: it is large on cymbals and attacks
-    and almost zero on a sustained bass line. The last sample of the previous
-    block is carried over so the difference is not lost at the boundary."""
-    if mono is None:
-        if block.ndim > 1:
-            n_ch = block.shape[1]
-            if n_ch == 1:
-                mono = block[:, 0]
-            elif n_ch == 2:
-                mono = (block[:, 0] + block[:, 1]) * 0.5
-            else:
-                mono = block.mean(axis=1)
-        else:
-            mono = block
-    if mono.size == 0:
-        return -math.inf, 0.0
-
-    sumsq = float(np.dot(mono, mono))
-    if sumsq > 0.0:
-        rms_db = 10.0 * math.log10(sumsq / mono.size)
-    else:
-        rms_db = -math.inf
-
+def _mono_diff_mean_sq(mono, last_sample=None, diff_buf=None):
+    """Mean squared adjacent-sample difference on a 1-D sequence."""
     n_diffs = mono.size - 1
     if n_diffs <= 0:
-        return rms_db, 0.0
+        return 0.0
     chunk = 16384
     if diff_buf is None or diff_buf.dtype != mono.dtype or diff_buf.size < min(chunk, n_diffs):
         diff_buf = np.empty(min(chunk, n_diffs), dtype=mono.dtype)
@@ -1324,7 +1322,80 @@ def _activity_score(block, last_sample=None, mono=None, diff_buf=None):
         np.subtract(mono[idx + 1 : end + 1], mono[idx:end], out=cur)
         total_sq += float(np.dot(cur, cur))
     denom = float(mono.size if last_sample is not None else n_diffs)
-    return rms_db, float(total_sq / denom)
+    return float(total_sq / denom)
+
+
+def _activity_score(block, last_sample=None, mono=None, diff_buf=None, int_scale=None):
+    """(RMS in dBFS, E_diff) of a block. E_diff = mean((x[t]-x[t-1])^2) is a
+    cheap high-frequency/transient indicator: it is large on cymbals and attacks
+    and almost zero on a sustained bass line. The last sample of the previous
+    block is carried over so the difference is not lost at the boundary."""
+    scale_f = float(int_scale) if int_scale is not None else 1.0
+    if mono is None:
+        if block.ndim > 1:
+            n_ch = block.shape[1]
+            if n_ch == 1:
+                mono = (block[:, 0] if int_scale is None
+                        else block[:, 0].astype(np.float64) * scale_f)
+            elif n_ch == 2:
+                if int_scale is None:
+                    mono = (block[:, 0] + block[:, 1]) * 0.5
+                else:
+                    mono = (block[:, 0].astype(np.float64)
+                            + block[:, 1].astype(np.float64)) * (0.5 * scale_f)
+            else:
+                mono = (block.mean(axis=1) if int_scale is None
+                        else block.mean(axis=1, dtype=np.float64) * scale_f)
+        else:
+            mono = block if int_scale is None else block.astype(np.float64) * scale_f
+    if mono.size == 0:
+        return -math.inf, 0.0
+
+    sumsq = float(np.dot(mono, mono))
+    if sumsq > 0.0:
+        rms_db = 10.0 * math.log10(sumsq / mono.size)
+    else:
+        rms_db = -math.inf
+    e_diff = _mono_diff_mean_sq(mono, last_sample=last_sample, diff_buf=diff_buf)
+
+    if block.ndim > 1 and block.shape[1] > 2:
+        # Multichannel blocks may hold active Centre/Surround while Front L/R
+        # are silent or mutually out of phase; evaluate peak active channel.
+        fblock = np.asarray(block, dtype=np.float64)
+        sumsq_ch = np.einsum("ij,ij->j", fblock, fblock)
+        best_ch = int(np.argmax(sumsq_ch))
+        best_sumsq = float(sumsq_ch[best_ch]) * (scale_f * scale_f)
+        if best_sumsq > 0.0:
+            ch_rms = 10.0 * math.log10(best_sumsq / fblock.shape[0])
+            best_sig = (fblock[:, best_ch] * scale_f if int_scale is not None
+                        else fblock[:, best_ch])
+            ch_diff = _mono_diff_mean_sq(best_sig, last_sample=None, diff_buf=None)
+            if ch_rms > rms_db:
+                rms_db = ch_rms
+            if ch_diff > e_diff:
+                e_diff = ch_diff
+        return rms_db, e_diff
+
+    if (block.ndim > 1 and block.shape[1] == 2
+            and (rms_db <= ACTIVE_RMS_THRESHOLD_DB or e_diff <= 1e-12)):
+        # Out-of-phase L = -R cancels in (L + R) * 0.5; rescue via Side only when
+        # Mono fails the activity gate (zero extra cost on normal stereo audio).
+        if int_scale is not None:
+            side = (
+                block[:, 0].astype(np.float64) - block[:, 1].astype(np.float64)
+            ) * (0.5 * scale_f)
+        else:
+            side = (block[:, 0] - block[:, 1]) * 0.5
+        side_sumsq = float(np.dot(side, side))
+        if side_sumsq > sumsq and side_sumsq > 0.0:
+            side_rms_db = 10.0 * math.log10(side_sumsq / side.size)
+            side_e_diff = _mono_diff_mean_sq(side, last_sample=None, diff_buf=None)
+            if side_rms_db > rms_db:
+                rms_db = side_rms_db
+            if side_e_diff > e_diff:
+                e_diff = side_e_diff
+
+    return rms_db, e_diff
 
 def _stft_complex(channel, nperseg, hop, window, scale, frame_buf=None):
     """float32 STFT with sliding_window_view: no copies beyond the windowed
@@ -2508,6 +2579,52 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
     except Exception:
         return neutral
 
+def _select_multichannel_layout(chosen):
+    """Selects active non-floor channels and primary L/R pair for C > 2 blocks."""
+    n_ch = max((blk[4].shape[1] for blk in chosen if blk[4].ndim > 1), default=1)
+    ch_energy = np.zeros(n_ch, dtype=np.float64)
+    total_frames = 0
+    for _, _, _, _, audio in chosen:
+        if audio.ndim <= 1:
+            ch_energy[0] += float(np.dot(audio, audio))
+        else:
+            cols = min(n_ch, audio.shape[1])
+            if cols:
+                a64 = np.asarray(audio[:, :cols], dtype=np.float64)
+                ch_energy[:cols] += np.einsum("ij,ij->j", a64, a64)
+        total_frames += len(audio)
+    if total_frames > 0:
+        ch_energy /= float(total_frames)
+    max_e = float(np.max(ch_energy)) if n_ch > 0 else 0.0
+    if max_e <= 1e-26:
+        return [], ((0, 1) if n_ch >= 2 else (0,))
+
+    # In 5.1 / 6.1 / 7.1 (SMPTE channel 3 = LFE), exclude sub-only LFE when
+    # full-range channels hold real program energy.
+    candidates = list(range(n_ch))
+    if n_ch in (6, 7, 8):
+        non_lfe = [idx for idx in candidates if idx != 3]
+        non_lfe_max = max(float(ch_energy[idx]) for idx in non_lfe)
+        if non_lfe_max > 1e-24 and non_lfe_max >= 1e-4 * max_e:
+            candidates = non_lfe
+
+    cand_max = max(float(ch_energy[idx]) for idx in candidates)
+    thresh = max(1e-26, 1e-7 * cand_max)
+    active = [idx for idx in candidates if float(ch_energy[idx]) >= thresh]
+    if not active:
+        active = [int(np.argmax(ch_energy))]
+
+    if len(active) == 1:
+        pair = (active[0],)
+    elif (0 in active and 1 in active
+          and min(float(ch_energy[0]), float(ch_energy[1])) >= 1e-4 * cand_max):
+        pair = (0, 1)
+    else:
+        ranked = sorted(active, key=lambda idx: float(ch_energy[idx]), reverse=True)
+        pair = (ranked[0], ranked[1])
+    return active, pair
+
+
 class _SpectralAccumulator:
     """Keeps the K most active blocks in memory and runs the STFT on them at the
     end. Shared by the streaming path and the array path so both give the same
@@ -2567,7 +2684,8 @@ class _SpectralAccumulator:
                     if block.shape[0] == 0:
                         return
             rms_db, e_diff = _activity_score(
-                block, self._last, mono=mono, diff_buf=self._diff_buf
+                block, self._last, mono=mono, diff_buf=self._diff_buf,
+                int_scale=int_scale,
             )
             if block.ndim > 1:
                 if mono is not None:
@@ -2613,6 +2731,28 @@ class _SpectralAccumulator:
             self._error = str(e)
             self._state = AccumulatorState.FAILED
 
+    def _invoke_renderer(self, freqs, times, mix, ceiling_hz, cutoff_hz):
+        """Forwards mode/seconds to the PNG renderer when accepted."""
+        try:
+            sig = inspect.signature(self._renderer)
+            accepts_mode = (
+                "mode" in sig.parameters
+                or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()
+                )
+            )
+        except (TypeError, ValueError):
+            accepts_mode = False
+        if accepts_mode:
+            return self._renderer(
+                freqs, times, mix, self.sr, self.path, ceiling_hz, cutoff_hz,
+                mode=self.mode, seconds=self.seconds,
+            )
+        return self._renderer(
+            freqs, times, mix, self.sr, self.path, ceiling_hz, cutoff_hz
+        )
+
     def result(self):
         if self._cached_result is not None:
             return dict(self._cached_result)
@@ -2624,6 +2764,22 @@ class _SpectralAccumulator:
             self._state = AccumulatorState.FAILED
             return {"error": "could not analyze the spectrum"}
         chosen = sorted(chosen, key=lambda item: item[2])   # chronological
+
+        is_multichannel = any(
+            item[4].ndim > 1 and item[4].shape[1] > 2 for item in chosen
+        )
+        if is_multichannel:
+            mc_active, mc_pair = _select_multichannel_layout(chosen)
+            if not mc_active:
+                err_out = {"error": "insufficient signal energy for spectral analysis"}
+                self._state = AccumulatorState.COMPLETED
+                self._cached_result = dict(err_out)
+                return err_out
+            effective_stereo = len(mc_active) >= 2
+        else:
+            mc_active = ()
+            mc_pair = (0, 1) if self.is_stereo else (0,)
+            effective_stereo = bool(self.is_stereo)
 
         lengths = [len(item[4]) for item in chosen]
         total_samples = sum(lengths)
@@ -2652,10 +2808,10 @@ class _SpectralAccumulator:
         n_bins = nperseg // 2 + 1
         stft_tile = 64
         sum_l = np.zeros(n_bins, dtype=np.float32)
-        sum_r = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
-        sum_total = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
-        sum_mid = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
-        sum_side = np.zeros(n_bins, dtype=np.float32) if self.is_stereo else None
+        sum_r = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
+        sum_total = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
+        sum_mid = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
+        sum_side = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
         freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
         frames = 0
         frames_global = 0
@@ -2664,7 +2820,14 @@ class _SpectralAccumulator:
         zero_f32 = np.float32(0.0)
         pfft = _get_pocketfft()
 
-        if self.is_stereo:
+        if is_multichannel:
+            n_act = len(mc_active)
+            tile_in = np.empty((n_act, stft_tile, nperseg), dtype=np.float32)
+            tile_z = np.empty((n_act, stft_tile, n_bins), dtype=np.complex64)
+            mc_acc = np.empty((stft_tile, n_bins), dtype=np.float32)
+            mc_pos = {ch: pos for pos, ch in enumerate(mc_active)}
+            inv_act = np.float32(1.0 / float(n_act))
+        elif effective_stereo:
             tile_in = np.empty((2, stft_tile, nperseg), dtype=np.float32)
             tile_z = np.empty((2, stft_tile, n_bins), dtype=np.complex64)
         else:
@@ -2679,7 +2842,83 @@ class _SpectralAccumulator:
             if len(audio) < nperseg:
                 continue                  # a very short trailing block
             n_frames_blk = (len(audio) - nperseg) // hop + 1
-            if self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
+            if is_multichannel:
+                n_act = len(mc_active)
+                frames_ch = [
+                    np.lib.stride_tricks.sliding_window_view(
+                        np.ascontiguousarray(audio[:, ch], dtype=np.float32), nperseg
+                    )[::hop]
+                    for ch in mc_active
+                ]
+                for f0 in range(0, n_frames_blk, stft_tile):
+                    f1 = min(f0 + stft_tile, n_frames_blk)
+                    m = f1 - f0
+                    tin = tile_in[:, :m, :]
+                    tz = tile_z[:, :m, :]
+                    tsq = tile_sq[:m, :]
+                    raw_l = tile_a[:m, :]
+                    raw_r = tile_b[:m, :]
+                    tmp_f = tile_c[:m, :]
+                    p_total_t = mc_acc[:m, :]
+                    p_total_t.fill(zero_f32)
+
+                    for pos in range(n_act):
+                        np.multiply(frames_ch[pos][f0:f1], scaled_window, out=tin[pos])
+                    pfft.r2c(tin, (2,), True, 0, tz, 1)
+
+                    for pos in range(n_act):
+                        zc = tz[pos]
+                        np.square(zc.view(np.float32), out=tsq)
+                        np.add(tsq[:, 0::2], tsq[:, 1::2], out=tmp_f)
+                        np.maximum(tmp_f, _FLOOR_F32, out=tmp_f)
+                        p_total_t += tmp_f
+                    p_total_t *= inv_act
+
+                    if effective_stereo:
+                        p0 = mc_pos[mc_pair[0]]
+                        p1 = mc_pos[mc_pair[1]]
+                        zl_t, zr_t = tz[p0], tz[p1]
+                        np.square(zl_t.view(np.float32), out=tsq)
+                        np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_l)
+                        np.maximum(raw_l, _FLOOR_F32, out=tmp_f)
+                        sum_l += tmp_f.sum(axis=0, dtype=np.float32)
+
+                        np.square(zr_t.view(np.float32), out=tsq)
+                        np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_r)
+                        np.maximum(raw_r, _FLOOR_F32, out=tmp_f)
+                        sum_r += tmp_f.sum(axis=0, dtype=np.float32)
+
+                        np.add(raw_l, raw_r, out=raw_l)
+                        raw_l *= medium
+                        np.subtract(zl_t, zr_t, out=zl_t)
+                        zl_t *= medium
+                        np.square(zl_t.view(np.float32), out=tsq)
+                        np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_r)
+
+                        np.subtract(raw_l, raw_r, out=raw_l)
+                        np.maximum(raw_l, zero_f32, out=raw_l)
+                        np.maximum(raw_l, _FLOOR_F32, out=raw_l)
+                        sum_mid += raw_l.sum(axis=0, dtype=np.float32)
+
+                        np.maximum(raw_r, _FLOOR_F32, out=raw_r)
+                        sum_side += raw_r.sum(axis=0, dtype=np.float32)
+
+                        sum_total += p_total_t.sum(axis=0, dtype=np.float32)
+                        self._psycho.add(p_total_t, freqs, window, power_side=raw_r)
+                    else:
+                        sum_l += p_total_t.sum(axis=0, dtype=np.float32)
+                        self._psycho.add(p_total_t, freqs, window, power_side=None)
+
+                    if self.save_png:
+                        remaining = MAX_FRAMES_PNG - png_n
+                        if remaining > 0:
+                            i0 = (-(frames_global + f0)) % step_png
+                            idx = np.arange(i0, m, step_png)[:remaining]
+                            if idx.size:
+                                png_power.append(p_total_t[idx].copy())
+                                png_times.append((start + (f0 + idx) * hop) / float(self.sr))
+                                png_n += idx.size
+            elif effective_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
                 xl = np.ascontiguousarray(audio[:, 0], dtype=np.float32)
                 xr = np.ascontiguousarray(audio[:, 1], dtype=np.float32)
                 frames_l = np.lib.stride_tricks.sliding_window_view(xl, nperseg)[::hop]
@@ -2777,20 +3016,24 @@ class _SpectralAccumulator:
 
         if frames == 0:
             return {"error": "could not analyze the spectrum"}
-        if not self.is_stereo:
+        if not effective_stereo:
             sum_r = sum_l
             sum_total = sum_l
 
         mean_l = sum_l / np.float32(frames)
-        mean_r = mean_l if not self.is_stereo else sum_r / np.float32(frames)
+        mean_r = mean_l if not effective_stereo else sum_r / np.float32(frames)
         mean_total = sum_total / np.float32(frames)
-        mean_mid = (sum_mid / np.float32(frames)) if self.is_stereo else None
-        mean_side = (sum_side / np.float32(frames)) if self.is_stereo else None
+        mean_mid = (sum_mid / np.float32(frames)) if effective_stereo else None
+        mean_side = (sum_side / np.float32(frames)) if effective_stereo else None
         spectrum = _spectral_metrics(freqs, mean_l, mean_r, self.sr,
-                                    is_stereo=self.is_stereo,
+                                    is_stereo=effective_stereo,
                                     power=mean_total,
                                     power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
+        if spectrum.get("error"):
+            self._state = AccumulatorState.COMPLETED
+            self._cached_result = dict(spectrum)
+            return spectrum
         spectrum.update(self._psycho.result())
         if spectrum.get("es_estacionario"):
             if (spectrum.get("sospecha_joint_stereo")
@@ -2861,17 +3104,20 @@ class _SpectralAccumulator:
             ranked_blks = sorted(
                 chosen, key=lambda item: (len(item[4]) >= 24576, item[0]), reverse=True)
             best_blk = ranked_blks[0][4]
-            if best_blk.ndim > 1 and best_blk.shape[1] >= 2:
-                dl = np.diff(best_blk[:, 0])
-                dr = np.diff(best_blk[:, 1])
+            if best_blk.ndim > 1 and len(mc_pair) >= 2:
+                c0, c1 = mc_pair[0], mc_pair[1]
+                dl = np.diff(best_blk[:, c0])
+                dr = np.diff(best_blk[:, c1])
                 el = float(np.dot(dl, dl))
                 er = float(np.dot(dr, dr))
-                primary_idx = 0 if el >= er else 1
+                primary_idx = c0 if el >= er else c1
+                opp_idx = c1 if primary_idx == c0 else c0
                 mono_blk = best_blk[:, primary_idx]
-                opp_blk = best_blk[:, 1 - primary_idx]
+                opp_blk = best_blk[:, opp_idx]
                 asym_ch = abs(el - er) > 0.25 * max(el, er, 1e-12)
             else:
-                mono_blk = best_blk[:, 0] if best_blk.ndim > 1 else best_blk
+                ch0 = mc_pair[0] if best_blk.ndim > 1 else 0
+                mono_blk = best_blk[:, ch0] if best_blk.ndim > 1 else best_blk
                 opp_blk = None
                 asym_ch = False
             lat = _detect_lapped_codec_grid(mono_blk, self.sr, ceiling_hz=ceiling_val)
@@ -2883,9 +3129,16 @@ class _SpectralAccumulator:
                         or lat_opp.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
                     lat = lat_opp
             if (not lat.get("mdct_lattice_detected")
-                    and best_blk.ndim > 1 and best_blk.shape[1] >= 2
+                    and best_blk.ndim > 1 and len(mc_pair) >= 2
                     and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
-                mid_blk = 0.5 * (best_blk[:, 0] + best_blk[:, 1])
+                c0, c1 = mc_pair[0], mc_pair[1]
+                mid_blk = 0.5 * (best_blk[:, c0] + best_blk[:, c1])
+                if float(np.dot(mid_blk, mid_blk)) <= 1e-6 * max(
+                    float(np.dot(best_blk[:, c0], best_blk[:, c0])),
+                    float(np.dot(best_blk[:, c1], best_blk[:, c1])),
+                    0.0,
+                ):
+                    mid_blk = 0.5 * (best_blk[:, c0] - best_blk[:, c1])
                 lat_mid = _detect_lapped_codec_grid(mid_blk, self.sr, ceiling_hz=ceiling_val)
                 if (lat_mid.get("mdct_lattice_detected")
                         or lat_mid.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
@@ -2896,14 +3149,16 @@ class _SpectralAccumulator:
                 sec_b = sec_item[4]
                 if len(sec_b) < 24576:
                     continue
-                if sec_b.ndim > 1 and sec_b.shape[1] >= 2:
-                    dl2 = np.diff(sec_b[:, 0])
-                    dr2 = np.diff(sec_b[:, 1])
+                if sec_b.ndim > 1 and len(mc_pair) >= 2:
+                    c0, c1 = mc_pair[0], mc_pair[1]
+                    dl2 = np.diff(sec_b[:, c0])
+                    dr2 = np.diff(sec_b[:, c1])
                     el2 = float(np.dot(dl2, dl2))
                     er2 = float(np.dot(dr2, dr2))
-                    sec_mono = sec_b[:, 0] if el2 >= er2 else sec_b[:, 1]
+                    sec_mono = sec_b[:, c0] if el2 >= er2 else sec_b[:, c1]
                 else:
-                    sec_mono = sec_b[:, 0] if sec_b.ndim > 1 else sec_b
+                    ch0 = mc_pair[0] if sec_b.ndim > 1 else 0
+                    sec_mono = sec_b[:, ch0] if sec_b.ndim > 1 else sec_b
                 lat_sec = _detect_lapped_codec_grid(sec_mono, self.sr, ceiling_hz=ceiling_val)
                 if lat_sec.get("mdct_lattice_detected") and (
                     sec_idx == 0
@@ -2938,9 +3193,18 @@ class _SpectralAccumulator:
                 blk = item[4]
                 if len(blk) == 0:
                     continue
-                mid_p = (0.5 * (blk[:, 0] + blk[:, 1])
-                         if blk.ndim > 1 and blk.shape[1] >= 2
-                         else (blk[:, 0] if blk.ndim > 1 else blk))
+                if blk.ndim > 1 and len(mc_pair) >= 2:
+                    c0, c1 = mc_pair[0], mc_pair[1]
+                    mid_p = 0.5 * (blk[:, c0] + blk[:, c1])
+                    if float(np.dot(mid_p, mid_p)) <= 1e-6 * max(
+                        float(np.dot(blk[:, c0], blk[:, c0])),
+                        float(np.dot(blk[:, c1], blk[:, c1])),
+                        0.0,
+                    ):
+                        mid_p = 0.5 * (blk[:, c0] - blk[:, c1])
+                else:
+                    ch0 = mc_pair[0] if blk.ndim > 1 else 0
+                    mid_p = blk[:, ch0] if blk.ndim > 1 else blk
                 mid_parts.append(np.asarray(mid_p, dtype=np.float32))
                 gathered += len(mid_p)
                 if gathered >= target_samples:
@@ -2948,10 +3212,10 @@ class _SpectralAccumulator:
             if mid_parts:
                 spectrum.update(_detect_sbr_qmf_replication(mid_parts, self.sr))
         if self.save_png and png_power:
-            png_path, error = self._renderer(
+            png_path, error = self._invoke_renderer(
                 freqs, np.concatenate(png_times),
                 np.concatenate(png_power, axis=0).T,
-                self.sr, self.path, spectrum["techo_hz"], spectrum["frecuencia_corte"])
+                spectrum["techo_hz"], spectrum["frecuencia_corte"])
             spectrum["espectrograma"] = png_path
             if error:
                 spectrum["espectrograma_error"] = error
@@ -2971,6 +3235,17 @@ class _SpectralAccumulator:
             return {"espectrograma": None,
                     "espectrograma_error": "could not analyze the spectrum"}
         chosen = sorted(chosen, key=lambda item: item[2])
+
+        is_multichannel = any(
+            item[4].ndim > 1 and item[4].shape[1] > 2 for item in chosen
+        )
+        if is_multichannel:
+            mc_active, _ = _select_multichannel_layout(chosen)
+            if not mc_active:
+                return {"espectrograma": None,
+                        "espectrograma_error": "insufficient signal energy for spectral analysis"}
+        else:
+            mc_active = ()
 
         lengths = [len(item[4]) for item in chosen]
         total_samples = sum(lengths)
@@ -3005,7 +3280,19 @@ class _SpectralAccumulator:
                 i0 = (-frames_global) % step_png
                 idx = np.arange(i0, n_frames_blk, step_png)[:remaining]
                 if idx.size:
-                    if self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
+                    if is_multichannel:
+                        mc_frames = np.stack([
+                            np.lib.stride_tricks.sliding_window_view(
+                                np.ascontiguousarray(audio[:, ch], dtype=np.float32),
+                                nperseg,
+                            )[::hop][idx] * scaled_window
+                            for ch in mc_active
+                        ], axis=0)
+                        z_all = _rfft_f32(mc_frames, axis=2)
+                        power_total = np.mean(
+                            np.maximum(_power_from_fft(z_all), _FLOOR_F32), axis=0
+                        )
+                    elif self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
                         ch_l = np.ascontiguousarray(audio[:, 0], dtype=np.float32)
                         ch_r = np.ascontiguousarray(audio[:, 1], dtype=np.float32)
                         frames_l = np.lib.stride_tricks.sliding_window_view(
@@ -3037,10 +3324,10 @@ class _SpectralAccumulator:
 
         if not png_power:
             return {"espectrograma": None}
-        png_path, error = self._renderer(
+        png_path, error = self._invoke_renderer(
             freqs, np.concatenate(png_times),
             np.concatenate(png_power, axis=0).T,
-            self.sr, self.path, ceiling_hz, cutoff_hz
+            ceiling_hz, cutoff_hz
         )
         out = {"espectrograma": png_path}
         if error:

@@ -411,42 +411,204 @@ def analyze_bit_depth(data, meta, include_forensic=True):
 
 def _streaks(en, previous_count=0):
     """Lengths of the runs of True, vectorised and without losing the ones that
-    cross the boundary between blocks. Returns (rachas_cerradas, cuenta_abierta_final)."""
+    cross the boundary between blocks. Returns (closed_runs, open_trailing_count)."""
+    if en.size == 0:
+        return [], (int(previous_count) if previous_count else 0)
     if not en.any():
-        return ([previous_count] if previous_count else []), 0
-    flags   = en.astype(np.int8)
-    edges  = np.diff(np.concatenate(([0], flags, [0])))
+        return ([int(previous_count)] if previous_count else []), 0
+    flags = en.astype(np.int8)
+    edges = np.diff(np.concatenate(([0], flags, [0])))
     starts = np.flatnonzero(edges == 1)
-    lengths  = (np.flatnonzero(edges == -1) - starts).tolist()
-    if starts[0] == 0 and previous_count:
-        lengths[0] += previous_count          # continues the run of the previous block
+    lengths = (np.flatnonzero(edges == -1) - starts).tolist()
+    if previous_count:
+        if starts[0] == 0:
+            lengths[0] += int(previous_count)   # continues the run from the previous block
+        else:
+            lengths.insert(0, int(previous_count))  # previous run ended right at boundary
     if flags[-1]:
-        return lengths[:-1], lengths[-1]      # the last one is still open
+        return lengths[:-1], lengths[-1]        # trailing run stays open
     return lengths, 0
 
-def detect_clipping(data):
-    """Real clipping = 3+ CONSECUTIVE samples at the top (>= 0.9999). A clipping
-    run is counted once; isolated inter-sample peaks are not clipping."""
-    try:
-        amp     = np.max(np.abs(data), axis=1) if data.ndim > 1 else np.abs(data)
-        streaks, opened = _streaks(amp >= 0.9999)
-        if opened:
-            streaks.append(opened)
-        runs = sum(1 for long in streaks if long >= 3)
-        return {"runs_clip": runs, "hay_clipping": runs > 0}
-    except (ValueError, TypeError) as e:
-        print(f"[clipping] {e}")
-        return None
 
-def _classify_streaks(run_lengths, ceiling_hz=None, frequency_cutoff=None, nyquist=None):
-    """Vector 6 classification from the lengths of the saturation runs.
+class _ClippingAccumulator:
+    """Bounded O(channels) per-channel clipping streak tracker.
 
-    * Lossy reconstruction (Gibbs overshoot): most events are 1-2 isolated
-      samples and the spectral cut-off sits below 20.5 kHz.
-    * Mastering limiter: runs of 4+ consecutive samples on average while the
-      spectrum still reaches Nyquist. It is an observation, never a defect."""
-    lengths = [int(l) for l in run_lengths if int(l) > 0]
-    events = len(lengths)
+    Tracks consecutive full-scale runs independently on each channel so
+    alternating peaks across channels (L, R, L) never merge into false runs,
+    while accumulating exact run counts, mean length and maximum streak in O(1)
+    auxiliary memory regardless of signal duration.
+    """
+
+    def __init__(self, channels=2):
+        n_ch = max(1, int(channels))
+        self._open = [0] * n_ch
+        self._events = 0
+        self._short_events = 0
+        self._clip_runs = 0
+        self._total_samples = 0
+        self._max_streak = 0
+
+    def _ensure_channels(self, n_ch):
+        if n_ch > len(self._open):
+            self._open.extend([0] * (n_ch - len(self._open)))
+
+    def _close_run_len(self, length):
+        length = int(length)
+        if length <= 0:
+            return
+        self._events += 1
+        self._total_samples += length
+        if length <= 2:
+            self._short_events += 1
+        else:
+            self._clip_runs += 1
+        if length > self._max_streak:
+            self._max_streak = length
+
+    def _close_channel_open(self, ch):
+        prev = self._open[ch]
+        if prev:
+            self._close_run_len(prev)
+            self._open[ch] = 0
+
+    def flush_zeros(self):
+        """Closes every currently open channel run (used on sub-threshold blocks)."""
+        for ch, prev in enumerate(self._open):
+            if prev:
+                self._close_run_len(prev)
+                self._open[ch] = 0
+
+    def _record_channel(self, ch, en_1d):
+        n = en_1d.shape[0]
+        if n == 0:
+            return
+        if not en_1d.any():
+            self._close_channel_open(ch)
+            return
+        prev = self._open[ch]
+        if en_1d.all():
+            self._open[ch] = prev + n
+            return
+        flags = np.asarray(en_1d, dtype=np.int8)
+        padded = np.empty(n + 2, dtype=np.int8)
+        padded[0] = 0
+        padded[-1] = 0
+        padded[1:-1] = flags
+        diff = np.diff(padded)
+        starts = np.flatnonzero(diff == 1)
+        lengths = np.flatnonzero(diff == -1) - starts
+        if prev:
+            if starts[0] == 0:
+                lengths[0] += prev
+            else:
+                self._close_run_len(prev)
+        if flags[-1]:
+            self._open[ch] = int(lengths[-1])
+            closed = lengths[:-1]
+        else:
+            self._open[ch] = 0
+            closed = lengths
+        if closed.size:
+            self._events += int(closed.size)
+            n_short = int(np.count_nonzero(closed <= 2))
+            self._short_events += n_short
+            self._clip_runs += int(closed.size) - n_short
+            self._total_samples += int(closed.sum())
+            blk_max = int(closed.max())
+            if blk_max > self._max_streak:
+                self._max_streak = blk_max
+
+    def add_float_block(self, block, threshold=0.9999):
+        arr = np.asarray(block)
+        if arr.size == 0:
+            return
+        thr = float(threshold)
+        if arr.ndim <= 1:
+            self._ensure_channels(1)
+            if float(np.max(arr)) < thr and float(np.min(arr)) > -thr:
+                self._close_channel_open(0)
+                return
+            self._record_channel(0, (arr >= thr) | (arr <= -thr))
+            return
+        n_ch = arr.shape[1]
+        self._ensure_channels(n_ch)
+        for ch in range(n_ch):
+            col = arr[:, ch]
+            if float(np.max(col)) < thr and float(np.min(col)) > -thr:
+                self._close_channel_open(ch)
+            else:
+                self._record_channel(ch, (col >= thr) | (col <= -thr))
+
+    def add_int16_block(self, block_i16, threshold=32765):
+        if block_i16.size == 0:
+            return
+        thr = int(threshold)
+        if block_i16.ndim <= 1:
+            self._ensure_channels(1)
+            self._record_channel(0, (block_i16 >= thr) | (block_i16 <= -thr))
+            return
+        n_ch = block_i16.shape[1]
+        self._ensure_channels(n_ch)
+        for ch in range(n_ch):
+            col = block_i16[:, ch]
+            if int(np.max(col)) < thr and int(np.min(col)) > -thr:
+                self._close_channel_open(ch)
+            else:
+                self._record_channel(ch, (col >= thr) | (col <= -thr))
+
+    def add_abs_int_block(self, abs_q, threshold=8387770):
+        if abs_q.size == 0:
+            return
+        thr = int(threshold)
+        if abs_q.ndim <= 1:
+            self._ensure_channels(1)
+            self._record_channel(0, abs_q >= thr)
+            return
+        n_ch = abs_q.shape[1]
+        self._ensure_channels(n_ch)
+        for ch in range(n_ch):
+            col = abs_q[:, ch]
+            if int(np.max(col)) < thr:
+                self._close_channel_open(ch)
+            else:
+                self._record_channel(ch, col >= thr)
+
+    def snapshot(self):
+        """Non-mutating summary (events, short_events, total_samples, max_streak, clip_runs)."""
+        events = self._events
+        short_events = self._short_events
+        total_samples = self._total_samples
+        max_streak = self._max_streak
+        clip_runs = self._clip_runs
+        for open_len in self._open:
+            if open_len > 0:
+                events += 1
+                total_samples += open_len
+                if open_len <= 2:
+                    short_events += 1
+                else:
+                    clip_runs += 1
+                if open_len > max_streak:
+                    max_streak = open_len
+        return events, short_events, total_samples, max_streak, clip_runs
+
+    def clip_dict(self):
+        _, _, _, _, clip_runs = self.snapshot()
+        return {"runs_clip": clip_runs, "hay_clipping": clip_runs > 0}
+
+    def classify(self, ceiling_hz=None, frequency_cutoff=None, nyquist=None):
+        return _classify_from_clip_stats(
+            self.snapshot(),
+            ceiling_hz=ceiling_hz,
+            frequency_cutoff=frequency_cutoff,
+            nyquist=nyquist,
+        )
+
+
+def _classify_from_clip_stats(stats, ceiling_hz=None, frequency_cutoff=None,
+                              nyquist=None):
+    """Vector 6 classification from (events, short_events, total_samples, max_streak, clip_runs)."""
+    events, short_events, total_samples, max_streak, _ = stats
     if not events:
         return {
             "clipping_eventos": 0,
@@ -456,17 +618,16 @@ def _classify_streaks(run_lengths, ceiling_hz=None, frequency_cutoff=None, nyqui
             "clipping_reconstruccion_lossy": False,
             "clipping_mastering_limitador": False,
         }
-    short = sum(1 for long in lengths if long <= 2)
-    fraction = short / float(events)
-    mean = sum(lengths) / float(events)
+    fraction = short_events / float(events)
+    mean = total_samples / float(events)
     cutoff_effective = (frequency_cutoff if frequency_cutoff is not None
-                      else ceiling_hz)
+                        else ceiling_hz)
     # Lossy reconstruction needs a pattern, not a few isolated events: a vinyl
     # rip with three clicks and a 19 kHz ceiling used to be accused of Gibbs
     # overshoot. At least 10 events, 8 of them short, are required.
     lossy = bool(
         events >= 10
-        and short >= 8
+        and short_events >= 8
         and fraction > 0.75
         and cutoff_effective is not None
         and cutoff_effective < 20500.0
@@ -477,26 +638,73 @@ def _classify_streaks(run_lengths, ceiling_hz=None, frequency_cutoff=None, nyqui
         "clipping_eventos":            events,
         "clipping_fraccion_cortos":    round(fraction, 4),
         "clipping_longitud_media":     round(mean, 2),
-        "clipping_racha_maxima":       max(lengths),
+        "clipping_racha_maxima":       max_streak,
         "clipping_reconstruccion_lossy": lossy,
         "clipping_mastering_limitador":  master,
     }
 
+
+def detect_clipping(data):
+    """Real clipping = 3+ CONSECUTIVE samples at the top (>= 0.9999) on a single
+    channel. A clipping run is counted once; isolated inter-sample peaks are not
+    clipping."""
+    try:
+        arr = np.asarray(data)
+        if arr.size == 0:
+            return {"runs_clip": 0, "hay_clipping": False}
+        n_ch = arr.shape[1] if arr.ndim > 1 else 1
+        acc = _ClippingAccumulator(n_ch)
+        acc.add_float_block(arr)
+        return acc.clip_dict()
+    except (ValueError, TypeError) as e:
+        print(f"[clipping] {e}")
+        return None
+
+
+def _classify_streaks(run_lengths, ceiling_hz=None, frequency_cutoff=None, nyquist=None):
+    """Vector 6 classification from explicit run lengths."""
+    lengths = [int(l) for l in run_lengths if int(l) > 0]
+    if not lengths:
+        return _classify_from_clip_stats((0, 0, 0, 0, 0), ceiling_hz, frequency_cutoff, nyquist)
+    events = len(lengths)
+    short = sum(1 for l in lengths if l <= 2)
+    total_samples = sum(lengths)
+    max_streak = max(lengths)
+    clip_runs = events - short
+    return _classify_from_clip_stats(
+        (events, short, total_samples, max_streak, clip_runs),
+        ceiling_hz=ceiling_hz,
+        frequency_cutoff=frequency_cutoff,
+        nyquist=nyquist,
+    )
+
+
 def _classify_clipping_nature(samples_int, max_val_integer,
-                                    ceiling_hz=None, frequency_cutoff=None,
-                                    nyquist=None):
+                              ceiling_hz=None, frequency_cutoff=None,
+                              nyquist=None):
     """Vector 6 from native integer samples (array/direct API path).
 
     `max_val_integer` is the positive full-scale integer (32767 for 16 bits,
     8388607 for 24 bits). Spectral arguments are optional: without them only the
     run statistics are produced, because both classifications need the spectrum."""
     try:
-        samples = np.asarray(samples_int).reshape(-1)
-        en_clip = np.abs(samples) >= int(max_val_integer)
-        streaks, opened = _streaks(en_clip)
-        if opened:
-            streaks.append(opened)
-        return _classify_streaks(streaks, ceiling_hz, frequency_cutoff, nyquist)
+        arr = np.asarray(samples_int)
+        if arr.size == 0:
+            return _classify_from_clip_stats(
+                (0, 0, 0, 0, 0), ceiling_hz, frequency_cutoff, nyquist
+            )
+        thr = int(max_val_integer)
+        n_ch = arr.shape[1] if arr.ndim > 1 else 1
+        acc = _ClippingAccumulator(n_ch)
+        if arr.ndim <= 1:
+            acc._record_channel(0, (arr >= thr) | (arr <= -thr))
+        else:
+            for ch in range(n_ch):
+                col = arr[:, ch]
+                acc._record_channel(ch, (col >= thr) | (col <= -thr))
+        return acc.classify(ceiling_hz=ceiling_hz,
+                            frequency_cutoff=frequency_cutoff,
+                            nyquist=nyquist)
     except Exception as e:
         return {"clipping_eventos": 0, "error": str(e)}
 

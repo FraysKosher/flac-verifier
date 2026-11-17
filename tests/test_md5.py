@@ -91,5 +91,58 @@ class TestMD5(unittest.TestCase):
         self.assertIsNone(engine._md5_pcm([[0.0]], 12))
 
 
+class TestShortCircuitOnSilenceAndBadChecksum(unittest.TestCase):
+    """Regressions for v2.10.1 short-circuit before STFT/PNG on invalid files."""
+
+    def test_silence_and_bad_checksum_skip_stft_and_png(self):
+        import os
+        import tempfile
+        from unittest import mock
+        import numpy as np
+        import soundfile as sf
+        import motor_flac as engine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache")
+            silent_path = os.path.join(tmpdir, "silent.flac")
+            sf.write(silent_path, np.zeros((16384, 2), dtype=np.float64),
+                     44100, subtype="PCM_16")
+
+            tone_path = os.path.join(tmpdir, "bad_md5.flac")
+            t = np.arange(16384, dtype=np.float64) / 44100.0
+            sig = np.column_stack([0.2 * np.sin(2 * np.pi * 1000.0 * t)] * 2)
+            sf.write(tone_path, sig, 44100, subtype="PCM_16")
+
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                with mock.patch.object(
+                    engine._BlockAnalysis, "_spectral_result"
+                ) as spec_res:
+                    res_silent = engine.analyze_file_data(
+                        silent_path, "full", None, save_png=True, use_cache=False
+                    )
+                    spec_res.assert_not_called()
+                    self.assertIn("digital silence", res_silent.get("error", ""))
+
+                    meta_bad = engine.verify_metadata(tone_path)
+                    meta_bad["md5"] = meta_bad["md5"] ^ 1
+                    res_md5 = engine.analyze_file_data(
+                        tone_path, "full", None, save_png=True,
+                        use_cache=False, _pre_meta=meta_bad,
+                    )
+                    spec_res.assert_not_called()
+                    self.assertIn("MD5 does not match", res_md5.get("error", ""))
+
+                # Neither short-circuited track should leave orphan PNGs in cache.
+                orphan_pngs = [
+                    name
+                    for _, _, fnames in os.walk(isolated_cache)
+                    for name in fnames
+                    if name.lower().endswith(".png")
+                ]
+                self.assertEqual(orphan_pngs, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

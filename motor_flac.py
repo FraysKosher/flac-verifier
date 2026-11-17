@@ -47,7 +47,7 @@ from _motor_bits import (
     IO_RETRY_DELAYS, _is_transient_io_error, retry_io,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
     _normalize_path_fs, _Int24Packer, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
-    _StreamingBitDepthAccumulator,
+    _StreamingBitDepthAccumulator, _ClippingAccumulator,
     analyze_bit_depth, _streaks, detect_clipping, _classify_streaks,
     _classify_clipping_nature, _dr_from_rms, calculate_dr,
     ForensicBitsAccumulator, _analyze_forensic_bits,
@@ -73,8 +73,8 @@ from _motor_veredicto import (
     apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (
-    PNG_FOLDER_NAME, CACHE_ENV_VAR, cache_root, _album_bucket_hash,
-    CacheLookupStatus, _png_folder, _cache_path, _identity,
+    PNG_FOLDER_NAME, PNG_MAGIC, CACHE_ENV_VAR, cache_root, _album_bucket_hash,
+    CacheLookupStatus, _png_folder, _png_path, _cache_path, _identity,
     _analysis_key, _replace_with_retries, _sanitize,
     read_cache_entry as _cache_read_entry,
     read_cache as _cache_read, write_cache as _cache_write,
@@ -86,7 +86,13 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.5"
+ENGINE_VERSION = "14.6"
+# 14.6: Handle >=3-channel FLACs without discarding Centre/Surround channels,
+#       add anti-phase (L = -R) fallback and a zero-energy spectral guard, track
+#       clipping runs per channel in bounded O(channels) memory, scope PNG
+#       spectrogram filenames by mode with atomic writes and PNG magic checks,
+#       harden malformed cache JSON / stale paths / mid-stream 32-bit fallback,
+#       and short-circuit spectral/PNG work on digital silence or MD5 mismatch.
 # 14.5: Exempt genuine high-headroom 24-bit <= 48 kHz studio masters from Rule 5
 #       ("not backed by the content") when smooth acoustic/band-limited decay is
 #       backed by clean active 24-bit LSBs, zero lossy signatures, and a
@@ -251,7 +257,7 @@ ENGINE_VERSION = "14.5"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.4.0"
+CACHE_SCHEMA_VERSION = "2.5.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 
@@ -330,12 +336,14 @@ def _rgb_to_image(rgb):
     return Image.fromarray(rgb, mode="RGB")
 
 def _save_spectrogram(freqs, times, mix, samplerate, audio_path,
-                          ceiling_hz, frequency_cutoff):
+                          ceiling_hz, frequency_cutoff,
+                          mode="full", seconds=None):
     """Facade seam: the tests inject renderer failures through `motor.Image`."""
     if Image is None:
         return None, "Image renderer is not available"
     return _spectrogram_save(freqs, times, mix, samplerate, audio_path,
-                                      ceiling_hz, frequency_cutoff)
+                             ceiling_hz, frequency_cutoff,
+                             mode=mode, seconds=seconds)
 
 def read_cache_entry(path, meta, mode, seconds, requires_png):
     """Facade wrapper returning (CacheLookupStatus, cached_result_or_None)."""
@@ -377,6 +385,7 @@ def verify_metadata(path):
             "bits_per_sample":  info.bits_per_sample,
             "canales":          info.channels,
             "duracion":         round(info.length, 2),
+            "total_samples":    int(getattr(info, "total_samples", 0) or 0),
             "md5":              getattr(info, "md5_signature", None),
         }
     except FLACNoHeaderError:
@@ -567,12 +576,23 @@ def _read_sf_block_with_retry(
         raise last_exc
 
 
+def _declared_total_samples(path, meta):
+    """Returns declared STREAMINFO sample count if known, else 0."""
+    declared = int((meta or {}).get("total_samples") or 0)
+    if declared > 0:
+        return declared
+    try:
+        return int(getattr(FLAC(_normalize_path_fs(path)).info, "total_samples", 0) or 0)
+    except Exception:
+        return 0
+
+
 def _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
     """Generator of blocks: it never loads the whole track into memory."""
     norm_path = _normalize_path_fs(path)
+    offset = 0
     try:
         f = retry_io(lambda: sf.SoundFile(norm_path))
-        offset = 0
         try:
             while True:
                 f, block = _read_sf_block_with_retry(
@@ -591,6 +611,8 @@ def _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
             except Exception:
                 pass
     except Exception:
+        if offset > 0:
+            raise
         meta = verify_metadata(path)
         if meta.get("valido") and meta.get("bits_per_sample") == 32:
             yield from _iter_blocks_s32_flac(path, meta=meta,
@@ -641,10 +663,9 @@ class _BlockAnalysis:
         self._abs_i32_buf = None
 
         # clipping + global peak
-        self._clip_runs   = 0
-        self._clip_opened = 0
-        self._clip_lengths = []      # Vector 6: all run lengths, including 1-2
-        self._peak        = 0.0
+        n_ch = int(meta.get("canales") or 2)
+        self._clip_acc = _ClippingAccumulator(n_ch)
+        self._peak     = 0.0
 
         # dynamic range (3 s blocks, carrying the incomplete block over)
         self._dr_block   = self.sr * 3
@@ -722,15 +743,9 @@ class _BlockAnalysis:
             if peak > self._peak:
                 self._peak = peak
         if peak < 0.9999:
-            if self._clip_opened:
-                self._clip_lengths.append(self._clip_opened)
-                if self._clip_opened >= 3:
-                    self._clip_runs += 1
-                self._clip_opened = 0
+            self._clip_acc.flush_zeros()
             return
-        streaks, self._clip_opened = _streaks(amp >= 0.9999, self._clip_opened)
-        self._clip_lengths.extend(streaks)
-        self._clip_runs += sum(1 for long in streaks if long >= 3)
+        self._clip_acc.add_float_block(block)
 
     def add_int16(self, block_i16, offset):
         """Streaming path for native little-endian int16 PCM blocks."""
@@ -757,22 +772,9 @@ class _BlockAnalysis:
             mono = block_i16.mean(axis=1, dtype=np.float64) * (1.0 / 32768.0)
         # |sample| / 32768.0 >= 0.9999 iff |sample| >= 32765.
         if max_abs < 32765:
-            if self._clip_opened:
-                self._clip_lengths.append(self._clip_opened)
-                if self._clip_opened >= 3:
-                    self._clip_runs += 1
-                self._clip_opened = 0
+            self._clip_acc.flush_zeros()
         else:
-            en_clip_ch = (block_i16 >= 32765) | (block_i16 <= -32765)
-            if n_ch == 2:
-                en_clip = en_clip_ch[:, 0] | en_clip_ch[:, 1]
-            elif n_ch == 1:
-                en_clip = en_clip_ch[:, 0]
-            else:
-                en_clip = np.any(en_clip_ch, axis=1)
-            streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
-            self._clip_lengths.extend(streaks)
-            self._clip_runs += sum(1 for long in streaks if long >= 3)
+            self._clip_acc.add_int16_block(block_i16, threshold=32765)
         self._dynamic_range_from_mono(mono)
         self._spectrum_acc.add(block_i16, offset, mono=mono, int_scale=1.0 / 32768.0)
 
@@ -802,21 +804,9 @@ class _BlockAnalysis:
             mono = q_i32.mean(axis=1, dtype=np.float64) * (1.0 / 8388608.0)
         # |sample| / 8388608.0 >= 0.9999 iff |sample| >= 8387770.
         if max_abs < 8387770:
-            if self._clip_opened:
-                self._clip_lengths.append(self._clip_opened)
-                if self._clip_opened >= 3:
-                    self._clip_runs += 1
-                self._clip_opened = 0
+            self._clip_acc.flush_zeros()
         else:
-            if n_ch == 2:
-                en_clip = (abs_view[:, 0] >= 8387770) | (abs_view[:, 1] >= 8387770)
-            elif n_ch == 1:
-                en_clip = abs_view[:, 0] >= 8387770
-            else:
-                en_clip = np.any(abs_view >= 8387770, axis=1)
-            streaks, self._clip_opened = _streaks(en_clip, self._clip_opened)
-            self._clip_lengths.extend(streaks)
-            self._clip_runs += sum(1 for long in streaks if long >= 3)
+            self._clip_acc.add_abs_int_block(abs_view, threshold=8387770)
         self._dynamic_range_from_mono(mono)
         self._bdi_acc.add_block(offset, q_int=q_i32, abs_q=abs_view)
         if self._forensic_bits is not None:
@@ -860,22 +850,45 @@ class _BlockAnalysis:
     def result(self):
         if self._cached_result is not None:
             return dict(self._cached_result)
-        closed_lengths = (
-            self._clip_lengths + [self._clip_opened]
-            if self._clip_opened
-            else list(self._clip_lengths)
-        )
-        closed_runs = self._clip_runs + (1 if self._clip_opened >= 3 else 0)
-        output = {
-            "pico": self._peak,
-            "md5":  _compare_md5(self._md5.hexdigest() if self._md5 else None, self.meta),
-            "clip": {"runs_clip": closed_runs, "hay_clipping": closed_runs > 0},
-        }
+        md5_out = _compare_md5(self._md5.hexdigest() if self._md5 else None, self.meta)
+        clip_out = self._clip_acc.clip_dict()
         if self._dr_block and self._dr_sumsq:
             rms = np.sqrt(np.asarray(self._dr_sumsq, dtype=np.float64) / self._dr_block)
-            output["dr"] = _dr_from_rms(rms, self._dr_peak, len(self._dr_sumsq))
+            dr_out = _dr_from_rms(rms, self._dr_peak, len(self._dr_sumsq))
         else:
-            output["dr"] = None
+            dr_out = None
+        silence_floor = 1.0 / float(1 << max(0, self.bits - 1))
+        if self._peak < silence_floor:
+            output = {
+                "pico": self._peak,
+                "md5": md5_out,
+                "clip": clip_out,
+                "dr": dr_out,
+                "bdi": {"aplica": False},
+                "esp": {"error": "digital silence: insufficient signal energy"},
+            }
+            self._state = AccumulatorState.COMPLETED
+            self._cached_result = dict(output)
+            return output
+        if md5_out.get("estado") == "mismatch":
+            output = {
+                "pico": self._peak,
+                "md5": md5_out,
+                "clip": clip_out,
+                "dr": dr_out,
+                "bdi": {"aplica": False},
+                "esp": {"error": "STREAMINFO MD5 mismatch"},
+            }
+            self._state = AccumulatorState.COMPLETED
+            self._cached_result = dict(output)
+            return output
+
+        output = {
+            "pico": self._peak,
+            "md5": md5_out,
+            "clip": clip_out,
+            "dr": dr_out,
+        }
 
         bdi = self._bdi_acc.result()
         if self._forensic_bits is not None:
@@ -885,21 +898,21 @@ class _BlockAnalysis:
             # matches the array path so both give identical results.
             bdi["forense_bits"] = {"aplica": False}
         output["bdi"] = bdi
-        output["esp"] = self._spectral_result(closed_lengths)
+        output["esp"] = self._spectral_result()
         self._state = AccumulatorState.COMPLETED
         self._cached_result = dict(output)
         return output
 
-    def _spectral_result(self, clip_lengths=None):
+    def _spectral_result(self):
         spectrum = self._spectrum_acc.result()
         if not spectrum.get("error"):
             # Vector 6: the nature of the clipping needs the spectrum (cut-off
             # below 20.5 kHz or content up to Nyquist).
-            lengths = self._clip_lengths if clip_lengths is None else clip_lengths
-            spectrum.update(_classify_streaks(lengths,
-                                          spectrum.get("techo_hz"),
-                                          spectrum.get("frecuencia_corte"),
-                                          self.sr // 2))
+            spectrum.update(self._clip_acc.classify(
+                ceiling_hz=spectrum.get("techo_hz"),
+                frequency_cutoff=spectrum.get("frecuencia_corte"),
+                nyquist=self.sr // 2,
+            ))
         return spectrum
 
 def _analyze_streaming(path, meta, mode, seconds, save_png):
@@ -959,10 +972,7 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
         if meta.get("bits_per_sample") != 32:
             raise
         sr = int(meta["sample_rate"])
-        try:
-            total = int(getattr(FLAC(_normalize_path_fs(path)).info, "total_samples", 0) or 0)
-        except Exception:
-            total = 0
+        total = _declared_total_samples(path, meta)
         accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
                                          save_png, path)
         offset = 0
@@ -1071,11 +1081,16 @@ def _plan_batch_cache_with_meta(files, mode, seconds, save_png, use_cache=True,
                 )
                 if status is CacheLookupStatus.FULL_HIT and entry is not None:
                     entry = dict(entry)
+                    entry["ruta"] = path
+                    entry["archivo"] = os.path.basename(path)
                     entry["desde_cache"] = True
                     cached = entry
                 elif (status is CacheLookupStatus.METRICS_HIT_NEEDS_PNG
                       and entry is not None):
-                    cached = dict(entry)
+                    entry = dict(entry)
+                    entry["ruta"] = path
+                    entry["archivo"] = os.path.basename(path)
+                    cached = entry
         plan.append((index, path, status, cached, pre_meta))
     return plan
 
@@ -1231,21 +1246,43 @@ def _hydrate_cached_png(path, meta, mode, seconds, cached, save_png=True):
     """Regenerates only the missing spectrogram PNG while reusing all cached
     forensic metrics, score, verdict and evidence."""
     result = dict(cached)
+    result["ruta"] = path
+    result["archivo"] = os.path.basename(path)
     spectrum = dict(result.get("esp") or {})
     result["esp"] = spectrum
     if bool(save_png) and PIL_OK and bool(path):
         sr = int(meta["sample_rate"])
         is_stereo = meta.get("canales", 0) >= 2 if meta.get("canales") else None
-        acc = _SpectralAccumulator(
-            sr, is_stereo, save_png=True, path=path,
-            renderer=_save_spectrogram, mode=mode, seconds=seconds
-        )
+        expected_total = _declared_total_samples(path, meta)
+
+        def _make_acc():
+            return _SpectralAccumulator(
+                sr, is_stereo, save_png=True, path=path,
+                renderer=_save_spectrogram, mode=mode, seconds=seconds
+            )
+
+        acc = _make_acc()
         offset = 0
-        for block in _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
-            if block.shape[0] == 0:
-                continue
-            acc.add(block, offset)
-            offset += block.shape[0]
+        try:
+            for block in _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
+                if block.shape[0] == 0:
+                    continue
+                acc.add(block, offset)
+                offset += block.shape[0]
+        except Exception:
+            if offset == 0 and meta.get("bits_per_sample") == 32:
+                acc = _make_acc()
+                offset = 0
+                for block in _iter_blocks_s32_flac(path, meta=meta,
+                                                   frames_by_block=FRAMES_BY_BLOCK):
+                    if block.shape[0] == 0:
+                        continue
+                    acc.add(block, offset)
+                    offset += block.shape[0]
+            else:
+                raise
+        if expected_total and offset != expected_total:
+            raise ValueError(f"decoded {offset} of the {expected_total} declared samples")
         spectrum.update(acc.render_png_only(
             ceiling_hz=spectrum.get("techo_hz"),
             cutoff_hz=spectrum.get("frecuencia_corte"),
@@ -1290,12 +1327,20 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
                 path, meta, mode, seconds, requires_png=save_png
             )
             if status is CacheLookupStatus.FULL_HIT and cached is not None:
+                cached["ruta"] = path
+                cached["archivo"] = os.path.basename(path)
                 cached["desde_cache"] = True
                 return cached
             if status is CacheLookupStatus.METRICS_HIT_NEEDS_PNG and cached is not None:
-                return _hydrate_cached_png(
-                    path, meta, mode, seconds, cached, save_png=save_png
-                )
+                try:
+                    return _hydrate_cached_png(
+                        path, meta, mode, seconds, cached, save_png=save_png
+                    )
+                except Exception as e:
+                    result["error"] = (
+                        f"Could not decode the audio ({type(e).__name__}: {e})"
+                    )
+                    return result
 
         # A single pass, memory bounded per block (Block 6). A decoding failure
         # here is a truncated or corrupt file.

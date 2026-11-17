@@ -707,7 +707,7 @@ class TestCentralizedCacheIsolation(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(album_dir, "_spectrograms")))
 
     def test_schema_version_invalidation(self):
-        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.4.0")
+        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.5.0")
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "schema_probe.flac")
             shutil.copy(self.fx["ok16"], path)
@@ -720,6 +720,179 @@ class TestCentralizedCacheIsolation(unittest.TestCase):
             finally:
                 engine.CACHE_SCHEMA_VERSION = original_schema
             self.assertFalse(second_result.get("desde_cache"))
+
+
+class TestCacheHardeningAndStreams(unittest.TestCase):
+    """Regressions for v2.10.1 malformed cache JSON, PNG scoping & stream safety."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = fx.Fixtures()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_malformed_json_roots_and_nested_types_degrade_to_miss(self):
+        from _motor_cache import CacheLookupStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache")
+            flac_path = os.path.join(tmpdir, "ok.flac")
+            shutil.copy(self.fx["ok16"], flac_path)
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                base = engine.analyze_file_data(flac_path, "center", None, False, use_cache=True)
+                self.assertEqual(base["veredicto"], "GENUINE LOSSLESS")
+                cache_file = engine._cache_path(flac_path, "center", None)
+                meta = engine.verify_metadata(flac_path)
+                with open(cache_file, encoding="utf-8") as fh:
+                    valid_payload = json.load(fh)
+
+                bad_payloads = [
+                    "[]",
+                    "null",
+                    "123",
+                    '"broken"',
+                    "{not json",
+                    json.dumps({**valid_payload, "identidad": 42}),
+                    json.dumps({**valid_payload, "clave": "not-a-dict"}),
+                    json.dumps({**valid_payload, "resultado": ["not", "a", "dict"]}),
+                    json.dumps({
+                        **valid_payload,
+                        "resultado": {**valid_payload["resultado"], "esp": []},
+                    }),
+                    json.dumps({
+                        **valid_payload,
+                        "resultado": {**valid_payload["resultado"], "problemas": "str"},
+                    }),
+                ]
+                for raw in bad_payloads:
+                    with self.subTest(raw=raw[:40]):
+                        with open(cache_file, "w", encoding="utf-8") as fh:
+                            fh.write(raw)
+                        status, entry = engine.read_cache_entry(
+                            flac_path, meta, "center", None, requires_png=False
+                        )
+                        self.assertIs(status, CacheLookupStatus.MISS)
+                        self.assertIsNone(entry)
+                        plan = engine.plan_batch_cache(
+                            [flac_path], "center", None, save_png=False, use_cache=True
+                        )
+                        self.assertIs(plan[0][2], CacheLookupStatus.MISS)
+
+    @unittest.skipUnless(engine.PIL_OK, "Pillow not installed")
+    def test_mode_scoped_png_atomic_write_and_magic_validation(self):
+        from _motor_cache import CacheLookupStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache")
+            flac_path = os.path.join(tmpdir, "track.flac")
+            shutil.copy(self.fx["ok16"], flac_path)
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                r_full = engine.analyze_file_data(flac_path, "full", None, True, use_cache=True)
+                r_sec = engine.analyze_file_data(flac_path, "seconds", 1, True, use_cache=True)
+                r_center = engine.analyze_file_data(flac_path, "center", None, True, use_cache=True)
+                p_full = r_full["esp"]["espectrograma"]
+                p_sec = r_sec["esp"]["espectrograma"]
+                p_center = r_center["esp"]["espectrograma"]
+
+                self.assertEqual(len({p_full, p_sec, p_center}), 3)
+                for p_png in (p_full, p_sec, p_center):
+                    self.assertTrue(os.path.isfile(p_png))
+                    with open(p_png, "rb") as fh:
+                        self.assertEqual(fh.read(8), engine.PNG_MAGIC)
+                    self.assertFalse(
+                        any(f.endswith(".tmp") for f in os.listdir(os.path.dirname(p_png)))
+                    )
+
+                # Corrupt PNG header -> METRICS_HIT_NEEDS_PNG triggers clean regeneration.
+                with open(p_full, "wb") as fh:
+                    fh.write(b"NOT_A_PNG_FILE_12345")
+                meta = engine.verify_metadata(flac_path)
+                status, _ = engine.read_cache_entry(
+                    flac_path, meta, "full", None, requires_png=True
+                )
+                self.assertIs(status, CacheLookupStatus.METRICS_HIT_NEEDS_PNG)
+                regen = engine.analyze_file_data(flac_path, "full", None, True, use_cache=True)
+                self.assertFalse(regen.get("desde_cache"))
+                with open(regen["esp"]["espectrograma"], "rb") as fh:
+                    self.assertEqual(fh.read(8), engine.PNG_MAGIC)
+
+    def test_cache_hits_refresh_caller_path_across_relative_invocations(self):
+        from _motor_cache import CacheLookupStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache")
+            album = os.path.join(tmpdir, "Album")
+            sub = os.path.join(album, "sub")
+            os.makedirs(sub)
+            flac_abs = os.path.join(album, "song.flac")
+            shutil.copy(self.fx["ok16"], flac_abs)
+
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                engine.analyze_file_data(flac_abs, "center", None, False, use_cache=True)
+                rel_path = os.path.join(".", "song.flac")
+                prev_cwd = os.getcwd()
+                try:
+                    os.chdir(album)
+                    meta = engine.verify_metadata(rel_path)
+                    st_hit, entry_hit = engine.read_cache_entry(
+                        rel_path, meta, "center", None, requires_png=False
+                    )
+                    self.assertIs(st_hit, CacheLookupStatus.FULL_HIT)
+                    self.assertEqual(entry_hit["ruta"], rel_path)
+                    self.assertEqual(entry_hit["archivo"], "song.flac")
+
+                    res_hit = engine.analyze_file_data(
+                        rel_path, "center", None, False, use_cache=True
+                    )
+                    self.assertTrue(res_hit.get("desde_cache"))
+                    self.assertEqual(res_hit["ruta"], rel_path)
+                finally:
+                    os.chdir(prev_cwd)
+
+    def test_midstream_read_error_and_truncated_hydration_fail_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            isolated_cache = os.path.join(tmpdir, "cache")
+            flac_path = os.path.join(tmpdir, "truncated_hydrate.flac")
+            shutil.copy(self.fx["ok24"], flac_path)
+
+            class _MidFailSF:
+                def __init__(self, _path):
+                    self.calls = 0
+
+                def read(self, frames, dtype="float64", always_2d=True):
+                    self.calls += 1
+                    if self.calls == 1:
+                        return np.zeros((1024, 2), dtype=np.float64)
+                    raise RuntimeError("midstream decode error")
+
+                def close(self):
+                    pass
+
+            with mock.patch.object(engine.sf, "SoundFile", side_effect=_MidFailSF):
+                with mock.patch.object(engine, "_iter_blocks_s32_flac") as s32_mock:
+                    with self.assertRaises(RuntimeError):
+                        list(engine._read_blocks(flac_path))
+                    s32_mock.assert_not_called()
+
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                first = engine.analyze_file_data(flac_path, "center", None, False, use_cache=True)
+                self.assertEqual(first["veredicto"], "GENUINE LOSSLESS")
+                with mock.patch.object(
+                    engine, "_read_blocks",
+                    return_value=iter([np.zeros((512, 2), dtype=np.float64)]),
+                ):
+                    bad = engine.analyze_file_data(flac_path, "center", None, True, use_cache=True)
+                self.assertIn("Could not decode the audio", bad.get("error", ""))
 
 
 if __name__ == "__main__":

@@ -68,8 +68,35 @@ def _album_bucket_hash(audio_path: str) -> str:
     ).hexdigest()[:16]
 
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
 def _png_folder(audio_path):
     return os.path.join(cache_root(), _album_bucket_hash(audio_path))
+
+
+def _png_path(audio_path, mode="full", seconds=None):
+    """Mode-scoped spectrogram PNG path so partial modes do not overwrite full PNGs."""
+    name = os.path.splitext(os.path.basename(audio_path))[0]
+    mode_norm = mode or "full"
+    sec_tag = f"{seconds}" if seconds not in (None, "") else ""
+    if mode_norm == "full" and not sec_tag:
+        filename = f"{name}_espectrograma.png"
+    else:
+        filename = f"{name}.{mode_norm}{sec_tag}_espectrograma.png"
+    return os.path.join(_png_folder(audio_path), filename)
+
+
+def _is_valid_png_file(png_path):
+    """True iff `png_path` exists, exceeds the 8-byte signature and starts with PNG_MAGIC."""
+    try:
+        norm_path = _normalize_path_fs(png_path)
+        if os.path.getsize(norm_path) <= len(PNG_MAGIC):
+            return False
+        with open(norm_path, "rb") as f:
+            return f.read(len(PNG_MAGIC)) == PNG_MAGIC
+    except OSError:
+        return False
 
 
 def _cache_path(audio_path, mode, seconds):
@@ -100,39 +127,58 @@ def read_cache_entry(path, meta, mode, seconds, requires_png, version, schema,
         with open(_normalize_path_fs(_cache_path(path, mode, seconds)),
                   encoding="utf-8") as f:
             cached_entry = json.load(f)
-    except (OSError, ValueError):
-        return CacheLookupStatus.MISS, None
+        if not isinstance(cached_entry, dict):
+            return CacheLookupStatus.MISS, None
 
-    if cached_entry.get("identidad") != _identity(path, meta):
-        return CacheLookupStatus.MISS, None
-    if cached_entry.get("clave") != _analysis_key(mode, seconds, version, schema):
-        return CacheLookupStatus.MISS, None
-    result = cached_entry.get("resultado")
-    if not isinstance(result, dict):
-        return CacheLookupStatus.MISS, None
+        ident = cached_entry.get("identidad")
+        key_entry = cached_entry.get("clave")
+        expected_ident = _identity(path, meta)
+        if (not isinstance(ident, dict) or expected_ident is None
+                or ident != expected_ident):
+            return CacheLookupStatus.MISS, None
+        if (not isinstance(key_entry, dict)
+                or key_entry != _analysis_key(mode, seconds, version, schema)):
+            return CacheLookupStatus.MISS, None
 
-    if requires_png:
-        # The PNG must exist and match the current parameters.
-        png_path = (result.get("esp") or {}).get("espectrograma")
-        if (cached_entry.get("render") == render and png_path
-                and os.path.exists(png_path) and os.path.getsize(png_path) > 0):
-            return CacheLookupStatus.FULL_HIT, result
+        result = cached_entry.get("resultado")
+        if not isinstance(result, dict):
+            return CacheLookupStatus.MISS, None
         spectrum = result.get("esp")
-        if isinstance(spectrum, dict) and spectrum.get("error") is None:
-            copy = dict(result)
-            copy["esp"] = dict(spectrum)
-            copy["esp"]["espectrograma"] = None
-            copy["esp"].pop("espectrograma_error", None)
-            return CacheLookupStatus.METRICS_HIT_NEEDS_PNG, copy
-        return CacheLookupStatus.MISS, None
+        if not isinstance(spectrum, dict):
+            return CacheLookupStatus.MISS, None
+        for nested_key in ("clip", "bdi", "md5", "meta"):
+            nested_val = result.get(nested_key)
+            if nested_val is not None and not isinstance(nested_val, dict):
+                return CacheLookupStatus.MISS, None
+        for list_key in ("problemas", "notas"):
+            if list_key in result and not isinstance(result.get(list_key), list):
+                return CacheLookupStatus.MISS, None
 
-    # No PNG was requested: the caller must not see a path that this run has not
-    # generated (the cache entry does keep it for next time).
-    copy = dict(result)
-    copy["esp"] = dict(result.get("esp") or {})
-    copy["esp"]["espectrograma"] = None
-    copy["esp"].pop("espectrograma_error", None)
-    return CacheLookupStatus.FULL_HIT, copy
+        fresh_entry = dict(result)
+        fresh_entry["ruta"] = path
+        fresh_entry["archivo"] = os.path.basename(path)
+        fresh_entry["esp"] = dict(spectrum)
+
+        if requires_png:
+            # The PNG must exist, match render parameters, and carry a valid PNG header.
+            png_path = spectrum.get("espectrograma")
+            if (cached_entry.get("render") == render
+                    and isinstance(png_path, str) and png_path
+                    and _is_valid_png_file(png_path)):
+                return CacheLookupStatus.FULL_HIT, fresh_entry
+            if spectrum.get("error") is None:
+                fresh_entry["esp"]["espectrograma"] = None
+                fresh_entry["esp"].pop("espectrograma_error", None)
+                return CacheLookupStatus.METRICS_HIT_NEEDS_PNG, fresh_entry
+            return CacheLookupStatus.MISS, None
+
+        # No PNG was requested: the caller must not see a path that this run has not
+        # generated (the cache entry does keep it for next time).
+        fresh_entry["esp"]["espectrograma"] = None
+        fresh_entry["esp"].pop("espectrograma_error", None)
+        return CacheLookupStatus.FULL_HIT, fresh_entry
+    except Exception:
+        return CacheLookupStatus.MISS, None
 
 
 def read_cache(path, meta, mode, seconds, requires_png, version, schema,

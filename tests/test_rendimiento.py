@@ -104,20 +104,22 @@ class TestVectorization(unittest.TestCase):
 
     @staticmethod
     def _naive_clipping(data):
-        """Original implementation, sample by sample (reference)."""
-        amp = np.max(np.abs(data), axis=1) if data.ndim > 1 else np.abs(data)
-        en_clip = (amp >= 0.9999).astype(np.int8)
+        """Sample-by-sample per-channel clipping reference."""
+        arr = np.asarray(data)
+        cols = [arr] if arr.ndim <= 1 else [arr[:, ch] for ch in range(arr.shape[1])]
         runs = 0
-        count = 0
-        for v in en_clip:
-            if v:
-                count += 1
-            else:
-                if count >= 3:
-                    runs += 1
-                count = 0
-        if count >= 3:
-            runs += 1
+        for col in cols:
+            en_clip = (np.abs(col) >= 0.9999).astype(np.int8)
+            count = 0
+            for v in en_clip:
+                if v:
+                    count += 1
+                else:
+                    if count >= 3:
+                        runs += 1
+                    count = 0
+            if count >= 3:
+                runs += 1
         return {"runs_clip": runs, "hay_clipping": runs > 0}
 
     def test_streaks_edges_length_2_3(self):
@@ -402,6 +404,111 @@ class TestNativeFastPathEquivalence(unittest.TestCase):
             + tail_check
         )
         subprocess.run([sys.executable, "-c", probe], check=True)
+
+
+class TestClippingAccumulatorBoundsAndParity(unittest.TestCase):
+    """Regressions for v2.10.1 O(channels) clipping tracker & boundary math."""
+
+    def test_streaks_preserves_closed_run_at_block_boundary(self):
+        # Prior block closed at boundary while the new block starts with False
+        # before opening a new streak (starts[0] > 0).
+        closed, open_tail = engine._streaks(np.array([False, True, True, False]), 3)
+        self.assertEqual(closed, [3, 2])
+        self.assertEqual(open_tail, 0)
+
+        closed2, open_tail2 = engine._streaks(np.array([False, True, True]), 4)
+        self.assertEqual(closed2, [4])
+        self.assertEqual(open_tail2, 2)
+
+        closed3, open_tail3 = engine._streaks(np.array([], dtype=bool), 5)
+        self.assertEqual(closed3, [])
+        self.assertEqual(open_tail3, 5)
+
+    def test_alternating_lr_single_sample_peaks_never_merge_across_channels(self):
+        x_f = np.zeros((32, 2), dtype=np.float64)
+        x_f[2, 0] = 1.0
+        x_f[3, 1] = -1.0
+        x_f[4, 0] = 1.0
+        x_f[10:13, 1] = 1.0  # single genuine 3-sample run on R
+        clip = engine.detect_clipping(x_f)
+        self.assertEqual(clip, {"runs_clip": 1, "hay_clipping": True})
+
+        x_only_alt = np.zeros((32, 2), dtype=np.float64)
+        x_only_alt[0::2, 0] = 1.0
+        x_only_alt[1::2, 1] = -1.0
+        self.assertEqual(engine.detect_clipping(x_only_alt),
+                         {"runs_clip": 0, "hay_clipping": False})
+
+        # Same across integer _classify_clipping_nature and _BlockAnalysis paths.
+        x_i16 = (x_only_alt * 32767.0).astype(np.int16)
+        nat16 = engine._classify_clipping_nature(x_i16, 32765)
+        self.assertEqual(nat16["clipping_eventos"], 32)
+        self.assertEqual(nat16["clipping_racha_maxima"], 1)
+
+        meta16 = {"sample_rate": 8000, "bits_per_sample": 16, "canales": 2,
+                  "duracion": 1.0, "md5": None}
+        acc16 = engine._BlockAnalysis(meta16, 8000, len(x_i16), "full", None)
+        acc16.add_int16(x_i16, 0)
+        res16 = acc16.result()
+        self.assertEqual(res16["clip"], {"runs_clip": 0, "hay_clipping": False})
+
+        x_i24 = (x_only_alt * 8388607.0).astype(np.int32)
+        meta24 = {"sample_rate": 8000, "bits_per_sample": 24, "canales": 2,
+                  "duracion": 1.0, "md5": None}
+        acc24 = engine._BlockAnalysis(meta24, 8000, len(x_i24), "full", None)
+        acc24.add_int24_s32(x_i24, 0)
+        res24 = acc24.result()
+        self.assertEqual(res24["clip"], {"runs_clip": 0, "hay_clipping": False})
+
+    def test_block_size_invariance_with_array_oracles(self):
+        rng = np.random.default_rng(20261)
+        x = rng.uniform(-0.4, 0.4, (311, 2))
+        x[0:4, 0] = 1.0
+        x[6:8, 0] = -1.0
+        x[63:66, 1] = 1.0
+        x[140:145, 0] = 1.0
+        x[-2:, 1] = -1.0
+        oracle_clip = engine.detect_clipping(x)
+        x_i16 = np.clip(np.rint(x * 32768.0), -32768, 32767).astype(np.int16)
+        oracle_nat = engine._classify_clipping_nature(
+            x_i16, 32765, ceiling_hz=22050, frequency_cutoff=None, nyquist=22050
+        )
+
+        meta = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2,
+                "duracion": 1.0, "md5": None}
+        for block_size in (1, 7, 64, 4096):
+            with self.subTest(block_size=block_size):
+                acc = engine._BlockAnalysis(meta, 44100, len(x), "full", None)
+                for pos in range(0, len(x_i16), block_size):
+                    acc.add_int16(x_i16[pos : pos + block_size], pos)
+                res = acc.result()
+                self.assertEqual(res["clip"], oracle_clip)
+                stats = acc._clip_acc.classify(
+                    ceiling_hz=22050, frequency_cutoff=None, nyquist=22050
+                )
+                self.assertEqual(stats, oracle_nat)
+
+    def test_pathological_alternating_clip_uses_bounded_memory(self):
+        import tracemalloc
+
+        blk = np.zeros((16384, 2), dtype=np.float64)
+        blk[0::2, 0] = 1.0
+        blk[1::2, 1] = -1.0
+        acc = engine._ClippingAccumulator(2)
+        tracemalloc.start()
+        try:
+            snap_before = tracemalloc.take_snapshot()
+            # 60 blocks (~983k samples = >980k isolated clipping events).
+            for _ in range(60):
+                acc.add_float_block(blk)
+            current, peak = tracemalloc.get_traced_memory()
+            _ = snap_before
+        finally:
+            tracemalloc.stop()
+        # O(channels) tracker holds summary integers, not a ~1M element list.
+        self.assertEqual(acc.clip_dict(), {"runs_clip": 0, "hay_clipping": False})
+        self.assertLess(peak, 2 * 1024 * 1024)
+        self.assertLess(current, 1024 * 1024)
 
 
 if __name__ == "__main__":

@@ -3545,5 +3545,163 @@ class test_forensic_rigorous(unittest.TestCase):
         )
 
 
+class TestMultichannelAndPhaseResilience(unittest.TestCase):
+    """Regressions for v2.10.1 multichannel (>2ch), zero-energy & L=-R fixes."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_multichannel_3ch_and_51_silent_lr_analyzes_active_centre(self):
+        import _motor_espectral as spectral
+
+        sr = 44100
+        dur = 3.5
+        n = int(sr * dur)
+        rng = np.random.default_rng(9101)
+        sig = signal.sosfilt(
+            signal.ellip(10, 0.1, 80.0, 16000.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal(n) * 0.25,
+        )
+        # 3-channel (L, R, C): Front L/R digitally silent, only Centre has audio.
+        data_3ch = np.zeros((n, 3), dtype=np.float64)
+        data_3ch[:, 2] = np.clip(sig, -0.95, 0.95)
+        p_3ch = self.tmp_path / "silent_lr_3ch_16k.flac"
+        sf.write(p_3ch, data_3ch, sr, subtype="PCM_16", format="FLAC")
+
+        res_3ch = motor_flac.analyze_file_data(str(p_3ch), use_cache=False, save_png=True)
+        self.assertNotIn("error", res_3ch, res_3ch.get("error"))
+        self.assertLess(res_3ch["esp"]["techo_hz"], 18000)
+        self.assertEqual(res_3ch["veredicto"], "PROBABLE UPSCALE")
+        png_3ch = res_3ch["esp"].get("espectrograma")
+        self.assertTrue(png_3ch and os.path.isfile(png_3ch))
+
+        # Full-band genuine 5.1 (silent Front L/R + silent LFE, wideband audio in Centre).
+        sig_wb = rng.standard_normal(n) * 0.25
+        data_51 = np.zeros((n, 6), dtype=np.float64)
+        data_51[:, 2] = np.clip(sig_wb, -0.95, 0.95)
+        p_51 = self.tmp_path / "silent_lr_51_genuine.flac"
+        sf.write(p_51, data_51, sr, subtype="PCM_16", format="FLAC")
+
+        res_51 = motor_flac.analyze_file_data(str(p_51), use_cache=False)
+        self.assertNotIn("error", res_51, res_51.get("error"))
+        self.assertGreater(res_51["esp"]["techo_hz"], 20000)
+        self.assertEqual(res_51["veredicto"], "GENUINE LOSSLESS")
+
+        # render_png_only also renders active Centre channel instead of failing/blank.
+        meta_3ch = motor_flac.verify_metadata(str(p_3ch))
+        acc = spectral._SpectralAccumulator(
+            sr, is_stereo=True, save_png=True, path=str(p_3ch),
+            mode="center", seconds=None,
+        )
+        for blk in motor_flac._read_blocks(str(p_3ch)):
+            acc.add(blk, 0)
+        png_only = acc.render_png_only(
+            ceiling_hz=res_3ch["esp"]["techo_hz"],
+            cutoff_hz=res_3ch["esp"]["frecuencia_corte"],
+        )
+        self.assertTrue(
+            png_only.get("espectrograma") and os.path.isfile(png_only["espectrograma"])
+        )
+        self.assertEqual(meta_3ch["canales"], 3)
+
+    def test_zero_energy_spectral_guard_rejects_flat_floor(self):
+        import _motor_espectral as spectral
+
+        freqs = np.fft.rfftfreq(4096, 1.0 / 44100)
+        floor_pow = np.full_like(freqs, float(spectral._FLOOR_F32), dtype=np.float32)
+        out = spectral._spectral_metrics(
+            freqs, floor_pow, floor_pow, 44100, is_stereo=True,
+            power=floor_pow, power_mid=floor_pow, power_side=floor_pow, gain_noise=34.0,
+        )
+        self.assertIsNotNone(out.get("error"))
+
+        acc = spectral._SpectralAccumulator(44100, is_stereo=True)
+        acc.add(np.zeros((8192, 2), dtype=np.float32), 0)
+        acc_out = acc.result()
+        self.assertIsNotNone(acc_out.get("error"))
+
+    def test_antiphase_stereo_activity_and_spectrum_rescue(self):
+        import math
+        import _motor_espectral as spectral
+
+        sr = 44100
+        n = sr * 3
+        rng = np.random.default_rng(9102)
+        mono_src = rng.standard_normal(n) * 0.2
+        anti = np.column_stack([mono_src, -mono_src]).astype(np.float32)
+
+        rms_db, e_diff = spectral._activity_score(anti[:16384])
+        self.assertTrue(math.isfinite(rms_db))
+        self.assertGreater(rms_db, spectral.ACTIVE_RMS_THRESHOLD_DB)
+        self.assertGreater(e_diff, 0.0)
+
+        p_anti = self.tmp_path / "antiphase_hires_96.flac"
+        sig_96 = rng.standard_normal(96000 * 3) * 0.15
+        anti_96 = np.column_stack([sig_96, -sig_96])
+        sf.write(p_anti, np.clip(anti_96, -0.95, 0.95), 96000, subtype="PCM_24")
+        res_anti = motor_flac.analyze_file_data(str(p_anti), use_cache=False)
+        self.assertNotIn("error", res_anti, res_anti.get("error"))
+        self.assertGreater(res_anti["esp"]["techo_hz"], 40000)
+        self.assertEqual(res_anti["veredicto"], "GENUINE LOSSLESS")
+
+    def test_album_coherence_normalizes_relative_and_mixed_paths(self):
+        album_dir = self.tmp_path / "MixedAlbum"
+        sub_dir = album_dir / "nested"
+        sub_dir.mkdir(parents=True)
+        abs_album = str(album_dir)
+        rel_via_dotdot = os.path.join(str(sub_dir), "..")
+        batch = []
+        for idx in range(7):
+            batch.append({
+                "archivo": f"g_{idx}.flac",
+                "ruta": os.path.join(abs_album, f"g_{idx}.flac"),
+                "veredicto": "GENUINE LOSSLESS",
+                "score": 0.9,
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16},
+                "md5": {"estado": "match"},
+                "bdi": {"lsbs": "active"},
+                "esp": {
+                    "techo_hz": 22050,
+                    "techo_rel_nyquist": 1.0,
+                    "corte_detectado": False,
+                    "corte_artificial": False,
+                    "clase_corte": "no_cutoff",
+                    "iqr_corte_hz": 120.0,
+                    "familias_evidencia_lossy": [],
+                },
+                "problemas": [],
+                "notes": [],
+            })
+        target = {
+            "archivo": "acoustic_suspect.flac",
+            "ruta": os.path.join(rel_via_dotdot, "acoustic_suspect.flac"),
+            "veredicto": "SUSPICIOUS",
+            "score": 0.55,
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16},
+            "md5": {"estado": "match"},
+            "bdi": {"lsbs": "active"},
+            "esp": {
+                "techo_hz": 17000,
+                "techo_rel_nyquist": 0.771,
+                "clase_corte": "no_cutoff",
+                "corte_detectado": False,
+                "corte_artificial": False,
+                "decaimiento_acustico_suave": True,
+                "familias_evidencia_lossy": [],
+            },
+            "problemas": ["Low spectral ceiling (17000 Hz)"],
+            "notes": [],
+        }
+        batch.append(target)
+        elevated = motor_flac.apply_album_coherence(batch)
+        self.assertEqual(elevated, 1)
+        self.assertTrue(target.get("coherencia_album"))
+        self.assertEqual(target["veredicto"], "PROBABLY LOSSLESS")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

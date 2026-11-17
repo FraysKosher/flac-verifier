@@ -933,7 +933,10 @@ def apply_album_coherence(results):
         path = result.get("ruta")
         if not path:
             continue
-        grupos.setdefault(os.path.dirname(os.path.abspath(path)), []).append(result)
+        folder_key = os.path.normcase(
+            os.path.normpath(os.path.abspath(os.path.dirname(os.path.abspath(str(path)))))
+        )
+        grupos.setdefault(folder_key, []).append(result)
 
     elevados = 0
     for tracks in grupos.values():
