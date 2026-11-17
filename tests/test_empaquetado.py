@@ -11,6 +11,7 @@ What matters and is pinned down here:
   - The `.spec` really collects everything that is needed and does not depend on
     absolute paths.
 """
+import glob
 import importlib
 import json
 import os
@@ -519,10 +520,6 @@ class TestPyprojectToml(unittest.TestCase):
         self.assertIn("--output-dir", main.HELP)
 
     def test_flat_modules_and_logo_package_data_are_complete(self):
-        from setuptools.command.build_py import build_py
-        from setuptools.config import pyprojecttoml
-        from setuptools.dist import Distribution
-
         data = self._load_pyproject()
         expected_mods = {
             "main",
@@ -536,27 +533,50 @@ class TestPyprojectToml(unittest.TestCase):
             "theme",
             "informe_pdf",
         }
-        py_modules = set(data["tool"]["setuptools"]["py-modules"])
+        setuptools_cfg = data["tool"]["setuptools"]
+        py_modules = set(setuptools_cfg["py-modules"])
         self.assertEqual(py_modules, expected_mods)
         for mod_name in py_modules:
             self.assertTrue(os.path.isfile(os.path.join(ROOT, f"{mod_name}.py")))
 
-        prev_cwd = os.getcwd()
+        self.assertEqual(set(setuptools_cfg["packages"]), {"Logo", "Logo.icons"})
+        self.assertFalse(setuptools_cfg["include-package-data"])
+        pkg_files = {}
+        for pkg_name, patterns in setuptools_cfg["package-data"].items():
+            pkg_dir = os.path.join(ROOT, *pkg_name.split("."))
+            self.assertTrue(os.path.isdir(pkg_dir))
+            matched = set()
+            for pattern in patterns:
+                for full in glob.glob(os.path.join(pkg_dir, pattern)):
+                    if os.path.isfile(full):
+                        matched.add(os.path.basename(full))
+            pkg_files[pkg_name] = matched
+
         try:
-            os.chdir(ROOT)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                dist = pyprojecttoml.apply_configuration(
-                    Distribution(), os.path.join(ROOT, "pyproject.toml")
-                )
-                cmd = build_py(dist)
-                cmd.finalize_options()
-                pkg_files = {
-                    pkg_name: set(files)
-                    for pkg_name, _, _, files in cmd.get_data_files_without_manifest()
-                }
-        finally:
-            os.chdir(prev_cwd)
+            from setuptools.command.build_py import build_py
+            from setuptools.config import pyprojecttoml
+            from setuptools.dist import Distribution
+        except ImportError:
+            build_py = None
+
+        if build_py is not None:
+            prev_cwd = os.getcwd()
+            try:
+                os.chdir(ROOT)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    dist = pyprojecttoml.apply_configuration(
+                        Distribution(), os.path.join(ROOT, "pyproject.toml")
+                    )
+                    cmd = build_py(dist)
+                    cmd.finalize_options()
+                    built_files = {
+                        pkg_name: set(files)
+                        for pkg_name, _, _, files in cmd.get_data_files_without_manifest()
+                    }
+            finally:
+                os.chdir(prev_cwd)
+            self.assertEqual(built_files, pkg_files)
 
         self.assertEqual(set(pkg_files), {"Logo", "Logo.icons"})
         self.assertTrue(
