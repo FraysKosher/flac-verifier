@@ -591,12 +591,15 @@ class TestPyprojectToml(unittest.TestCase):
         self.assertGreaterEqual(len(pkg_files["Logo.icons"]), 51)
 
     def test_build_verify_raises_on_nonzero_version_exit(self):
+        import contextlib
+        import io
         import build
 
         fake_proc = mock.Mock(returncode=2, stdout="", stderr="boom")
         with mock.patch.object(build.os.path, "exists", return_value=True), \
              mock.patch.object(build.os.path, "getsize", return_value=1024 * 1024), \
-             mock.patch.object(build.subprocess, "run", return_value=fake_proc):
+             mock.patch.object(build.subprocess, "run", return_value=fake_proc), \
+             contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit) as ctx:
                 build.verify()
         self.assertIn("exit code 2", str(ctx.exception))

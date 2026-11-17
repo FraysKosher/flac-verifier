@@ -470,10 +470,12 @@ class test_manager_process(unittest.TestCase):
         self.assertTrue(options["text"])
         self.assertEqual(options["encoding"], "utf-8")
         self.assertEqual(options["bufsize"], 1)
-        self.assertIn("creationflags", options)
         if os.name == "nt":
+            self.assertIn("creationflags", options)
             self.assertEqual(options["creationflags"],
                              getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            self.assertTrue(options.get("start_new_session"))
 
     def test_events_arrive_queue_finishes_with_end(self):
         process = FakeProcess(['{"tipo": "inicio", "total": 1}',
