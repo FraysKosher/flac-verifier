@@ -29,6 +29,7 @@ import math
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -815,6 +816,18 @@ def finish_process(process: "subprocess.Popen[str] | None", wait_time: float = 3
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception:
             pass
+    else:
+        for pg_sig in (getattr(signal, "SIGTERM", None),
+                       getattr(signal, "SIGKILL", None)):
+            if pg_sig is None:
+                continue
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, pg_sig)
+                process.wait(timeout=wait_time)
+                return
+            except Exception:
+                continue
     for accion in (process.terminate, process.kill):
         try:
             accion()
@@ -904,13 +917,28 @@ class ProcessManager:
                                     engine=self.engine, png=png,
                                     output_dir=output_dir)
         self.cancelled = False
-        # CREATE_NO_WINDOW stops a console from flashing when the engine starts.
-        self.process = self._lanzador(
-            command, cwd=DIRECTORY,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        popen_kwargs: dict[str, Any] = {
+            "cwd": DIRECTORY,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        # CREATE_NO_WINDOW stops a console from flashing on Windows; a dedicated
+        # session on POSIX lets cancellation signal the entire worker tree.
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        try:
+            self.process = self._lanzador(command, **popen_kwargs)
+        except TypeError:
+            if self._lanzador is subprocess.Popen or "start_new_session" not in popen_kwargs:
+                raise
+            popen_kwargs.pop("start_new_session", None)
+            self.process = self._lanzador(command, **popen_kwargs)
         self.run_id += 1
         current_run = self.run_id
         self.thread = threading.Thread(
@@ -1422,6 +1450,7 @@ if CTK_OK:
             self._batch_total_count = 1
             self._batch_current_index = 1
             self._batch_current_path = ""
+            self._failed_batches: list[tuple[int, str, str]] = []
             self._album_total = 0
             self._album_received = 0
             self.active_filter: VerdictFilter = VerdictFilter.ALL
@@ -4379,6 +4408,7 @@ if CTK_OK:
                 "queued_batches": len(self._batch_queue),
                 "batch_total_count": self._batch_total_count,
                 "batch_current_index": self._batch_current_index,
+                "failed_batches": len(self._failed_batches),
                 "active_filter": self.active_filter.value,
                 "pdf_enabled": bool(self.var_pdf.get()),
                 "pdf_dest_mode": self.var_pdf_dest_mode.get(),
@@ -4751,6 +4781,7 @@ if CTK_OK:
             self._batch_total_count = len(discovered)
             self._batch_current_index = 0
             self._batch_current_path = ""
+            self._failed_batches = []
             self._album_total = 0
             self._album_received = 0
             self.barra.set(0)
@@ -4793,6 +4824,9 @@ if CTK_OK:
                         output_dir=output_dir,
                     )
                 except Exception as e:
+                    self._failed_batches.append(
+                        (self._batch_current_index, next_path, str(e))
+                    )
                     self._log(
                         f"Could not start album {self._batch_current_index} / "
                         f"{self._batch_total_count}: {e}",
@@ -4801,6 +4835,10 @@ if CTK_OK:
                     if self._batch_queue:
                         continue
                     self._set_run_state(RunState.ERROR)
+                    if (self._batch_total_count > 1
+                            and len(self._failed_batches) < self._batch_current_index):
+                        # At least one previous album completed; let _finish finalize once.
+                        return False
                     self._alert("Could not start the engine", str(e), error=True)
                     self._update_state()
                     self._render_hero()
@@ -5038,20 +5076,29 @@ if CTK_OK:
             )
             if cancelled:
                 self._batch_queue.clear()
-            elif self._batch_queue:
+            else:
                 if event.get("codigo") not in (0, None):
-                    self._log(
-                        f"Album {self._batch_current_index} / "
-                        f"{self._batch_total_count} finished with code "
-                        f"{event['codigo']}.",
-                        "error",
+                    self._failed_batches.append(
+                        (
+                            self._batch_current_index,
+                            self._batch_current_path,
+                            f"exit code {event['codigo']}",
+                        )
                     )
-                if self._start_next_batch():
-                    self._update_state()
-                    self._render_hero()
-                    if not self._batch_draining:
-                        self.after(ACTIVE_INTERVAL_MS, self._drain_queue)
-                    return
+                if self._batch_queue:
+                    if event.get("codigo") not in (0, None):
+                        self._log(
+                            f"Album {self._batch_current_index} / "
+                            f"{self._batch_total_count} finished with code "
+                            f"{event['codigo']}.",
+                            "error",
+                        )
+                    if self._start_next_batch():
+                        self._update_state()
+                        self._render_hero()
+                        if not self._batch_draining:
+                            self.after(ACTIVE_INTERVAL_MS, self._drain_queue)
+                        return
 
             self.barra.set(1.0 if not event.get("cancelado") else self.barra.get())
             color, text = format_summary(self.events)
@@ -5059,6 +5106,25 @@ if CTK_OK:
                 self._set_run_state(RunState.CANCELLED)
                 self.label_state.configure(text="Cancelled")
                 self._log("Analysis cancelled.", "aviso")
+            elif self._batch_total_count > 1 and self._failed_batches:
+                failed_count = len(self._failed_batches)
+                self._set_run_state(RunState.ERROR)
+                self.label_state.configure(
+                    text=(
+                        f"Finished with errors ({failed_count}/"
+                        f"{self._batch_total_count} albums failed)"
+                    )
+                )
+                self._log(
+                    f"Batch finished with errors: {failed_count} of "
+                    f"{self._batch_total_count} albums failed.",
+                    "error",
+                )
+                self._alert(
+                    "Batch finished with errors",
+                    f"{failed_count} of {self._batch_total_count} albums failed.",
+                    error=True,
+                )
             elif event.get("codigo") not in (0, None):
                 self._set_run_state(RunState.ERROR)
                 self.label_state.configure(text=f"Finished with code {event['codigo']}")

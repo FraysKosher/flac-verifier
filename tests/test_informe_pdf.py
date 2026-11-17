@@ -218,7 +218,7 @@ class test_report_pdf(unittest.TestCase):
         text = text_pdf(report["ruta"])
         self.assertIn("FLAC VERIFIER", text)                       # wordmark
         self.assertIn("Authenticity and lossless verification", text)
-        self.assertIn("engine 14.5", text)                         # footer
+        self.assertIn("engine 14.6", text)                         # footer
         self.assertNotEqual(
             pdf.STYLE_VERDICT["PROBABLY LOSSLESS"],
             pdf.STYLE_VERDICT["SUSPICIOUS"],
@@ -638,6 +638,21 @@ class test_report_pdf(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("could not generate the PDF report", warnings[0]["mensaje"])
         self.assertIn("Read-only file system", warnings[0]["mensaje"])
+
+    def test_generate_never_raises_on_malformed_index_or_destination(self):
+        results = analyze_album(self.album, save_png=False)
+        results[0]["indice_original"] = True
+        results[1]["indice_original"] = "not-an-int"
+        results[2].pop("indice_original", None)
+        out_ok = os.path.join(self.fx.dir, "safe_order_report.pdf")
+        rep = pdf.generate(self.album, results, destination=out_ok)
+        self.assertTrue(rep["ok"], rep.get("error"))
+        self.assertTrue(os.path.isfile(out_ok))
+
+        with mock.patch.object(pdf, "report_path", side_effect=OSError("bad path")):
+            rep_err = pdf.generate(self.album, results)
+        self.assertFalse(rep_err["ok"])
+        self.assertIn("bad path", rep_err["error"])
 
 
 if __name__ == "__main__":

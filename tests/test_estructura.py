@@ -196,6 +196,60 @@ class test_spectrogram_png(unittest.TestCase):
         res = engine.analyze_file_data(self.fx["ok16"], "center", None, False)
         self.assertIsNone(res["esp"]["espectrograma"])
 
+    def test_cli_summary_prints_indeterminate_count(self):
+        import io
+        import contextlib
+        import tempfile
+        from unittest import mock
+        import verificar_flac as cli_mod
+
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("01.flac", "02.flac"):
+                open(os.path.join(folder, name), "wb").close()
+            fake_results = [
+                {
+                    "archivo": "01.flac",
+                    "ruta": os.path.join(folder, "01.flac"),
+                    "indice_original": 0,
+                    "veredicto": "GENUINE LOSSLESS",
+                    "score": 0.9,
+                    "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2, "duracion": 1.0},
+                    "md5": {"estado": "match"},
+                    "clip": {"runs_clip": 0, "hay_clipping": False},
+                    "dr": 10.0,
+                    "bdi": {"aplica": False},
+                    "esp": {
+                        "techo_hz": 22050, "nyquist": 22050,
+                        "corte_detectado": False, "ratio": 0.0,
+                        "ratio_aplica": True, "var_alta_db": 0.0,
+                    },
+                    "problemas": [],
+                    "notes": [],
+                },
+                {
+                    "archivo": "02.flac",
+                    "ruta": os.path.join(folder, "02.flac"),
+                    "indice_original": 1,
+                    "veredicto": "indeterminate",
+                    "score": 0.0,
+                    "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2, "duracion": 1.0},
+                    "md5": {"estado": "match"},
+                    "clip": {"runs_clip": 0, "hay_clipping": False},
+                    "dr": 10.0,
+                    "bdi": {"aplica": False},
+                    "esp": {"error": "insufficient signal energy"},
+                    "problemas": [],
+                    "notes": [],
+                },
+            ]
+            stream = io.StringIO()
+            with mock.patch.object(cli_mod.engine, "analyze_files", return_value=(iter(fake_results), 1)):
+                with contextlib.redirect_stdout(stream):
+                    cli_mod.execute_analysis(folder, "center", None, False, False)
+            out = stream.getvalue()
+            self.assertIn("SUMMARY:", out)
+            self.assertIn("1 ❓ INDETERMINATE", out)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

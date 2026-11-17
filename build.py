@@ -171,6 +171,7 @@ def verify() -> None:
     # That they respond without opening any window. The engine writes the version
     # to stdout; the windowed one has no console, so there the exit code is enough
     # (that it does not blow up).
+    failed = []
     for path in (EXE_GUI, EXE_ENGINE):
         process = subprocess.run([path, "--version"], capture_output=True, text=True,
                                  timeout=180,
@@ -178,7 +179,11 @@ def verify() -> None:
         output = (process.stdout or process.stderr or "").strip().splitlines()
         brand = "✓" if process.returncode == 0 else "✗"
         print(f"  {brand} {os.path.basename(path)} --version -> "
-              f"exit code {process.returncode}, {output[0] if output else '(sin salida)'}")
+              f"exit code {process.returncode}, {output[0] if output else '(no output)'}")
+        if process.returncode != 0:
+            failed.append(f"{os.path.basename(path)} (exit code {process.returncode})")
+    if failed:
+        raise SystemExit("  ✗ executable check failed: " + "; ".join(failed))
 
     total = sum(os.path.getsize(os.path.join(root, name))
                 for root, _, files in os.walk(FOLDER)

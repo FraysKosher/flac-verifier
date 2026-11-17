@@ -2582,5 +2582,87 @@ class TestMultiAlbumFilterAndOutputDirWindow(unittest.TestCase):
             self.assertLess(retheme_dark_ms, 1500.0)
 
 
+class TestPosixProcessGroupAndBatchErrors(unittest.TestCase):
+    """Regressions for v2.10.1 POSIX process-group cleanup & partial batch failure."""
+
+    def test_posix_process_group_start_and_finish_cleanup(self):
+        q: queue.Queue = queue.Queue()
+        recorded_kwargs = {}
+
+        class _FakeProc:
+            def __init__(self, cmd, **kwargs):
+                recorded_kwargs.update(kwargs)
+                self.pid = 4242
+                self.stdout = io.StringIO("")
+                self.stderr = io.StringIO("")
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        pm = gui.ProcessManager(q, engine="flac_motor.exe", lanzador=_FakeProc)
+        with mock.patch.object(gui.os, "name", "posix"):
+            pm.start("C:/Music", mode="full", pdf=False, workers=2)
+            self.assertIs(recorded_kwargs.get("start_new_session"), True)
+            with mock.patch.object(gui.os, "getpgid", return_value=4242, create=True) as getpgid, \
+                 mock.patch.object(gui.os, "killpg", create=True) as killpg:
+                gui.finish_process(pm.process, wait_time=1.0)
+                getpgid.assert_called_once_with(4242)
+                killpg.assert_called_once()
+        pm.thread.join(timeout=2.0)
+
+    @unittest.skipUnless(VISUAL, "customtkinter and a display are required")
+    def test_multi_album_partial_failure_transitions_to_error_state(self):
+        with tempfile.TemporaryDirectory() as root:
+            alb1 = os.path.join(root, "Album1")
+            alb2 = os.path.join(root, "Album2")
+            os.makedirs(alb1)
+            os.makedirs(alb2)
+            for alb in (alb1, alb2):
+                open(os.path.join(alb, "track.flac"), "wb").close()
+
+            started = []
+
+            class _FakeManager:
+                def __init__(self):
+                    self.active = False
+                    self.process = None
+                    self.run_id = 0
+
+                def start(self, path, **kwargs):
+                    self.run_id += 1
+                    started.append(path)
+                    return ["flac_motor.exe", "--path", path]
+
+            win = gui.FlacVerifierWindow()
+            try:
+                win.withdraw()
+                win.manager = _FakeManager()
+                win._alert = mock.Mock()
+                win._analyze_target = mock.Mock()
+                with mock.patch.object(win, "_drain_queue"):
+                    win.var_path.set(root)
+                    win._analyze()
+                self.assertEqual(started, [alb1])
+                win._finish({"tipo": "__fin__", "codigo": 1, "cancelado": False, "run_id": 1})
+                self.assertEqual(started, [alb1, alb2])
+                win._finish({"tipo": "__fin__", "codigo": 0, "cancelado": False, "run_id": 2})
+
+                snap = win.ui_snapshot()
+                self.assertEqual(snap["run_state"], "error")
+                self.assertEqual(snap["failed_batches"], 1)
+                win._alert.assert_called_once()
+            finally:
+                win.destroy()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

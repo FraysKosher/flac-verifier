@@ -259,10 +259,15 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
     if is_folder:
         print(f"\n{'═'*60}")
         probable = f"{verdicts['PROBABLY LOSSLESS']} ☑️ PROBABLY  |  " if verdicts["PROBABLY LOSSLESS"] else ""
+        indeterminate = (
+            f"  |  {verdicts['indeterminate']} ❓ INDETERMINATE"
+            if verdicts["indeterminate"] else ""
+        )
         print(f"SUMMARY: {verdicts['GENUINE LOSSLESS']} ✅ GENUINE  |  "
               f"{probable}"
               f"{verdicts['SUSPICIOUS']} ⚠️  SUSPICIOUS  |  "
               f"{verdicts['PROBABLE UPSCALE']} ❌ UPSCALE"
+              + indeterminate
               + (f"  |  {failures} ❌ WITH ERRORS" if failures else ""))
         print(f"{'═'*60}")
         if save_png and engine.PIL_OK and files:
@@ -271,8 +276,12 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
     if save_pdf:
         # Sort by original track index so held-back coherence tracks appear
         # in album order inside the PDF report.
-        results.sort(key=lambda r: r.get("indice_original", 0)
-                     if isinstance(r.get("indice_original"), int) else 0)
+        results.sort(
+            key=lambda r: r["indice_original"]
+            if (isinstance(r.get("indice_original"), int)
+                and not isinstance(r.get("indice_original"), bool))
+            else 0
+        )
         # A failed PDF write is reported; the analysis is never aborted.
         report = engine.generate_pdf_report(path, results, mode=mode)
         if report.get("ok"):

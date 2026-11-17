@@ -13,10 +13,14 @@ decode the lossy families; otherwise deterministic filterbank equivalents keep
 the benchmark runnable in minimal CI environments.
 
     python tests/benchmark_validacion.py
+    python tests/benchmark_validacion.py --check
 
-Exit code 0 only if sensitivity >= 95%, specificity >= 95% and album coherence
-passes.
+Without `--check`, updates the validation tables in `docs/VALIDATION.md`,
+`README.md` and `docs/COMPARISON.md` and requires sensitivity >= 95%,
+specificity >= 95% and album coherence. With `--check`, runs non-mutating and
+requires 100% pass across all 260 tracks plus album coherence.
 """
+import argparse
 from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import math
@@ -342,7 +346,7 @@ def _ffmpeg_encode_decode(wav_in, out_flac, lossy_ext, codec_args, out_sr=None):
 # ─── DATASET (n = 260: 110 authentic + 150 fake) ────────────────────────────
 
 def create_dataset(directory):
-    """Returns [(path, authentic_bool, class_name)] for n = 260 tracks."""
+    """Returns [(path, authentic_bool, class_name, backend)] for n = 260 tracks."""
     cases = []
     sr = 44100
 
@@ -350,7 +354,7 @@ def create_dataset(directory):
     for i in range(10):
         p = os.path.join(directory, f"gen_cd_{i:02d}.flac")
         _save(p, track_reference(sr, 4.5, 1000 + i), sr, "PCM_16")
-        cases.append((p, True, "GEN 01: CD fullband master 16/44.1"))
+        cases.append((p, True, "GEN 01: CD fullband master 16/44.1", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_studio24_48_{i:02d}.flac")
@@ -358,7 +362,7 @@ def create_dataset(directory):
         rng = np.random.default_rng(1150 + i)
         x += rng.normal(0.0, 10.0 ** (-118.0 / 20.0), x.shape)
         _save(p, x, 48000, "PCM_24")
-        cases.append((p, True, "GEN 02: Studio master 24/48"))
+        cases.append((p, True, "GEN 02: Studio master 24/48", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_hires_analog_{i:02d}.flac")
@@ -367,7 +371,7 @@ def create_dataset(directory):
         rng = np.random.default_rng(1250 + i)
         x += rng.normal(0.0, 10.0 ** (-104.0 / 20.0), x.shape)
         _save(p, x, 96000, "PCM_24")
-        cases.append((p, True, "GEN 03: Hi-Res analogue roll-off 24/96"))
+        cases.append((p, True, "GEN 03: Hi-Res analogue roll-off 24/96", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_hires_192_{i:02d}.flac")
@@ -377,34 +381,34 @@ def create_dataset(directory):
                            rng.standard_normal((n192, 2)) * 0.25, axis=0)
         x += rng.normal(0.0, 10.0 ** (-110.0 / 20.0), x.shape)
         _save(p, x / (np.max(np.abs(x)) * 1.12), 192000, "PCM_24")
-        cases.append((p, True, "GEN 04: Hi-Res ultrasonic master 24/192"))
+        cases.append((p, True, "GEN 04: Hi-Res ultrasonic master 24/192", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_dsd64_{i:02d}.flac")
         _save(p, dsd_like(88200, 4.0, 1400 + i, 24000.0, 40000.0), 88200, "PCM_24")
-        cases.append((p, True, "GEN 05: DSD64 / SACD transfer 24/88.2"))
+        cases.append((p, True, "GEN 05: DSD64 / SACD transfer 24/88.2", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_dsd128_{i:02d}.flac")
         _save(p, dsd128_192k(3.5, 1500 + i), 192000, "PCM_24")
-        cases.append((p, True, "GEN 06: DSD128 transfer 24/192"))
+        cases.append((p, True, "GEN 06: DSD128 transfer 24/192", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_acoustic18k_{i:02d}.flac")
         x = track_reference(sr, 4.5, 1600 + i)
         x = signal.sosfilt(signal.butter(2, 18000.0, btype="low", fs=sr, output="sos"), x, axis=0)
         _save(p, x / max(1.0, np.max(np.abs(x))), sr, "PCM_16")
-        cases.append((p, True, "GEN 07: Acoustic 18 kHz roll-off 16/44.1"))
+        cases.append((p, True, "GEN 07: Acoustic 18 kHz roll-off 16/44.1", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_solo_lowcent_{i:02d}.flac")
         _save(p, solo_acoustic_low_centroid(sr, 5.0, 1700 + i), sr, "PCM_16")
-        cases.append((p, True, "GEN 08: Solo acoustic low-centroid (<15 kHz)"))
+        cases.append((p, True, "GEN 08: Solo acoustic low-centroid (<15 kHz)", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_vintage_1950s_{i:02d}.flac")
         _save(p, vintage_archival_tape(sr, 5.0, 1800 + i), sr, "PCM_16")
-        cases.append((p, True, "GEN 09: Vintage 1950s archival tape (<14 kHz)"))
+        cases.append((p, True, "GEN 09: Vintage 1950s archival tape (<14 kHz)", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_vinyl_synth_{i:02d}.flac")
@@ -431,7 +435,7 @@ def create_dataset(directory):
             saw += rng.standard_normal((n, 2)) * 0.12
             sig = saw / (np.max(np.abs(saw)) * 1.14)
         _save(p, sig, sr, "PCM_16")
-        cases.append((p, True, "GEN 10: Vinyl / cassette / polyphonic synth"))
+        cases.append((p, True, "GEN 10: Vinyl / cassette / polyphonic synth", "native_dsp"))
 
     for i in range(10):
         p = os.path.join(directory, f"gen_stationary_synth32_{i:02d}.flac")
@@ -450,6 +454,7 @@ def create_dataset(directory):
             drone += rng.standard_normal((n, 2)) * (10.0 ** (-84.0 / 20.0))
             drone /= np.max(np.abs(drone)) * 1.15
             _save(p, drone, sr, "PCM_16")
+            backend = "native_dsp"
         else:
             x32 = track_reference(sr, 4.5, 1980 + i)
             x32 += rng.standard_normal(x32.shape) * (10.0 ** (-132.0 / 20.0))
@@ -463,9 +468,11 @@ def create_dataset(directory):
                     check=True,
                 )
                 os.remove(w32)
+                backend = "ffmpeg"
             else:
                 _save(p, x32, sr, "PCM_24")
-        cases.append((p, True, "GEN 11: Stationary synth drone & 32-bit PCM_32"))
+                backend = "dsp_fallback"
+        cases.append((p, True, "GEN 11: Stationary synth drone & 32-bit PCM_32", backend))
 
     # Pre-render 7 reference WAVs at 44.1 kHz for real ffmpeg codecs
     wav_refs = []
@@ -479,12 +486,15 @@ def create_dataset(directory):
         wav_refs.append(w_path)
 
     def _add_codec_family(idx_base, tag, label, ext, args, fallback_fn, out_sr=None):
+        start_pos = len(cases)
         for i in range(7):
             p = os.path.join(directory, f"fake_{tag}_{i:02d}.flac")
-            if not _ffmpeg_encode_decode(wav_refs[i], p, ext, args, out_sr=out_sr):
+            used_ffmpeg = _ffmpeg_encode_decode(wav_refs[i], p, ext, args, out_sr=out_sr)
+            if not used_ffmpeg:
                 y, fs_y = fallback_fn(i)
                 _save(p, y, fs_y, "PCM_16")
-            cases.append((p, False, label))
+            cases.append((p, False, label, "ffmpeg" if used_ffmpeg else "dsp_fallback"))
+        return start_pos
 
     # --- 21 FAKE / ADVERSARIAL FAMILIES (140 + 10 = 150 fake) ---
     _add_codec_family(
@@ -534,17 +544,30 @@ def create_dataset(directory):
         ["-c:a", "libvorbis", "-q:a", "4"],
         lambda i: (_mdct1024_roundtrip(track_reference(sr, 5.0, 5000 + i), sr, 10500.0, 17500.0, 0.52, 6800 + i), sr),
     )
-    _add_codec_family(
+    vorbis_start = _add_codec_family(
         10, "vorbis_q9_fb", "FAKE 10: Vorbis -q9 (~320k fullband) + -q10 (~500k)", ".ogg",
         ["-c:a", "libvorbis", "-q:a", "9"],
         lambda i: (_mdct1024_roundtrip(track_reference(sr, 5.0, 5000 + i), sr, 12500.0, 20500.0, 0.35, 6900 + i), sr),
     )
-    # Replace last 2 of FAKE 10 with unconstrained Vorbis -q10 (~500 kbps) when ffmpeg is present
-    # to measure the documented physical limit honestly inside the benchmark!
+    # Replace last 2 of FAKE 10 with unconstrained Vorbis -q10 (~500 kbps) only if
+    # ffmpeg succeeds into a temp file; otherwise retain the validated fallback.
     if HAS_FFMPEG:
         for i in (5, 6):
             p_q10 = os.path.join(directory, f"fake_vorbis_q9_fb_{i:02d}.flac")
-            _ffmpeg_encode_decode(wav_refs[i], p_q10, ".ogg", ["-c:a", "libvorbis", "-q:a", "10"])
+            tmp_q10 = os.path.join(directory, f"_tmp_vorbis_q10_{i:02d}.flac")
+            try:
+                if (_ffmpeg_encode_decode(wav_refs[i], tmp_q10, ".ogg", ["-c:a", "libvorbis", "-q:a", "10"])
+                        and os.path.isfile(tmp_q10)
+                        and os.path.getsize(tmp_q10) > 0):
+                    os.replace(tmp_q10, p_q10)
+                    cases[vorbis_start + i] = (
+                        p_q10, False,
+                        "FAKE 10: Vorbis -q9 (~320k fullband) + -q10 (~500k)",
+                        "ffmpeg",
+                    )
+            finally:
+                if os.path.exists(tmp_q10):
+                    os.remove(tmp_q10)
 
     _add_codec_family(
         11, "opus_96", "FAKE 11: Opus 96 kbps", ".opus",
@@ -576,7 +599,7 @@ def create_dataset(directory):
             rng = np.random.default_rng(7380 + i)
             sbr96 += rng.standard_normal(sbr96.shape) * 1e-4
             _save(p, sbr96, 96000, "PCM_24")
-        cases.append((p, False, "FAKE 14: Seamless HE-AAC QMF SBR (44.1 & 96 kHz)"))
+        cases.append((p, False, "FAKE 14: Seamless HE-AAC QMF SBR (44.1 & 96 kHz)", "native_dsp"))
 
     # 15. Musepack SV7/SV8 PQMF-32 pure subband lattice
     for i in range(7):
@@ -584,7 +607,7 @@ def create_dataset(directory):
         blk_len = 12 if i < 4 else 36
         mpc = _musepack_pqmf32(track_reference(sr, 5.0, 7400 + i), sr, block_len=blk_len, seed=7450 + i)
         _save(p, mpc, sr, "PCM_16")
-        cases.append((p, False, "FAKE 15: Musepack SV7/SV8 PQMF-32 subband"))
+        cases.append((p, False, "FAKE 15: Musepack SV7/SV8 PQMF-32 subband", "native_dsp"))
 
     # 16. Vintage 1950s archival -> MP3 / MDCT transcode
     for i in range(7):
@@ -592,12 +615,12 @@ def create_dataset(directory):
         v_src = vintage_archival_tape(sr, 5.0, 7500 + i)
         w_v = os.path.join(directory, f"_vint_{i}.wav")
         _save(w_v, v_src, sr, "PCM_16")
-        if i < 4 and _ffmpeg_encode_decode(w_v, p, ".mp3", ["-c:a", "libmp3lame", "-b:a", "128k"]):
-            pass
-        else:
+        used_ffmpeg = bool(i < 4 and _ffmpeg_encode_decode(w_v, p, ".mp3", ["-c:a", "libmp3lame", "-b:a", "128k"]))
+        if not used_ffmpeg:
             y_v = _mdct1024_roundtrip(v_src, sr, f_lo=6000.0, f_hi=11500.0, zero_prob=0.42, seed=7550 + i)
             _save(p, y_v, sr, "PCM_16")
-        cases.append((p, False, "FAKE 16: Vintage 1950s master -> MP3/MDCT"))
+        cases.append((p, False, "FAKE 16: Vintage 1950s master -> MP3/MDCT",
+                      "ffmpeg" if used_ffmpeg else ("dsp_fallback" if i < 4 else "native_dsp")))
 
     # 17. Sinc upscale 44.1->96 & 48->192 kHz
     sinc_4x = signal.firwin(257, 0.245, window=("kaiser", 12.0)) * 4.0
@@ -606,16 +629,19 @@ def create_dataset(directory):
         if i < 4:
             x = signal.resample_poly(track_reference(sr, 4.0, 7600 + i), up=320, down=147, axis=0)
             _save(p, x, 96000, "PCM_24")
+            backend = "native_dsp"
         else:
             src48 = track_reference(48000, 3.5, 7620 + i)
             w48 = os.path.join(directory, f"_up48_{i}.wav")
             _save(w48, src48, 48000, "PCM_24")
-            if not _ffmpeg_encode_decode(w48, p, ".wav", ["-c:a", "pcm_s24le"], out_sr=192000):
+            used_ffmpeg = _ffmpeg_encode_decode(w48, p, ".wav", ["-c:a", "pcm_s24le"], out_sr=192000)
+            if not used_ffmpeg:
                 x = signal.upfirdn(sinc_4x, src48, up=4, down=1, axis=0)[128 : 128 + len(src48) * 4]
                 _save(p, x, 192000, "PCM_24")
             if os.path.exists(w48):
                 os.remove(w48)
-        cases.append((p, False, "FAKE 17: Sinc upscale (44.1->96 & 48->192)"))
+            backend = "ffmpeg" if used_ffmpeg else "dsp_fallback"
+        cases.append((p, False, "FAKE 17: Sinc upscale (44.1->96 & 48->192)", backend))
 
     # 18. Aliasing mirror upscale 44.1->88.2 kHz
     for i in range(7):
@@ -627,7 +653,7 @@ def create_dataset(directory):
         y[-1] = x[-1]
         p = os.path.join(directory, f"fake_mirror_{i:02d}.flac")
         _save(p, y, 88200, "PCM_24")
-        cases.append((p, False, "FAKE 18: Aliasing mirror upscale 44.1->88.2"))
+        cases.append((p, False, "FAKE 18: Aliasing mirror upscale 44.1->88.2", "native_dsp"))
 
     # 19. 16-bit zero-padded & gain-comb scaled into 24-bit
     for i in range(7):
@@ -637,7 +663,7 @@ def create_dataset(directory):
             _save(p, x, sr, "PCM_24")
         else:
             _save(p, x * 0.96605, sr, "PCM_24")
-        cases.append((p, False, "FAKE 19: 16-in-24 zero-pad & gain-comb"))
+        cases.append((p, False, "FAKE 19: 16-in-24 zero-pad & gain-comb", "native_dsp"))
 
     # 20. 16-bit + +/-1..2 LSB boundary micro-dither in 24-bit
     for i in range(7):
@@ -647,7 +673,7 @@ def create_dataset(directory):
         dither = rng.integers(-2, 3, size=x16.shape)
         x24 = np.clip(x16 + dither, -8388607, 8388607) / 8388608.0
         _save(p, x24, 96000, "PCM_24")
-        cases.append((p, False, "FAKE 20: 16-in-24 boundary micro-dither"))
+        cases.append((p, False, "FAKE 20: 16-in-24 boundary micro-dither", "native_dsp"))
 
     # 21. MPEG-4 AAC KBD-1024 asymmetric stereo & 16-in-32 container bloat
     w_kbd = _get_kbd_2048()
@@ -672,6 +698,7 @@ def create_dataset(directory):
             asym = np.column_stack([left_muf * 0.35, rec_r.astype(np.float64)])
             asym /= np.max(np.abs(asym)) * 1.14
             _save(p, asym, sr, "PCM_16")
+            backend = "native_dsp"
         else:
             x16 = np.round(track_reference(sr, 4.5, 7990 + i) * 32767.0) / 32768.0
             if HAS_FFMPEG:
@@ -683,9 +710,11 @@ def create_dataset(directory):
                     check=True,
                 )
                 os.remove(w16)
+                backend = "ffmpeg"
             else:
                 _save(p, x16, sr, "PCM_24")
-        cases.append((p, False, "FAKE 21: AAC KBD-1024 asymmetric & 16-in-32 bloat"))
+                backend = "dsp_fallback"
+        cases.append((p, False, "FAKE 21: AAC KBD-1024 asymmetric & 16-in-32 bloat", backend))
 
     for w_path in wav_refs:
         if os.path.exists(w_path):
@@ -743,7 +772,7 @@ def wilson(k, n, z=1.96):
 
 
 def _eval_one(item):
-    path, autentica, category = item
+    path, autentica, category, backend = item if len(item) == 4 else (*item, "unknown")
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(65536), b""):
@@ -754,6 +783,7 @@ def _eval_one(item):
     return {
         "clase": category,
         "autentica": autentica,
+        "backend": backend,
         "veredicto": verdict,
         "correcto": correct,
         "archivo": os.path.basename(path),
@@ -879,7 +909,16 @@ def update_document(path, section):
         f.write(text)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run the 260-track forensic validation benchmark."
+    )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="Non-mutating verification mode: skip doc writes and require 100%% pass.",
+    )
+    args = parser.parse_args(argv)
+
     directory = tempfile.mkdtemp(prefix="flac_verifier_benchmark_")
     old_cache_env = os.environ.get("FLAC_VERIFIER_CACHE_DIR")
     os.environ["FLAC_VERIFIER_CACHE_DIR"] = os.path.join(directory, "_cache")
@@ -906,14 +945,22 @@ def main():
     print("  Specificity: %.1f%%  Wilson 95%% CI %.1f%%-%.1f%%"
           % (spec * 100, ic_spec[0] * 100, ic_spec[1] * 100))
 
+    backend_totals = {}
     by_category = {}
     for f in rows:
-        payload = by_category.setdefault(f["clase"], [0, 0])
+        payload = by_category.setdefault(f["clase"], [0, 0, {}])
         payload[0] += 1
         payload[1] += int(f["correcto"])
+        bk = f.get("backend", "unknown")
+        payload[2][bk] = payload[2].get(bk, 0) + 1
+        backend_totals[bk] = backend_totals.get(bk, 0) + 1
     for category in sorted(by_category):
-        total, aciertos = by_category[category]
-        print("  %-48s %d/%d" % (category, aciertos, total))
+        total, aciertos, bk_map = by_category[category]
+        bk_txt = ", ".join(f"{k}={bk_map[k]}" for k in sorted(bk_map))
+        print("  %-48s %d/%d  [%s]" % (category, aciertos, total, bk_txt))
+    print("  Backends: " + ", ".join(
+        f"{k}={backend_totals[k]}" for k in sorted(backend_totals)
+    ))
 
     errors = [f for f in rows if not f["correcto"]]
     for f in errors:
@@ -924,11 +971,19 @@ def main():
           % ("PASS" if coherence_ok else "FAIL",
              acoustic.get("veredicto"), acoustic.get("coherencia_album")))
 
-    section = _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
-    with open(os.path.join(ROOT, "docs", "VALIDATION.md"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(_detailed_validation_doc(section, rows))
-    update_document(os.path.join(ROOT, "README.md"), section)
-    update_document(os.path.join(ROOT, "docs", "COMPARISON.md"), section)
+    if not args.check:
+        section = _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
+        with open(os.path.join(ROOT, "docs", "VALIDATION.md"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(_detailed_validation_doc(section, rows))
+        update_document(os.path.join(ROOT, "README.md"), section)
+        update_document(os.path.join(ROOT, "docs", "COMPARISON.md"), section)
+
+    if args.check:
+        if fp > 0 or fn > 0 or not coherence_ok:
+            print("FAILED (--check): non-perfect sensitivity, specificity or album coherence")
+            return 1
+        print("PASS (--check): 100% sensitivity, specificity and album coherence")
+        return 0
 
     if sens < THRESHOLD or spec < THRESHOLD or not coherence_ok:
         print("FAILED: metrics below 95% or album coherence did not elevate the track")

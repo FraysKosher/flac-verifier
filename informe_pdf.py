@@ -726,28 +726,37 @@ def _elements(analyzed_path, results, mode, styles, temporal):
     yield _final_table(results, styles)
 
 
+def _pdf_sort_key(pair):
+    """Order by valid integer `indice_original`, falling back to enumerate index."""
+    idx, item = pair
+    if isinstance(item, dict):
+        orig = item.get("indice_original")
+        if isinstance(orig, int) and not isinstance(orig, bool):
+            return (0, orig, idx)
+    return (1, idx, idx)
+
+
 def generate(analyzed_path, results, destination=None, mode=None, output_dir=None):
     """Writes the PDF report. NEVER raises.
 
     Returns {"ok": bool, "ruta": str|None, "error": str|None, "paginas": int}.
     """
-    if not REPORTLAB_OK:
-        return {"ok": False, "ruta": None, "paginas": 0,
-                "error": "reportlab is not installed (pip install reportlab)"}
-    if not results:
-        return {"ok": False, "ruta": None, "paginas": 0,
-                "error": "there are no results to include in the report"}
-    # The direct API must honour the original track order even when the caller
-    # passes a streamed/suspicious-last list. Missing indices keep input order.
-    results = [r for _, r in sorted(
-        enumerate(results),
-        key=lambda par: par[1].get("indice_original", par[0]))]
-
-    destination = destination or report_path(analyzed_path, output_dir=output_dir)
-    styles = _styles()
     counter = {"paginas": 0}
     temporal = None
     try:
+        if not REPORTLAB_OK:
+            return {"ok": False, "ruta": None, "paginas": 0,
+                    "error": "reportlab is not installed (pip install reportlab)"}
+        if not results:
+            return {"ok": False, "ruta": None, "paginas": 0,
+                    "error": "there are no results to include in the report"}
+        # The direct API must honour the original track order even when the caller
+        # passes a streamed/suspicious-last list. Missing or malformed indices
+        # fall back to input order without raising.
+        results = [r for _, r in sorted(enumerate(results), key=_pdf_sort_key)]
+
+        destination = destination or report_path(analyzed_path, output_dir=output_dir)
+        styles = _styles()
         target_parent = os.path.dirname(os.path.abspath(destination))
         if target_parent:
             os.makedirs(target_parent, exist_ok=True)
