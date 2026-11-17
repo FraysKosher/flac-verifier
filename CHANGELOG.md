@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-11-16
+
+### Added
+
+- Non-mutating `--check` mode and explicit per-family generator backend reporting
+  (`ffmpeg`, `dsp_fallback`, `native_dsp`) in `tests/benchmark_validacion.py`.
+- 18 targeted regression tests bringing the automated suite from **383** to
+  **401 tests**: multichannel (`>2` channels) analysis and PNG rendering,
+  zero-energy spectral guard, `L = -R` anti-phase rescue, normalized album
+  folder grouping, malformed cache JSON & corrupted PNG header isolation,
+  mode-scoped PNG filenames & atomic temp replacement, fresh caller path
+  stamping, mid-stream decode/truncation guards, per-channel bounded
+  `_ClippingAccumulator` (`L/R/L` isolation, boundary streaks, `<2 MiB` heap),
+  silence & MD5-mismatch short-circuiting, `build.verify()` non-zero exit check,
+  CLI indeterminate summary output, `informe_pdf.generate` robustness, POSIX
+  process-group tree cleanup, and GUI multi-album partial failure tracking.
+
+### Changed
+
+- Raised `ENGINE_VERSION` to **`"14.6"`** (`motor_flac.py`),
+  `CACHE_SCHEMA_VERSION` to **`"2.5.0"`** (`motor_flac.py`), and application
+  version to **`2.10.1`** (`main.py`, `pyproject.toml`, `version_info.txt`).
+- Replaced the per-file `self._clip_lengths` Python list in `_BlockAnalysis` with
+  a bounded `O(channels)` per-channel `_ClippingAccumulator` (`_motor_bits.py`),
+  dropping 4-minute alternating clipping peak heap from `53.55 MiB` to
+  `0.27 MiB` while keeping `O(1)` scaling across track length.
+- Short-circuited `_BlockAnalysis.result()` before BDI, ForensicBits, STFT, and
+  PNG generation on digital silence and `STREAMINFO MD5` mismatches.
+
+### Fixed
+
+- **Multichannel & anti-phase spectral blindness (`_motor_espectral.py`)**:
+  multichannel (`>=3` ch) FLACs no longer discard Centre/Surround channels when
+  Front L/R are silent, out-of-phase (`L = -R`) stereo blocks no longer score
+  `-inf` activity or lose Hi-Res/SBR/MDCT detection, and `_spectral_metrics` now
+  rejects all-floor signals via a zero-energy guard instead of reporting
+  `ceiling = Nyquist` (`GENUINE LOSSLESS`).
+- **Cache, PNG & path hardening (`_motor_cache.py`, `motor_flac.py`,
+  `_motor_veredicto.py`)**: malformed cache JSON roots or non-dict nested fields
+  degrade cleanly to `MISS`, PNG spectrograms are mode-scoped and written
+  atomically with 8-byte PNG signature validation on read, cache hits refresh
+  caller `ruta`/`archivo`, album coherence normalizes folder paths, mid-stream
+  `sf.SoundFile` failures (`offset > 0`) no longer splice into `s32` fallback,
+  and `_hydrate_cached_png` uses a fresh accumulator with sample-count checks.
+- **Clipping boundary & cross-channel streaks (`_motor_bits.py`)**: fixed
+  `_streaks` losing `previous_count` when the next block begins with `starts[0] > 0`,
+  and prevented alternating single-sample `L, R, L` peaks from merging into false
+  clipping runs.
+- **CLI, PDF, build & GUI lifecycle**: `build.py:verify()` raises `SystemExit`
+  on non-zero `--version` exits; `verificar_flac.py` includes indeterminate count
+  in folder summaries; `informe_pdf.generate()` guards `indice_original` sorting
+  and pre-build path resolution inside `try/except`; `gui.py` isolates POSIX
+  subprocesses (`start_new_session=True` / `os.killpg`) and surfaces partial
+  multi-album batch failures as `RunState.ERROR`; `tests/benchmark_validacion.py`
+  fixes the unchecked Vorbis `-q10` overwrite bug.
+
 ## [2.10.0] - 2026-11-16
 
 ### Storage & PDF Output

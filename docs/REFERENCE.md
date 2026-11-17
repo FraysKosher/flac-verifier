@@ -293,7 +293,7 @@ An entry is reused only if all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"14.5"`), `CACHE_SCHEMA_VERSION` (`"2.4.0"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"14.6"`), `CACHE_SCHEMA_VERSION` (`"2.5.0"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---
