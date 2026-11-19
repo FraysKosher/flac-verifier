@@ -12,6 +12,7 @@ test('decodes 32-bit FLAC to int32', { skip: !existsSync(fixture) }, async () =>
   assert.equal(r.sampleRate, 44100);
   assert.ok(r.interleaved instanceof Int32Array);
   assert.equal(r.interleaved.length, 5292000);
+  r.release();
 });
 
 test('rejects truncated input', { skip: !existsSync(fixture) }, async () => {

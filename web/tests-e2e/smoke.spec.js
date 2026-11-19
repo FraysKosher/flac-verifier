@@ -33,7 +33,7 @@ test('analyzes a folder and matches parity verdicts', async ({ page }) => {
   await expect(page.locator('#folder-input')).toBeAttached();
   await expect(page.locator('#browse-folder')).toBeVisible();
   await page.locator('#folder-input').setInputFiles(FIXTURES);
-  await expect(page.locator('#rows tr')).toHaveCount(5, { timeout: LONG });
+  await expect(page.locator('#rows tr')).toHaveCount(6, { timeout: LONG });
   await expect(state).toHaveText('Idle', { timeout: LONG });
-  await expect(page.locator('#rows tr')).toHaveCount(5);
+  await expect(page.locator('#rows tr')).toHaveCount(6);
 });

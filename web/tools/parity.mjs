@@ -59,15 +59,17 @@ engine.py.FS.mkdirTree('/fx');
 engine.py.FS.mount(engine.py.FS.filesystems.NODEFS, { root: dir }, '/fx');
 
 let failed = 0;
+let seq = 0;
 for (const name of names) {
   const vpath = `/fx/${name}`;
   let raw = null;
   if (engine.call('needs_s32', vpath)) {
     const bytes = readFileSync(path.join(dir, name));
-    const { interleaved } = await decodeFlac32(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length));
-    raw = `/s32/${name}.raw`;
+    const { interleaved, release } = await decodeFlac32(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length));
+    raw = `/s32/${++seq}.raw`;
     engine.py.FS.mkdirTree('/s32');
-    engine.py.FS.writeFile(raw, new Uint8Array(interleaved.buffer));
+    engine.py.FS.writeFile(raw, new Uint8Array(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength));
+    release();
     engine.call('set_s32_source', vpath, raw);
   }
   const [json] = engine.call('analyze', vpath, 'full', null);

@@ -11,7 +11,7 @@ typedef struct {
   uint64_t total_frames;
   int32_t *data;
   size_t used, cap; /* in samples */
-  int failed;
+  int failed, oom;
 } Handle;
 
 static FLAC__StreamDecoderReadStatus on_read(const FLAC__StreamDecoder *d, FLAC__byte *buf, size_t *bytes, void *c) {
@@ -35,7 +35,7 @@ static FLAC__StreamDecoderWriteStatus on_write(const FLAC__StreamDecoder *d, con
     size_t cap = h->cap ? h->cap : 1u << 16;
     while (cap < need) cap *= 2;
     int32_t *p = realloc(h->data, cap * sizeof(int32_t));
-    if (!p) { h->failed = 1; return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT; }
+    if (!p) { h->failed = 1; h->oom = 1; return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT; }
     h->data = p; h->cap = cap;
   }
   for (i = 0; i < f->header.blocksize; i++)
@@ -55,9 +55,10 @@ static void on_meta(const FLAC__StreamDecoder *d, const FLAC__StreamMetadata *m,
   }
 }
 
+/* Recoverable stream errors (lost sync, bad CRC) keep the decoded PCM, as
+   the desktop ffmpeg path does; the engine reports integrity itself. */
 static void on_error(const FLAC__StreamDecoder *d, FLAC__StreamDecoderErrorStatus s, void *c) {
-  (void)d; (void)s;
-  ((Handle *)c)->failed = 1;
+  (void)d; (void)s; (void)c;
 }
 
 /* in must stay valid until flac32_free. Returns NULL on allocation failure;
@@ -68,18 +69,21 @@ Handle *flac32_decode(const uint8_t *in, size_t len) {
   h->in = in; h->in_len = len;
   FLAC__StreamDecoder *d = FLAC__stream_decoder_new();
   if (!d) { h->failed = 1; return h; }
-  FLAC__stream_decoder_set_md5_checking(d, 1);
   if (FLAC__stream_decoder_init_stream(d, on_read, NULL, NULL, NULL, NULL, on_write, on_meta, on_error, h)
       != FLAC__STREAM_DECODER_INIT_STATUS_OK) h->failed = 1;
   else {
     if (!FLAC__stream_decoder_process_until_end_of_stream(d)) h->failed = 1;
-    if (!FLAC__stream_decoder_finish(d)) h->failed = 1; /* false on MD5 mismatch */
+    FLAC__stream_decoder_finish(d);
   }
   FLAC__stream_decoder_delete(d);
-  if (h->channels && h->total_frames && h->used != h->total_frames * h->channels) h->failed = 1;
+  if (h->used && h->used < h->cap) {
+    int32_t *p = realloc(h->data, h->used * sizeof(int32_t));
+    if (p) { h->data = p; h->cap = h->used; }
+  }
   return h;
 }
 int flac32_ok(Handle *h) { return !h->failed && h->channels > 0; }
+int flac32_oom(Handle *h) { return h->oom; }
 uint32_t flac32_channels(Handle *h) { return h->channels; }
 uint32_t flac32_sample_rate(Handle *h) { return h->sample_rate; }
 uint32_t flac32_bits(Handle *h) { return h->bits; }

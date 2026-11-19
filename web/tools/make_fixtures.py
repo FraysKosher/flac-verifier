@@ -43,6 +43,11 @@ def main(out):
              SR, subtype="PCM_24")
     y = np.concatenate([full_band_noise(96000, 2.0, seed=100 + s) for s in range(10)])
     sf.write(os.path.join(out, "genuine24_96.flac"), y, 96000, subtype="PCM_24")
+    with open(os.path.join(out, "flac32.flac"), "rb") as src:
+        data = bytearray(src.read())
+    data[26 + 7] ^= 0xFF  # STREAMINFO MD5 (bytes 26..41 of the file)
+    with open(os.path.join(out, "flac32_badmd5.flac"), "wb") as dst:
+        dst.write(data)
     bits = FLAC(os.path.join(out, "flac32.flac")).info.bits_per_sample
     if bits != 32:
         sys.exit(f"flac32.flac is {bits}-bit, expected 32")

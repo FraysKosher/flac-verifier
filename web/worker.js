@@ -1,5 +1,5 @@
 // Module worker: hosts the Pyodide engine. Protocol: see scheduler.js.
-import { decodeFlac32 } from './flac32.js';
+import { decodeFlac32, TOO_LARGE } from './flac32.js';
 import { loadEngine, PYODIDE_INDEX_URL, ENGINE_FILES } from './runtime.js';
 
 let engine = null;
@@ -29,21 +29,27 @@ async function init(base) {
   }
 }
 
-async function registerS32(file, vpath) {
+let seq = 0;
+const perFile = (message) => Object.assign(new Error(message), { perFile: true });
+
+async function registerS32(file, vpath, raw) {
   const { FS } = engine.py;
   let decoded;
   try {
     decoded = await decodeFlac32(await file.arrayBuffer());
   } catch (err) {
-    const failure = new Error(`Could not decode this 32-bit FLAC file (${err.message || err}) Check that the file is not damaged, then analyze it again.`);
-    failure.perFile = true;
-    throw failure;
+    const message = String(err.message || err);
+    throw perFile(message === TOO_LARGE ? message : `Could not decode this 32-bit FLAC file: ${message}`);
   }
-  const raw = `/s32/${vpath.replace(/[^A-Za-z0-9._-]/g, '_')}.raw`;
-  FS.mkdirTree('/s32');
-  FS.writeFile(raw, new Uint8Array(decoded.interleaved.buffer));
+  try {
+    FS.mkdirTree('/s32');
+    FS.writeFile(raw, new Uint8Array(decoded.interleaved.buffer, decoded.interleaved.byteOffset, decoded.interleaved.byteLength));
+  } catch {
+    throw perFile(TOO_LARGE);
+  } finally {
+    decoded.release();
+  }
   engine.call('set_s32_source', vpath, raw);
-  return raw;
 }
 
 async function analyze({ id, file, vpath, mode, seconds }) {
@@ -53,13 +59,16 @@ async function analyze({ id, file, vpath, mode, seconds }) {
   FS.mount(FS.filesystems.WORKERFS, { files: [file] }, dir);
   let raw = null;
   try {
-    if (engine.call('needs_s32', vpath)) raw = await registerS32(file, vpath);
+    if (engine.call('needs_s32', vpath)) {
+      raw = `/s32/${++seq}.raw`;
+      await registerS32(file, vpath, raw);
+    }
     const [json, png] = engine.call('analyze', vpath, mode, seconds);
     const out = png ? new Uint8Array(png) : null;
     postMessage({ type: 'result', id, json, png: out }, out ? [out.buffer] : []);
   } finally {
     if (raw) {
-      engine.call('set_s32_source', vpath, '');
+      try { engine.call('set_s32_source', vpath, ''); } catch { /* nothing registered */ }
       try { FS.unlink(raw); } catch { /* already gone */ }
     }
     FS.unmount(dir);
