@@ -36,8 +36,10 @@ class _LazyWindows:
 def sliding_window_view(x, window_shape, axis=None, **kwargs):
     try:
         return _original(x, window_shape, axis=axis, **kwargs)
-    except ValueError:
-        if axis is None and x.ndim == 1 and isinstance(window_shape, int):
+    except ValueError as error:
+        if (axis is None and x.ndim == 1 and isinstance(window_shape, int)
+                and 0 < window_shape <= x.shape[0]
+                and "too big" in str(error)):
             return _LazyWindows(x, window_shape)
         raise
 

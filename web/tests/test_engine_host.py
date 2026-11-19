@@ -87,8 +87,14 @@ class EngineHostTests(unittest.TestCase):
         out = json.loads(engine_host.album_coherence(text))
         self.assertEqual(text, json.dumps(results))
         self.assertEqual(len(out), len(results))
-        self.assertIn(engine_host.disposition(json.dumps(results[0])),
-                      ("deferred", "immediate"))
+
+    def test_disposition_matches_engine(self):
+        for name in ("ok16", "upscale96", "corte_16k", "hires96_rolloff30k"):
+            result = json.loads(engine_host.analyze(self.fx[name], "full", None)[0])
+            deferred = (motor_flac.classify_batch_disposition(result)
+                        == motor_flac.BatchDisposition.DEFERRED)
+            self.assertEqual(engine_host.disposition(json.dumps(result)),
+                             "deferred" if deferred else "immediate", name)
 
     def test_sort_names_natural(self):
         self.assertEqual(
