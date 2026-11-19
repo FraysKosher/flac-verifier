@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLAC Verifier</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>FLAC Verifier</h1>
+  <span id="state" role="status">Idle</span>
+  <span id="progress"></span>
+  <span class="grow"></span>
+  <button id="analyze" class="primary" disabled>Analyze</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="theme" aria-label="Theme"><span id="theme-icon" class="icon"></span></button>
+</header>
+<div id="layout">
+  <aside id="rail">
+    <label class="row">Mode
+      <select id="mode"><option value="full">Full</option><option value="center">Center</option><option value="seconds">Seconds</option></select>
+    </label>
+    <label class="row" id="seconds-row" hidden>Seconds
+      <input id="seconds" type="number" min="1" value="15">
+    </label>
+    <label class="row">Workers <select id="workers"></select></label>
+    <label class="row check"><input id="ignore-cache" type="checkbox"> Ignore cache</label>
+  </aside>
+  <main>
+    <section id="start">
+      <div id="dropzone" tabindex="0">Drop folder</div>
+      <div class="buttons">
+        <button id="browse-folder" class="primary">Browse folder</button>
+        <button id="browse-files">Choose files</button>
+      </div>
+      <input id="folder-input" type="file" webkitdirectory hidden>
+      <input id="files-input" type="file" accept=".flac" multiple hidden>
+      <p id="start-error" class="error" hidden></p>
+    </section>
+    <section id="results" hidden>
+      <div id="filters"></div>
+      <div id="warnings"></div>
+      <div id="table-wrap">
+        <table id="table"><thead><tr id="head"></tr></thead><tbody id="rows"></tbody></table>
+        <p id="empty" class="empty">No results</p>
+      </div>
+    </section>
+  </main>
+  <aside id="inspector" hidden></aside>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

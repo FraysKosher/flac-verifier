@@ -13,4 +13,5 @@ for f in "$web"/*.html "$web"/*.js "$web"/*.css "$web"/*.py; do
   esac
   cp "$f" "$site/"
 done
+[ -d "$web/icons" ] && cp -r "$web/icons" "$site/icons"
 cp "$root"/motor_flac.py "$root"/_motor_*.py "$site/"
