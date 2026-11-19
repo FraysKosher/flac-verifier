@@ -69,7 +69,12 @@ function renderControls() {
   $('progress').textContent = state.total ? `${state.done} / ${state.total}` : '';
 }
 
-function showError(text) { const p = $('start-error'); p.textContent = text; p.hidden = !text; }
+function showError(text) {
+  const p = $('start-error'); p.textContent = text; p.hidden = !text || !$('results').hidden;
+  if (text && !$('results').hidden) state.warnings.set('!intake', text);
+  else state.warnings.delete('!intake');
+  renderWarnings();
+}
 
 function loadEntries(entries, dropName) {
   const albums = buildAlbums(entries, dropName);
@@ -142,7 +147,7 @@ function renderWarnings() {
   for (const [album, message] of state.warnings) {
     const p = document.createElement('p');
     p.className = 'error';
-    p.textContent = album ? `${album}: ${message}` : message;
+    p.textContent = album && !album.startsWith('!') ? `${album}: ${message}` : message;
     box.append(p);
   }
 }
@@ -276,7 +281,6 @@ function wire() {
       loadEntries(entries, rootName(entries));
     } catch (err) {
       showError(`Could not read the dropped items: ${err.message}. Try Browse folder.`);
-      $('start').hidden = false;
     }
   });
   setupWorkers(); renderControls(); renderTable();

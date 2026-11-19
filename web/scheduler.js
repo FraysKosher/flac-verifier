@@ -3,9 +3,10 @@
 // immediate results stream, deferred ones wait for album coherence.
 import { cacheKey } from './cache.js';
 
+const TIMEOUT_MESSAGE = 'File took too long to analyze. Re-analyze it, or use the desktop app.';
 const basename = (p) => p.slice(p.lastIndexOf('/') + 1);
 
-export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, base }) {
+export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, base, fileTimeoutMs = 600000 }) {
   let current = null;
 
   function stop() {
@@ -41,13 +42,14 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
         if (m.type === 'fatal') { w.onReady.reject(new Error(m.message)); return; }
         const p = w.pending.get(m.id);
         if (!p) return;
-        w.pending.delete(m.id);
-        if (m.type === 'error') p.reject(new Error(m.message));
+        if (!(m.type === 'error' && m.crash)) w.pending.delete(m.id);
+        if (m.type === 'error' && m.crash) w.fail(new Error(m.message || 'Analysis worker crashed'));
+        else if (m.type === 'error') p.reject(new Error(m.message));
         else p.resolve(m);
       };
-      w.onerror = (e) => {
+      w.onerror = (e) => w.fail(new Error((e && e.message) || 'Analysis worker crashed'));
+      w.fail = (err) => {
         if (!run.alive) return;
-        const err = new Error((e && e.message) || 'Analysis worker crashed');
         run.limit = 1;
         drop(w);
         w.onReady.reject(err);
@@ -93,12 +95,16 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
     // Send one request on a pooled worker; a crash rejects the promise.
     async function request(msg, transfer = []) {
       const w = await acquire();
+      let timer;
       try {
         const id = run.nextId++;
         const reply = new Promise((resolve, reject) => w.pending.set(id, { resolve, reject }));
+        timer = setTimeout(() => w.fail(new Error(TIMEOUT_MESSAGE)), fileTimeoutMs);
+        timer.unref?.();
         w.postMessage({ ...msg, id }, transfer);
         return await reply;
       } finally {
+        clearTimeout(timer);
         release(w);
       }
     }

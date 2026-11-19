@@ -12,6 +12,10 @@
   <span id="state" role="status">Idle</span>
   <span id="progress"></span>
   <span class="grow"></span>
+  <button id="browse-folder" class="primary">Browse folder</button>
+  <button id="browse-files">Choose files</button>
+  <input id="folder-input" type="file" webkitdirectory hidden>
+  <input id="files-input" type="file" accept=".flac" multiple hidden>
   <button id="analyze" class="primary" disabled>Analyze</button>
   <button id="stop" disabled>Stop</button>
   <button id="theme" aria-label="Theme"><span id="theme-icon" class="icon"></span></button>
@@ -30,12 +34,6 @@
   <main>
     <section id="start">
       <div id="dropzone" tabindex="0">Drop folder</div>
-      <div class="buttons">
-        <button id="browse-folder" class="primary">Browse folder</button>
-        <button id="browse-files">Choose files</button>
-      </div>
-      <input id="folder-input" type="file" webkitdirectory hidden>
-      <input id="files-input" type="file" accept=".flac" multiple hidden>
       <p id="start-error" class="error" hidden></p>
     </section>
     <section id="results" hidden>

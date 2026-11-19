@@ -55,10 +55,14 @@ onmessage = async (event) => {
     if (msg.type === 'analyze') analyze(msg);
     else if (msg.type === 'call') callFn(msg);
   } catch (err) {
-    postMessage({ type: 'error', id: msg.id, message: String(err && err.message || err) });
+    const message = String(err && err.message || err);
+    const python = err && (err.constructor?.name === 'PythonError' || err.type);
+    if (python || !engine) postMessage({ type: 'error', id: msg.id, message });
+    else { postMessage({ type: 'error', id: msg.id, message, crash: true }); self.close(); }
   }
 };
 
 onunhandledrejection = (event) => {
-  postMessage({ type: 'error', id: currentId, message: String(event.reason && event.reason.message || event.reason) });
+  postMessage({ type: 'error', id: currentId, message: String(event.reason && event.reason.message || event.reason), crash: true });
+  self.close();
 };

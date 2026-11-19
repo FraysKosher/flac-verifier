@@ -274,3 +274,54 @@ test('replacement worker init failing after a crash ends the run with fatal', { 
   assert.equal(events.at(-1).type, 'fatal');
   assert.equal(count, 2);
 });
+
+test('crash:true message shrinks the pool and the batch completes', { timeout: 3000 }, async () => {
+  const script = {};
+  for (const n of ['a', 'b', 'c']) script[V('A', `${n}.flac`)] = { json: verdict('ok', V('A', `${n}.flac`)) };
+  const env = makeEnv(script);
+  const events = [];
+  const factory = () => {
+    const w = env.factory();
+    const orig = w.postMessage;
+    w.postMessage = function (m, t) {
+      if (m.type === 'analyze' && m.vpath === V('A', 'b.flac')) {
+        setTimeout(() => this.onmessage({ data: { type: 'error', id: m.id, message: 'wasm abort', crash: true } }), 1);
+        return;
+      }
+      return orig.call(this, m, t);
+    };
+    return w;
+  };
+  const sched = createScheduler({ workerFactory: factory, poolSize: 2, cache: openCache(memoryBackend()), onEvent: (e) => events.push(e), base: '/' });
+  sched.run([album('A', ['a.flac', 'b.flac', 'c.flac'])], opts);
+  await done(events);
+  const tracks = events.filter((e) => e.type === 'track');
+  assert.equal(tracks.length, 3);
+  assert.equal(tracks.filter((e) => e.result.error).length, 1);
+  assert.ok(events.some((e) => e.type === 'done'));
+  assert.ok(env.workers.some((w) => w.terminated));
+});
+
+test('a worker that never answers times out, errors the track and the batch continues', { timeout: 5000 }, async () => {
+  const script = {};
+  for (const n of ['a', 'b', 'c']) script[V('A', `${n}.flac`)] = { json: verdict('ok', V('A', `${n}.flac`)) };
+  const env = makeEnv(script);
+  const events = [];
+  const factory = () => {
+    const w = env.factory();
+    const orig = w.postMessage;
+    w.postMessage = function (m, t) {
+      if (m.type === 'analyze' && m.vpath === V('A', 'b.flac')) return;
+      return orig.call(this, m, t);
+    };
+    return w;
+  };
+  const sched = createScheduler({ workerFactory: factory, poolSize: 2, cache: openCache(memoryBackend()), onEvent: (e) => events.push(e), base: '/', fileTimeoutMs: 100 });
+  sched.run([album('A', ['a.flac', 'b.flac', 'c.flac'])], opts);
+  await done(events);
+  const errs = events.filter((e) => e.type === 'track' && e.result.error);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].result.error, /took too long/);
+  assert.ok(events.some((e) => e.type === 'done'));
+  assert.ok(env.workers.some((w) => w.terminated));
+});
