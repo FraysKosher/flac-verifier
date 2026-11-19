@@ -253,3 +253,24 @@ test('second worker init failure keeps batch going', async () => {
   assert.ok(events.some((e) => e.type === 'done'));
   assert.ok(env.workers.filter((w) => !w.terminated).length <= 1);
 });
+
+test('replacement worker init failing after a crash ends the run with fatal', { timeout: 3000 }, async () => {
+  const script = {};
+  for (const n of ['a', 'b', 'c']) script[V('A', `${n}.flac`)] = { json: verdict('ok', V('A', `${n}.flac`)) };
+  script[V('A', 'b.flac')] = { crash: true };
+  const env = makeEnv(script);
+  const events = [];
+  let count = 0;
+  const factory = () => {
+    const w = env.factory();
+    if (++count === 2) {
+      w.postMessage = function () { setTimeout(() => this.onmessage({ data: { type: 'fatal', message: 'reload failed' } }), 1); };
+    }
+    return w;
+  };
+  const sched = createScheduler({ workerFactory: factory, poolSize: 1, cache: openCache(memoryBackend()), onEvent: (e) => events.push(e), base: '/' });
+  sched.run([album('A', ['a.flac', 'b.flac', 'c.flac'])], opts);
+  await done(events);
+  assert.equal(events.at(-1).type, 'fatal');
+  assert.equal(count, 2);
+});

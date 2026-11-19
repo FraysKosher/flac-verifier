@@ -19,7 +19,6 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
   function makeRun() {
     const run = {
       alive: true, limit: poolSize, workers: [], waiters: [], nextId: 1,
-      engineVersion: null, everReady: false,
     };
     run.emit = (event) => { if (run.alive) onEvent(event); };
 
@@ -73,12 +72,11 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
           } catch (err) {
             // Init failure or crash: drop this worker; fatal only if none can start.
             drop(w);
-            if (!run.everReady && run.workers.length === 0) { err.fatal = true; throw err; }
+            if (run.workers.length === 0) { err.fatal = true; throw err; }
             run.limit = Math.max(1, Math.min(run.limit, run.workers.length));
             wake();
             continue;
           }
-          run.everReady = true;
           return w;
         }
         await new Promise((resolve) => run.waiters.push(resolve));
