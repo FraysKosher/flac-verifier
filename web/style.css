@@ -62,7 +62,14 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; padding:16px; }
   border:1px solid var(--border-subtle); border-radius:12px; overflow:hidden; }
 #filters { display:flex; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border-subtle); }
 #filters button { padding:3px 12px; color:var(--text-secondary); }
-#filters button.active { border-width:1px; }
+/* Active filter colours mirror gui.py FILTER_BUTTON_SPECS (fill, hover, border, text).
+   The #filters prefix is needed to outrank the inactive rule above. */
+#filters button.active.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+#filters button.active.primary:hover:not(:disabled) { background:var(--accent-hover); }
+#filters button.active.tone-bad { background:var(--bad-bg); border-color:var(--bad-border); color:var(--bad); }
+#filters button.active.tone-warn { background:var(--warn-bg); border-color:var(--warn-border); color:var(--warn); }
+#filters button.active.tone-danger { background:var(--danger-bg); border-color:var(--danger); color:var(--danger); }
+#filters button.active:not(.primary):hover:not(:disabled) { background:var(--bg-hover); }
 #warnings .error { margin:6px 10px 0; }
 #table-wrap { flex:1; overflow:auto; }
 table { width:100%; border-collapse:collapse; }
