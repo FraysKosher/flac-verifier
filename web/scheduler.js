@@ -19,7 +19,7 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
   function makeRun() {
     const run = {
       alive: true, limit: poolSize, workers: [], waiters: [], nextId: 1,
-      engineVersion: null, fatalMessage: null,
+      engineVersion: null, everReady: false,
     };
     run.emit = (event) => { if (run.alive) onEvent(event); };
 
@@ -68,7 +68,17 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
         if (idle) { idle.busy = true; return idle; }
         if (run.workers.length < run.limit) {
           const w = spawn();
-          await w.ready;
+          try {
+            await w.ready;
+          } catch (err) {
+            // Init failure or crash: drop this worker; fatal only if none can start.
+            drop(w);
+            if (!run.everReady && run.workers.length === 0) { err.fatal = true; throw err; }
+            run.limit = Math.max(1, Math.min(run.limit, run.workers.length));
+            wake();
+            continue;
+          }
+          run.everReady = true;
           return w;
         }
         await new Promise((resolve) => run.waiters.push(resolve));
@@ -111,16 +121,21 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
       mode: opts.mode, seconds: opts.seconds, engineVersion: run.engineVersion,
     });
     try {
-      let entry = opts.ignoreCache ? null : await cache.get(key);
+      // Cache failures are never allowed to turn a good analysis into an error.
+      let entry = null;
+      if (!opts.ignoreCache) {
+        try { entry = await cache.get(key); } catch { entry = null; }
+      }
       const fromCache = !!entry;
       if (!entry) {
         const r = await run.analyze(track.file, track.vpath, opts.mode, opts.seconds ?? null);
         entry = { json: r.json, png: r.png ?? null };
-        await cache.put(key, entry);
+        try { await cache.put(key, entry); } catch { /* ignore */ }
       }
       const kind = await run.call('disposition', entry.json);
       return { track, json: entry.json, png: entry.png, fromCache, kind };
     } catch (err) {
+      if (err.fatal) throw err;
       return {
         track, json: null, png: null, fromCache: false, kind: 'immediate',
         error: { ruta: track.vpath, error: err.message },
@@ -133,9 +148,9 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
     const byName = new Map(album.tracks.map((t) => [basename(t.vpath), t]));
     const held = [];
     const ok = [];
-    const emitTrack = (r, result) => run.emit({
+    const emitTrack = (r, result, extra = {}) => run.emit({
       type: 'track', album: album.key, relPath: r.track.relPath,
-      result, png: r.png, fromCache: r.fromCache,
+      result, png: r.png, fromCache: r.fromCache, ...extra,
     });
     await Promise.all(order.map(async (name) => {
       const r = await analyzeTrack(run, byName.get(name), opts);
@@ -147,13 +162,26 @@ export function createScheduler({ workerFactory, poolSize = 2, cache, onEvent, b
     if (held.length) {
       const results = ok.map((r) => JSON.parse(r.json));
       const coherent = new Map();
-      try {
-        for (const res of JSON.parse(await run.call('album_coherence', JSON.stringify(results)))) {
-          coherent.set(res.ruta, res);
+      let failed = true;
+      for (let attempt = 0; attempt < 2 && failed; attempt++) {
+        try {
+          const out = JSON.parse(await run.call('album_coherence', JSON.stringify(results)));
+          for (const res of out) coherent.set(res.ruta, res);
+          failed = false;
+        } catch (err) {
+          if (err.fatal) throw err;
         }
-      } catch { /* fall back to uncorrelated results */ }
+      }
       held.sort((a, b) => order.indexOf(basename(a.track.vpath)) - order.indexOf(basename(b.track.vpath)));
-      for (const r of held) emitTrack(r, coherent.get(r.track.vpath) ?? JSON.parse(r.json));
+      for (const r of held) {
+        emitTrack(r, coherent.get(r.track.vpath) ?? JSON.parse(r.json), failed ? { coherence_failed: true } : {});
+      }
+      if (failed) {
+        run.emit({
+          type: 'album-warning', album: album.key,
+          message: 'Album consistency check failed. Re-analyze this album.',
+        });
+      }
     }
     run.emit({ type: 'album-done', album: album.key });
   }

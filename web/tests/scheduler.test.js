@@ -189,3 +189,67 @@ test('init failure reports fatal', async () => {
   assert.equal(events.at(-1).type, 'fatal');
   assert.equal(events.at(-1).message, 'engine down');
 });
+
+test('coherence fails once: second attempt output is used', async () => {
+  const p = V('A', 'a.flac');
+  const script = { [p]: { json: verdict('ok', p), deferred: true } };
+  let n = 0;
+  const { events, sched } = setup(script, {
+    coherence: (l) => { if (n++ === 0) throw new Error('x'); return l.map((r) => ({ ...r, veredicto: 'second' })); },
+  });
+  sched.run([album('A', ['a.flac'])], opts);
+  await done(events);
+  const t = events.find((e) => e.type === 'track');
+  assert.equal(t.result.veredicto, 'second');
+  assert.equal(t.coherence_failed, undefined);
+});
+
+test('coherence fails twice: coherence_failed and warning before album-done', async () => {
+  const p = V('A', 'a.flac');
+  const script = { [p]: { json: verdict('ok', p), deferred: true } };
+  const { events, sched } = setup(script, { coherence: () => { throw new Error('x'); } });
+  sched.run([album('A', ['a.flac'])], opts);
+  await done(events);
+  const t = events.find((e) => e.type === 'track');
+  assert.equal(t.coherence_failed, true);
+  assert.equal(t.result.veredicto, 'ok');
+  const types = events.map((e) => e.type);
+  assert.ok(types.indexOf('album-warning') < types.indexOf('album-done'));
+  assert.equal(events.find((e) => e.type === 'album-warning').message,
+    'Album consistency check failed. Re-analyze this album.');
+});
+
+test('throwing cache backend still yields real results', async () => {
+  const p = V('A', 'a.flac');
+  const env = makeEnv({ [p]: { json: verdict('ok', p) } });
+  const events = [];
+  const bad = { get: async () => { throw new Error('g'); }, put: async () => { throw new Error('p'); }, clear: async () => {} };
+  const sched = createScheduler({ workerFactory: env.factory, poolSize: 1, cache: bad, onEvent: (e) => events.push(e), base: '/' });
+  sched.run([album('A', ['a.flac'])], opts);
+  await done(events);
+  const t = events.find((e) => e.type === 'track');
+  assert.equal(t.result.veredicto, 'ok');
+  assert.equal(t.result.error, undefined);
+});
+
+test('second worker init failure keeps batch going', async () => {
+  const names = ['a', 'b', 'c'];
+  const script = {};
+  for (const n of names) script[V('A', `${n}.flac`)] = { json: verdict('ok', V('A', `${n}.flac`)) };
+  const env = makeEnv(script);
+  const events = [];
+  let count = 0;
+  const factory = () => {
+    const w = env.factory();
+    if (++count === 2) {
+      w.postMessage = function () { setTimeout(() => this.onmessage({ data: { type: 'fatal', message: 'no' } }), 1); };
+    }
+    return w;
+  };
+  const sched = createScheduler({ workerFactory: factory, poolSize: 2, cache: openCache(memoryBackend()), onEvent: (e) => events.push(e), base: '/' });
+  sched.run([album('A', names.map((n) => `${n}.flac`))], opts);
+  await done(events);
+  assert.equal(events.filter((e) => e.type === 'track' && !e.result.error).length, 3);
+  assert.ok(events.some((e) => e.type === 'done'));
+  assert.ok(env.workers.filter((w) => !w.terminated).length <= 1);
+});

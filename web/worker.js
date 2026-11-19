@@ -2,16 +2,18 @@
 import { loadEngine, PYODIDE_INDEX_URL, ENGINE_FILES } from './runtime.js';
 
 let engine = null;
+let currentId = null;
 
 function dirname(p) { return p.slice(0, p.lastIndexOf('/')) || '/'; }
 
 async function init(base) {
   try {
+    const root = new URL(base || '.', self.location.href);
     engine = await loadEngine({
       indexURL: PYODIDE_INDEX_URL,
       engineFiles: ENGINE_FILES,
       fetchText: async (name) => {
-        const res = await fetch(new URL(name, base));
+        const res = await fetch(new URL(name, root));
         if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
         return res.text();
       },
@@ -47,6 +49,7 @@ function callFn({ id, fn, args }) {
 onmessage = async (event) => {
   const msg = event.data;
   if (msg.type === 'init') return init(msg.base);
+  currentId = msg.id;
   try {
     if (!engine) throw new Error('Engine not ready');
     if (msg.type === 'analyze') analyze(msg);
@@ -57,5 +60,5 @@ onmessage = async (event) => {
 };
 
 onunhandledrejection = (event) => {
-  postMessage({ type: 'error', id: null, message: String(event.reason && event.reason.message || event.reason) });
+  postMessage({ type: 'error', id: currentId, message: String(event.reason && event.reason.message || event.reason) });
 };
