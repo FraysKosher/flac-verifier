@@ -24,14 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - name: Assemble the site
         run: bash web/tools/assemble.sh
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: web/_site
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
