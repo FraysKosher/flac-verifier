@@ -94,16 +94,18 @@ function rootName(entries) {
 // so engine workers start behind it.
 const swControlled = (async () => {
   if (!('serviceWorker' in navigator)) return;
-  try {
+  const control = (async () => {
     await navigator.serviceWorker.register('./sw.js', { type: 'module' });
     await navigator.serviceWorker.ready;
     if (!navigator.serviceWorker.controller) {
       await new Promise((resolve) => {
         navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
-        setTimeout(resolve, 3000);
       });
     }
-  } catch { /* caching is optional */ }
+  })();
+  control.catch(() => {});
+  await Promise.race([control, new Promise((resolve) => setTimeout(resolve, 3000))])
+    .catch(() => {}); // caching is optional
 })();
 
 function setupWorkers() {

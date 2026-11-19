@@ -16,3 +16,5 @@ done
 [ -d "$web/vendor" ] && cp -r "$web/vendor" "$site/vendor"
 [ -d "$web/icons" ] && cp -r "$web/icons" "$site/icons"
 cp "$root"/motor_flac.py "$root"/_motor_*.py "$site/"
+hash="$(cd "$web/vendor" && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-12)"
+sed -i "s/__VENDOR_HASH__/$hash/" "$site/sw.js"

@@ -2,8 +2,8 @@
 // network-first so deploys show up immediately.
 import { PYODIDE_INDEX_URL } from './runtime.js';
 
-// Bump when anything under vendor/ changes.
-const VENDOR_REV = 1;
+// assemble.sh replaces the placeholder with a hash of vendor/.
+const VENDOR_REV = '__VENDOR_HASH__';
 const CACHE = `fv-engine-${VENDOR_REV}-${PYODIDE_INDEX_URL}`;
 const PREFIX = 'fv-engine-';
 const inflight = new Map();
@@ -28,12 +28,14 @@ async function cacheFirst(request) {
   if (!pending) {
     pending = (async () => {
       const res = await fetch(request.url, { mode: 'cors', credentials: 'omit' });
-      if (cacheable(res)) await cache.put(request.url, res.clone());
-      return res;
+      if (!cacheable(res)) return () => res.clone();
+      await cache.put(request.url, res);
+      // The body now lives in the cache; each caller reads its own copy.
+      return async () => (await cache.match(request.url)) ?? fetch(request.url);
     })().finally(() => inflight.delete(request.url));
     inflight.set(request.url, pending);
   }
-  return (await pending).clone();
+  return (await pending)();
 }
 
 async function networkFirst(request) {
