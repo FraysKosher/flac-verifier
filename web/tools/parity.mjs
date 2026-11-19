@@ -53,8 +53,9 @@ const engineFiles = ['motor_flac.py', '_motor_bits.py', '_motor_espectral.py', '
   '_motor_cache.py', 'engine_host.py', 'wasm_compat.py'];
 const fetchText = async (name) => readFileSync(
   path.join(name === 'engine_host.py' || name === 'wasm_compat.py' ? web : root, name), 'utf8');
+const fetchBytes = async (name) => new Uint8Array(readFileSync(path.join(web, name)));
 const indexURL = path.join(web, 'node_modules/pyodide') + '/';
-const engine = await loadEngine({ indexURL, engineFiles, fetchText, loadPyodide });
+const engine = await loadEngine({ indexURL, engineFiles, fetchText, fetchBytes, loadPyodide });
 engine.py.FS.mkdirTree('/fx');
 engine.py.FS.mount(engine.py.FS.filesystems.NODEFS, { root: dir }, '/fx');
 

@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Surface the service worker's own network requests to the test.
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1';
+
 const PORT = 8765;
 
 export default defineConfig({
@@ -14,6 +17,7 @@ export default defineConfig({
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
   ],
   webServer: {
     command: `bash tools/assemble.sh && python3 -m http.server -d _site ${PORT}`,

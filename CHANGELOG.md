@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Web version at https://melo-foundation.github.io/flac-verifier/: choose an album folder in desktop Chromium or Firefox. 32-bit FLAC files are analyzed. The first load downloads about 33 MB.
+- Web version: the engine downloads once and later loads start from the local cache.
 
 ## [2.13.0] - 2026-11-24
 

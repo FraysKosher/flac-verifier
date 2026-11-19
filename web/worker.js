@@ -10,14 +10,16 @@ function dirname(p) { return p.slice(0, p.lastIndexOf('/')) || '/'; }
 async function init(base) {
   try {
     const root = new URL(base || '.', self.location.href);
+    const get = async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      return res;
+    };
     engine = await loadEngine({
       indexURL: PYODIDE_INDEX_URL,
       engineFiles: ENGINE_FILES,
-      fetchText: async (name) => {
-        const res = await fetch(new URL(name, root));
-        if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
-        return res.text();
-      },
+      fetchText: async (name) => (await get(new URL(name, root))).text(),
+      fetchBytes: async (name) => new Uint8Array(await (await get(new URL(name, root))).arrayBuffer()),
     });
     postMessage({ type: 'ready', engineVersion: engine.engineVersion });
   } catch (err) {

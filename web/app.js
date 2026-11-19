@@ -90,6 +90,22 @@ function rootName(entries) {
   return first.includes('/') ? first.split('/')[0] : 'Files';
 }
 
+// Register the cache worker; resolves once it controls the page (or gives up),
+// so engine workers start behind it.
+const swControlled = (async () => {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    await navigator.serviceWorker.register('./sw.js', { type: 'module' });
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((resolve) => {
+        navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+        setTimeout(resolve, 3000);
+      });
+    }
+  } catch { /* caching is optional */ }
+})();
+
 function setupWorkers() {
   const max = Math.max(1, Math.min((navigator.hardwareConcurrency || 2) - 1, 6));
   const sel = $('workers');
@@ -99,6 +115,7 @@ function setupWorkers() {
 
 async function analyze() {
   if (!state.albums.length) return;
+  await swControlled;
   if (scheduler) scheduler.stop();
   try { cache ??= openCache(); } catch { cache = null; }
   state.rows = new Map(); state.warnings = new Map(); state.selected = null;
