@@ -1,4 +1,5 @@
 // Module worker: hosts the Pyodide engine. Protocol: see scheduler.js.
+import { decodeFlac32 } from './flac32.js';
 import { loadEngine, PYODIDE_INDEX_URL, ENGINE_FILES } from './runtime.js';
 
 let engine = null;
@@ -28,16 +29,39 @@ async function init(base) {
   }
 }
 
-function analyze({ id, file, vpath, mode, seconds }) {
+async function registerS32(file, vpath) {
+  const { FS } = engine.py;
+  let decoded;
+  try {
+    decoded = await decodeFlac32(await file.arrayBuffer());
+  } catch (err) {
+    const failure = new Error(`Could not decode this 32-bit FLAC file (${err.message || err}) Check that the file is not damaged, then analyze it again.`);
+    failure.perFile = true;
+    throw failure;
+  }
+  const raw = `/s32/${vpath.replace(/[^A-Za-z0-9._-]/g, '_')}.raw`;
+  FS.mkdirTree('/s32');
+  FS.writeFile(raw, new Uint8Array(decoded.interleaved.buffer));
+  engine.call('set_s32_source', vpath, raw);
+  return raw;
+}
+
+async function analyze({ id, file, vpath, mode, seconds }) {
   const { FS } = engine.py;
   const dir = dirname(vpath);
   FS.mkdirTree(dir);
   FS.mount(FS.filesystems.WORKERFS, { files: [file] }, dir);
+  let raw = null;
   try {
+    if (engine.call('needs_s32', vpath)) raw = await registerS32(file, vpath);
     const [json, png] = engine.call('analyze', vpath, mode, seconds);
     const out = png ? new Uint8Array(png) : null;
     postMessage({ type: 'result', id, json, png: out }, out ? [out.buffer] : []);
   } finally {
+    if (raw) {
+      engine.call('set_s32_source', vpath, '');
+      try { FS.unlink(raw); } catch { /* already gone */ }
+    }
     FS.unmount(dir);
   }
 }
@@ -52,11 +76,11 @@ onmessage = async (event) => {
   currentId = msg.id;
   try {
     if (!engine) throw new Error('Engine not ready');
-    if (msg.type === 'analyze') analyze(msg);
+    if (msg.type === 'analyze') await analyze(msg);
     else if (msg.type === 'call') callFn(msg);
   } catch (err) {
     const message = String(err && err.message || err);
-    const python = err && (err.constructor?.name === 'PythonError' || err.type);
+    const python = err && (err.perFile || err.constructor?.name === 'PythonError' || err.type);
     if (python || !engine) postMessage({ type: 'error', id: msg.id, message });
     else { postMessage({ type: 'error', id: msg.id, message, crash: true }); self.close(); }
   }

@@ -107,7 +107,6 @@ Open the [web version](https://melo-foundation.github.io/flac-verifier/) and cho
 
 Supported browsers: desktop Chromium and Firefox.
 
-- 32-bit FLAC is not supported: the file shows an error. Use the desktop app for it.
 - The first load downloads about 33 MB.
 
 ---

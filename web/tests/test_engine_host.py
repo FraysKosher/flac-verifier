@@ -17,7 +17,6 @@ import engine_host  # noqa: E402
 import motor_flac  # noqa: E402
 from fixtures import Fixtures  # noqa: E402
 
-ERROR_32 = "32-bit FLAC is not supported in the browser. Use the desktop app."
 KEYS = ("veredicto", "score", "problemas", "md5")
 
 
@@ -62,23 +61,34 @@ class EngineHostTests(unittest.TestCase):
             f.write(os.urandom(4096))
         self.assertIn("error", json.loads(engine_host.analyze(p, "full", None)[0]))
 
-    def test_32bit_rejected_in_browser_mode(self):
-        if not shutil.which("ffmpeg"):
-            self.skipTest("ffmpeg missing")
-        p = os.path.join(self.fx.dir, "w32.flac")
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=2",
-                        "-sample_fmt", "s32", "-strict", "experimental", p], check=True)
-        old = engine_host.BROWSER
+    def test_s32_raw_reader_matches_original(self):
+        import numpy as np
+        src = os.path.join(WEB, ".fixtures", "flac32.flac")
+        if not os.path.exists(src) or not shutil.which("ffmpeg"):
+            self.skipTest("fixture or ffmpeg missing")
+        self.assertTrue(engine_host.needs_s32(src))
+        self.assertFalse(engine_host.needs_s32(self.fx["ok16"]))
+        raw = os.path.join(self.fx.dir, "w32.raw")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+                        "-f", "s32le", raw], check=True)
+        engine_host.set_s32_source(src, raw)
         try:
-            engine_host.BROWSER = True
-            line, png = engine_host.analyze(p, "full", None)
-            self.assertEqual(json.loads(line)["error"], ERROR_32)
-            self.assertIsNone(png)
-            engine_host.BROWSER = False
-            line, _ = engine_host.analyze(p, "full", None)
-            self.assertNotEqual(json.loads(line).get("error"), ERROR_32)
+            for fb in (motor_flac.FRAMES_BY_BLOCK, 4096, 1000):
+                want = list(motor_flac._iter_blocks_s32_flac(src, None, fb))
+                got = list(engine_host._iter_blocks_s32_raw(src, None, fb))
+                self.assertEqual(len(want), len(got))
+                for w, g in zip(want, got):
+                    self.assertEqual(w.shape, g.shape)
+                    self.assertEqual(g.dtype, np.float64)
+                    self.assertTrue(np.array_equal(w, g))
+            engine_host.install_s32_reader()
+            try:
+                line, _ = engine_host.analyze(src, "full", None)
+            finally:
+                engine_host.restore_s32_reader()
+            self.assertNotIn("error", json.loads(line))
         finally:
-            engine_host.BROWSER = old
+            engine_host.set_s32_source(src, None)
 
     def test_album_coherence_does_not_mutate_input(self):
         results = [json.loads(engine_host.analyze(self.fx[n], "full", None)[0])

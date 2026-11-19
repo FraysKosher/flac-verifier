@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadPyodide } from 'pyodide';
 import { loadEngine } from '../runtime.js';
+import { decodeFlac32 } from '../flac32.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const web = path.resolve(here, '..');
@@ -19,7 +20,6 @@ const names = readdirSync(dir).filter((n) => n.toLowerCase().endsWith('.flac')).
 
 const IGNORED = new Set(['/ruta', '/esp/espectrograma']);
 const TOLERANT = '/esp/var_alta_db';
-const ERROR_32BIT = '32-bit FLAC is not supported in the browser. Use the desktop app.';
 const isTiming = (k) => /(^|\/)(_?secs|segundos|tiempo\w*|elapsed\w*|duracion_analisis\w*)$/i.test(k);
 
 function pythonBin() {
@@ -60,13 +60,20 @@ engine.py.FS.mount(engine.py.FS.filesystems.NODEFS, { root: dir }, '/fx');
 
 let failed = 0;
 for (const name of names) {
-  const [json] = engine.call('analyze', `/fx/${name}`, 'full', null);
+  const vpath = `/fx/${name}`;
+  let raw = null;
+  if (engine.call('needs_s32', vpath)) {
+    const bytes = readFileSync(path.join(dir, name));
+    const { interleaved } = await decodeFlac32(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length));
+    raw = `/s32/${name}.raw`;
+    engine.py.FS.mkdirTree('/s32');
+    engine.py.FS.writeFile(raw, new Uint8Array(interleaved.buffer));
+    engine.call('set_s32_source', vpath, raw);
+  }
+  const [json] = engine.call('analyze', vpath, 'full', null);
+  if (raw) { engine.call('set_s32_source', vpath, ''); engine.py.FS.unlink(raw); }
   const browser = JSON.parse(json);
   const n = native[name];
-  if (n && !n.error && browser.error === ERROR_32BIT) {
-    console.log(`EXPECTED   ${name}  (32-bit not supported in browser)`);
-    continue;
-  }
   const a = flat(n), b = flat(browser);
   const diffs = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()
     .filter((k) => differs(k, a[k], b[k]));

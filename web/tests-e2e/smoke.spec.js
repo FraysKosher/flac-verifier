@@ -19,6 +19,8 @@ test('analyzes a folder and matches parity verdicts', async ({ page }) => {
 
   await expect(verdictOf(page, 'fake_mp3.flac')).toHaveText('PROBABLE UPSCALE');
   await expect(verdictOf(page, 'genuine.flac')).toHaveText('GENUINE LOSSLESS');
+  await expect(verdictOf(page, 'flac32.flac')).not.toHaveText(/ERROR/i);
+  await expect(verdictOf(page, 'flac32.flac')).toHaveText(/\S/);
 
   await rowFor(page, 'genuine.flac').click();
   const img = page.locator('#inspector img');
