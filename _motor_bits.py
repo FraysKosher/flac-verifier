@@ -596,17 +596,21 @@ class _ClippingAccumulator:
         _, _, _, _, clip_runs = self.snapshot()
         return {"runs_clip": clip_runs, "hay_clipping": clip_runs > 0}
 
-    def classify(self, ceiling_hz=None, frequency_cutoff=None, nyquist=None):
+    def classify(self, ceiling_hz=None, frequency_cutoff=None, nyquist=None,
+                 edge_gradient_db_khz=None, has_codec_signature=False):
         return _classify_from_clip_stats(
             self.snapshot(),
             ceiling_hz=ceiling_hz,
             frequency_cutoff=frequency_cutoff,
             nyquist=nyquist,
+            edge_gradient_db_khz=edge_gradient_db_khz,
+            has_codec_signature=has_codec_signature,
         )
 
 
 def _classify_from_clip_stats(stats, ceiling_hz=None, frequency_cutoff=None,
-                              nyquist=None):
+                              nyquist=None, edge_gradient_db_khz=None,
+                              has_codec_signature=False):
     """Vector 6 classification from (events, short_events, total_samples, max_streak, clip_runs)."""
     events, short_events, total_samples, max_streak, _ = stats
     if not events:
@@ -625,12 +629,24 @@ def _classify_from_clip_stats(stats, ceiling_hz=None, frequency_cutoff=None,
     # Lossy reconstruction needs a pattern, not a few isolated events: a vinyl
     # rip with three clicks and a 19 kHz ceiling used to be accused of Gibbs
     # overshoot. At least 10 events, 8 of them short, are required.
+    # Also spare isolated 0 dBFS analog transient crests on uncut full-band
+    # masters (>= 88% Nyquist, gentle edge < 18 dB/kHz, zero codec signatures).
+    gentle_fullband_crests = bool(
+        frequency_cutoff is None
+        and ceiling_hz is not None
+        and nyquist
+        and float(ceiling_hz) >= 0.88 * float(nyquist)
+        and edge_gradient_db_khz is not None
+        and float(edge_gradient_db_khz) < 18.0
+        and not has_codec_signature
+    )
     lossy = bool(
         events >= 10
         and short_events >= 8
         and fraction > 0.75
         and cutoff_effective is not None
         and cutoff_effective < 20500.0
+        and not gentle_fullband_crests
     )
     master = bool(mean >= 4.0 and ceiling_hz is not None and nyquist
                   and ceiling_hz >= 0.97 * nyquist)

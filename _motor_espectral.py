@@ -1157,11 +1157,37 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
             step_p3 = float(np.median(power_db_n[m_c_p1]) - np.median(power_db_n[m_c_p3]))
             gentle_post_ceiling = (-3.0 <= step_p1 < 12.0) and (-3.0 <= step_p3 < 18.0)
 
+    subceiling_analog_floor = False
+    if (samplerate <= 48000 and near_nyq_high
+            and 7500.0 <= ceiling_hz < 10500.0
+            and 0.0 < centroid_hz < 1200.0
+            and gradient_edge < 18.0):
+        s_m1, ok_m1 = _freq_slice(freqs, 0.55 * nyquist, 0.70 * nyquist)
+        s_m2, ok_m2 = _freq_slice(freqs, 0.70 * nyquist, 0.84 * nyquist)
+        s_m3, ok_m3 = _freq_slice(freqs, 0.84 * nyquist, 0.93 * nyquist)
+        s_m4, ok_m4 = _freq_slice(freqs, 0.93 * nyquist, 0.985 * nyquist)
+        if ok_m1 and ok_m2 and ok_m3 and ok_m4:
+            e_m1 = float(np.median(spectrum_mid_db[s_m1]))
+            e_m2 = float(np.median(spectrum_mid_db[s_m2]))
+            e_m3 = float(np.median(spectrum_mid_db[s_m3]))
+            e_m4 = float(np.median(spectrum_mid_db[s_m4]))
+            subceiling_analog_floor = bool(
+                -82.0 < e_m4 <= -45.0
+                and e_m1 >= e_m2 - 1.5
+                and e_m2 >= e_m3 - 1.5
+                and e_m3 >= e_m4 - 1.5
+                and 1.5 <= (e_m1 - e_m4) <= 18.0
+                and (e_m3 - e_m4) <= 8.0
+            )
+
     smooth_acoustic_decay = bool(
-        0.0 < centroid_hz < 1800.0
-        and near_nyq_high
-        and ceiling_hz >= 10500.0
-        and (gradient_edge < 20.0 or gentle_post_ceiling)
+        (
+            0.0 < centroid_hz < 1800.0
+            and near_nyq_high
+            and ceiling_hz >= 10500.0
+            and (gradient_edge < 20.0 or gentle_post_ceiling)
+        )
+        or subceiling_analog_floor
     )
     smooth_band_limited_rolloff = False
     if (samplerate <= 48000 and near_nyq_high
@@ -2288,17 +2314,8 @@ def _detect_sbr_qmf_replication(mono, sr):
         return neutral
 
 
-def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
-    """Phase 11/12/13.2: orthogonal lapped transform & subband inversion for lossy codecs.
-
-    Evaluates four standardized codec filterbanks across sample-level phase offsets:
-      1. MDCT-1024 (Vorbis / AAC Sine & KBD) with 128-sample block-switching subgrids.
-      2. PQMF-576 (MP3 32-band polyphase filterbank + 18-point MDCT).
-      3. PQMF-32 (Musepack SV7/SV8 32-band pure subband 36-sample frame grid).
-      4. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 preemphasis).
-    When 9.5 kHz <= ceiling_hz < 17.5 kHz, adapts MDCT-1024 and PQMF-576 to the
-    passband and ATH roll-off tail so band-limited transcodes are still caught.
-    """
+def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
+    """Single-mode lapped transform & subband lattice evaluator."""
     neutral = {
         "mdct_lattice_detected": False,
         "mdct_lattice_snr": 0.0,
@@ -2578,6 +2595,43 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
         }
     except Exception:
         return neutral
+
+
+def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
+    """Phase 11/12/13.2/14.7: orthogonal lapped transform & subband inversion.
+
+    Evaluates four standardized codec filterbanks across sample-level phase offsets:
+      1. MDCT-1024 (Vorbis / AAC Sine & KBD) with 128-sample block-switching subgrids.
+      2. PQMF-576 (MP3 32-band polyphase filterbank + 18-point MDCT).
+      3. PQMF-32 (Musepack SV7/SV8 32-band pure subband 36-sample frame grid).
+      4. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 preemphasis).
+    When 7.0 kHz <= ceiling_hz < 17.5 kHz, checks the adaptive passband first and
+    falls back to the fullband upper-hiss probe (12.0-20.5 kHz + CELT-960) so
+    high-bitrate transcodes of dark ambient/tape recordings cannot hide below
+    the -60 dB ceiling.
+    """
+    if not (41000 <= sr <= 48000):
+        return {
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": 0.0,
+            "mdct_lattice_family": None,
+        }
+    if ceiling_hz is not None and ceiling_hz < 7000.0:
+        return {
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": 0.0,
+            "mdct_lattice_family": None,
+        }
+    if ceiling_hz is None or ceiling_hz >= 17500.0:
+        return _eval_lapped_codec_grid(mono, sr, ceiling_hz=ceiling_hz)
+    eff_ceil = max(9500.0, float(ceiling_hz))
+    res_adapt = _eval_lapped_codec_grid(mono, sr, ceiling_hz=eff_ceil)
+    if res_adapt.get("mdct_lattice_detected"):
+        return res_adapt
+    res_fb = _eval_lapped_codec_grid(mono, sr, ceiling_hz=None)
+    if res_fb.get("mdct_lattice_detected"):
+        return res_fb
+    return res_adapt
 
 def _select_multichannel_layout(chosen):
     """Selects active non-floor channels and primary L/R pair for C > 2 blocks."""
@@ -3099,7 +3153,7 @@ class _SpectralAccumulator:
             if math.isfinite(ms_p95) and ms_p95 > collapse:
                 spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
         if (41000 <= self.sr <= 48000
-                and ceiling_val >= 9500
+                and ceiling_val >= 7000
                 and spectrum.get("clase_corte") != "far_cutoff"):
             ranked_blks = sorted(
                 chosen, key=lambda item: (len(item[4]) >= 24576, item[0]), reverse=True)

@@ -3544,6 +3544,153 @@ class test_forensic_rigorous(unittest.TestCase):
             res_bl["problemas"],
         )
 
+    def test_46_dark_ambient_analog_tape_subceiling_decay_and_uncut_crest_guard(self):
+        """Phase 14.7: dark ambient / analog tape masters with a sub-10.5 kHz
+        relative ceiling pass when calibrated dBFS tape hiss tapers smoothly to
+        Nyquist, while digital-floor upscales and upper-band lossy transcodes
+        stay caught; also spares uncut full-band analog crests from Gibbs."""
+        from _motor_bits import _classify_from_clip_stats
+        from _motor_espectral import _fast_mdct_f32, _get_vorbis_2048
+
+        sr = 44100
+        dur = 6.0
+        n = int(sr * dur)
+        t = np.arange(n, dtype=np.float64) / float(sr)
+        rng = np.random.default_rng(4601)
+
+        # 1. Genuine 16/44.1 dark ambient bowed-string / 2-inch analog tape drone:
+        # strong low/mid harmonic body (centroid ~500-800 Hz) so -60 dB crosses
+        # around 8.5-9.8 kHz, plus gentle tapering analog tape hiss (~-61..-68
+        # dBFS/bin) extending smoothly all the way to 22.05 kHz.
+        drone = np.zeros((n, 2), dtype=np.float64)
+        for idx_f, f0 in enumerate((65.41, 98.00, 146.83, 220.00, 293.66)):
+            amp = 0.22 / (idx_f + 1.0)
+            drone[:, 0] += amp * np.sin(2.0 * np.pi * f0 * t + 0.1 * idx_f)
+            drone[:, 1] += amp * np.sin(2.0 * np.pi * (f0 * 1.002) * t + 0.4 + 0.1 * idx_f)
+        low_pad = signal.sosfilt(
+            signal.butter(2, [80.0, 600.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)),
+            axis=0,
+        ) * 0.25
+        drone = drone + low_pad
+        swells = 0.45 + 0.55 * (np.sin(2.0 * np.pi * 0.4 * t) ** 2)
+        drone *= swells[:, None]
+
+        # Mid/presence bowed texture rolling softly across 4-9.5 kHz
+        bow_noise = signal.sosfilt(
+            signal.butter(4, 3900.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)),
+            axis=0,
+        ) * 0.035
+
+        # Gentle analog tape hiss floor tapering ~6-7 dB from 12 kHz to 21.5 kHz
+        f_axis = np.fft.rfftfreq(n, 1.0 / sr)
+        hiss_spec = (
+            rng.standard_normal((f_axis.size, 2))
+            + 1j * rng.standard_normal((f_axis.size, 2))
+        )
+        tilt_db = np.where(f_axis > 6000.0, -0.65 * (f_axis - 6000.0) / 1000.0, 0.0)
+        hiss_spec *= (10.0 ** (tilt_db / 20.0))[:, None]
+        hiss = np.fft.irfft(hiss_spec, n, axis=0)
+        hiss *= 0.00028 / max(float(np.std(hiss)), 1e-12)
+
+        tape_mix = drone + bow_noise + hiss
+        tape_mix /= np.max(np.abs(tape_mix)) * 1.15
+        path_tape = self.base_path / "dark_ambient_analog_tape_16_44.flac"
+        sf.write(path_tape, np.clip(tape_mix, -0.99, 0.99), sr, subtype="PCM_16")
+
+        res_tape = motor_flac.analyze_file_data(str(path_tape), mode="full", use_cache=False)
+        spectrum_tape = res_tape["esp"]
+        self.assertGreaterEqual(spectrum_tape["techo_hz"], 7500)
+        self.assertLess(spectrum_tape["techo_hz"], 10000)
+        self.assertLess(spectrum_tape["centroide_hz"], 1200.0)
+        self.assertIs(spectrum_tape["decaimiento_acustico_suave"], True)
+        self.assertIs(spectrum_tape["mdct_lattice_detected"], False)
+        self.assertEqual(res_tape["veredicto"], "PROBABLY LOSSLESS")
+        self.assertEqual(res_tape["problemas"], [])
+
+        # 2. Counterexample A: same low-centroid track band-limited at 9.5 kHz
+        # with only 16-bit TPDF dither floor (no analog HF tape hiss) -> caught.
+        dark_cut = signal.sosfilt(
+            signal.ellip(6, 0.2, 85.0, 9500.0, btype="low", fs=sr, output="sos"),
+            drone + bow_noise,
+            axis=0,
+        )
+        dark_cut /= np.max(np.abs(dark_cut)) * 1.15
+        lsb16 = 1.0 / 32768.0
+        tpdf16 = (rng.random(dark_cut.shape) - rng.random(dark_cut.shape)) * lsb16
+        path_cut = self.base_path / "dark_bandlimited_tpdf_fake.flac"
+        sf.write(path_cut, np.clip(dark_cut + tpdf16, -0.99, 0.99), sr, subtype="PCM_16")
+
+        res_cut = motor_flac.analyze_file_data(str(path_cut), mode="full", use_cache=False)
+        self.assertLess(res_cut["esp"]["techo_hz"], 10000)
+        self.assertIs(res_cut["esp"]["decaimiento_acustico_suave"], False)
+        self.assertIn(res_cut["veredicto"], BAD_VERDICTS)
+
+        # 3. Counterexample B: genuine dark ambient tape track quantized in the
+        # upper band (12-20.5 kHz) with MDCT-1024 lapped lattice -> caught even
+        # though its -60 dB ceiling sits < 10 kHz, and blocked from coherence.
+        w_vorb = _get_vorbis_2048()
+        k_lo = int(12000.0 / (sr / 2.0) * 1024)
+        k_hi = int(20500.0 / (sr / 2.0) * 1024)
+        trans_ch = []
+        for ch in range(2):
+            padded = np.pad(tape_mix[:, ch].astype(np.float32), (2048, 2048))
+            n_fr = (padded.size - 2048) // 1024
+            frames = np.lib.stride_tricks.sliding_window_view(padded, 2048)[::1024][:n_fr]
+            c = _fast_mdct_f32(frames, w_vorb)
+            z_mask = rng.random((n_fr, k_hi - k_lo)) < 0.45
+            c[:, k_lo:k_hi] = np.where(z_mask, 0.0, c[:, k_lo:k_hi] * np.sqrt(1.0 / 0.55))
+            rec = self._imdct_overlap_add(c, w_vorb)
+            trans_ch.append(rec[2048 + 31 : 2048 + 31 + n])
+        fake_mdct = np.column_stack(trans_ch).astype(np.float64)
+        fake_mdct /= np.max(np.abs(fake_mdct)) * 1.15
+        path_mdct = self.base_path / "dark_ambient_mdct_upper_band.flac"
+        sf.write(path_mdct, np.clip(fake_mdct, -0.99, 0.99), sr, subtype="PCM_16")
+
+        res_mdct = motor_flac.analyze_file_data(str(path_mdct), mode="full", use_cache=False)
+        self.assertLess(res_mdct["esp"]["techo_hz"], 10000)
+        self.assertIs(res_mdct["esp"]["mdct_lattice_detected"], True)
+        self.assertEqual(res_mdct["veredicto"], "PROBABLE UPSCALE")
+        self.assertFalse(motor_flac._deserves_album_coherence(res_mdct))
+
+        # 4. Uncut full-band analog transient crest guard:
+        # 15 single-sample crests on a gentle-rolloff full-band signal (>= 88%
+        # Nyquist, no cutoff, edge < 18 dB/kHz, zero codec signature) must stay
+        # clean, while the same crests on a cut or steep-edge stream stay Gibbs.
+        stats_15_short = (15, 15, 15, 1, 0)
+        uncut_ok = _classify_from_clip_stats(
+            stats_15_short,
+            ceiling_hz=20026,
+            frequency_cutoff=None,
+            nyquist=22050,
+            edge_gradient_db_khz=11.5,
+            has_codec_signature=False,
+        )
+        self.assertIs(uncut_ok["clipping_reconstruccion_lossy"], False)
+
+        steep_bad = _classify_from_clip_stats(
+            stats_15_short,
+            ceiling_hz=19800,
+            frequency_cutoff=19950,
+            nyquist=22050,
+            edge_gradient_db_khz=45.0,
+            has_codec_signature=True,
+        )
+        self.assertIs(steep_bad["clipping_reconstruccion_lossy"], True)
+
+        # Full end-to-end streaming check: uncut full-band track with 16 single-
+        # sample full-scale transient crests stays GENUINE LOSSLESS.
+        full_sig = _create_track_reference(sr, duration=6.0, seed=4609) * 0.85
+        for idx_hit in range(16):
+            full_sig[int(sr * 0.25) + idx_hit * int(sr * 0.30), 0] = 1.0
+        path_crests = self.base_path / "fullband_analog_crests_uncut.flac"
+        sf.write(path_crests, full_sig, sr, subtype="PCM_16")
+        res_crests = motor_flac.analyze_file_data(str(path_crests), mode="full", use_cache=False)
+        self.assertIs(res_crests["esp"]["clipping_reconstruccion_lossy"], False)
+        self.assertEqual(res_crests["veredicto"], "GENUINE LOSSLESS")
+
+
 
 class TestMultichannelAndPhaseResilience(unittest.TestCase):
     """Regressions for v2.10.1 multichannel (>2ch), zero-energy & L=-R fixes."""

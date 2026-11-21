@@ -86,7 +86,13 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.6"
+ENGINE_VERSION = "14.7"
+# 14.7: Recognise dark ambient / analog tape masters whose -60 dB musical contour
+#       crosses early (7.5-10.5 kHz) while calibrated dBFS high-frequency tape
+#       hiss tapers smoothly into Nyquist, probe upper-band lapped-codec grids on
+#       7.0-17.5 kHz low-ceiling tracks so high-rate transcodes cannot hide below
+#       the ceiling, and spare isolated 0 dBFS analog transient crests on uncut
+#       full-band gentle-rolloff masters from false Gibbs overshoot flags.
 # 14.6: Handle >=3-channel FLACs without discarding Centre/Surround channels,
 #       add anti-phase (L = -R) fallback and a zero-energy spectral guard, track
 #       clipping runs per channel in bounded O(channels) memory, scope PNG
@@ -907,11 +913,25 @@ class _BlockAnalysis:
         spectrum = self._spectrum_acc.result()
         if not spectrum.get("error"):
             # Vector 6: the nature of the clipping needs the spectrum (cut-off
-            # below 20.5 kHz or content up to Nyquist).
+            # below 20.5 kHz or content up to Nyquist) and edge/codec context.
+            has_codec_sig = bool(
+                spectrum.get("corte_artificial")
+                or spectrum.get("sospecha_joint_stereo")
+                or spectrum.get("sospecha_corte_opus_20k")
+                or spectrum.get("islas_mdct_sfb21")
+                or spectrum.get("sospecha_excitador_armonico")
+                or spectrum.get("sbr_qmf_detectado")
+                or spectrum.get("modulacion_psicoacustica_20k")
+                or spectrum.get("mdct_lattice_detected")
+                or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
+                or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
+            )
             spectrum.update(self._clip_acc.classify(
                 ceiling_hz=spectrum.get("techo_hz"),
                 frequency_cutoff=spectrum.get("frecuencia_corte"),
                 nyquist=self.sr // 2,
+                edge_gradient_db_khz=spectrum.get("gradiente_borde_db_khz"),
+                has_codec_signature=has_codec_sig,
             ))
         return spectrum
 
