@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.2] - 2026-11-21
+
+### Added
+
+- Deterministic regression test `test_46_dark_ambient_analog_tape_subceiling_decay_and_uncut_crest_guard`
+  in `tests/test_forense_riguroso.py` bringing the automated suite from **401**
+  to **402 tests**: verifies sub-10.5 kHz dark ambient analog tape decay,
+  rejects digital-floor upscales and upper-band MDCT transcodes hidden below a
+  low musical ceiling, and guards isolated full-scale analog transient crests on
+  uncut full-band masters.
+
+### Changed
+
+- Raised `ENGINE_VERSION` to **`"14.7"`** (`motor_flac.py`) and application
+  version to **`2.10.2`** (`main.py`, `pyproject.toml`, `version_info.txt`).
+- Lowered the clean album support quorum floor for `decaimiento_acustico_suave`
+  tracks in `_is_clean_album_support_track` (`_motor_veredicto.py`) from `55%`
+  to `35%` of Nyquist to stay consistent with the `7.5 kHz` sub-ceiling analog
+  floor lower bound.
+
+### Fixed
+
+- **Dark ambient / analog tape sub-ceiling false positive (`_motor_espectral.py`)**:
+  recognised genuine low-centroid (`< 1200 Hz`) tracks whose `-60 dB` relative
+  activity contour crosses early (`7.5–10.5 kHz`) while calibrated dBFS/bin
+  analog tape/preamp hiss (`> -82 dBFS/bin`) tapers smoothly across
+  `12–21.7 kHz` with no cut-off (`subceiling_analog_floor` inside
+  `decaimiento_acustico_suave`). Thanks to `@cizzop` for reporting and providing
+  the spotless EAC CD rip of *Godspeed You! Black Emperor — Yanqui U.X.O.*
+  (`02 - 09‐15‐00, Part 2.flac`).
+- **Upper-band lapped-codec coverage below low musical ceilings (`_motor_espectral.py`)**:
+  lowered the `_detect_lapped_codec_grid` entry floor to `7.0 kHz` and added a
+  fullband (`12.0–20.5 kHz` + `CELT-960`) fallback probe when adaptive passband
+  analysis on `7.0–17.5 kHz` tracks finds no lattice, catching high-bitrate
+  `MP3`, `AAC`, `Vorbis`, and `Opus` transcodes that hide inside the sub-ceiling
+  tape-hiss band.
+- **Full-band uncut analog transient crest guard (`_motor_bits.py`, `motor_flac.py`)**:
+  isolated 1–2 sample `0 dBFS` peaks on uncut full-band masters (`no_cutoff`,
+  ceiling `>= 88%` of Nyquist, transition gradient `< 18 dB/kHz`, zero codec
+  signatures) no longer trigger `clipping_reconstruccion_lossy` (`Gibbs
+  ringing`), restoring album quorum consistency on dynamic analog recordings
+  such as Track 03 (`rockets fall on Rocket Falls.`) of *Yanqui U.X.O.*.
+
 ## [2.10.1] - 2026-11-16
 
 ### Added
