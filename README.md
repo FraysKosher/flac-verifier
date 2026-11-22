@@ -215,6 +215,8 @@ python build.py
 - **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Development workflow and invariants.
+- **[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)** — Community standards and reporting guidelines.
+- **[`ACCESSIBILITY.md`](ACCESSIBILITY.md)** — Accessibility support, verified contrast, and known GUI limitations.
 
 ---
 
