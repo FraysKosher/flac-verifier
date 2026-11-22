@@ -5,7 +5,52 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.10.4] - 2026-11-22
+
+### Added
+
+- **Clean digital solo-acoustic decay exemption (`_motor_espectral.py`, engine `14.8`)**:
+  added `subceiling_clean_acoustic_decay` (folded into `decaimiento_acustico_suave`)
+  for clean digital solo-instrument recordings (such as solo piano masters with
+  a `-60 dB` ceiling in `7.5-10.5 kHz`, low spectral centroid, smooth
+  pre/post-ceiling decay with post-ceiling slope `< 16 dB/kHz`, and a silent or
+  noise-shaped digital floor without analog tape hiss).
+- **Dedicated low-band brickwall detector (`6.5-12.5 kHz`, `_motor_espectral.py`)**:
+  added a fixed-width `~500 Hz` low-band cutoff pass (leaving the existing
+  `>= 12 kHz` step scan untouched) and lowered `_gradient_edge_db_khz`'s lower
+  clamp from `8000 Hz` to `5500 Hz`, ensuring `16/22.05 -> 44.1 kHz` sinc
+  resamples and low-bitrate codec brickwalls (`MP3 64`, `AAC 64/96`, `Vorbis -q1`)
+  are classified deterministically as `far_cutoff` (`HARD_PROOF`).
+- **Schema `2.7.0` diagnostics & codes (`_motor_veredicto.py`, `_motor_espectral.py`)**:
+  added `FindingCode.ALBUM_LOSSY_CONSISTENCY` (24 canonical `FindingCode`
+  members total, emitted on shallow copy in `apply_album_coherence`'s lossy
+  conviction branch) and exposed `esp["psycho_detector_error"]` when
+  `PsychoacousticSTFTAccumulator` records an internal runtime failure (omitted
+  on clean runs).
+- **Typed domain enums & value objects (`_motor_bits.py`, `_motor_espectral.py`, `_motor_veredicto.py`, `motor_flac.py`, `verificar_flac.py`)**:
+  introduced `Verdict`, `Md5Status`, `LsbStatus`, `CutoffClass`,
+  `CodecLatticeFamily`, `EvidenceTier`, `AccumulatorState`, `CacheStatus`,
+  `StreamEventType`, `CutoffAssessment`, `ScoreEvaluation`, `BatchTask`, and
+  `CliTarget`, plus `functools.lru_cache` on deterministic DSP filterbank
+  windows.
+- **Expanded adversarial & state-machine test coverage**: added 10 tests across
+  `tests/test_blindaje.py`, `tests/test_cache_y_paralelo.py`,
+  `tests/test_forense_riguroso.py`, `tests/test_gui.py`, and
+  `tests/test_protocolo.py` (including `test_47_clean_digital_solo_piano_vs_lowband_fakes_and_schema_270`),
+  bringing the automated suite from **406** to **416 tests**.
+
+### Changed
+
+- **Engine & cache schema bump (`motor_flac.py`)**: raised `ENGINE_VERSION`
+  from `"14.7"` to **`"14.8"`**, `CACHE_SCHEMA_VERSION` from `"2.6.0"` to
+  **`"2.7.0"`**, and application version to **`"2.10.4"`** (`main.py`,
+  `pyproject.toml`, `version_info.txt`).
+- **Evidence-tier calibration (`_motor_veredicto.py`)**: `_ScoreLedger` now
+  tracks `has_hard_proof` explicitly via `EvidenceTier.HARD_PROOF` and scores
+  an isolated, uncorroborated `LOW_SPECTRAL_CEILING` as
+  `EvidenceTier.SOFT_BLOCKING` (capped at `SUSPICIOUS`, `score >= 0.50`, never
+  `PROBABLE UPSCALE` without a cutoff, codec signature, or second evidence
+  family).
 
 ### Fixed
 
@@ -14,9 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folder and track names containing isolated non-decimal Unicode digits (such
   as `²` in `"Album2²"` or `①` in `"①01 - Intro.flac"`) no longer raise
   `ValueError` during `int()` conversion, while preserving numeric sorting for
-  fullwidth decimal digits (`"０１"`). Thanks to `@chropic` (PR #15). Added
-  regression coverage in `tests/test_gui.py` and `tests/test_cache_y_paralelo.py`
-  bringing the suite from **406** to **408 tests**.
+  fullwidth decimal digits (`"０１"`). Thanks to `@chropic` (PR #15).
+- **Streaming I/O & state-machine invariants (`motor_flac.py`, `_motor_bits.py`, `_motor_veredicto.py`)**:
+  fixed closed-handle seek after reopen failure in `_read_sf_block_with_retry`,
+  unified 32-bit fallback handling (`offset == 0` only), enforced strict
+  `error XOR veredicto` on late exceptions, enforced terminal state guards on
+  streaming accumulators, and made `apply_album_coherence` strictly idempotent
+  across repeated calls.
 
 ## [2.10.3] - 2026-11-21
 

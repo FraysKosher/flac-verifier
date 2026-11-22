@@ -3,7 +3,7 @@
 Both **FLAC VERIFIER** and **[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)**
 answer the same question — *is this lossless file genuinely lossless, or a
 lossy transcode / inflated container in disguise?* — from two different
-engineering philosophies. This page compares **FLAC VERIFIER `v2.10.3`** (`engine
+engineering philosophies. This page compares **FLAC VERIFIER `v2.10.4`** (`engine
 14.8`) and **FLAC Detective `v2.6.0`**, with the exact commands used to obtain
 every figure, so you can choose the one that fits your workflow (or use both).
 
@@ -23,7 +23,7 @@ every figure, so you can choose the one that fits your workflow (or use both).
 
 ## Side by side
 
-| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.10.3`, engine `14.8`) |
+| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.10.4`, engine `14.8`) |
 |---|---|---|
 | **Primary shape** | Python library + CLI + `beets` plugin + optional PySide6 GUI | Standalone Windows desktop app (`FLAC_Verifier.exe` + `flac_motor.exe`), `uv`/`pipx` CLI entry points & NDJSON engine |
 | **Installation** | `pip install flac-detective` (`[gui]`, `[ml]`, `[beets]`), Docker (`amd64`/`arm64`), built-in `--update` | Portable Windows ZIP (no Python required), `uv tool install ".[all]"`, or `pip install -r requirements.txt` |
@@ -38,7 +38,7 @@ every figure, so you can choose the one that fits your workflow (or use both).
 | **Parallelism & caching** | Process pool (`cli/pool.py`) and in-run audio/window cache | Process pool (up to 8 workers) + persistent on-disk per-track JSON cache keyed by size, `mtime_ns`, `STREAMINFO MD5`, `ENGINE_VERSION` and render fingerprint |
 | **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (8,780 lines), or 12 modules (9,580 lines) including build/verification scripts |
 | **Automated tests** | 772 test functions across 82 files (`pytest`) | 416 test functions across 13 files (`unittest`, zero external audio files) + 260-track real-encoder benchmark + 12-check frozen `.exe` gate |
-| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.10.3` (`ENGINE_VERSION = "14.8"`, 2026-11-22) |
+| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.10.4` (`ENGINE_VERSION = "14.8"`, 2026-11-22) |
 | **Licence** | MIT | MIT |
 
 ---
