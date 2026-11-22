@@ -212,7 +212,7 @@ def write_cache(path, meta, mode, seconds, result, version, schema,
     try:
         folder = _normalize_path_fs(os.path.join(_png_folder(path), "_cache"))
         os.makedirs(folder, exist_ok=True)
-        input = {
+        cache_entry = {
             "identidad": _identity(path, meta),
             "clave":     _analysis_key(mode, seconds, version, schema),
             "render":    render,
@@ -221,7 +221,7 @@ def write_cache(path, meta, mode, seconds, result, version, schema,
         destination = _normalize_path_fs(_cache_path(path, mode, seconds))
         temporal = f"{destination}.{os.getpid()}.tmp"
         with open(temporal, "w", encoding="utf-8") as f:
-            json.dump(_sanitize(input), f, ensure_ascii=False)
+            json.dump(_sanitize(cache_entry), f, ensure_ascii=False)
         _replace_with_retries(temporal, destination)  # atomic, with a short retry
     except Exception:
         if temporal is not None:

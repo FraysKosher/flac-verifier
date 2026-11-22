@@ -23,6 +23,32 @@ class EvidenceFamily(str, Enum):
     SPECTRAL_ENVELOPE = "spectral_envelope"
 
 
+class FindingCode(str, Enum):
+    HIRES_BELOW_CD = "hires_below_cd"
+    HIRES_NO_ULTRASONIC = "hires_no_ultrasonic"
+    LOW_SPECTRAL_CEILING = "low_spectral_ceiling"
+    NYQUIST_BRICKWALL = "nyquist_brickwall"
+    ALIASING_MIRROR = "aliasing_mirror"
+    HIRES_UPSCALE_CUTOFF = "hires_upscale_cutoff"
+    ARTIFICIAL_CUTOFF = "artificial_cutoff"
+    JOINT_STEREO_COLLAPSE = "joint_stereo_collapse"
+    CUTOFF_JITTER = "cutoff_jitter"
+    MDCT_SPECTRAL_HOLES = "mdct_spectral_holes"
+    MP3_SFB21_ISLANDS = "mp3_sfb21_islands"
+    EXCITER_RECTIFICATION = "exciter_rectification"
+    SBR_REPLICA = "sbr_replica"
+    PSYCHOACOUSTIC_MOD_20K = "psychoacoustic_mod_20k"
+    LAPPED_CODEC_LATTICE = "lapped_codec_lattice"
+    OPUS_20K_CUTOFF = "opus_20k_cutoff"
+    GIBBS_LOSSY_CLIPPING = "gibbs_lossy_clipping"
+    CONTAINER_NOT_BACKED = "container_not_backed"
+    PADDED_16_IN_24 = "padded_16_in_24"
+    DITHER_16_IN_24 = "dither_16_in_24"
+    EMPTY_LSBS = "empty_lsbs"
+    PARTIAL_LSBS = "partial_lsbs"
+    GAIN_COMB_24 = "gain_comb_24"
+
+
 HARD_PROOF_FAMILIES = frozenset((
     EvidenceFamily.FILTERBANK_LATTICE.value,
     EvidenceFamily.SPECTRAL_CUTOFF.value,
@@ -49,6 +75,7 @@ class _ScoreLedger:
         self.problems = []
         self.notes = []
         self.families = []
+        self.finding_codes: list[str] = []
 
     def add_votes(self, votes_val, max_val=0.0):
         self.votes += float(votes_val)
@@ -68,8 +95,20 @@ class _ScoreLedger:
         if target_cap < self.cap:
             self.cap = target_cap
 
-    def penalize(self, text, amount, blocks_max_verdict=True, family=None, tier=None):
+    def penalize(
+        self,
+        text,
+        amount,
+        blocks_max_verdict=True,
+        family=None,
+        tier=None,
+        code: FindingCode | str | None = None,
+    ):
         self.problems.append(text)
+        if code is not None:
+            code_value = code.value if isinstance(code, Enum) else str(code)
+            if code_value:
+                self.finding_codes.append(code_value)
         self.penalty += float(amount)
         self.add_family(family)
         family_name = family.value if isinstance(family, Enum) else (str(family) if family else None)
@@ -90,6 +129,7 @@ class _ScoreLedger:
         if not spectrum.get("error"):
             spectrum["familias_evidencia_lossy"] = list(self.families)
             spectrum["corroboracion_multifamilia"] = corroborated
+            spectrum["finding_codes"] = list(self.finding_codes)
 
         if self.max_votes == 0:
             if include_notes:
@@ -126,6 +166,69 @@ def _has_non_opus_codec_signature(spectrum) -> bool:
         )
         or spectrum.get("islas_mdct_sfb21")
         or spectrum.get("sbr_qmf_detectado")
+    )
+
+
+def _has_clean_active_24bit_lattice(bdi) -> bool:
+    """True when the 24/32-bit LSB lattice is active with zero padding, comb, or micro-dither flags."""
+    forensic = (bdi or {}).get("forense_bits") or {}
+    return bool(
+        (bdi or {}).get("lsbs") == "active"
+        and not forensic.get("es_padded_16_en_24")
+        and not forensic.get("es_24bit_escalado_en_peine")
+        and not forensic.get("es_16bit_dither_en_24")
+    )
+
+
+def _is_codec_clean_core(spectrum, category, rel_cutoff) -> bool:
+    """Shared codec-free core predicate composed by Rule 2 and Rule 5 exemptions."""
+    near_adc_edge = (
+        category == "no_cutoff"
+        or (category == "near_nyquist_cutoff" and (rel_cutoff or 0.0) >= 0.94)
+    )
+    return bool(
+        near_adc_edge
+        and not spectrum.get("sospecha_joint_stereo")
+        and not spectrum.get("sospecha_corte_opus_20k")
+        and not spectrum.get("sbr_qmf_detectado")
+        and not spectrum.get("modulacion_psicoacustica_20k")
+        and not spectrum.get("mdct_lattice_detected")
+        and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
+        and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
+    )
+
+
+def _allows_dark_sparse_iqr_rescue(sr, spectrum, md5_state) -> bool:
+    """True when a dark, sparse, uncut <=48 kHz track with verified MD5 may
+    still qualify for album coherence despite elevated cut-off IQR."""
+    return bool(
+        md5_state == "match"
+        and sr <= 48000
+        and spectrum.get("clase_corte") == "no_cutoff"
+        and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 460.0
+        and (
+            (
+                (spectrum.get("iqr_corte_hz") or 0.0) <= 950.0
+                and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
+                and float(spectrum.get("mdct_lattice_snr") or 0.0) < 3.5
+            )
+            or (
+                float(spectrum.get("techo_hz") or 0.0) < 12500.0
+                and float(spectrum.get("gradiente_borde_db_khz") or 0.0) < 25.0
+                and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.05
+            )
+        )
+    )
+
+
+def _allows_24b_dark_vhs_rescue(sr, bits, bdi, spectrum) -> bool:
+    """True when a dark <=48 kHz 24-bit track with active LSBs may waive Rule 5
+    during album coherence."""
+    return bool(
+        sr <= 48000
+        and bits > 16
+        and bdi.get("lsbs") == "active"
+        and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 1800.0
     )
 
 
@@ -166,6 +269,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"but its spectral ceiling sits at {ceiling/1000:.1f} kHz (below the CD band)",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    code=FindingCode.HIRES_BELOW_CD,
                 )
 
         # 2. High band. The reference depends on the sample rate:
@@ -181,35 +285,16 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
         # A low ceiling is only a defect when it cannot be explained: an acoustic
         # or low-centroid mix with clean bits and no codec signature ends its band
         # early because there is nothing above it.
-        forensic_bdi = bdi.get("forense_bits") or {}
         # Fail-closed on 24-bit: when the bit-depth audit applies, only a fully
         # active LSB lattice earns the acoustic exemption. "partial",
         # "indeterminate" and None all mean "not verified", not "clean".
-        bits_ok_acoustic = (
-            (not bdi.get("aplica"))
-            or (
-                bdi.get("lsbs") == "active"
-                and not forensic_bdi.get("es_padded_16_en_24")
-                and not forensic_bdi.get("es_24bit_escalado_en_peine")
-                and not forensic_bdi.get("es_16bit_dither_en_24")
-            )
-        )
-        near_adc_edge = (
-            category == "no_cutoff"
-            or (category == "near_nyquist_cutoff" and (rel_cutoff or 0.0) >= 0.94)
-        )
+        bits_ok_acoustic = (not bdi.get("aplica")) or _has_clean_active_24bit_lattice(bdi)
+        codec_clean_core = _is_codec_clean_core(spectrum, category, rel_cutoff)
         without_signatures_lossy = (
-            near_adc_edge
-            and not spectrum.get("sospecha_joint_stereo")
-            and not spectrum.get("sospecha_corte_opus_20k")
+            codec_clean_core
             and not spectrum.get("clipping_reconstruccion_lossy")
             and not spectrum.get("islas_mdct_sfb21")
             and not spectrum.get("sospecha_excitador_armonico")
-            and not spectrum.get("sbr_qmf_detectado")
-            and not spectrum.get("modulacion_psicoacustica_20k")
-            and not spectrum.get("mdct_lattice_detected")
-            and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
-            and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
         )
         acoustic_exemption = bool(
             spectrum.get("decaimiento_acustico_suave")
@@ -238,6 +323,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"{sr/1000:.1f} kHz band is not backed by content)",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    code=FindingCode.HIRES_NO_ULTRASONIC,
                 )
         elif rel_ceiling >= 0.88:
             ledger.add_votes(3.0)
@@ -269,6 +355,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
+                code=FindingCode.LOW_SPECTRAL_CEILING,
             )
 
         # 3b. Morphology that no legitimate master produces.
@@ -280,6 +367,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"{spectrum.get('salto_ultrasonico_db', 0.0):.1f} dB step into silence)",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
+                code=FindingCode.NYQUIST_BRICKWALL,
             )
         if spectrum.get("espejo_aliasing_detectado"):
             ledger.penalize(
@@ -288,6 +376,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f})",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
+                code=FindingCode.ALIASING_MIRROR,
             )
         if spectrum.get("es_transferencia_dsd"):
             ledger.note("Genuine DSD/SACD transfer: characteristic ultrasonic "
@@ -311,6 +400,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"high frequencies stop at the source Nyquist",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    code=FindingCode.HIRES_UPSCALE_CUTOFF,
                 )
             else:
                 ledger.penalize(
@@ -320,6 +410,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"high frequencies are sharply cut off",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    code=FindingCode.ARTIFICIAL_CUTOFF,
                 )
         elif category == "near_nyquist_cutoff":
             # It is neither flagged nor rewarded unless a genuinely band-limited
@@ -372,6 +463,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"{spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz)",
                 0.30,
                 family=EvidenceFamily.STEREO_COLLAPSE,
+                code=FindingCode.JOINT_STEREO_COLLAPSE,
             )
         iqr = spectrum.get("iqr_corte_hz") or 0.0
         # The jitter is already part of the Opus evidence: do not penalise the
@@ -395,6 +487,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     0.30,
                     blocks_max_verdict=True,
                     family=EvidenceFamily.TEMPORAL_MODULATION,
+                    code=FindingCode.CUTOFF_JITTER,
                 )
             else:
                 ledger.penalize(
@@ -403,6 +496,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     0.20,
                     blocks_max_verdict=False,
                     family=EvidenceFamily.TEMPORAL_MODULATION,
+                    code=FindingCode.CUTOFF_JITTER,
                 )
         huecos = spectrum.get("ratio_huecos_mdct") or 0.0
         if huecos > 0.10:
@@ -412,6 +506,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.25,
                 blocks_max_verdict=False,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
+                code=FindingCode.MDCT_SPECTRAL_HOLES,
             )
 
         # Top-band islands (sfb21) and harmonic-exciter / SBR reconstruction. Both are
@@ -428,6 +523,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.25,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
+                code=FindingCode.MP3_SFB21_ISLANDS,
             )
         if spectrum.get("sospecha_excitador_armonico"):
             ledger.penalize(
@@ -438,6 +534,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.30,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.SPECTRAL_ENVELOPE,
+                code=FindingCode.EXCITER_RECTIFICATION,
             )
         elif spectrum.get("sbr_qmf_detectado"):
             ledger.penalize(
@@ -448,6 +545,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.55,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.FILTERBANK_LATTICE,
+                code=FindingCode.SBR_REPLICA,
             )
         if (spectrum.get("modulacion_psicoacustica_20k")
                 and not (spectrum.get("sospecha_corte_opus_20k") and iqr > 550.0)):
@@ -459,6 +557,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.30,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
+                code=FindingCode.PSYCHOACOUSTIC_MOD_20K,
             )
         if spectrum.get("mdct_lattice_detected"):
             family = spectrum.get("mdct_lattice_family") or "MDCT"
@@ -470,6 +569,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.55,
                 blocks_max_verdict=True,
                 family=EvidenceFamily.FILTERBANK_LATTICE,
+                code=FindingCode.LAPPED_CODEC_LATTICE,
             )
 
         # Steep 20.00 kHz shelf (libopus fullband or high-rate codec low-pass).
@@ -508,6 +608,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     0.45 if sub_lattice else 0.20,
                     blocks_max_verdict=sub_lattice,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    code=FindingCode.OPUS_20K_CUTOFF,
                 )
             elif category != "far_cutoff":
                 ledger.note("Inconclusive 20.00 kHz shelf: consistent with both a "
@@ -524,6 +625,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.25,
                 blocks_max_verdict=False,
                 family=EvidenceFamily.TEMPORAL_MODULATION,
+                code=FindingCode.GIBBS_LOSSY_CLIPPING,
             )
         if spectrum.get("clipping_mastering_limitador"):
             ledger.note("Mastering brickwall limiter peaks: 4+ consecutive clipped "
@@ -542,7 +644,6 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                          if spectrum.get("frecuencia_corte") else
                          f"limited to {rel_ceiling*100:.0f}% of Nyquist "
                          f"({ceiling/1000:.1f} kHz)")
-            forensic = bdi.get("forense_bits") or {}
             native_24b_tail_ok = bool(
                 category != "far_cutoff"
                 and (acoustic_exemption or band_limited_exemption)
@@ -562,23 +663,12 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     0.25,
                     blocks_max_verdict=True,
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                    code=FindingCode.CONTAINER_NOT_BACKED,
                 )
             elif 0.88 <= rel_ceiling < 0.95:
-                bits_clean = (
-                    bdi.get("lsbs") == "active"
-                    and not forensic.get("es_padded_16_en_24")
-                    and not forensic.get("es_24bit_escalado_en_peine")
-                    and not forensic.get("es_16bit_dither_en_24")
-                )
+                bits_clean = _has_clean_active_24bit_lattice(bdi)
                 without_codec_nor_brickwall = (
-                    near_adc_edge
-                    and not spectrum.get("sospecha_joint_stereo")
-                    and not spectrum.get("sospecha_corte_opus_20k")
-                    and not spectrum.get("sbr_qmf_detectado")
-                    and not spectrum.get("modulacion_psicoacustica_20k")
-                    and not spectrum.get("mdct_lattice_detected")
-                    and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
-                    and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
+                    codec_clean_core
                     and (
                         (spectrum.get("gradiente_borde_db_khz") or 0.0) < 35.0
                         or (
@@ -596,6 +686,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                         0.25,
                         blocks_max_verdict=True,
                         family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                        code=FindingCode.CONTAINER_NOT_BACKED,
                     )
                 else:
                     ledger.note(f"Genuine {bits}-bit master with studio anti-aliasing filter: "
@@ -616,6 +707,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"{bdi.get('resolucion_efectiva_bits','?')} bits)",
                     0.40,
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                    code=FindingCode.PADDED_16_IN_24,
                 )
             elif forensic.get("es_16bit_dither_en_24"):
                 occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
@@ -626,6 +718,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"effective resolution ~16 bits)",
                     0.80,
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                    code=FindingCode.DITHER_16_IN_24,
                 )
             else:
                 ledger.penalize(
@@ -635,6 +728,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"in a {bits}-bit container)",
                     0.40,
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                    code=FindingCode.EMPTY_LSBS,
                 )
         elif lsbs == "partial":
             ledger.penalize(
@@ -645,6 +739,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.15,
                 blocks_max_verdict=False,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                code=FindingCode.PARTIAL_LSBS,
             )
         elif lsbs == "indeterminate" and bdi.get("error"):
             ledger.note(f"Bit-depth LSB check skipped: {bdi['error']}")
@@ -657,6 +752,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"zero across the whole file)",
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                code=FindingCode.PADDED_16_IN_24,
             )
         if forensic.get("es_24bit_escalado_en_peine"):
             step_size = forensic.get("paso_reticula_mediano")
@@ -675,6 +771,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"(quantisation comb in the lowest 8 bits: {comb_detail})",
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                code=FindingCode.GAIN_COMB_24,
             )
         if forensic.get("es_16bit_dither_en_24") and lsbs != "empty":
             occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
@@ -683,6 +780,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 f"inside a {bits}-bit container (interior LSB8 occupancy {occ:.2f}%)",
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                code=FindingCode.DITHER_16_IN_24,
             )
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
@@ -701,7 +799,8 @@ def _deserves_album_coherence(result):
     bdi = result.get("bdi") or {}
     if spectrum.get("error"):
         return False
-    if (result.get("md5") or {}).get("estado") not in ("match", "absent"):
+    md5_state = (result.get("md5") or {}).get("estado")
+    if md5_state not in ("match", "absent"):
         return False
     if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == "far_cutoff":
         return False                       # a below-Nyquist codec step is never rescued
@@ -715,24 +814,7 @@ def _deserves_album_coherence(result):
                   "modulacion_psicoacustica_20k", "mdct_lattice_detected"):
         if spectrum.get(key):
             return False
-    dark_sparse_iqr_ok = (
-        (result.get("md5") or {}).get("estado") == "match"
-        and sr <= 48000
-        and spectrum.get("clase_corte") == "no_cutoff"
-        and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 460.0
-        and (
-            (
-                (spectrum.get("iqr_corte_hz") or 0.0) <= 950.0
-                and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
-                and float(spectrum.get("mdct_lattice_snr") or 0.0) < 3.5
-            )
-            or (
-                float(spectrum.get("techo_hz") or 0.0) < 12500.0
-                and float(spectrum.get("gradiente_borde_db_khz") or 0.0) < 25.0
-                and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.05
-            )
-        )
-    )
+    dark_sparse_iqr_ok = _allows_dark_sparse_iqr_rescue(sr, spectrum, md5_state)
     if (spectrum.get("iqr_corte_hz") or 0.0) > 550.0 and not dark_sparse_iqr_ok:
         return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
@@ -745,6 +827,28 @@ def _deserves_album_coherence(result):
             or forensic.get("es_16bit_dither_en_24")
             or bdi.get("lsbs") == "empty"):
         return False
+    allow_24b_dark_vhs = _allows_24b_dark_vhs_rescue(sr, bits, bdi, spectrum)
+    problems = result.get("problemas") or []
+    if ("finding_codes" in spectrum
+            and isinstance(spectrum["finding_codes"], list)
+            and len(spectrum["finding_codes"]) == len(problems)):
+        hires_clean_bits = (not bdi.get("aplica")) or bdi.get("lsbs") == "active"
+        for raw_code in spectrum["finding_codes"]:
+            code_val = raw_code.value if isinstance(raw_code, Enum) else str(raw_code)
+            if code_val == FindingCode.LOW_SPECTRAL_CEILING.value:
+                continue
+            if (code_val == FindingCode.HIRES_BELOW_CD.value
+                    and sr >= 88200 and hires_clean_bits):
+                continue
+            if (code_val == FindingCode.HIRES_NO_ULTRASONIC.value
+                    and sr > 48000 and hires_clean_bits):
+                continue
+            if code_val == FindingCode.CONTAINER_NOT_BACKED.value and allow_24b_dark_vhs:
+                continue
+            if code_val == FindingCode.CUTOFF_JITTER.value and dark_sparse_iqr_ok:
+                continue
+            return False
+        return True
     permitidos = [
         "spectral ceiling", "partial hi-res content", "partial high-res content",
         "reduced high band", "reduced high-frequency band",
@@ -756,13 +860,7 @@ def _deserves_album_coherence(result):
     ]
     if sr >= 88200 and (not bdi.get("aplica") or bdi.get("lsbs") == "active"):
         permitidos.extend(["below the cd band", "not backed by content"])
-    allow_24b_dark_vhs = (
-        sr <= 48000
-        and bits > 16
-        and bdi.get("lsbs") == "active"
-        and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 1800.0
-    )
-    for problem in result.get("problemas") or []:
+    for problem in problems:
         low = problem.lower()
         if any(text in low for text in permitidos):
             continue
@@ -806,11 +904,9 @@ def _is_lossy_codec_quorum_track(result):
     if spectrum.get("mdct_lattice_detected"):
         return True
     if (spectrum.get("sospecha_corte_opus_20k")
-            and result.get("veredicto") in (
-                "SUSPICIOUS", "PROBABLE UPSCALE", "CONFIRMED LOSSY"
-            )):
+            and result.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE")):
         return True
-    if result.get("veredicto") not in ("CONFIRMED LOSSY", "PROBABLE UPSCALE"):
+    if result.get("veredicto") != "PROBABLE UPSCALE":
         return False
     sr = int((result.get("meta") or {}).get("sample_rate") or 0)
     rel = float(spectrum.get("techo_rel_nyquist") or 0.0)
@@ -1024,6 +1120,8 @@ def apply_album_coherence(results):
                         if ALBUM_COHERENCE_NOTE not in notes:
                             notes.append(ALBUM_COHERENCE_NOTE)
                         r["problemas"] = []
+                        if isinstance(r.get("esp"), dict) and "finding_codes" in r["esp"]:
+                            r["esp"] = {**r["esp"], "finding_codes": []}
                         r["notes"] = notes
                         evid = list(r.get("evidencias_forenses") or [])
                         if ALBUM_COHERENCE_NOTE not in evid:

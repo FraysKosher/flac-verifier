@@ -1085,9 +1085,9 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
 
     sep = None
     if is_stereo and ratio_applies:
-        gives  = _mean_safe(np.abs(power_l[mask_a] - power_r[mask_a]))
-        dm  = _mean_safe(np.abs(power_l[mask_m] - power_r[mask_m]))
-        sep = float(gives / (dm + 1e-30))
+        dh = _mean_safe(np.abs(power_l[mask_a] - power_r[mask_a]))
+        dm = _mean_safe(np.abs(power_l[mask_m] - power_r[mask_m]))
+        sep = float(dh / (dm + 1e-30))
 
     # Vector 1: Mid/Side asymmetry. Without the decomposition (direct API use)
     # the detector is not applicable: never guess it from L/R, which would flag
@@ -1295,6 +1295,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "mdct_lattice_snr":         0.0,
         "mdct_lattice_family":      None,
         "familias_evidencia_lossy": [],
+        "finding_codes":            [],
         "corroboracion_multifamilia": False,
         "nyquist":            samplerate // 2,
         "espectrograma":      None,
@@ -2310,8 +2311,8 @@ def _detect_sbr_qmf_replication(mono, sr):
             "sbr_qmf_correlacion": round(float(mx), 4) if (detected and math.isfinite(mx)) else 0.0,
             "sbr_qmf_z": round(float(z_sbr), 2) if (detected and math.isfinite(z_sbr)) else 0.0,
         }
-    except Exception:
-        return neutral
+    except Exception as exc:
+        return {**neutral, "sbr_detector_error": f"{type(exc).__name__}: {exc}"}
 
 
 def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
@@ -2593,8 +2594,8 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
             "mdct_lattice_snr": round(float(best_z), 2) if math.isfinite(best_z) else 0.0,
             "mdct_lattice_family": None,
         }
-    except Exception:
-        return neutral
+    except Exception as exc:
+        return {**neutral, "mdct_detector_error": f"{type(exc).__name__}: {exc}"}
 
 
 def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
@@ -2631,6 +2632,8 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
     res_fb = _eval_lapped_codec_grid(mono, sr, ceiling_hz=None)
     if res_fb.get("mdct_lattice_detected"):
         return res_fb
+    if "mdct_detector_error" in res_fb and "mdct_detector_error" not in res_adapt:
+        return {**res_adapt, "mdct_detector_error": res_fb["mdct_detector_error"]}
     return res_adapt
 
 def _select_multichannel_layout(chosen):

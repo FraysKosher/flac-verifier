@@ -67,7 +67,7 @@ from _motor_espectral import (
 )
 from _motor_veredicto import (
     LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, EvidenceTier, EvidenceFamily,
-    VerdictCap, _ScoreLedger, calculate_score,
+    FindingCode, VerdictCap, _ScoreLedger, calculate_score,
     _deserves_album_coherence, _deserves_album_lossy_coherence,
     _is_clean_quorum_track,
     apply_album_coherence, forensic_evidence,
@@ -263,7 +263,7 @@ ENGINE_VERSION = "14.7"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.5.0"
+CACHE_SCHEMA_VERSION = "2.6.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 
@@ -676,7 +676,7 @@ class _BlockAnalysis:
         # dynamic range (3 s blocks, carrying the incomplete block over)
         self._dr_block   = self.sr * 3
         self._dr_sumsq    = []
-        self._dr_slope = np.zeros(0)
+        self._dr_remainder = np.zeros(0)
         self._dr_peak     = 0.0
 
         # LSB: O(1)-memory sample spread over the whole file
@@ -826,14 +826,14 @@ class _BlockAnalysis:
             peak = max(float(np.max(mono)), -float(np.min(mono)))
             if peak > self._dr_peak:
                 self._dr_peak = peak
-        if self._dr_slope.size:
-            mono = np.concatenate((self._dr_slope, mono))
+        if self._dr_remainder.size:
+            mono = np.concatenate((self._dr_remainder, mono))
         n = mono.size // self._dr_block
         if n:
             full = mono[: n * self._dr_block].reshape(n, self._dr_block)
             self._dr_sumsq.extend(np.einsum("ij,ij->i", full, full).tolist())
             mono = mono[n * self._dr_block :]
-        self._dr_slope = mono
+        self._dr_remainder = mono
         return block_mono
 
     def _dynamic_range(self, block):
