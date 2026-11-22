@@ -143,8 +143,8 @@ class TestUTF8(unittest.TestCase):
         This is exactly the scenario where it used to die with UnicodeEncodeError.
         The order of the answers is: PNG, PDF report, path, another folder."""
         environment = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
-        input = f"n\n{'y' if pdf else 'n'}\n{folder}\nn\n"
-        return subprocess.run([sys.executable, fx.CLI], input=input, cwd=fx.ROOT,
+        stdin_payload = f"n\n{'y' if pdf else 'n'}\n{folder}\nn\n"
+        return subprocess.run([sys.executable, fx.CLI], input=stdin_payload, cwd=fx.ROOT,
                               capture_output=True, text=True, encoding="utf-8",
                               timeout=900, env=environment)
 

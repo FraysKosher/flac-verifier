@@ -2938,7 +2938,7 @@ class test_forensic_rigorous(unittest.TestCase):
             {
                 "archivo": f"0{i}_opus.flac",
                 "ruta": os.path.join(folder_opus, f"0{i}_opus.flac"),
-                "veredicto": "CONFIRMED LOSSY",
+                "veredicto": "PROBABLE UPSCALE",
                 "score": 0.15,
                 "problemas": ["Lapped transform quantization lattice (CELT-960 (Opus))"],
                 "evidencias_forenses": [],
@@ -3848,6 +3848,365 @@ class TestMultichannelAndPhaseResilience(unittest.TestCase):
         self.assertEqual(elevated, 1)
         self.assertTrue(target.get("coherencia_album"))
         self.assertEqual(target["veredicto"], "PROBABLY LOSSLESS")
+
+
+class TestFindingCodesAndDiagnostics(unittest.TestCase):
+    """Typed FindingCode ledger, detector error diagnostics, and real-corpus validator."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_finding_code_emission_across_calculate_score(self):
+        """Every calculate_score penalty emits its canonical FindingCode while notes emit none."""
+        fc = motor_flac.FindingCode
+        self.assertEqual(len(list(fc)), 23)
+
+        # Clean track with notes (low high/mid ratio, dual-mono, mastering limiter) emits zero codes.
+        spec_clean = {
+            "techo_hz": 22050,
+            "techo_rel_nyquist": 1.0,
+            "clase_corte": "no_cutoff",
+            "frecuencia_corte": None,
+            "distancia_nyquist": None,
+            "ratio_aplica": True,
+            "ratio": 0.002,
+            "var_alta_db": 10.0,
+            "separacion_stereo": 0.0,
+            "es_dual_mono": True,
+            "clipping_mastering_limitador": True,
+        }
+        _, _, probs_clean, notes_clean = motor_flac.calculate_score(
+            {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            spec_clean,
+            {"aplica": False},
+            include_notes=True,
+        )
+        self.assertEqual(probs_clean, [])
+        self.assertGreaterEqual(len(notes_clean), 3)
+        self.assertEqual(spec_clean["finding_codes"], [])
+
+        # CD 24-bit track triggering spectral, psychoacoustic, container, and bit-depth codes.
+        spec_cd = {
+            "techo_hz": 12000,
+            "techo_rel_nyquist": 12000 / 22050.0,
+            "clase_corte": "far_cutoff",
+            "frecuencia_corte": 15000,
+            "distancia_nyquist": 15000 / 22050.0,
+            "ratio_aplica": True,
+            "ratio": 0.02,
+            "var_alta_db": 5.0,
+            "separacion_stereo": 0.2,
+            "sospecha_joint_stereo": True,
+            "iqr_corte_hz": 900.0,
+            "ratio_huecos_mdct": 0.25,
+            "islas_mdct_sfb21": True,
+            "sospecha_excitador_armonico": True,
+            "modulacion_psicoacustica_20k": True,
+            "mdct_lattice_detected": True,
+            "mdct_lattice_family": "PQMF-576 (MP3)",
+            "mdct_lattice_snr": 18.0,
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 50.0,
+            "clipping_reconstruccion_lossy": True,
+        }
+        bdi_comb = {
+            "aplica": True,
+            "lsbs": "partial",
+            "forense_bits": {
+                "es_padded_16_en_24": True,
+                "es_24bit_escalado_en_peine": True,
+                "es_16bit_dither_en_24": True,
+            },
+        }
+        _, _, probs_cd = motor_flac.calculate_score(
+            {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2},
+            spec_cd,
+            bdi_comb,
+        )
+        self.assertEqual(len(spec_cd["finding_codes"]), len(probs_cd))
+        expected_cd_subset = {
+            fc.LOW_SPECTRAL_CEILING.value,
+            fc.ARTIFICIAL_CUTOFF.value,
+            fc.JOINT_STEREO_COLLAPSE.value,
+            fc.MDCT_SPECTRAL_HOLES.value,
+            fc.MP3_SFB21_ISLANDS.value,
+            fc.EXCITER_RECTIFICATION.value,
+            fc.LAPPED_CODEC_LATTICE.value,
+            fc.OPUS_20K_CUTOFF.value,
+            fc.GIBBS_LOSSY_CLIPPING.value,
+            fc.CONTAINER_NOT_BACKED.value,
+            fc.PARTIAL_LSBS.value,
+            fc.PADDED_16_IN_24.value,
+            fc.GAIN_COMB_24.value,
+            fc.DITHER_16_IN_24.value,
+        }
+        self.assertTrue(expected_cd_subset.issubset(set(spec_cd["finding_codes"])))
+
+        # Hi-Res track covering HIRES_BELOW_CD, HIRES_NO_ULTRASONIC, NYQUIST_BRICKWALL,
+        # ALIASING_MIRROR, HIRES_UPSCALE_CUTOFF, CUTOFF_JITTER, SBR_REPLICA,
+        # PSYCHOACOUSTIC_MOD_20K, and EMPTY_LSBS.
+        spec_hr = {
+            "techo_hz": 16000,
+            "techo_rel_nyquist": 16000 / 48000.0,
+            "clase_corte": "far_cutoff",
+            "frecuencia_corte": 22050,
+            "distancia_nyquist": 22050 / 48000.0,
+            "muro_brickwall_nyquist": True,
+            "espejo_aliasing_detectado": True,
+            "iqr_corte_hz": 2000.0,
+            "sbr_qmf_detectado": True,
+            "modulacion_psicoacustica_20k": True,
+        }
+        _, _, probs_hr = motor_flac.calculate_score(
+            {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2},
+            spec_hr,
+            {"aplica": True, "lsbs": "empty", "forense_bits": {}},
+        )
+        self.assertEqual(len(spec_hr["finding_codes"]), len(probs_hr))
+        expected_hr_subset = {
+            fc.HIRES_BELOW_CD.value,
+            fc.HIRES_NO_ULTRASONIC.value,
+            fc.NYQUIST_BRICKWALL.value,
+            fc.ALIASING_MIRROR.value,
+            fc.HIRES_UPSCALE_CUTOFF.value,
+            fc.CUTOFF_JITTER.value,
+            fc.SBR_REPLICA.value,
+            fc.PSYCHOACOUSTIC_MOD_20K.value,
+            fc.EMPTY_LSBS.value,
+        }
+        self.assertTrue(expected_hr_subset.issubset(set(spec_hr["finding_codes"])))
+
+    def test_typed_album_coherence_clearing_and_legacy_fallback(self):
+        """Typed FindingCode gates rescue, clears codes on shallow copy, and preserves legacy fallback."""
+        fc = motor_flac.FindingCode
+        album_dir = self.tmp_path / "typed_coherence"
+        album_dir.mkdir(parents=True, exist_ok=True)
+
+        def _base_track(sr=44100, bits=16, ceiling=14000, md5_state="match"):
+            nyq = sr / 2.0
+            return {
+                "archivo": "candidate.flac",
+                "ruta": str(album_dir / "candidate.flac"),
+                "veredicto": "SUSPICIOUS",
+                "score": 0.50,
+                "meta": {"sample_rate": sr, "bits_per_sample": bits, "canales": 2},
+                "md5": {"estado": md5_state},
+                "bdi": {"aplica": bits > 16, "lsbs": "active", "forense_bits": {}},
+                "esp": {
+                    "error": None,
+                    "techo_hz": ceiling,
+                    "techo_rel_nyquist": round(ceiling / nyq, 4),
+                    "clase_corte": "no_cutoff",
+                    "corte_artificial": False,
+                    "centroide_hz": 400.0,
+                    "iqr_corte_hz": 200.0,
+                    "ratio_huecos_mdct": 0.0,
+                    "gradiente_borde_db_khz": 12.0,
+                    "mdct_lattice_snr": 1.5,
+                    "finding_codes": [fc.LOW_SPECTRAL_CEILING.value],
+                    "familias_evidencia_lossy": ["spectral_cutoff"],
+                },
+                "problemas": ["unrelated custom text"],
+                "notes": [],
+            }
+
+        # Typed LOW_SPECTRAL_CEILING rescues even when prose text does not match legacy substrings.
+        t_low = _base_track()
+        self.assertTrue(motor_flac._deserves_album_coherence(t_low))
+
+        # Non-rescuable typed code is rejected even when prose text looks like a legacy allowed string.
+        t_bad = _base_track()
+        t_bad["problemas"] = ["low spectral ceiling"]
+        t_bad["esp"]["finding_codes"] = [fc.ARTIFICIAL_CUTOFF.value]
+        self.assertFalse(motor_flac._deserves_album_coherence(t_bad))
+
+        # Conditional CONTAINER_NOT_BACKED at 24/44.1 requires dark centroid (< 1800 Hz).
+        t_24 = _base_track(sr=44100, bits=24, ceiling=15000)
+        t_24["esp"]["finding_codes"] = [fc.CONTAINER_NOT_BACKED.value]
+        self.assertTrue(motor_flac._deserves_album_coherence(t_24))
+        t_24_bright = _base_track(sr=44100, bits=24, ceiling=15000)
+        t_24_bright["esp"]["centroide_hz"] = 2400.0
+        t_24_bright["esp"]["finding_codes"] = [fc.CONTAINER_NOT_BACKED.value]
+        self.assertFalse(motor_flac._deserves_album_coherence(t_24_bright))
+
+        # Conditional CUTOFF_JITTER requires dark_sparse_iqr_ok INCLUDING md5_state == "match".
+        t_iqr = _base_track(sr=44100, bits=16, ceiling=11500, md5_state="match")
+        t_iqr["esp"]["iqr_corte_hz"] = 780.0
+        t_iqr["esp"]["finding_codes"] = [fc.CUTOFF_JITTER.value]
+        self.assertTrue(motor_flac._deserves_album_coherence(t_iqr))
+        t_iqr_no_md5 = _base_track(sr=44100, bits=16, ceiling=11500, md5_state="absent")
+        t_iqr_no_md5["esp"]["iqr_corte_hz"] = 780.0
+        t_iqr_no_md5["esp"]["finding_codes"] = [fc.CUTOFF_JITTER.value]
+        self.assertFalse(motor_flac._deserves_album_coherence(t_iqr_no_md5))
+
+        # Conditional Hi-Res codes rescue on active LSBs at 96 kHz.
+        t_hr = _base_track(sr=96000, bits=24, ceiling=16000)
+        t_hr["problemas"] = ["below cd", "no ultrasonic"]
+        t_hr["esp"]["finding_codes"] = [fc.HIRES_BELOW_CD.value, fc.HIRES_NO_ULTRASONIC.value]
+        self.assertTrue(motor_flac._deserves_album_coherence(t_hr))
+
+        # Legacy substring fallback still works when finding_codes is absent.
+        t_legacy = _base_track()
+        del t_legacy["esp"]["finding_codes"]
+        t_legacy["problemas"] = ["Low spectral ceiling (14.0 kHz)"]
+        self.assertTrue(motor_flac._deserves_album_coherence(t_legacy))
+
+        # apply_album_coherence clears finding_codes on a shallow copy without mutating the original spectrum dict.
+        original_spectrum = t_low["esp"]
+        siblings = [
+            {
+                "archivo": f"0{i}_clean.flac",
+                "ruta": str(album_dir / f"0{i}_clean.flac"),
+                "veredicto": "GENUINE LOSSLESS",
+                "score": 0.95,
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "md5": {"estado": "match"},
+                "bdi": {"aplica": False},
+                "esp": {
+                    "techo_hz": 22050,
+                    "techo_rel_nyquist": 1.0,
+                    "clase_corte": "no_cutoff",
+                    "familias_evidencia_lossy": [],
+                    "finding_codes": [],
+                },
+                "problemas": [],
+                "notes": [],
+            }
+            for i in range(1, 5)
+        ]
+        rescued = motor_flac.apply_album_coherence([t_low] + siblings)
+        self.assertEqual(rescued, 1)
+        self.assertEqual(t_low["problemas"], [])
+        self.assertEqual(t_low["esp"]["finding_codes"], [])
+        self.assertIsNot(t_low["esp"], original_spectrum)
+        self.assertEqual(original_spectrum["finding_codes"], [fc.LOW_SPECTRAL_CEILING.value])
+
+    def test_detector_error_diagnostics_and_fallback_propagation(self):
+        """Detectors never crash on runtime errors and attach explicit error keys when failing."""
+        from unittest import mock
+        import _motor_espectral as spectral
+
+        rng = np.random.default_rng(7701)
+        sig = rng.standard_normal(44100 * 2).astype(np.float32) * 0.25
+
+        # Clean runs must omit error keys.
+        clean_sbr = spectral._detect_sbr_qmf_replication(sig, 44100)
+        self.assertNotIn("sbr_detector_error", clean_sbr)
+        clean_mdct = spectral._eval_lapped_codec_grid(sig, 44100)
+        self.assertNotIn("mdct_detector_error", clean_mdct)
+
+        # Injected exception inside SBR detector.
+        with mock.patch.object(spectral, "_rfft_f32", side_effect=RuntimeError("boom-sbr")):
+            err_sbr = spectral._detect_sbr_qmf_replication(sig, 44100)
+        self.assertIs(err_sbr["sbr_qmf_detectado"], False)
+        self.assertEqual(err_sbr.get("sbr_detector_error"), "RuntimeError: boom-sbr")
+
+        # Injected exception inside lapped-codec grid detector.
+        with mock.patch.object(
+            spectral, "_select_continuous_subwindow", side_effect=RuntimeError("boom-mdct")
+        ):
+            err_mdct = spectral._eval_lapped_codec_grid(sig, 44100)
+        self.assertIs(err_mdct["mdct_lattice_detected"], False)
+        self.assertEqual(err_mdct.get("mdct_detector_error"), "RuntimeError: boom-mdct")
+
+        # Fallback propagation when 7.0 kHz <= ceiling_hz < 17.5 kHz and fullband probe errors.
+        def _fake_eval(mono_in, sr_in, ceiling_hz=None):
+            if ceiling_hz is not None:
+                return {
+                    "mdct_lattice_detected": False,
+                    "mdct_lattice_snr": 1.2,
+                    "mdct_lattice_family": None,
+                }
+            return {
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 0.0,
+                "mdct_lattice_family": None,
+                "mdct_detector_error": "RuntimeError: fallback-boom",
+            }
+
+        with mock.patch.object(spectral, "_eval_lapped_codec_grid", side_effect=_fake_eval):
+            prop_res = spectral._detect_lapped_codec_grid(sig, 44100, ceiling_hz=12000.0)
+        self.assertIs(prop_res["mdct_lattice_detected"], False)
+        self.assertEqual(prop_res.get("mdct_detector_error"), "RuntimeError: fallback-boom")
+
+    def test_real_corpus_manifest_pass_fail_and_missing_skip(self):
+        """--real-corpus validates passing albums, flags mismatches with exit 1, and skips missing paths."""
+        import contextlib
+        import io
+        import json
+        import tests.benchmark_validacion as bench
+
+        sr = 44100
+        album_dir = self.tmp_path / "synthetic_album"
+        album_dir.mkdir(parents=True, exist_ok=True)
+        for idx in (1, 2):
+            sig = _create_track_reference(sr, duration=3.5, seed=8800 + idx)
+            sf.write(album_dir / f"0{idx}_clean.flac", sig, sr, subtype="PCM_16")
+        cut_sig = signal.sosfilt(
+            signal.ellip(10, 0.1, 80.0, 15500.0, btype="low", fs=sr, output="sos"),
+            _create_track_reference(sr, duration=3.5, seed=8803),
+            axis=0,
+        )
+        sf.write(album_dir / "03_cut.flac", np.clip(cut_sig, -0.98, 0.98), sr, subtype="PCM_16")
+
+        manifest_pass = self.tmp_path / "manifest_pass.json"
+        manifest_pass.write_text(
+            json.dumps({
+                "album_checks": [
+                    {
+                        "label": "Synthetic Album",
+                        "path": str(album_dir),
+                        "expected_clean": 2,
+                        "expected_flagged": {"03_cut.flac": "PROBABLE UPSCALE"},
+                    },
+                    {
+                        "label": "Unmounted Drive Album",
+                        "path": str(self.tmp_path / "nonexistent_album"),
+                        "expected_clean": 99,
+                        "expected_flagged": {},
+                    },
+                ],
+                "info_globs": [str(self.tmp_path / "no_match_*")],
+            }),
+            encoding="utf-8",
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc_pass = bench.main(["--real-corpus", str(manifest_pass)])
+        self.assertEqual(rc_pass, 0, buf.getvalue())
+        self.assertIn("[PASS] Synthetic Album", buf.getvalue())
+        self.assertIn("[SKIP] Unmounted Drive Album", buf.getvalue())
+
+        manifest_fail = self.tmp_path / "manifest_fail.json"
+        manifest_fail.write_text(
+            json.dumps({
+                "album_checks": [
+                    {
+                        "label": "Synthetic Album Mismatch",
+                        "path": str(album_dir),
+                        "expected_clean": 3,
+                        "expected_flagged": {},
+                    }
+                ],
+                "info_globs": [],
+            }),
+            encoding="utf-8",
+        )
+        buf_fail = io.StringIO()
+        with contextlib.redirect_stdout(buf_fail):
+            rc_fail = bench.main(["--real-corpus", str(manifest_fail)])
+        self.assertEqual(rc_fail, 1, buf_fail.getvalue())
+        self.assertIn("[FAIL] Synthetic Album Mismatch", buf_fail.getvalue())
+
+        buf_missing = io.StringIO()
+        with contextlib.redirect_stdout(buf_missing):
+            rc_missing = bench.main(["--real-corpus", str(self.tmp_path / "missing.json")])
+        self.assertEqual(rc_missing, 0, buf_missing.getvalue())
+        self.assertIn("SKIP", buf_missing.getvalue())
 
 
 if __name__ == "__main__":

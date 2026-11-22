@@ -22,7 +22,9 @@ requires 100% pass across all 260 tracks plus album coherence.
 """
 import argparse
 from concurrent.futures import ProcessPoolExecutor
+import glob
 import hashlib
+import json
 import math
 import os
 import shutil
@@ -909,6 +911,106 @@ def update_document(path, section):
         f.write(text)
 
 
+def evaluate_real_corpus(manifest_path):
+    """Runs local real-album assertions and informational glob scans from JSON.
+
+    Missing manifest files or absent album directories print a clean skip line
+    and return True so CI and machines without mounted local drives stay green.
+    Returns False if any asserted album fails its expected clean/flagged counts.
+    """
+    if not manifest_path or not os.path.isfile(manifest_path):
+        print(f"Real corpus: SKIP (manifest not found: {manifest_path})")
+        return True
+
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+
+    album_checks = manifest.get("album_checks") or []
+    info_globs = manifest.get("info_globs") or []
+    print(f"Real corpus validation ({manifest_path})")
+    all_ok = True
+
+    for entry in album_checks:
+        album_path = str(entry.get("path") or "")
+        label = str(entry.get("label") or os.path.basename(os.path.normpath(album_path)) or album_path)
+        if not album_path or not os.path.isdir(album_path):
+            print(f"  [SKIP] {label}: directory not present ({album_path})")
+            continue
+        files = [
+            os.path.join(album_path, name)
+            for name in sorted(os.listdir(album_path), key=motor_flac.natural_sort_key)
+            if name.lower().endswith(".flac")
+        ]
+        if not files:
+            print(f"  [FAIL] {label}: no .flac files found ({album_path})")
+            all_ok = False
+            continue
+        analysis, _ = motor_flac.analyze_files(files, "full", None, False, use_cache=False)
+        results = list(analysis)
+        clean_count = sum(
+            1 for r in results
+            if not r.get("error") and r.get("veredicto") in GOOD_VERDICTS
+        )
+        actual_flagged = {}
+        for r in results:
+            track_name = r.get("archivo") or os.path.basename(str(r.get("ruta") or ""))
+            if r.get("error"):
+                actual_flagged[track_name] = f"ERROR: {r['error']}"
+            elif r.get("veredicto") not in GOOD_VERDICTS:
+                actual_flagged[track_name] = r.get("veredicto") or "indeterminate"
+        expected_clean = int(entry.get("expected_clean", 0))
+        expected_flagged = dict(entry.get("expected_flagged") or {})
+        album_ok = (clean_count == expected_clean and actual_flagged == expected_flagged)
+        status = "PASS" if album_ok else "FAIL"
+        print(
+            f"  [{status}] {label}: clean={clean_count}/{len(files)} "
+            f"(expected {expected_clean}), flagged={len(actual_flagged)} "
+            f"(expected {len(expected_flagged)})"
+        )
+        if not album_ok:
+            all_ok = False
+            print(f"         expected_flagged={expected_flagged}")
+            print(f"         actual_flagged={actual_flagged}")
+
+    for pattern in info_globs:
+        matched_dirs = sorted(
+            (p for p in glob.glob(str(pattern)) if os.path.isdir(p)),
+            key=motor_flac.natural_sort_key,
+        )
+        if not matched_dirs:
+            print(f"  [SKIP] info glob: no matching directories ({pattern})")
+            continue
+        print(f"  [INFO] glob scan: {pattern} ({len(matched_dirs)} folder(s))")
+        for folder in matched_dirs:
+            files = [
+                os.path.join(folder, name)
+                for name in sorted(os.listdir(folder), key=motor_flac.natural_sort_key)
+                if name.lower().endswith(".flac")
+            ]
+            if not files:
+                continue
+            analysis, _ = motor_flac.analyze_files(files, "full", None, False, use_cache=False)
+            results = list(analysis)
+            clean_count = sum(
+                1 for r in results
+                if not r.get("error") and r.get("veredicto") in GOOD_VERDICTS
+            )
+            flagged_items = [
+                f"{r.get('archivo')}={r.get('error') or r.get('veredicto')}"
+                for r in results
+                if r.get("error") or r.get("veredicto") not in GOOD_VERDICTS
+            ]
+            parent_label = os.path.basename(os.path.dirname(folder))
+            folder_label = f"{parent_label}/{os.path.basename(folder)}" if parent_label else folder
+            detail = (" · " + ", ".join(flagged_items)) if flagged_items else ""
+            print(
+                f"    - {folder_label}: pass={clean_count}/{len(files)}, "
+                f"flagged={len(flagged_items)}{detail}"
+            )
+
+    return all_ok
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Run the 260-track forensic validation benchmark."
@@ -917,7 +1019,23 @@ def main(argv=None):
         "--check", action="store_true",
         help="Non-mutating verification mode: skip doc writes and require 100%% pass.",
     )
+    parser.add_argument(
+        "--real-corpus",
+        nargs="?",
+        const=os.path.join(ROOT, ".local_corpus.json"),
+        default=None,
+        metavar="MANIFEST_JSON",
+        help="Run local real-album checks from a JSON manifest (non-mutating).",
+    )
     args = parser.parse_args(argv)
+
+    if args.real_corpus is not None and not args.check:
+        real_ok = evaluate_real_corpus(args.real_corpus)
+        if not real_ok:
+            print("FAILED (--real-corpus): one or more real-album expectations failed")
+            return 1
+        print("PASS (--real-corpus)")
+        return 0
 
     directory = tempfile.mkdtemp(prefix="flac_verifier_benchmark_")
     old_cache_env = os.environ.get("FLAC_VERIFIER_CACHE_DIR")
@@ -971,21 +1089,25 @@ def main(argv=None):
           % ("PASS" if coherence_ok else "FAIL",
              acoustic.get("veredicto"), acoustic.get("coherencia_album")))
 
-    if not args.check:
+    if not args.check and args.real_corpus is None:
         section = _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok)
         with open(os.path.join(ROOT, "docs", "VALIDATION.md"), "w", encoding="utf-8", newline="\n") as f:
             f.write(_detailed_validation_doc(section, rows))
         update_document(os.path.join(ROOT, "README.md"), section)
         update_document(os.path.join(ROOT, "docs", "COMPARISON.md"), section)
 
+    real_ok = True
+    if args.real_corpus is not None:
+        real_ok = evaluate_real_corpus(args.real_corpus)
+
     if args.check:
-        if fp > 0 or fn > 0 or not coherence_ok:
-            print("FAILED (--check): non-perfect sensitivity, specificity or album coherence")
+        if fp > 0 or fn > 0 or not coherence_ok or not real_ok:
+            print("FAILED (--check): non-perfect sensitivity, specificity, album coherence or real corpus")
             return 1
         print("PASS (--check): 100% sensitivity, specificity and album coherence")
         return 0
 
-    if sens < THRESHOLD or spec < THRESHOLD or not coherence_ok:
+    if sens < THRESHOLD or spec < THRESHOLD or not coherence_ok or not real_ok:
         print("FAILED: metrics below 95% or album coherence did not elevate the track")
         return 1
     print("PASS: sensitivity, specificity and album coherence")

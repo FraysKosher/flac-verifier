@@ -75,12 +75,12 @@ class test_cache(unittest.TestCase):
         path_cache = engine._cache_path(path, "center", None)
         self.assertTrue(os.path.exists(path_cache))
         with open(path_cache, encoding="utf-8") as f:
-            input = json.load(f)
-        self.assertEqual(sorted(input), ["clave", "identidad", "render", "resultado"])
-        self.assertEqual(input["clave"]["motor"], engine.ENGINE_VERSION)
-        self.assertEqual(input["clave"]["modo"], "center")
-        self.assertEqual(input["identidad"]["tamano"], os.path.getsize(path))
-        self.assertIn("resultado", input)
+            cache_entry = json.load(f)
+        self.assertEqual(sorted(cache_entry), ["clave", "identidad", "render", "resultado"])
+        self.assertEqual(cache_entry["clave"]["motor"], engine.ENGINE_VERSION)
+        self.assertEqual(cache_entry["clave"]["modo"], "center")
+        self.assertEqual(cache_entry["identidad"]["tamano"], os.path.getsize(path))
+        self.assertIn("resultado", cache_entry)
 
     def test_invalidates_if_changes_date_file(self):
         path = self.copy("fecha")
@@ -707,7 +707,7 @@ class TestCentralizedCacheIsolation(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(album_dir, "_spectrograms")))
 
     def test_schema_version_invalidation(self):
-        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.5.0")
+        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.6.0")
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "schema_probe.flac")
             shutil.copy(self.fx["ok16"], path)

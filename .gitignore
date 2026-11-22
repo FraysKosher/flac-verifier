@@ -44,6 +44,7 @@ desktop.ini
 # Per-project directories used to isolate LOCALAPPDATA/TEMP while verifying.
 .localappdata/
 .tmp/
+.local_corpus.json
 
 # ─── Test audio ──────────────────────────────────────────────────────────────
 # The tests generate their own fixtures in a temporary directory, so no .flac
