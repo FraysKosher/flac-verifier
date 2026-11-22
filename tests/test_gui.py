@@ -1997,6 +1997,12 @@ class TestExplicitStateMachines(unittest.TestCase):
 class TestAlbumQueueAndQuickFilters(unittest.TestCase):
     """Pure logic for recursive album queue discovery and live table filters."""
 
+    def test_natural_sort_key_handles_non_decimal_unicode_digits(self):
+        self.assertEqual(
+            sorted(("Album²", "Album10", "Album2"), key=gui.natural_sort_key),
+            ["Album2", "Album10", "Album²"],
+        )
+
     def test_discover_album_queue_single_file_and_flat_folder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             flac_file = os.path.join(tmpdir, "single.flac")
