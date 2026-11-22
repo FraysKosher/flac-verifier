@@ -7,7 +7,7 @@
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
 [![Version: 2.10.3](https://img.shields.io/badge/version-2.10.3-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 406](https://img.shields.io/badge/tests-406-brightgreen)](#tests)
+[![Tests: 408](https://img.shields.io/badge/tests-408-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
 lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
@@ -176,7 +176,7 @@ FLAC VERIFIER/
 ├── comprobar_ejecutable.py   12-check verification suite for the frozen .exe
 ├── pyproject.toml            PEP 621 metadata & uv / pipx console scripts
 ├── docs/                     technical reference, design system, validation & comparison
-└── tests/                    406 unit tests (stdlib unittest, synthetic fixtures)
+└── tests/                    408 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -187,7 +187,7 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 406-test suite (~70 s, no external audio files needed)
+# Run the full 408-test suite (~70 s, no external audio files needed)
 python -m unittest discover -s tests
 
 # Skip GUI tests in headless environments
