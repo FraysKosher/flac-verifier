@@ -1013,24 +1013,11 @@ def _analyze_mid_side_asymmetry(spectrum_mid_db, spectrum_side_db, freqs_hz,
     output["sospecha_joint_stereo"] = bool(suspicion)
     return output
 
-def _gradient_edge_db_khz(freqs_hz, power_db, ceiling_hz, nyquist):
-    """Steepest smoothed descent (dB/kHz) in the transition band around the ceiling.
-
-    The band covers 1.5 kHz below the ceiling and 0.5 kHz above it, clamped to
-    12 kHz and Nyquist. A 500 Hz moving average removes the bin-to-bin variance
-    of real noise, which otherwise looks like a cliff on its own. A studio
-    anti-alias filter leaves a gentle slope (well under 35 dB/kHz), while a
-    brickwall or a resampler exceeds it.
-
-    Returns a positive number for a descent, 0.0 when the band cannot be
-    measured."""
+def _max_smoothed_descent_db_khz(freqs_hz, power_db, f_min, f_max):
+    """Steepest 500 Hz moving-average descent (dB/kHz) inside [f_min, f_max]."""
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     power_db = np.asarray(power_db, dtype=np.float64)
-    if freqs.size < 8 or power_db.shape != freqs.shape or not ceiling_hz:
-        return 0.0
-    f_min = max(8000.0, float(ceiling_hz) - 1500.0)
-    f_max = min(float(nyquist), float(ceiling_hz) + 500.0)
-    if f_max <= f_min:
+    if freqs.size < 8 or power_db.shape != freqs.shape or f_max <= f_min:
         return 0.0
     mask = (freqs >= f_min) & (freqs <= f_max)
     if np.count_nonzero(mask) < 8:
@@ -1058,6 +1045,24 @@ def _gradient_edge_db_khz(freqs_hz, power_db, ceiling_hz, nyquist):
     if not math.isfinite(gradient):
         return 0.0
     return round(max(0.0, gradient), 2)
+
+
+def _gradient_edge_db_khz(freqs_hz, power_db, ceiling_hz, nyquist):
+    """Steepest smoothed descent (dB/kHz) in the transition band around the ceiling.
+
+    The band covers 1.5 kHz below the ceiling and 0.5 kHz above it, clamped to
+    5.5 kHz and Nyquist. A 500 Hz moving average removes the bin-to-bin variance
+    of real noise, which otherwise looks like a cliff on its own. A studio
+    anti-alias filter leaves a gentle slope (well under 35 dB/kHz), while a
+    brickwall or a resampler exceeds it.
+
+    Returns a positive number for a descent, 0.0 when the band cannot be
+    measured."""
+    if not ceiling_hz:
+        return 0.0
+    f_min = max(5500.0, float(ceiling_hz) - 1500.0)
+    f_max = min(float(nyquist), float(ceiling_hz) + 500.0)
+    return _max_smoothed_descent_db_khz(freqs_hz, power_db, f_min, f_max)
 
 def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power=None,
                           power_mid=None, power_side=None, gain_noise=1.0):
@@ -1144,6 +1149,55 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # signature or a mastering filter. A legitimate anti-alias filter lives right
     # at the Nyquist; only a cut-off below 88% of Nyquist is flagged.
     nyquist = samplerate / 2.0
+
+    # Dedicated low-band brickwall pass (6.5-12.5 kHz): catches 16/22.05 -> 44.1 kHz
+    # resamples and low-bitrate codec brickwalls without changing the >= 12 kHz
+    # window step_size. Uses a fixed ~500 Hz physical window and requires both
+    # a steep transition slope (> 28 dB/kHz) and sustained post-cutoff suppression
+    # (>= 25 dB below `before` across the next 1-4 kHz) so tonal inter-harmonic
+    # valleys never trigger a false cut-off.
+    if cutoff_hz is None and samplerate <= 48000 and 6500.0 <= ceiling_hz < 12500.0:
+        mask_lo = (freqs >= 6000.0) & (freqs <= 13500.0)
+        if np.count_nonzero(mask_lo) > 10:
+            pr_lo = power_db_n[mask_lo]
+            fr_lo = freqs[mask_lo]
+            n_lo = len(pr_lo)
+            df_lo = float(fr_lo[1] - fr_lo[0]) if n_lo > 1 else 0.0
+            step_lo = max(1, int(round(500.0 / df_lo))) if df_lo > 0.0 else 0
+            if step_lo > 0 and n_lo > 2 * step_lo:
+                cs_lo = np.empty(n_lo + 1, dtype=np.float64)
+                cs_lo[0] = 0.0
+                np.cumsum(pr_lo, dtype=np.float64, out=cs_lo[1:])
+                inv_lo = 1.0 / step_lo
+                bef_lo = (cs_lo[step_lo : n_lo - step_lo] - cs_lo[0 : n_lo - 2 * step_lo]) * inv_lo
+                aft_lo = (cs_lo[2 * step_lo : n_lo] - cs_lo[step_lo : n_lo - step_lo]) * inv_lo
+                cond_primary = ((bef_lo - aft_lo) > 25.0) & (aft_lo < -45.0)
+                cond_medium = ((bef_lo - aft_lo) > 18.5) & (aft_lo < -42.0) & (bef_lo > -52.0)
+                cond_steep_sub = ((bef_lo - aft_lo) > 16.5) & (aft_lo < -55.0)
+                cond_lo = cond_primary | cond_medium | cond_steep_sub
+                for idx_c in np.flatnonzero(cond_lo):
+                    i_c = int(idx_c)
+                    cand_hz = float(fr_lo[i_c + step_lo])
+                    grad_c = _gradient_edge_db_khz(freqs, power_db_n, cand_hz, nyquist)
+                    min_grad = 28.0 if (cond_primary[i_c] or cond_medium[i_c]) else 36.0
+                    if grad_c <= min_grad:
+                        continue
+                    post_lo = cand_hz + 1000.0
+                    post_hi = min(nyquist - 500.0, cand_hz + 4000.0)
+                    if post_hi <= post_lo:
+                        continue
+                    mask_post = (freqs >= post_lo) & (freqs <= post_hi)
+                    if not np.any(mask_post):
+                        continue
+                    mask_pre = (freqs >= max(6000.0, cand_hz - 1000.0)) & (freqs <= cand_hz)
+                    pre_ref = max(
+                        float(bef_lo[i_c]),
+                        float(np.median(power_db_n[mask_pre])) if np.any(mask_pre) else -300.0,
+                    )
+                    if (pre_ref - float(np.median(power_db_n[mask_post]))) >= 25.0:
+                        cutoff_hz = cand_hz
+                        break
+
     cutoff = CutoffAssessment.from_cutoff(cutoff_hz, nyquist)
 
     mask_a = freqs > 18000
@@ -1253,6 +1307,45 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
                 and (e_m3 - e_m4) <= 8.0
             )
 
+    # Clean digital solo-instrument decay (e.g. modern ECM solo piano in
+    # 16/44.1 without analog tape hiss): -60 dB contour crosses in 7.5-10.5 kHz
+    # with a low centroid (< 1100 Hz), progressive pre-ceiling decay, gentle
+    # post-ceiling continuation (tolerating either a quiet digital floor or
+    # noise-shaped dither), and no hidden filter cliff in the 5 kHz above the
+    # ceiling.
+    subceiling_clean_acoustic_decay = False
+    if (samplerate <= 48000 and near_nyq_high
+            and 7500.0 <= ceiling_hz < 10500.0
+            and 0.0 < centroid_hz < 1100.0
+            and 0.5 <= gradient_edge < 16.0):
+        s_pre_lo, ok_pre_lo = _freq_slice(
+            freqs, max(3000.0, ceiling_hz - 4000.0), max(4500.0, ceiling_hz - 2000.0)
+        )
+        s_pre_hi, ok_pre_hi = _freq_slice(
+            freqs, max(5500.0, ceiling_hz - 1200.0), ceiling_hz
+        )
+        s_p1, ok_p1 = _freq_slice(freqs, ceiling_hz + 250.0, ceiling_hz + 1500.0)
+        s_p2, ok_p2 = _freq_slice(
+            freqs, ceiling_hz + 1500.0, min(nyquist - 500.0, ceiling_hz + 3500.0)
+        )
+        if ok_pre_lo and ok_pre_hi and ok_p1 and ok_p2:
+            e_pre_lo = float(np.median(power_db_n[s_pre_lo]))
+            e_pre_hi = float(np.median(power_db_n[s_pre_hi]))
+            e_p1 = float(np.median(power_db_n[s_p1]))
+            e_p2 = float(np.median(power_db_n[s_p2]))
+            pre_drop = e_pre_lo - e_pre_hi
+            step_p1 = e_pre_hi - e_p1
+            step_p2 = e_p1 - e_p2
+            post_max_grad = _max_smoothed_descent_db_khz(
+                freqs, power_db_n, ceiling_hz, min(nyquist - 500.0, ceiling_hz + 5000.0)
+            )
+            subceiling_clean_acoustic_decay = bool(
+                6.0 <= pre_drop <= 45.0
+                and step_p1 < 16.0
+                and step_p2 < 24.0
+                and post_max_grad < 16.0
+            )
+
     smooth_acoustic_decay = bool(
         (
             0.0 < centroid_hz < 1800.0
@@ -1261,6 +1354,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
             and (gradient_edge < 20.0 or gentle_post_ceiling)
         )
         or subceiling_analog_floor
+        or subceiling_clean_acoustic_decay
     )
     smooth_band_limited_rolloff = False
     if (samplerate <= 48000 and near_nyq_high
@@ -3185,6 +3279,8 @@ class _SpectralAccumulator:
             return spectrum
         psycho = self._psycho.summary()
         spectrum.update(psycho.metrics)
+        if psycho.error is not None:
+            spectrum["psycho_detector_error"] = psycho.error
         if spectrum.get("es_estacionario"):
             if (spectrum.get("sospecha_joint_stereo")
                     and (spectrum.get("delta_corte_ms_hz") or 0.0) < 2500.0):

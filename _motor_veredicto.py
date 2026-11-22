@@ -61,6 +61,7 @@ class FindingCode(str, Enum):
     EMPTY_LSBS = "empty_lsbs"
     PARTIAL_LSBS = "partial_lsbs"
     GAIN_COMB_24 = "gain_comb_24"
+    ALBUM_LOSSY_CONSISTENCY = "album_lossy_consistency"
 
 
 HARD_PROOF_FAMILIES = frozenset((
@@ -98,6 +99,7 @@ class _ScoreLedger:
         self.max_votes = 0.0
         self.penalty = 0.0
         self.cap = VerdictCap.GENUINE_LOSSLESS
+        self.has_hard_proof = False
         self.problems = []
         self.notes = []
         self.families = []
@@ -150,13 +152,14 @@ class _ScoreLedger:
                 tier = EvidenceTier.HARD_PROOF
             else:
                 tier = EvidenceTier.SOFT_BLOCKING
+        if tier is EvidenceTier.HARD_PROOF:
+            self.has_hard_proof = True
         if blocks_max_verdict or tier in (EvidenceTier.HARD_PROOF, EvidenceTier.SOFT_BLOCKING):
             self.lower_cap(VerdictCap.SUSPICIOUS)
 
     def evaluate(self) -> ScoreEvaluation:
         """Pure score and verdict computation with zero external mutation."""
-        hard_proof = any(f in HARD_PROOF_FAMILIES for f in self.families)
-        corroborated = bool(len(self.families) >= 2 or hard_proof)
+        corroborated = bool(len(self.families) >= 2 or self.has_hard_proof)
 
         if self.max_votes == 0:
             return ScoreEvaluation(
@@ -412,11 +415,12 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                         f"{ceiling/1000:.1f} kHz, {rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})")
         else:
             ledger.penalize(
-                f"Severely truncated high frequencies (the high band is destroyed): "
+                f"Unexplained low spectral ceiling (the high band is destroyed): "
                 f"spectral ceiling drops to {ceiling/1000:.1f} kHz "
                 f"({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})",
                 0.40,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
+                tier=EvidenceTier.SOFT_BLOCKING,
                 code=FindingCode.LOW_SPECTRAL_CEILING,
             )
 
@@ -1275,6 +1279,13 @@ def apply_album_coherence(results):
             r["veredicto"] = Verdict.PROBABLE_UPSCALE.value
             r["score"] = min(float(r.get("score") or 0.0), 0.35)
             r["problemas"] = list(r.get("problemas") or []) + [note]
+            if isinstance(r.get("esp"), dict):
+                existing_codes = list(r["esp"].get("finding_codes") or [])
+                r["esp"] = {
+                    **r["esp"],
+                    "finding_codes": existing_codes
+                    + [FindingCode.ALBUM_LOSSY_CONSISTENCY.value],
+                }
             r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [note]
             r["coherencia_album"] = True
             r["album_coherence_note"] = note

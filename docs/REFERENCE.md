@@ -127,7 +127,7 @@ with `error` and the process continues until it emits `fin`.
 | `esp.perfil_dsd` | DSD profile: `direct_24_40k`, `scarlet_30k`, `dsd128_40_80k`, or `null` (no DSD ramp) |
 | `esp.gradiente_borde_db_khz` | Steepest slope of the transition band around the ceiling, in dB/kHz |
 | `esp.centroide_hz` | Spectral centroid: a low-centroid acoustic mix sits below 1800 Hz |
-| `esp.decaimiento_acustico_suave` | `true` for a low-centroid, no-cutoff, ≥ 11 kHz ceiling with a gentle (< 20 dB/kHz) edge: the acoustic exemption candidate |
+| `esp.decaimiento_acustico_suave` | `true` for a low-centroid, no-cutoff acoustic decay with a gentle (< 20 dB/kHz) edge (≥ 11 kHz, or 7.5–10.5 kHz with an analogue floor or continuous post-ceiling acoustic decay): the acoustic exemption candidate |
 | `esp.rolloff_banda_limitada_genuina` | `true` for a smooth (< 18 dB/kHz), no-cutoff, 10–15.4 kHz ceiling with an analogue noise floor: vintage/archival/vinyl band-limited roll-off candidate |
 | `esp.native_24bit_hf_tail` | `true` on > 44.1 to 48 kHz streams when sub-ceiling high-frequency energy tapers monotonically above the 22.05 kHz CD band into a genuine 24-bit studio converter stopband floor |
 | `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
@@ -143,7 +143,8 @@ with `error` and the process continues until it emits `fin`.
 | `esp.sbr_qmf_detectado` / `esp.sbr_qmf_correlacion` / `esp.sbr_qmf_z` | Local-whitened additive QMF subband transposition detector (`3.5–9.5 kHz` shift sweep) for seamless HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates) |
 | `esp.es_estacionario` | `true` for a stationary harmonic/tonal programme (`std(env_4_11) < 1.8 dB` and `13.5–19.5 kHz` tonal crest `P95 - P50 >= 12 dB`), protecting sustained electronic synth drones from false subband-hole or modulation flags |
 | `esp.familias_evidencia_lossy` / `esp.corroboracion_multifamilia` | Independent lossy evidence families triggered (`filterbank_lattice`, `spectral_cutoff`, `spectral_envelope`, `temporal_modulation`, `stereo_collapse`, `bit_depth_container`) and whether multi-family or hard-proof corroboration holds |
-| `esp.finding_codes` | Typed canonical `FindingCode` identifiers emitted alongside `problemas` (cleared on album-coherence rescue) |
+| `esp.finding_codes` | Typed canonical `FindingCode` identifiers emitted alongside `problemas` (cleared on album-coherence rescue; appends `album_lossy_consistency` on album-coherence lossy conviction) |
+| `esp.psycho_detector_error` | Optional diagnostic string emitted only if the streaming psychoacoustic STFT accumulator hits an internal runtime error (omitted on clean runs) |
 | `esp.sospecha_corte_opus_20k` | `true` for a 20.00 kHz cliff (> 45 dB between 19.85 and 20.15 kHz) with a flat 18–19.7 kHz band |
 | `esp.caida_opus_20k_db` | Depth of that cliff in dB |
 | `esp.clipping_eventos` / `clipping_longitud_media` | Saturation runs and their mean length |
@@ -191,8 +192,8 @@ contribute.
 
 | Defect | Subtracts | Condition |
 |---|---|---|
-| Far artificial cut-off | 0.40 | Step below 88 % of Nyquist (blocks) |
-| Destroyed high band | 0.40 | Up to 48 kHz: ceiling < 70 % of Nyquist (unless exempted by smooth acoustic/archival roll-off with clean bits and no codec lattice). Above 48 kHz: ceiling < 22.05 kHz (blocks) |
+| Far artificial cut-off | 0.40 | Step below 88 % of Nyquist, including low-band brickwall steps in 6.5–12.5 kHz (blocks; hard proof) |
+| Destroyed high band | 0.40 | Up to 48 kHz: ceiling < 70 % of Nyquist (unless exempted by smooth acoustic/archival roll-off with clean bits and no codec lattice; soft-blocking when isolated -> caps at `SUSPICIOUS`). Above 48 kHz: ceiling < 22.05 kHz (blocks) |
 | Hi-res with no high content | 0.40 | ≥ 88.2 kHz and ceiling < 18 kHz (blocks) |
 | Empty LSBs | 0.40 | > 97 % of samples on the 16-bit grid (blocks) |
 | Partially inactive LSBs | 0.15 | 80–97 % (does not block) |
@@ -216,8 +217,10 @@ contribute.
 verdict at `SUSPICIOUS` (score ≥ 0.50) or `PROBABLE UPSCALE`. Condemning a track
 as `PROBABLE UPSCALE` requires `corroboracion_multifamilia` (`≥ 2` independent
 evidence families in `familias_evidencia_lossy` or a deterministic structural
-proof in `filterbank_lattice`, `spectral_cutoff`, or `bit_depth_container`); an
-isolated, uncorroborated soft heuristic is capped at `SUSPICIOUS` (`score ≥ 0.50`).
+`HARD_PROOF` such as a filterbank lattice, far artificial cut-off, Hi-Res
+brickwall/aliasing or bit-depth container proof); an isolated, uncorroborated
+soft-blocking heuristic (including unexplained low spectral ceiling without a
+cut-off or codec evidence) is capped at `SUSPICIOUS` (`score ≥ 0.50`).
 
 ---
 
@@ -294,7 +297,7 @@ An entry is reused only if all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"14.7"`), `CACHE_SCHEMA_VERSION` (`"2.6.0"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"14.8"`), `CACHE_SCHEMA_VERSION` (`"2.7.0"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

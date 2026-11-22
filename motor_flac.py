@@ -88,7 +88,15 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.7"
+ENGINE_VERSION = "14.8"
+# 14.8: Recognise clean digital solo-instrument masters (e.g. modern ECM solo
+#       piano at 7.5-10.5 kHz with smooth pre/post-ceiling decay and silent or
+#       noise-shaped digital floor), add a dedicated 6.5-12.5 kHz low-band
+#       brickwall detector (lowering edge-gradient clamp to 5.5 kHz) so
+#       16/22.05 -> 44.1 kHz upscales and low-bitrate cutoffs remain HARD_PROOF
+#       `far_cutoff`, downgrade isolated `LOW_SPECTRAL_CEILING` to SOFT_BLOCKING
+#       (`SUSPICIOUS`), emit `FindingCode.ALBUM_LOSSY_CONSISTENCY`, and expose
+#       `psycho_detector_error` on psychoacoustic runtime failures.
 # 14.7: Recognise dark ambient / analog tape masters whose -60 dB musical contour
 #       crosses early (7.5-10.5 kHz) while calibrated dBFS high-frequency tape
 #       hiss tapers smoothly into Nyquist, probe upper-band lapped-codec grids on
@@ -265,7 +273,7 @@ ENGINE_VERSION = "14.7"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.6.0"
+CACHE_SCHEMA_VERSION = "2.7.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 

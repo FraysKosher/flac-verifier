@@ -218,7 +218,7 @@ class test_report_pdf(unittest.TestCase):
         text = text_pdf(report["ruta"])
         self.assertIn("FLAC VERIFIER", text)                       # wordmark
         self.assertIn("Authenticity and lossless verification", text)
-        self.assertIn("engine 14.7", text)                         # footer
+        self.assertIn("engine 14.8", text)                         # footer
         self.assertNotEqual(
             pdf.STYLE_VERDICT["PROBABLY LOSSLESS"],
             pdf.STYLE_VERDICT["SUSPICIOUS"],

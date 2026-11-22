@@ -3689,6 +3689,258 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIs(res_crests["esp"]["clipping_reconstruccion_lossy"], False)
         self.assertEqual(res_crests["veredicto"], "GENUINE LOSSLESS")
 
+    def test_47_clean_digital_solo_piano_vs_lowband_fakes_and_schema_270(self):
+        """Phase 14.8 / schema 2.7.0: clean digital solo piano (7.5-10.5 kHz,
+        silent or noise-shaped floor) passes on its own, while low-band sinc
+        resamples, 16-in-24 padding and low-bitrate codecs stay caught, and
+        isolated LOW_SPECTRAL_CEILING caps at SUSPICIOUS."""
+        import shutil
+        import subprocess
+        from unittest import mock
+        import _motor_espectral as spectral
+
+        sr = 44100
+        dur = 6.0
+        n = int(sr * dur)
+        t = np.arange(n, dtype=np.float64) / float(sr)
+
+        def _make_clean_solo_piano(seed, dither_shaped=False):
+            rng_p = np.random.default_rng(seed)
+            piano_sig = np.zeros((n, 2), dtype=np.float64)
+            events = [
+                (0.05, 130.81, 0.24), (0.05, 196.00, 0.18), (0.05, 246.94, 0.15), (0.05, 329.63, 0.14),
+                (1.20, 146.83, 0.22), (1.20, 220.00, 0.17), (1.20, 293.66, 0.15), (1.20, 392.00, 0.13),
+                (2.40, 164.81, 0.23), (2.40, 246.94, 0.17), (2.40, 329.63, 0.16), (2.40, 493.88, 0.12),
+                (3.60, 110.00, 0.25), (3.60, 220.00, 0.18), (3.60, 261.63, 0.16), (3.60, 392.00, 0.13),
+                (4.70, 130.81, 0.22), (4.70, 196.00, 0.16), (4.70, 329.63, 0.14), (4.70, 440.00, 0.12),
+            ]
+            for t0, f0, vel in events:
+                dt = t - t0
+                mask = dt >= 0.0
+                dtm = dt[mask]
+                for k in range(1, 30):
+                    fk = f0 * k * (1.0 + 0.00015 * k * k)
+                    if fk >= 6500.0:
+                        break
+                    amp_k = vel * (1.0 / (k ** 0.9)) * (
+                        10.0 ** (-5.5 * max(0.0, fk - 500.0) / 1000.0 / 20.0)
+                    )
+                    tau = max(0.12, 1.8 / (1.0 + fk / 600.0))
+                    env = (1.0 - np.exp(-dtm / 0.004)) * np.exp(-dtm / tau)
+                    ph0 = rng_p.uniform(0.0, 2.0 * np.pi)
+                    ph1 = ph0 + rng_p.uniform(-0.35, 0.35)
+                    piano_sig[mask, 0] += amp_k * env * np.sin(2.0 * np.pi * fk * dtm + ph0)
+                    piano_sig[mask, 1] += amp_k * env * np.sin(2.0 * np.pi * fk * dtm + ph1)
+            f_ax = np.fft.rfftfreq(n, 1.0 / sr)
+            air_spec = (
+                rng_p.standard_normal((f_ax.size, 2))
+                + 1j * rng_p.standard_normal((f_ax.size, 2))
+            )
+            air_db = np.where(
+                f_ax < 300.0, -40.0, -4.6 * np.maximum(0.0, f_ax - 1000.0) / 1000.0
+            )
+            air_spec *= (10.0 ** (air_db / 20.0))[:, None]
+            air = np.fft.irfft(air_spec, n, axis=0)
+            air *= 0.085 / max(float(np.std(air)), 1e-12)
+            swells = 0.40 + 0.60 * (np.sin(2.0 * np.pi * 0.8 * t) ** 2)
+            mix = piano_sig + air * swells[:, None]
+            mix /= np.max(np.abs(mix)) * 1.18
+            lsb16 = 1.0 / 32768.0
+            if dither_shaped:
+                d_raw = rng_p.standard_normal(mix.shape)
+                d_hp = signal.sosfilt(
+                    signal.butter(3, 17500.0, btype="high", fs=sr, output="sos"),
+                    d_raw,
+                    axis=0,
+                )
+                mix = mix + d_hp * (2.5 * lsb16)
+            else:
+                tpdf = (rng_p.random(mix.shape) - rng_p.random(mix.shape)) * lsb16
+                mix = mix + tpdf
+            return np.clip(mix, -0.99, 0.99)
+
+        # 1. Clean digital solo piano (16/44.1, silent digital floor)
+        piano_clean = _make_clean_solo_piano(4701, dither_shaped=False)
+        p_clean = self.base_path / "ecm_solo_piano_clean_16_44.flac"
+        sf.write(p_clean, piano_clean, sr, subtype="PCM_16")
+        res_clean = motor_flac.analyze_file_data(str(p_clean), mode="full", use_cache=False)
+        self.assertGreaterEqual(res_clean["esp"]["techo_hz"], 7500)
+        self.assertLess(res_clean["esp"]["techo_hz"], 10500)
+        self.assertLess(res_clean["esp"]["centroide_hz"], 1100.0)
+        self.assertEqual(res_clean["esp"]["clase_corte"], motor_flac.CutoffClass.NO_CUTOFF.value)
+        self.assertIs(res_clean["esp"]["decaimiento_acustico_suave"], True)
+        self.assertIn(res_clean["veredicto"], GOOD_VERDICTS)
+        self.assertEqual(res_clean["problemas"], [])
+        self.assertNotIn("psycho_detector_error", res_clean["esp"])
+
+        # 2. Clean digital solo piano with high-frequency noise-shaped dither
+        piano_ns = _make_clean_solo_piano(4702, dither_shaped=True)
+        p_ns = self.base_path / "ecm_solo_piano_nshaped_16_44.flac"
+        sf.write(p_ns, piano_ns, sr, subtype="PCM_16")
+        res_ns = motor_flac.analyze_file_data(str(p_ns), mode="full", use_cache=False)
+        self.assertGreaterEqual(res_ns["esp"]["techo_hz"], 7500)
+        self.assertLess(res_ns["esp"]["techo_hz"], 10500)
+        self.assertIs(res_ns["esp"]["decaimiento_acustico_suave"], True)
+        self.assertIn(res_ns["veredicto"], GOOD_VERDICTS)
+        self.assertEqual(res_ns["problemas"], [])
+
+        # 3. Full solo-piano album (4 dark tracks, zero full-band quorum) passes standalone
+        album_dir = self.base_path / "ecm_solo_piano_album"
+        album_dir.mkdir(parents=True, exist_ok=True)
+        album_variants = [
+            piano_clean,
+            piano_ns,
+            piano_clean[:, ::-1] * 0.92,
+            -piano_ns[:, ::-1] * 0.90,
+        ]
+        album_files = []
+        for idx, var_sig in enumerate(album_variants):
+            fp = album_dir / f"{idx + 1:02d}_piano_solo.flac"
+            sf.write(fp, var_sig, sr, subtype="PCM_16")
+            album_files.append(str(fp))
+        batch_gen, _ = motor_flac.analyze_files(album_files, "full", None, False, workers=1, use_cache=False)
+        batch_res = list(batch_gen)
+        self.assertEqual(len(batch_res), 4)
+        for item in batch_res:
+            self.assertIn(item["veredicto"], GOOD_VERDICTS, item["archivo"])
+            self.assertEqual(item["problemas"], [], item["archivo"])
+
+        # 4. Adversarial: 22.05 kHz -> 44.1 kHz sinc resample (brickwall ~11.0 kHz)
+        p_22_sig = signal.resample(signal.resample(piano_clean, n // 2, axis=0), n, axis=0)
+        p_22 = self.base_path / "piano_22k_sinc_upscale.flac"
+        sf.write(p_22, np.clip(p_22_sig, -0.99, 0.99), sr, subtype="PCM_16")
+        res_22 = motor_flac.analyze_file_data(str(p_22), mode="full", use_cache=False)
+        self.assertEqual(res_22["esp"]["clase_corte"], motor_flac.CutoffClass.FAR_CUTOFF.value)
+        self.assertEqual(res_22["veredicto"], motor_flac.Verdict.PROBABLE_UPSCALE.value)
+
+        # 5. Adversarial: 16 kHz -> 44.1 kHz sinc resample (brickwall ~8.0 kHz)
+        n_16 = int(round(n * 16000 / sr))
+        p_16_sig = signal.resample(signal.resample(piano_clean, n_16, axis=0), n, axis=0)
+        p_16 = self.base_path / "piano_16k_sinc_upscale.flac"
+        sf.write(p_16, np.clip(p_16_sig, -0.99, 0.99), sr, subtype="PCM_16")
+        res_16 = motor_flac.analyze_file_data(str(p_16), mode="full", use_cache=False)
+        self.assertEqual(res_16["esp"]["clase_corte"], motor_flac.CutoffClass.FAR_CUTOFF.value)
+        self.assertEqual(res_16["veredicto"], motor_flac.Verdict.PROBABLE_UPSCALE.value)
+
+        # 6. Adversarial: 16-in-24 zero-padded solo piano -> blocked and condemned
+        piano_16q = np.round(piano_clean * 32768.0) / 32768.0
+        p_pad = self.base_path / "piano_16in24_padded.flac"
+        sf.write(p_pad, np.clip(piano_16q, -0.99, 0.99), sr, subtype="PCM_24")
+        res_pad = motor_flac.analyze_file_data(str(p_pad), mode="full", use_cache=False)
+        self.assertEqual(res_pad["veredicto"], motor_flac.Verdict.PROBABLE_UPSCALE.value)
+        self.assertIn(
+            motor_flac.FindingCode.PADDED_16_IN_24.value,
+            res_pad["esp"].get("finding_codes") or [],
+        )
+
+        # 7. Adversarial: real ffmpeg low-bitrate transcodes of the same solo piano
+        ff_bin = shutil.which("ffmpeg")
+        if ff_bin:
+            src_wav = self.base_path / "piano_clean_src.wav"
+            sf.write(src_wav, piano_clean, sr, subtype="PCM_16")
+            codec_cases = [
+                ("mp3_64k", ["-c:a", "libmp3lame", "-b:a", "64k"], ".mp3", (motor_flac.Verdict.PROBABLE_UPSCALE.value,)),
+                ("mp3_96k", ["-c:a", "libmp3lame", "-b:a", "96k"], ".mp3", (motor_flac.Verdict.PROBABLE_UPSCALE.value,)),
+                ("aac_64k", ["-c:a", "aac", "-b:a", "64k"], ".m4a", (motor_flac.Verdict.PROBABLE_UPSCALE.value,)),
+                ("aac_96k", ["-c:a", "aac", "-b:a", "96k"], ".m4a", (motor_flac.Verdict.PROBABLE_UPSCALE.value,)),
+                ("vorbis_q1", ["-c:a", "libvorbis", "-q:a", "1"], ".ogg", BAD_VERDICTS),
+            ]
+            for tag, enc_args, ext, allowed_verdicts in codec_cases:
+                with self.subTest(codec=tag):
+                    enc_p = self.base_path / f"piano_{tag}{ext}"
+                    dec_p = self.base_path / f"piano_{tag}.flac"
+                    subprocess.run([ff_bin, "-y", "-v", "error", "-i", str(src_wav), *enc_args, str(enc_p)], check=True)
+                    subprocess.run([ff_bin, "-y", "-v", "error", "-i", str(enc_p), "-c:a", "flac", str(dec_p)], check=True)
+                    r_cod = motor_flac.analyze_file_data(str(dec_p), mode="full", use_cache=False)
+                    self.assertIn(r_cod["veredicto"], allowed_verdicts, r_cod["esp"])
+
+        # 8. Invariant 2.7.0: isolated LOW_SPECTRAL_CEILING -> SUSPICIOUS (score >= 0.50)
+        iso_spec = {
+            "techo_hz": 12000,
+            "techo_rel_nyquist": round(12000 / 22050.0, 4),
+            **motor_flac.CutoffAssessment.none().to_protocol_fields(),
+            "ratio_aplica": False,
+            "ratio": 0.0,
+            "var_alta_db": 0.0,
+            "separacion_stereo": None,
+            "decaimiento_acustico_suave": False,
+            "rolloff_banda_limitada_genuina": False,
+        }
+        sc_iso, verd_iso, probs_iso = motor_flac.calculate_score(
+            {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            iso_spec,
+            {"aplica": False},
+        )
+        self.assertEqual(verd_iso, motor_flac.Verdict.SUSPICIOUS.value)
+        self.assertGreaterEqual(sc_iso, 0.50)
+        self.assertEqual(iso_spec["finding_codes"], [motor_flac.FindingCode.LOW_SPECTRAL_CEILING.value])
+        self.assertEqual(len(probs_iso), 1)
+
+        # 9. Invariant 2.7.0: ALBUM_LOSSY_CONSISTENCY + psycho_detector_error
+        self.assertEqual(len(list(motor_flac.FindingCode)), 24)
+        lossy_dir = self.base_path / "schema270_lossy_album"
+        lossy_dir.mkdir(parents=True, exist_ok=True)
+        lossy_batch = [
+            {
+                "archivo": f"{i + 1:02d}_mp3.flac",
+                "ruta": str(lossy_dir / f"{i + 1:02d}_mp3.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+                "bdi": {"aplica": False},
+                "veredicto": motor_flac.Verdict.PROBABLE_UPSCALE.value,
+                "score": 0.20,
+                "problemas": ["Lapped lattice"],
+                "notes": [],
+                "evidencias_forenses": [],
+                "esp": {
+                    "techo_hz": 20500,
+                    "techo_rel_nyquist": 0.93,
+                    "mdct_lattice_detected": True,
+                    "mdct_lattice_snr": 15.0,
+                    "mdct_lattice_family": motor_flac.CodecLatticeFamily.PQMF_576.value,
+                    "finding_codes": [motor_flac.FindingCode.LAPPED_CODEC_LATTICE.value],
+                },
+            }
+            for i in range(6)
+        ]
+        orig_spec = {
+            "techo_hz": 14000,
+            "techo_rel_nyquist": 0.635,
+            "mdct_lattice_detected": False,
+            "mdct_lattice_snr": 4.2,
+            "finding_codes": [],
+        }
+        cand_lossy = {
+            "archivo": "07_dark_intro.flac",
+            "ruta": str(lossy_dir / "07_dark_intro.flac"),
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+            "bdi": {"aplica": False},
+            "veredicto": motor_flac.Verdict.PROBABLY_LOSSLESS.value,
+            "score": 0.72,
+            "problemas": [],
+            "notes": [],
+            "evidencias_forenses": [],
+            "esp": orig_spec,
+        }
+        lossy_batch.append(cand_lossy)
+        self.assertEqual(motor_flac.apply_album_coherence(lossy_batch), 1)
+        self.assertIsNot(cand_lossy["esp"], orig_spec)
+        self.assertEqual(orig_spec["finding_codes"], [])
+        self.assertEqual(
+            cand_lossy["esp"]["finding_codes"],
+            [motor_flac.FindingCode.ALBUM_LOSSY_CONSISTENCY.value],
+        )
+        self.assertEqual(len(cand_lossy["esp"]["finding_codes"]), len(cand_lossy["problemas"]))
+
+        acc_err = spectral._SpectralAccumulator(44100, is_stereo=True)
+        acc_err.add(piano_clean[:16384].astype(np.float32), 0)
+        with mock.patch.object(
+            acc_err._psycho, "_get_cached_slices", side_effect=RuntimeError("psycho-boom")
+        ):
+            spec_psy_err = acc_err.result()
+        self.assertEqual(spec_psy_err.get("psycho_detector_error"), "psycho-boom")
+
 
 
 class TestMultichannelAndPhaseResilience(unittest.TestCase):
@@ -3862,7 +4114,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
     def test_finding_code_emission_across_calculate_score(self):
         """Every calculate_score penalty emits its canonical FindingCode while notes emit none."""
         fc = motor_flac.FindingCode
-        self.assertEqual(len(list(fc)), 23)
+        self.assertEqual(len(list(fc)), 24)
 
         # Clean track with notes (low high/mid ratio, dual-mono, mastering limiter) emits zero codes.
         spec_clean = {
