@@ -2,10 +2,24 @@
 
 Extracted from the motor facade in Phase 4.
 """
+from dataclasses import dataclass
 from enum import Enum, IntEnum
 import os
 
+from _motor_bits import LsbStatus, Md5Status
+from _motor_espectral import CodecLatticeFamily, CutoffClass
+
 LIMIT_CD_HZ = 22050
+
+
+class Verdict(str, Enum):
+    """Canonical authenticity verdicts emitted by the scoring engine."""
+
+    GENUINE_LOSSLESS = "GENUINE LOSSLESS"
+    PROBABLY_LOSSLESS = "PROBABLY LOSSLESS"
+    SUSPICIOUS = "SUSPICIOUS"
+    PROBABLE_UPSCALE = "PROBABLE UPSCALE"
+    INDETERMINATE = "indeterminate"
 
 
 class EvidenceTier(Enum):
@@ -63,6 +77,19 @@ class VerdictCap(IntEnum):
     PROBABLE_UPSCALE = 1
 
 
+@dataclass(frozen=True)
+class ScoreEvaluation:
+    """Pure, immutable output of `_ScoreLedger.evaluate()`."""
+
+    score: float
+    verdict: Verdict
+    problems: tuple[str, ...]
+    notes: tuple[str, ...]
+    families: tuple[str, ...]
+    finding_codes: tuple[str, ...]
+    corroborated: bool
+
+
 class _ScoreLedger:
     """Deterministic score and verdict ceiling accumulator."""
 
@@ -70,12 +97,16 @@ class _ScoreLedger:
         self.votes = 0.0
         self.max_votes = 0.0
         self.penalty = 0.0
-        self.blocks = False
         self.cap = VerdictCap.GENUINE_LOSSLESS
         self.problems = []
         self.notes = []
         self.families = []
         self.finding_codes: list[str] = []
+
+    @property
+    def is_blocked(self) -> bool:
+        """True when a blocking defect caps the verdict at SUSPICIOUS or below."""
+        return self.cap <= VerdictCap.SUSPICIOUS
 
     def add_votes(self, votes_val, max_val=0.0):
         self.votes += float(votes_val)
@@ -120,39 +151,69 @@ class _ScoreLedger:
             else:
                 tier = EvidenceTier.SOFT_BLOCKING
         if blocks_max_verdict or tier in (EvidenceTier.HARD_PROOF, EvidenceTier.SOFT_BLOCKING):
-            self.blocks = True
             self.lower_cap(VerdictCap.SUSPICIOUS)
 
-    def finalize(self, spectrum, include_notes=False):
+    def evaluate(self) -> ScoreEvaluation:
+        """Pure score and verdict computation with zero external mutation."""
         hard_proof = any(f in HARD_PROOF_FAMILIES for f in self.families)
         corroborated = bool(len(self.families) >= 2 or hard_proof)
-        if not spectrum.get("error"):
-            spectrum["familias_evidencia_lossy"] = list(self.families)
-            spectrum["corroboracion_multifamilia"] = corroborated
-            spectrum["finding_codes"] = list(self.finding_codes)
 
         if self.max_votes == 0:
-            if include_notes:
-                return 0.0, "indeterminate", self.problems, self.notes
-            return 0.0, "indeterminate", self.problems
+            return ScoreEvaluation(
+                score=0.0,
+                verdict=Verdict.INDETERMINATE,
+                problems=tuple(self.problems),
+                notes=tuple(self.notes),
+                families=tuple(self.families),
+                finding_codes=tuple(self.finding_codes),
+                corroborated=corroborated,
+            )
 
         score = max(0.0, self.votes / self.max_votes - self.penalty)
-        if self.blocks and not corroborated and score < 0.50:
+        if self.is_blocked and not corroborated and score < 0.50:
             score = 0.50
 
-        if self.blocks or self.cap <= VerdictCap.SUSPICIOUS:
-            verdict = "SUSPICIOUS" if (score >= 0.50 or not corroborated) else "PROBABLE UPSCALE"
+        if self.is_blocked:
+            verdict = (
+                Verdict.SUSPICIOUS
+                if (score >= 0.50 or not corroborated)
+                else Verdict.PROBABLE_UPSCALE
+            )
         elif score >= 0.80:
-            verdict = "GENUINE LOSSLESS"
+            verdict = Verdict.GENUINE_LOSSLESS
         elif score >= 0.60:
-            verdict = "PROBABLY LOSSLESS"
+            verdict = Verdict.PROBABLY_LOSSLESS
         elif score >= 0.40:
-            verdict = "SUSPICIOUS"
+            verdict = Verdict.SUSPICIOUS
         else:
-            verdict = "PROBABLE UPSCALE" if corroborated else "SUSPICIOUS"
+            verdict = (
+                Verdict.PROBABLE_UPSCALE if corroborated else Verdict.SUSPICIOUS
+            )
+
+        return ScoreEvaluation(
+            score=score,
+            verdict=verdict,
+            problems=tuple(self.problems),
+            notes=tuple(self.notes),
+            families=tuple(self.families),
+            finding_codes=tuple(self.finding_codes),
+            corroborated=corroborated,
+        )
+
+    def finalize(self, spectrum, include_notes=False):
+        evaluation = self.evaluate()
+        if not spectrum.get("error"):
+            spectrum["familias_evidencia_lossy"] = list(evaluation.families)
+            spectrum["corroboracion_multifamilia"] = evaluation.corroborated
+            spectrum["finding_codes"] = list(evaluation.finding_codes)
         if include_notes:
-            return score, verdict, self.problems, self.notes
-        return score, verdict, self.problems
+            return (
+                evaluation.score,
+                evaluation.verdict.value,
+                list(evaluation.problems),
+                list(evaluation.notes),
+            )
+        return evaluation.score, evaluation.verdict.value, list(evaluation.problems)
 
 
 def _has_non_opus_codec_signature(spectrum) -> bool:
@@ -162,7 +223,8 @@ def _has_non_opus_codec_signature(spectrum) -> bool:
         (
             spectrum.get("mdct_lattice_detected")
             and lattice_family
-            and "Opus" not in lattice_family
+            and lattice_family != CodecLatticeFamily.CELT_960.value
+            and "Opus" not in str(lattice_family)
         )
         or spectrum.get("islas_mdct_sfb21")
         or spectrum.get("sbr_qmf_detectado")
@@ -173,7 +235,7 @@ def _has_clean_active_24bit_lattice(bdi) -> bool:
     """True when the 24/32-bit LSB lattice is active with zero padding, comb, or micro-dither flags."""
     forensic = (bdi or {}).get("forense_bits") or {}
     return bool(
-        (bdi or {}).get("lsbs") == "active"
+        (bdi or {}).get("lsbs") == LsbStatus.ACTIVE.value
         and not forensic.get("es_padded_16_en_24")
         and not forensic.get("es_24bit_escalado_en_peine")
         and not forensic.get("es_16bit_dither_en_24")
@@ -183,8 +245,8 @@ def _has_clean_active_24bit_lattice(bdi) -> bool:
 def _is_codec_clean_core(spectrum, category, rel_cutoff) -> bool:
     """Shared codec-free core predicate composed by Rule 2 and Rule 5 exemptions."""
     near_adc_edge = (
-        category == "no_cutoff"
-        or (category == "near_nyquist_cutoff" and (rel_cutoff or 0.0) >= 0.94)
+        category == CutoffClass.NO_CUTOFF.value
+        or (category == CutoffClass.NEAR_NYQUIST.value and (rel_cutoff or 0.0) >= 0.94)
     )
     return bool(
         near_adc_edge
@@ -202,9 +264,9 @@ def _allows_dark_sparse_iqr_rescue(sr, spectrum, md5_state) -> bool:
     """True when a dark, sparse, uncut <=48 kHz track with verified MD5 may
     still qualify for album coherence despite elevated cut-off IQR."""
     return bool(
-        md5_state == "match"
+        md5_state == Md5Status.MATCH.value
         and sr <= 48000
-        and spectrum.get("clase_corte") == "no_cutoff"
+        and spectrum.get("clase_corte") == CutoffClass.NO_CUTOFF.value
         and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 460.0
         and (
             (
@@ -227,7 +289,7 @@ def _allows_24b_dark_vhs_rescue(sr, bits, bdi, spectrum) -> bool:
     return bool(
         sr <= 48000
         and bits > 16
-        and bdi.get("lsbs") == "active"
+        and bdi.get("lsbs") == LsbStatus.ACTIVE.value
         and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 1800.0
     )
 
@@ -242,7 +304,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
 
     if not spectrum.get("error"):
         ceiling     = spectrum["techo_hz"]
-        category     = spectrum.get("clase_corte", "no_cutoff")
+        category     = spectrum.get("clase_corte", CutoffClass.NO_CUTOFF.value)
         rel_cutoff = spectrum.get("distancia_nyquist")
         rel_ceiling = spectrum.get("techo_rel_nyquist")
         if rel_ceiling is None:
@@ -387,7 +449,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
         # `rolloff_analogico_genuino` is false in that case, so a Hi-Res
         # far_cutoff cannot bypass this penalty.
         ledger.add_votes(0.0, 3.0)
-        if category == "far_cutoff":
+        if category == CutoffClass.FAR_CUTOFF.value:
             if spectrum.get("es_transferencia_dsd") or spectrum.get("rolloff_analogico_genuino"):
                 ledger.note(f"Genuine analogue/DSD master roll-off: musical "
                             f"band ends naturally at {spectrum['frecuencia_corte']/1000:.1f} kHz "
@@ -412,7 +474,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                     code=FindingCode.ARTIFICIAL_CUTOFF,
                 )
-        elif category == "near_nyquist_cutoff":
+        elif category == CutoffClass.NEAR_NYQUIST.value:
             # It is neither flagged nor rewarded unless a genuinely band-limited
             # ADC transition sits right on the Nyquist edge (>= 95%) with zero
             # codec evidence; otherwise it stays inconclusive.
@@ -610,7 +672,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                     code=FindingCode.OPUS_20K_CUTOFF,
                 )
-            elif category != "far_cutoff":
+            elif category != CutoffClass.FAR_CUTOFF.value:
                 ledger.note("Inconclusive 20.00 kHz shelf: consistent with both a "
                             "libopus fullband encode and a mastering low-pass filter "
                             "(no other codec signature found)")
@@ -645,7 +707,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                          f"limited to {rel_ceiling*100:.0f}% of Nyquist "
                          f"({ceiling/1000:.1f} kHz)")
             native_24b_tail_ok = bool(
-                category != "far_cutoff"
+                category != CutoffClass.FAR_CUTOFF.value
                 and (acoustic_exemption or band_limited_exemption)
                 and spectrum.get("native_24bit_hf_tail")
             )
@@ -655,7 +717,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"converter roll-off up to Nyquist backs the declared "
                     f"{bits}-bit/{sr/1000:.1f} kHz format"
                 )
-            elif category == "far_cutoff" or rel_ceiling < 0.88:
+            elif category == CutoffClass.FAR_CUTOFF.value or rel_ceiling < 0.88:
                 ledger.penalize(
                     f"Repackaged {bits}-bit container from a band-limited/lossy source: "
                     f"declares {bits} bits at {sr/1000:.1f} kHz but high frequencies are "
@@ -697,7 +759,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
     if bdi.get("aplica"):
         lsbs = bdi.get("lsbs")
         forensic = bdi.get("forense_bits") or {}
-        if lsbs == "empty":
+        if lsbs == LsbStatus.EMPTY.value:
             if forensic.get("es_padded_16_en_24"):
                 ledger.penalize(
                     f"16-bit audio zero-padded inside a {bits}-bit container "
@@ -730,7 +792,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     family=EvidenceFamily.BIT_DEPTH_CONTAINER,
                     code=FindingCode.EMPTY_LSBS,
                 )
-        elif lsbs == "partial":
+        elif lsbs == LsbStatus.PARTIAL.value:
             ledger.penalize(
                 f"Bit-depth upscale with later processing: LSBs partially inactive "
                 f"({bdi.get('fraccion_16bit_grid','?')}% on the 16-bit grid; "
@@ -741,11 +803,11 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
                 code=FindingCode.PARTIAL_LSBS,
             )
-        elif lsbs == "indeterminate" and bdi.get("error"):
+        elif lsbs == LsbStatus.INDETERMINATE.value and bdi.get("error"):
             ledger.note(f"Bit-depth LSB check skipped: {bdi['error']}")
 
         # Native-integer audit (zero padding and quantisation comb).
-        if forensic.get("es_padded_16_en_24") and lsbs != "empty":
+        if forensic.get("es_padded_16_en_24") and lsbs != LsbStatus.EMPTY.value:
             ledger.penalize(
                 f"16-bit audio zero-padded inside a {bits}-bit container "
                 f"(the lowest {forensic.get('trailing_zeros_lsb', 8)} bits are always "
@@ -773,7 +835,7 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
                 code=FindingCode.GAIN_COMB_24,
             )
-        if forensic.get("es_16bit_dither_en_24") and lsbs != "empty":
+        if forensic.get("es_16bit_dither_en_24") and lsbs != LsbStatus.EMPTY.value:
             occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
             ledger.penalize(
                 f"16-bit source padded with synthetic boundary micro-dither "
@@ -800,9 +862,9 @@ def _deserves_album_coherence(result):
     if spectrum.get("error"):
         return False
     md5_state = (result.get("md5") or {}).get("estado")
-    if md5_state not in ("match", "absent"):
+    if md5_state not in (Md5Status.MATCH.value, Md5Status.ABSENT.value):
         return False
-    if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == "far_cutoff":
+    if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == CutoffClass.FAR_CUTOFF.value:
         return False                       # a below-Nyquist codec step is never rescued
     max_coh_rel = 0.95 if (bits > 16 and sr <= 48000) else 0.88
     if (spectrum.get("techo_rel_nyquist") or 1.0) >= max_coh_rel:
@@ -819,20 +881,20 @@ def _deserves_album_coherence(result):
         return False
     if (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10:
         return False
-    if sr >= 88200 and (bits > 16 or bdi.get("aplica")) and bdi.get("lsbs") != "active":
+    if sr >= 88200 and (bits > 16 or bdi.get("aplica")) and bdi.get("lsbs") != LsbStatus.ACTIVE.value:
         return False
     forensic = bdi.get("forense_bits") or {}
     if (forensic.get("es_padded_16_en_24")
             or forensic.get("es_24bit_escalado_en_peine")
             or forensic.get("es_16bit_dither_en_24")
-            or bdi.get("lsbs") == "empty"):
+            or bdi.get("lsbs") == LsbStatus.EMPTY.value):
         return False
     allow_24b_dark_vhs = _allows_24b_dark_vhs_rescue(sr, bits, bdi, spectrum)
     problems = result.get("problemas") or []
     if ("finding_codes" in spectrum
             and isinstance(spectrum["finding_codes"], list)
             and len(spectrum["finding_codes"]) == len(problems)):
-        hires_clean_bits = (not bdi.get("aplica")) or bdi.get("lsbs") == "active"
+        hires_clean_bits = (not bdi.get("aplica")) or bdi.get("lsbs") == LsbStatus.ACTIVE.value
         for raw_code in spectrum["finding_codes"]:
             code_val = raw_code.value if isinstance(raw_code, Enum) else str(raw_code)
             if code_val == FindingCode.LOW_SPECTRAL_CEILING.value:
@@ -858,7 +920,7 @@ def _deserves_album_coherence(result):
         "studio anti-aliasing", "anti-alias filter of a legitimate master",
         "analogue/dsd master", "dsd/sacd noise-shaping", "dsd/sacd transfer",
     ]
-    if sr >= 88200 and (not bdi.get("aplica") or bdi.get("lsbs") == "active"):
+    if sr >= 88200 and (not bdi.get("aplica") or bdi.get("lsbs") == LsbStatus.ACTIVE.value):
         permitidos.extend(["below the cd band", "not backed by content"])
     for problem in problems:
         low = problem.lower()
@@ -878,7 +940,10 @@ def _deserves_album_lossy_coherence(result):
     detector, yet already shows a weak lapped-transform lattice peak."""
     if not isinstance(result, dict) or result.get("error"):
         return False
-    if result.get("veredicto") not in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS"):
+    if result.get("veredicto") not in (
+        Verdict.GENUINE_LOSSLESS.value,
+        Verdict.PROBABLY_LOSSLESS.value,
+    ):
         return False
     meta = result.get("meta") or {}
     sr = int(meta.get("sample_rate") or 0)
@@ -904,9 +969,12 @@ def _is_lossy_codec_quorum_track(result):
     if spectrum.get("mdct_lattice_detected"):
         return True
     if (spectrum.get("sospecha_corte_opus_20k")
-            and result.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE")):
+            and result.get("veredicto") in (
+                Verdict.SUSPICIOUS.value,
+                Verdict.PROBABLE_UPSCALE.value,
+            )):
         return True
-    if result.get("veredicto") != "PROBABLE UPSCALE":
+    if result.get("veredicto") != Verdict.PROBABLE_UPSCALE.value:
         return False
     sr = int((result.get("meta") or {}).get("sample_rate") or 0)
     rel = float(spectrum.get("techo_rel_nyquist") or 0.0)
@@ -919,9 +987,9 @@ def _is_lossy_codec_quorum_track(result):
 
 def _is_clean_quorum_track(result):
     verdict = result.get("veredicto")
-    if verdict == "GENUINE LOSSLESS":
+    if verdict == Verdict.GENUINE_LOSSLESS.value:
         return True
-    if verdict != "PROBABLY LOSSLESS":
+    if verdict != Verdict.PROBABLY_LOSSLESS.value:
         return False
     if _deserves_album_coherence(result):
         return False
@@ -949,9 +1017,12 @@ def _is_clean_album_support_track(result, reference):
         return False
     if _is_clean_quorum_track(result):
         return True
-    if result.get("veredicto") != "PROBABLY LOSSLESS":
+    if result.get("veredicto") != Verdict.PROBABLY_LOSSLESS.value:
         return False
-    if (result.get("md5") or {}).get("estado") not in ("match", "absent"):
+    if (result.get("md5") or {}).get("estado") not in (
+        Md5Status.MATCH.value,
+        Md5Status.ABSENT.value,
+    ):
         return False
     spectrum = result.get("esp") or {}
     if spectrum.get("familias_evidencia_lossy") or []:
@@ -983,7 +1054,7 @@ def _is_clean_batch_track(result):
         return False
     if spectrum.get("familias_evidencia_lossy") or []:
         return False
-    if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == "far_cutoff":
+    if spectrum.get("corte_artificial") or spectrum.get("clase_corte") == CutoffClass.FAR_CUTOFF.value:
         return False
     for key in (
         "muro_brickwall_nyquist", "espejo_aliasing_detectado",
@@ -999,7 +1070,7 @@ def _is_clean_batch_track(result):
     if (forensic.get("es_padded_16_en_24")
             or forensic.get("es_24bit_escalado_en_peine")
             or forensic.get("es_16bit_dither_en_24")
-            or bdi.get("lsbs") == "empty"):
+            or bdi.get("lsbs") == LsbStatus.EMPTY.value):
         return False
     return True
 
@@ -1054,10 +1125,10 @@ def apply_album_coherence(results):
                 if _is_clean_album_support_track(r, reference)
             ]
             has_strong_anchor = any(
-                r.get("veredicto") == "GENUINE LOSSLESS"
+                r.get("veredicto") == Verdict.GENUINE_LOSSLESS.value
                 or float(r.get("score") or 0.0) >= 0.75
                 or (
-                    (r.get("md5") or {}).get("estado") == "absent"
+                    (r.get("md5") or {}).get("estado") == Md5Status.ABSENT.value
                     and float(r.get("score") or 0.0) >= 0.70
                     and float((r.get("esp") or {}).get("techo_rel_nyquist") or 0.0) >= 0.90
                     and not ((r.get("esp") or {}).get("familias_evidencia_lossy") or [])
@@ -1069,11 +1140,17 @@ def apply_album_coherence(results):
             if not (has_strong_anchor and support_ratio >= 0.75):
                 non_verde = [
                     r for r in validas
-                    if r.get("veredicto") not in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+                    if r.get("veredicto") not in (
+                        Verdict.GENUINE_LOSSLESS.value,
+                        Verdict.PROBABLY_LOSSLESS.value,
+                    )
                 ]
                 verde = [
                     r for r in validas
-                    if r.get("veredicto") in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+                    if r.get("veredicto") in (
+                        Verdict.GENUINE_LOSSLESS.value,
+                        Verdict.PROBABLY_LOSSLESS.value,
+                    )
                 ]
                 mixed_vhs_ok = bool(
                     has_strong_anchor
@@ -1091,8 +1168,14 @@ def apply_album_coherence(results):
             if (has_strong_anchor and support_ratio >= 0.75) or mixed_vhs_ok:
                 candidatos = []
                 for r in validas:
-                    if r.get("veredicto") not in ("SUSPICIOUS", "PROBABLE UPSCALE",
-                                                  "PROBABLY LOSSLESS"):
+                    if (r.get("coherencia_album") is True
+                            and r.get("veredicto") == Verdict.PROBABLY_LOSSLESS.value):
+                        continue
+                    if r.get("veredicto") not in (
+                        Verdict.SUSPICIOUS.value,
+                        Verdict.PROBABLE_UPSCALE.value,
+                        Verdict.PROBABLY_LOSSLESS.value,
+                    ):
                         continue
                     meta = r.get("meta") or {}
                     if (meta.get("sample_rate"), meta.get("bits_per_sample")) != reference:
@@ -1101,7 +1184,10 @@ def apply_album_coherence(results):
                         candidatos.append(r)
                 rescue_candidates = [
                     r for r in candidatos
-                    if r.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE")
+                    if r.get("veredicto") in (
+                        Verdict.SUSPICIOUS.value,
+                        Verdict.PROBABLE_UPSCALE.value,
+                    )
                 ]
                 max_candidates = max(2, len(validas) // 4)
                 within_cap = (
@@ -1110,7 +1196,7 @@ def apply_album_coherence(results):
                 )
                 if candidatos and within_cap:
                     for r in candidatos:
-                        r["veredicto"] = "PROBABLY LOSSLESS"
+                        r["veredicto"] = Verdict.PROBABLY_LOSSLESS.value
                         r["score"] = max(float(r.get("score") or 0.0), 0.60)
                         old_problems = list(r.get("problemas") or [])
                         notes = list(r.get("notes") or [])
@@ -1186,7 +1272,7 @@ def apply_album_coherence(results):
                     f"low-ceiling track in a confirmed lossy batch "
                     f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
                 )
-            r["veredicto"] = "PROBABLE UPSCALE"
+            r["veredicto"] = Verdict.PROBABLE_UPSCALE.value
             r["score"] = min(float(r.get("score") or 0.0), 0.35)
             r["problemas"] = list(r.get("problemas") or []) + [note]
             r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [note]
@@ -1290,7 +1376,7 @@ def forensic_evidence(result):
     if len(fams) >= 2:
         evidence.append(f"Multi-family corroboration ({len(fams)} families: "
                           f"{', '.join(fams)})")
-    if (result.get("md5") or {}).get("estado") == "match":
+    if (result.get("md5") or {}).get("estado") == Md5Status.MATCH.value:
         evidence.append("STREAMINFO MD5 verified (match)")
     if result.get("coherencia_album"):
         evidence.append(result.get("album_coherence_note") or ALBUM_COHERENCE_NOTE)

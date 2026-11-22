@@ -45,11 +45,11 @@ AFFIRMATIVE = ("y", "yes")
 # are no substring comparisons any more and no two sets of strings that could
 # diverge.
 VERDICTS = {
-    "GENUINE LOSSLESS":       ("✅", "GENUINE LOSSLESS"),
-    "PROBABLY LOSSLESS":      ("☑️", "PROBABLY LOSSLESS"),
-    "SUSPICIOUS":             ("⚠️ ", "SUSPICIOUS — possible upscale"),
-    "PROBABLE UPSCALE":       ("❌", "PROBABLE UPSCALE / TRANSCODE"),
-    "indeterminate":          ("❓", "indeterminate"),
+    engine.Verdict.GENUINE_LOSSLESS.value:  ("✅", "GENUINE LOSSLESS"),
+    engine.Verdict.PROBABLY_LOSSLESS.value: ("☑️", "PROBABLY LOSSLESS"),
+    engine.Verdict.SUSPICIOUS.value:        ("⚠️ ", "SUSPICIOUS — possible upscale"),
+    engine.Verdict.PROBABLE_UPSCALE.value:  ("❌", "PROBABLE UPSCALE / TRANSCODE"),
+    engine.Verdict.INDETERMINATE.value:     ("❓", "indeterminate"),
 }
 
 # ─── REPORT PRESENTATION ─────────────────────────────────────────────────────
@@ -66,9 +66,9 @@ def _md5(md5):
     if not md5:
         return
     state = md5.get("estado")
-    if state == "match":
+    if state == engine.Md5Status.MATCH.value:
         print(f"  ✅ MD5 verified: {md5.get('calculado')}")
-    elif state == "mismatch":
+    elif state == engine.Md5Status.MISMATCH.value:
         print("  ❌ MD5 MISMATCH — file corrupt or modified")
         print(f"     stored    : {md5.get('almacenado')}")
         print(f"     computed  : {md5.get('calculado')}")
@@ -97,7 +97,11 @@ def _bit_depth(bdi):
         return
     # "Active LSBs" is not good news: it only means that the test cannot disprove
     # anything (a lossy transcode at 24 bits fills the LSB as well).
-    ic = {"empty": "❌", "partial": "⚠️ ", "active": "ℹ️ "}.get(bdi.get("lsbs"), "⚠️ ")
+    ic = {
+        engine.LsbStatus.EMPTY.value: "❌",
+        engine.LsbStatus.PARTIAL.value: "⚠️ ",
+        engine.LsbStatus.ACTIVE.value: "ℹ️ ",
+    }.get(bdi.get("lsbs"), "⚠️ ")
     print(f"  {ic} LSB utilization: {bdi['conclusion']}")
 
 def _spectrum(spectrum):
@@ -117,11 +121,11 @@ def _spectrum(spectrum):
         print(f"  • L-R separation:           {spectrum['separacion_stereo']:.4f}")
 
     category = spectrum.get("clase_corte")
-    if category == "far_cutoff":
+    if category == engine.CutoffClass.FAR_CUTOFF.value:
         fc = spectrum.get("frecuencia_corte") or 0
         print(f"  ❌ Artificial cut-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
               f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): codec signature")
-    elif category == "near_nyquist_cutoff":
+    elif category == engine.CutoffClass.NEAR_NYQUIST.value:
         fc = spectrum.get("frecuencia_corte") or 0
         print(f"  ℹ️  Band cut at {fc:,} Hz ({fc/1000:.1f} kHz, "
               f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist) — inconclusive: "
@@ -134,7 +138,7 @@ def _body(res):
     error = res.get("error")
     if error:
         print(f"  ❌ FAILED — {error}")
-        if (res.get("md5") or {}).get("estado") == "mismatch":
+        if (res.get("md5") or {}).get("estado") == engine.Md5Status.MISMATCH.value:
             print(f"     stored    : {res['md5'].get('almacenado')}")
             print(f"     computed  : {res['md5'].get('calculado')}")
         return None
@@ -258,15 +262,17 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
 
     if is_folder:
         print(f"\n{'═'*60}")
-        probable = f"{verdicts['PROBABLY LOSSLESS']} ☑️ PROBABLY  |  " if verdicts["PROBABLY LOSSLESS"] else ""
+        probable_count = verdicts[engine.Verdict.PROBABLY_LOSSLESS.value]
+        indeterminate_count = verdicts[engine.Verdict.INDETERMINATE.value]
+        probable = f"{probable_count} ☑️ PROBABLY  |  " if probable_count else ""
         indeterminate = (
-            f"  |  {verdicts['indeterminate']} ❓ INDETERMINATE"
-            if verdicts["indeterminate"] else ""
+            f"  |  {indeterminate_count} ❓ INDETERMINATE"
+            if indeterminate_count else ""
         )
-        print(f"SUMMARY: {verdicts['GENUINE LOSSLESS']} ✅ GENUINE  |  "
+        print(f"SUMMARY: {verdicts[engine.Verdict.GENUINE_LOSSLESS.value]} ✅ GENUINE  |  "
               f"{probable}"
-              f"{verdicts['SUSPICIOUS']} ⚠️  SUSPICIOUS  |  "
-              f"{verdicts['PROBABLE UPSCALE']} ❌ UPSCALE"
+              f"{verdicts[engine.Verdict.SUSPICIOUS.value]} ⚠️  SUSPICIOUS  |  "
+              f"{verdicts[engine.Verdict.PROBABLE_UPSCALE.value]} ❌ UPSCALE"
               + indeterminate
               + (f"  |  {failures} ❌ WITH ERRORS" if failures else ""))
         print(f"{'═'*60}")
@@ -276,12 +282,7 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
     if save_pdf:
         # Sort by original track index so held-back coherence tracks appear
         # in album order inside the PDF report.
-        results.sort(
-            key=lambda r: r["indice_original"]
-            if (isinstance(r.get("indice_original"), int)
-                and not isinstance(r.get("indice_original"), bool))
-            else 0
-        )
+        results = engine.sort_results_by_original_index(results)
         # A failed PDF write is reported; the analysis is never aborted.
         report = engine.generate_pdf_report(path, results, mode=mode)
         if report.get("ok"):

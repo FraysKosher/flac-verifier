@@ -910,6 +910,244 @@ class TestCacheHardeningAndStreams(unittest.TestCase):
                     bad = engine.analyze_file_data(flac_path, "center", None, True, use_cache=True)
                 self.assertIn("Could not decode the audio", bad.get("error", ""))
 
+    def test_midstream_failure_on_32bit_does_not_invoke_s32_fallback(self):
+        """A mid-stream read error (offset > 0) on a 32-bit file must propagate
+        without falling back to `_iter_blocks_s32_flac`."""
+        meta_32 = {
+            "valido": True,
+            "sample_rate": 44100,
+            "bits_per_sample": 32,
+            "canales": 2,
+            "duracion": 1.0,
+            "total_samples": 4096,
+            "md5": None,
+        }
+
+        class _MidFail32SF:
+            def __init__(self, _path):
+                self.samplerate = 44100
+                self.frames = 4096
+                self.channels = 2
+                self.subtype = "PCM_32"
+                self._calls = 0
+
+            def read(self, frames, dtype="float64", always_2d=True):
+                self._calls += 1
+                if self._calls == 1:
+                    return np.zeros((1024, 2), dtype=np.float64)
+                raise RuntimeError("midstream 32-bit failure")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(engine.sf, "SoundFile", side_effect=_MidFail32SF), \
+             mock.patch.object(engine, "_iter_blocks_s32_flac") as s32_mock:
+            with self.assertRaises(RuntimeError):
+                engine._analyze_streaming("dummy32.flac", meta_32, "center", None, False)
+            s32_mock.assert_not_called()
+
+    def test_batch_task_pickling_legacy_tuples_sort_and_stream_events(self):
+        """BatchTask pickles cleanly, _work_analysis supports legacy tuples,
+        sort_results_by_original_index rejects bools, and StreamEvent matches CLI."""
+        import pickle
+
+        task = engine.BatchTask(
+            index=3,
+            path=self.fx["ok16"],
+            mode="center",
+            seconds=None,
+            save_png=False,
+            use_cache=False,
+            pre_meta=None,
+            skip_cache_lookup=False,
+        )
+        restored = pickle.loads(pickle.dumps(task))
+        self.assertEqual(restored, task)
+
+        res_task = engine._work_analysis(restored)
+        res_legacy5 = engine._work_analysis(
+            (self.fx["ok16"], "center", None, False, False)
+        )
+        self.assertEqual(res_task["veredicto"], res_legacy5["veredicto"])
+        self.assertEqual(res_task["score"], res_legacy5["score"])
+
+        unsorted = [
+            {"archivo": "bool_true.flac", "indice_original": True},
+            {"archivo": "idx_2.flac", "indice_original": 2},
+            {"archivo": "bool_false.flac", "indice_original": False},
+            {"archivo": "idx_0.flac", "indice_original": 0},
+            {"archivo": "idx_1.flac", "indice_original": 1},
+        ]
+        ordered = engine.sort_results_by_original_index(unsorted)
+        self.assertEqual(
+            [item["archivo"] for item in ordered],
+            ["idx_0.flac", "idx_1.flac", "idx_2.flac", "bool_true.flac", "bool_false.flac"],
+        )
+
+        # Verify StreamEvent covers every event type emitted by main_cli.
+        probe = self.fx.subfolder("stream_events_check", ("ok16",))
+        proc_ok = fx.run_engine(probe, extra=("--no-cache", "--workers", "1", "--pdf"))
+        events_ok = [
+            json.loads(line)["tipo"]
+            for line in proc_ok.stdout.splitlines()
+            if line.strip()
+        ]
+        self.assertIn(engine.StreamEvent.START.value, events_ok)
+        self.assertIn(engine.StreamEvent.RESULT.value, events_ok)
+        self.assertIn(engine.StreamEvent.END.value, events_ok)
+        self.assertTrue(
+            engine.StreamEvent.REPORT.value in events_ok
+            or engine.StreamEvent.WARNING.value in events_ok
+        )
+        proc_err = fx.run_engine(os.path.join(probe, "missing_dir_xyz"))
+        events_err = [
+            json.loads(line)["tipo"]
+            for line in proc_err.stdout.splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(events_err, [engine.StreamEvent.ERROR.value])
+        valid_values = {ev.value for ev in engine.StreamEvent}
+        self.assertTrue(set(events_ok + events_err).issubset(valid_values))
+
+    def test_accumulator_failed_transitions_and_post_finalization_guards(self):
+        """All streaming accumulators enforce FAILED/COMPLETED transitions and
+        block post-finalization mutations while tolerating mid-stream errors."""
+        import _motor_bits
+        import _motor_espectral
+
+        rng = np.random.default_rng(314)
+        stereo = rng.uniform(-0.2, 0.2, (8192, 2)).astype(np.float64)
+
+        # 1. _SpectralAccumulator early error branches + mid-stream tolerance + render_png_only
+        spec_empty = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+        err_empty = spec_empty.result()
+        self.assertIn("error", err_empty)
+        self.assertIs(spec_empty.state, engine.AccumulatorState.FAILED)
+        self.assertEqual(spec_empty.result(), err_empty)
+        with self.assertRaises(RuntimeError):
+            spec_empty.add(stereo, 0)
+
+        spec_short = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+        spec_short.add(np.ones((8, 2), dtype=np.float32) * 0.2, 0)
+        err_short = spec_short.result()
+        self.assertIn("error", err_short)
+        self.assertIs(spec_short.state, engine.AccumulatorState.FAILED)
+        with self.assertRaises(RuntimeError):
+            spec_short.add(stereo, 0)
+
+        spec_zero = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+        spec_zero.add(np.zeros((8192, 2), dtype=np.float32), 0)
+        err_zero = spec_zero.result()
+        self.assertIn("error", err_zero)
+        self.assertIs(spec_zero.state, engine.AccumulatorState.FAILED)
+        with self.assertRaises(RuntimeError):
+            spec_zero.add(stereo, 0)
+
+        spec_mc_zero = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+        spec_mc_zero.add(np.zeros((8192, 6), dtype=np.float32), 0)
+        err_mc = spec_mc_zero.result()
+        self.assertIn("error", err_mc)
+        self.assertIs(spec_mc_zero.state, engine.AccumulatorState.FAILED)
+        with self.assertRaises(RuntimeError):
+            spec_mc_zero.add(stereo, 0)
+
+        spec_mid_err = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+        with mock.patch.object(
+            _motor_espectral, "_activity_score", side_effect=ValueError("mid-block boom")
+        ):
+            spec_mid_err.add(stereo, 0)
+        self.assertIs(spec_mid_err.state, engine.AccumulatorState.FAILED)
+        # Mid-stream error does not abort subsequent blocks before finalization.
+        spec_mid_err.add(stereo, 8192)
+        res_mid_err = spec_mid_err.result()
+        self.assertIn("mid-block boom", res_mid_err["error"])
+        with self.assertRaises(RuntimeError):
+            spec_mid_err.add(stereo, 16384)
+
+        spec_png_only = _motor_espectral._SpectralAccumulator(
+            44100, is_stereo=True, save_png=False
+        )
+        spec_png_only.add(stereo, 0)
+        self.assertEqual(spec_png_only.render_png_only(), {"espectrograma": None})
+        self.assertIs(spec_png_only.state, engine.AccumulatorState.COMPLETED)
+        with self.assertRaises(RuntimeError):
+            spec_png_only.add(stereo, 8192)
+
+        spec_png_empty = _motor_espectral._SpectralAccumulator(
+            44100, is_stereo=True, save_png=True, path="unused.flac"
+        )
+        png_err = spec_png_empty.render_png_only()
+        self.assertIn("espectrograma_error", png_err)
+        self.assertIs(spec_png_empty.state, engine.AccumulatorState.FAILED)
+        with self.assertRaises(RuntimeError):
+            spec_png_empty.add(stereo, 0)
+
+        # 2. _StreamingBitDepthAccumulator (16-bit post-finalization + 24-bit mid-stream error)
+        bdi_16 = _motor_bits._StreamingBitDepthAccumulator(16, 8192)
+        self.assertIs(bdi_16.state, engine.AccumulatorState.COLLECTING)
+        bdi_16.add_block(0, block_f64=stereo)
+        self.assertEqual(bdi_16.result(), {"aplica": False})
+        self.assertIs(bdi_16.state, engine.AccumulatorState.COMPLETED)
+        with self.assertRaises(RuntimeError):
+            bdi_16.add_block(0, block_f64=stereo)
+
+        bdi_24 = _motor_bits._StreamingBitDepthAccumulator(24, 8192)
+        bdi_24.add_block(0, block_f64=object())  # triggers internal error mid-stream
+        self.assertIs(bdi_24.state, engine.AccumulatorState.FAILED)
+        # Subsequent block before result() returns silently without raising.
+        bdi_24.add_block(8192, block_f64=stereo)
+        bdi_err = bdi_24.result()
+        self.assertEqual(bdi_err["lsbs"], engine.LsbStatus.INDETERMINATE.value)
+        self.assertIn("error", bdi_err)
+        self.assertEqual(bdi_24.result(), bdi_err)
+        with self.assertRaises(RuntimeError):
+            bdi_24.add_block(16384, block_f64=stereo)
+
+        # 3. _ClippingAccumulator (post-finalize guards + idempotent read methods)
+        clip_acc = _motor_bits._ClippingAccumulator(2)
+        self.assertIs(clip_acc.state, engine.AccumulatorState.COLLECTING)
+        clipped = np.zeros((16, 2), dtype=np.float64)
+        clipped[2:6, 0] = 1.0
+        clip_acc.add_float_block(clipped)
+        snap_before = clip_acc.snapshot()
+        clip_acc.finalize()
+        self.assertIs(clip_acc.state, engine.AccumulatorState.COMPLETED)
+        self.assertEqual(clip_acc.snapshot(), snap_before)
+        self.assertEqual(clip_acc.clip_dict(), {"runs_clip": 1, "hay_clipping": True})
+        c1 = clip_acc.classify(ceiling_hz=22050, frequency_cutoff=None, nyquist=22050)
+        c2 = clip_acc.classify(ceiling_hz=22050, frequency_cutoff=None, nyquist=22050)
+        self.assertEqual(c1, c2)
+        with self.assertRaises(RuntimeError):
+            clip_acc.add_float_block(clipped)
+        with self.assertRaises(RuntimeError):
+            clip_acc.flush_zeros()
+
+        # 4. ForensicBitsAccumulator FAILED transition on exception during add()
+        fb_acc = _motor_bits.ForensicBitsAccumulator(24, sample_rate=44100)
+        with self.assertRaises(AttributeError):
+            fb_acc.add(object())
+        self.assertIs(fb_acc.state, engine.AccumulatorState.FAILED)
+        with self.assertRaises(RuntimeError):
+            fb_acc.add(stereo)
+
+        # 5. PsychoacousticSTFTAccumulator mid-stream error, summary(), and post-finalization
+        psy = _motor_espectral.PsychoacousticSTFTAccumulator(44100)
+        self.assertIs(psy.state, engine.AccumulatorState.COLLECTING)
+        freqs = np.fft.rfftfreq(2048, 1.0 / 44100)
+        win = np.hanning(2049)[:-1].astype(np.float32)
+        with mock.patch.object(psy, "_get_cached_slices", side_effect=RuntimeError("slice err")):
+            psy.add(np.ones((4, freqs.size), dtype=np.float32), freqs, win)
+        self.assertIs(psy.state, engine.AccumulatorState.FAILED)
+        # Subsequent add before summary() returns silently.
+        psy.add(np.ones((4, freqs.size), dtype=np.float32), freqs, win)
+        summary = psy.summary()
+        self.assertIsInstance(summary, engine.PsychoacousticSummary)
+        self.assertEqual(summary.error, "slice err")
+        self.assertEqual(psy.result(), summary.metrics)
+        self.assertNotIn("psycho_detector_error", psy.result())
+        with self.assertRaises(RuntimeError):
+            psy.add(np.ones((4, freqs.size), dtype=np.float32), freqs, win)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

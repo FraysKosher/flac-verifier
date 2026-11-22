@@ -50,6 +50,24 @@ class AccumulatorState(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+
+class Md5Status(str, Enum):
+    """STREAMINFO MD5 verification outcome."""
+
+    MATCH = "match"
+    MISMATCH = "mismatch"
+    ABSENT = "absent"
+    UNVERIFIABLE = "unverifiable"
+
+
+class LsbStatus(str, Enum):
+    """Effective LSB utilization status for >16-bit containers."""
+
+    EMPTY = "empty"
+    PARTIAL = "partial"
+    ACTIVE = "active"
+    INDETERMINATE = "indeterminate"
+
 FRAMES_BY_BLOCK = 1 << 18            # 262 144 frames (~6 s at 44.1 kHz) per read
 
 MAX_SAMPLES_BITS = 1 << 20            # sample for the LSB test
@@ -216,15 +234,15 @@ def _compare_md5(calculated, meta):
     if isinstance(stored, (bytes, bytearray)):
         stored = int.from_bytes(stored, "big")
     if not stored:
-        return {"estado": "absent",
+        return {"estado": Md5Status.ABSENT.value,
                 "detalle": "STREAMINFO has no MD5 recorded (encoder built with --no-md5, or altered metadata)"}
     if calculated is None:
-        return {"estado": "unverifiable",
+        return {"estado": Md5Status.UNVERIFIABLE.value,
                 "detalle": f"bit depth {meta.get('bits_per_sample')} bits: not verifiable",
                 "almacenado": f"{int(stored):032x}"}
     matches = int(calculated, 16) == int(stored)
     return {
-        "estado":     "match" if matches else "mismatch",
+        "estado":     Md5Status.MATCH.value if matches else Md5Status.MISMATCH.value,
         "calculado":  calculated,
         "almacenado": f"{int(stored):032x}",
     }
@@ -236,7 +254,7 @@ def verify_md5(data, meta):
 def _format_bit_depth_result(bits, n_active, n_grid16, counts_idx, forensic=None):
     """Formats the LSB utilization metrics and conclusion from accumulated counts."""
     if n_active < 1000:
-        output = {"aplica": True, "lsbs": "indeterminate",
+        output = {"aplica": True, "lsbs": LsbStatus.INDETERMINATE.value,
                   "conclusion": "indeterminate: too little signal to measure LSB utilization"}
         if forensic is not None:
             output["forense_bits"] = forensic
@@ -254,15 +272,15 @@ def _format_bit_depth_result(bits, n_active, n_grid16, counts_idx, forensic=None
     pct = f"{fraction * 100:.1f}%"
     if fraction > 0.97:
         effective = min(effective, 16)
-        lsbs = "empty"
+        lsbs = LsbStatus.EMPTY.value
         conclusion = (f"16-bit content inside a {bits}-bit container: LSBs are empty "
                       f"({pct} of samples on the 16-bit grid; effective resolution {effective} bits)")
     elif fraction > 0.80:
-        lsbs = "partial"
+        lsbs = LsbStatus.PARTIAL.value
         conclusion = (f"Bit-depth upscale with later processing: LSBs partially inactive "
                       f"({pct} on the 16-bit grid; effective resolution ~{effective} bits)")
     else:
-        lsbs = "active"
+        lsbs = LsbStatus.ACTIVE.value
         conclusion = (f"Active LSBs (~{effective} of {bits} effective bits): rules out "
                       f"grid upscaling, though bit activity alone does not prove lossless origin")
     output = {
@@ -292,8 +310,18 @@ class _StreamingBitDepthAccumulator:
         self._n_grid16 = 0
         self._counts_idx = np.zeros(32, dtype=np.int64)
         self._error = None
+        self._state = AccumulatorState.COLLECTING
+        self._finalized = False
+        self._cached_result = None
+
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
 
     def add_block(self, offset, block_f64=None, q_int=None, abs_q=None):
+        if self._finalized:
+            raise RuntimeError("cannot add audio blocks after completion")
         if self.bits <= 16 or self._sampled_frames >= MAX_SAMPLES_BITS or self._error:
             return
         if (offset // FRAMES_BY_BLOCK) % self._sampling_step:
@@ -339,15 +367,34 @@ class _StreamingBitDepthAccumulator:
                 self._counts_idx += np.bincount(idx, minlength=32)
         except Exception as e:
             self._error = str(e)
+            self._state = AccumulatorState.FAILED
 
     def result(self):
+        if self._cached_result is not None:
+            return dict(self._cached_result)
         if self.bits <= 16:
-            return {"aplica": False}
+            output = {"aplica": False}
+            self._state = AccumulatorState.COMPLETED
+            self._finalized = True
+            self._cached_result = dict(output)
+            return output
         if self._error:
-            return {"aplica": True, "lsbs": "indeterminate", "error": self._error}
-        return _format_bit_depth_result(
+            output = {
+                "aplica": True,
+                "lsbs": LsbStatus.INDETERMINATE.value,
+                "error": self._error,
+            }
+            self._state = AccumulatorState.FAILED
+            self._finalized = True
+            self._cached_result = dict(output)
+            return output
+        output = _format_bit_depth_result(
             self.bits, self._n_active, self._n_grid16, self._counts_idx
         )
+        self._state = AccumulatorState.COMPLETED
+        self._finalized = True
+        self._cached_result = dict(output)
+        return output
 
 
 def analyze_bit_depth(data, meta, include_forensic=True):
@@ -404,7 +451,7 @@ def analyze_bit_depth(data, meta, include_forensic=True):
             bits, int(active_mask.size), n_grid16, counts_idx, forensic=forensic
         )
     except Exception as e:
-        output = {"aplica": True, "lsbs": "indeterminate", "error": str(e)}
+        output = {"aplica": True, "lsbs": LsbStatus.INDETERMINATE.value, "error": str(e)}
         if forensic is not None:
             output["forense_bits"] = forensic
         return output
@@ -447,6 +494,22 @@ class _ClippingAccumulator:
         self._clip_runs = 0
         self._total_samples = 0
         self._max_streak = 0
+        self._state = AccumulatorState.COLLECTING
+
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
+
+    def _require_collecting(self):
+        if self._state is not AccumulatorState.COLLECTING:
+            raise RuntimeError("cannot add audio blocks after completion")
+
+    def finalize(self):
+        """Freezes the accumulator against further block mutations."""
+        if self._state is AccumulatorState.COLLECTING:
+            self.flush_zeros()
+            self._state = AccumulatorState.COMPLETED
 
     def _ensure_channels(self, n_ch):
         if n_ch > len(self._open):
@@ -473,6 +536,7 @@ class _ClippingAccumulator:
 
     def flush_zeros(self):
         """Closes every currently open channel run (used on sub-threshold blocks)."""
+        self._require_collecting()
         for ch, prev in enumerate(self._open):
             if prev:
                 self._close_run_len(prev)
@@ -519,6 +583,7 @@ class _ClippingAccumulator:
                 self._max_streak = blk_max
 
     def add_float_block(self, block, threshold=0.9999):
+        self._require_collecting()
         arr = np.asarray(block)
         if arr.size == 0:
             return
@@ -540,6 +605,7 @@ class _ClippingAccumulator:
                 self._record_channel(ch, (col >= thr) | (col <= -thr))
 
     def add_int16_block(self, block_i16, threshold=32765):
+        self._require_collecting()
         if block_i16.size == 0:
             return
         thr = int(threshold)
@@ -557,6 +623,7 @@ class _ClippingAccumulator:
                 self._record_channel(ch, (col >= thr) | (col <= -thr))
 
     def add_abs_int_block(self, abs_q, threshold=8387770):
+        self._require_collecting()
         if abs_q.size == 0:
             return
         thr = int(threshold)
@@ -875,54 +942,58 @@ class ForensicBitsAccumulator:
         self._dop_last = tops[-1, :].copy()
 
     def add(self, block, q_int=None, abs_q=None):
-        if self._state is AccumulatorState.COMPLETED:
+        if self._state in (AccumulatorState.COMPLETED, AccumulatorState.FAILED):
             raise RuntimeError("cannot add audio blocks after completion")
-        if self.bits not in (24, 32) or block.shape[0] == 0:
-            return
-        if q_int is None:
-            q = np.rint(np.asarray(block, dtype=np.float64) * self.max_val)
-            q = np.clip(q, -self.max_val, self.max_val - 1.0).astype(np.int32)
-        else:
-            q = q_int
-        self._samples += int(q.size)
-        if self.bits == 32:
-            if (self._or & 1) == 0:
-                self._or |= int(np.bitwise_or.reduce(q.view(np.uint32).ravel()))
-            absq = np.minimum(np.abs(q.astype(np.int64)).ravel() >> 8, 8388608).astype(np.int32)
-            absq_or = int(np.bitwise_or.reduce(absq)) if self._hi16_only else 0
-        else:
-            absq = np.asarray(abs_q).ravel() if abs_q is not None else np.abs(q).ravel()
-            if self._hi16_only:
-                absq_or = int(np.bitwise_or.reduce(absq))
-                self._or |= absq_or
-            elif (self._or & 1) == 0:
-                self._or |= int(np.bitwise_or.reduce(absq))
-
-        if self._hi16_only:
-            if (absq_or & 0xFF) == 0:
-                self._bitmap_hi16[absq >> 8] = True
+        try:
+            if self.bits not in (24, 32) or block.shape[0] == 0:
+                return
+            if q_int is None:
+                q = np.rint(np.asarray(block, dtype=np.float64) * self.max_val)
+                q = np.clip(q, -self.max_val, self.max_val - 1.0).astype(np.int32)
             else:
-                self._flush_hi16_bitmap()
+                q = q_int
+            self._samples += int(q.size)
+            if self.bits == 32:
+                if (self._or & 1) == 0:
+                    self._or |= int(np.bitwise_or.reduce(q.view(np.uint32).ravel()))
+                absq = np.minimum(np.abs(q.astype(np.int64)).ravel() >> 8, 8388608).astype(np.int32)
+                absq_or = int(np.bitwise_or.reduce(absq)) if self._hi16_only else 0
+            else:
+                absq = np.asarray(abs_q).ravel() if abs_q is not None else np.abs(q).ravel()
+                if self._hi16_only:
+                    absq_or = int(np.bitwise_or.reduce(absq))
+                    self._or |= absq_or
+                elif (self._or & 1) == 0:
+                    self._or |= int(np.bitwise_or.reduce(absq))
+
+            if self._hi16_only:
+                if (absq_or & 0xFF) == 0:
+                    self._bitmap_hi16[absq >> 8] = True
+                else:
+                    self._flush_hi16_bitmap()
+                    self._bitmap_global[absq] = True
+                    self._bitmap_global[0] = False
+            else:
                 self._bitmap_global[absq] = True
                 self._bitmap_global[0] = False
-        else:
-            self._bitmap_global[absq] = True
-            self._bitmap_global[0] = False
 
-        u_abs = absq.view(np.uint32)
-        self._samples_low += int(np.count_nonzero(
-            (u_abs - np.uint32(self.low_int)) <= np.uint32(self.high_int - self.low_int)))
-        if self._samples_reb1 < 2048:
-            self._samples_reb1 += int(np.count_nonzero(
-                (u_abs - np.uint32(SLICE_1_BASE)) < np.uint32(SLICE_WIDTH)))
-        if self._samples_reb2 < 2048:
-            self._samples_reb2 += int(np.count_nonzero(
-                (u_abs - np.uint32(SLICE_2_BASE)) < np.uint32(SLICE_WIDTH)))
-        if self._samples_active < 2048:
-            self._samples_active += int(np.count_nonzero(absq))
+            u_abs = absq.view(np.uint32)
+            self._samples_low += int(np.count_nonzero(
+                (u_abs - np.uint32(self.low_int)) <= np.uint32(self.high_int - self.low_int)))
+            if self._samples_reb1 < 2048:
+                self._samples_reb1 += int(np.count_nonzero(
+                    (u_abs - np.uint32(SLICE_1_BASE)) < np.uint32(SLICE_WIDTH)))
+            if self._samples_reb2 < 2048:
+                self._samples_reb2 += int(np.count_nonzero(
+                    (u_abs - np.uint32(SLICE_2_BASE)) < np.uint32(SLICE_WIDTH)))
+            if self._samples_active < 2048:
+                self._samples_active += int(np.count_nonzero(absq))
 
-        if self.bits == 24 and self.sr >= 176400:
-            self._follow_dop(q)
+            if self.bits == 24 and self.sr >= 176400:
+                self._follow_dop(q)
+        except Exception:
+            self._state = AccumulatorState.FAILED
+            raise
 
     @staticmethod
     def _evaluate_bitmap(bitmap, offset, n_samples):

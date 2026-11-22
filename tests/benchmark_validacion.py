@@ -44,7 +44,7 @@ from _motor_espectral import _fast_mdct_f32, _get_celt_1920, _get_kbd_2048, _get
 
 SEED = 2026
 GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
-BAD_VERDICTS = ("SUSPICIOUS", "PROBABLE UPSCALE", "TRANSCODE")
+BAD_VERDICTS = ("SUSPICIOUS", "PROBABLE UPSCALE")
 THRESHOLD = 0.95
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 

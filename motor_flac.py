@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+from typing import NamedTuple
 
 # ─── BLAS THREADS (before numpy/scipy are imported) ──────────────────────────
 # The album is analysed by a pool of processes; if every process opened its own
@@ -43,7 +44,7 @@ import _motor_veredicto
 from _motor_espectral import Image
 
 from _motor_bits import (
-    AccumulatorState,
+    AccumulatorState, Md5Status, LsbStatus,
     IO_RETRY_DELAYS, _is_transient_io_error, retry_io,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
     _normalize_path_fs, _Int24Packer, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
@@ -53,6 +54,7 @@ from _motor_bits import (
     ForensicBitsAccumulator, _analyze_forensic_bits,
 )
 from _motor_espectral import (
+    CutoffClass, CodecLatticeFamily, CutoffAssessment, PsychoacousticSummary,
     WIDTH_PNG, HEIGHT_PNG, PNG_SPECTROGRAM_FPS, SPECTRO_SECONDS,
     MAX_FRAMES_PNG, ACTIVE_RMS_THRESHOLD_DB, _LUT_SPECTROGRAM, _mean_safe, _power_db,
     _spectrum_dbfs, _white_noise_gain, _stft_complex,
@@ -66,8 +68,8 @@ from _motor_espectral import (
     _save_spectrogram as _spectrogram_save,
 )
 from _motor_veredicto import (
-    LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, EvidenceTier, EvidenceFamily,
-    FindingCode, VerdictCap, _ScoreLedger, calculate_score,
+    LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, Verdict, EvidenceTier, EvidenceFamily,
+    FindingCode, VerdictCap, ScoreEvaluation, _ScoreLedger, calculate_score,
     _deserves_album_coherence, _deserves_album_lossy_coherence,
     _is_clean_quorum_track,
     apply_album_coherence, forensic_evidence,
@@ -467,6 +469,35 @@ def _iter_blocks_s32_flac(path, meta=None, frames_by_block=FRAMES_BY_BLOCK):
             stderr_thread.join(timeout=1.0)
 
 
+def _should_fallback_s32(meta, offset=0) -> bool:
+    """True only when opening a valid 32-bit integer FLAC failed before any block was read."""
+    return bool(
+        offset == 0
+        and isinstance(meta, dict)
+        and meta.get("valido")
+        and meta.get("bits_per_sample") == 32
+    )
+
+
+def _silence_floor(bits_per_sample) -> float:
+    """One LSB amplitude floor for the declared bit depth."""
+    return 1.0 / float(1 << max(0, int(bits_per_sample) - 1))
+
+
+def _make_error_result(path, message, *, meta=None, md5=None) -> dict:
+    """Builds an error result dict guaranteeing the `error XOR veredicto` invariant."""
+    out = {
+        "archivo": os.path.basename(path),
+        "ruta": path,
+        "error": str(message),
+    }
+    if meta is not None:
+        out["meta"] = meta
+    if md5 is not None:
+        out["md5"] = md5
+    return out
+
+
 def read_audio(path):
     norm_path = _normalize_path_fs(path)
     try:
@@ -477,7 +508,7 @@ def read_audio(path):
     except Exception:
         try:
             meta = verify_metadata(path)
-            if meta.get("valido") and meta.get("bits_per_sample") == 32:
+            if _should_fallback_s32(meta):
                 blocks = list(_iter_blocks_s32_flac(path, meta=meta))
                 if blocks:
                     return np.concatenate(blocks, axis=0), int(meta["sample_rate"])
@@ -550,8 +581,9 @@ def _read_sf_block_with_retry(
     sf_handle, norm_path, offset, read_call, delays=IO_RETRY_DELAYS, sleep_fn=None
 ):
     """Reads a block from an open SoundFile, retrying transient NAS/I/O failures."""
+    handle = sf_handle
     try:
-        return sf_handle, read_call(sf_handle)
+        return handle, read_call(handle)
     except Exception as exc:
         if not _is_transient_io_error(exc):
             raise
@@ -559,23 +591,31 @@ def _read_sf_block_with_retry(
         last_exc = exc
         for delay in tuple(delays):
             wait(delay)
+            if handle is not None:
+                try:
+                    handle.seek(offset)
+                    return handle, read_call(handle)
+                except Exception as retry_exc:
+                    if not _is_transient_io_error(retry_exc):
+                        raise
+                    last_exc = retry_exc
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+                handle = None
             try:
-                sf_handle.seek(offset)
-                return sf_handle, read_call(sf_handle)
-            except Exception as retry_exc:
-                if not _is_transient_io_error(retry_exc):
-                    raise
-                last_exc = retry_exc
-            try:
-                sf_handle.close()
-            except Exception:
-                pass
-            try:
-                sf_handle = sf.SoundFile(norm_path)
+                handle = sf.SoundFile(norm_path)
                 if offset:
-                    sf_handle.seek(offset)
-                return sf_handle, read_call(sf_handle)
+                    handle.seek(offset)
+                return handle, read_call(handle)
             except Exception as reopen_exc:
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+                    handle = None
                 if not _is_transient_io_error(reopen_exc):
                     raise
                 last_exc = reopen_exc
@@ -620,7 +660,7 @@ def _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
         if offset > 0:
             raise
         meta = verify_metadata(path)
-        if meta.get("valido") and meta.get("bits_per_sample") == 32:
+        if _should_fallback_s32(meta, offset=offset):
             yield from _iter_blocks_s32_flac(path, meta=meta,
                                              frames_by_block=frames_by_block)
         else:
@@ -856,6 +896,7 @@ class _BlockAnalysis:
     def result(self):
         if self._cached_result is not None:
             return dict(self._cached_result)
+        self._clip_acc.finalize()
         md5_out = _compare_md5(self._md5.hexdigest() if self._md5 else None, self.meta)
         clip_out = self._clip_acc.clip_dict()
         if self._dr_block and self._dr_sumsq:
@@ -863,7 +904,7 @@ class _BlockAnalysis:
             dr_out = _dr_from_rms(rms, self._dr_peak, len(self._dr_sumsq))
         else:
             dr_out = None
-        silence_floor = 1.0 / float(1 << max(0, self.bits - 1))
+        silence_floor = _silence_floor(self.bits)
         if self._peak < silence_floor:
             output = {
                 "pico": self._peak,
@@ -876,7 +917,7 @@ class _BlockAnalysis:
             self._state = AccumulatorState.COMPLETED
             self._cached_result = dict(output)
             return output
-        if md5_out.get("estado") == "mismatch":
+        if md5_out.get("estado") == Md5Status.MISMATCH.value:
             output = {
                 "pico": self._peak,
                 "md5": md5_out,
@@ -938,6 +979,7 @@ class _BlockAnalysis:
 def _analyze_streaming(path, meta, mode, seconds, save_png):
     """A single read of the file, with memory bounded per block."""
     norm_path = _normalize_path_fs(path)
+    offset = 0
     try:
         f = retry_io(lambda: sf.SoundFile(norm_path))
         try:
@@ -945,7 +987,6 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
             total = f.frames
             accumulator = _BlockAnalysis(meta, sr, total, mode, seconds,
                                              save_png, path)
-            offset = 0
             bits = meta.get("bits_per_sample")
             subtype = getattr(f, "subtype", None)
             if bits == 16 and subtype == "PCM_16":
@@ -989,7 +1030,7 @@ def _analyze_streaming(path, meta, mode, seconds, save_png):
             except Exception:
                 pass
     except Exception:
-        if meta.get("bits_per_sample") != 32:
+        if not _should_fallback_s32(meta, offset=offset):
             raise
         sr = int(meta["sample_rate"])
         total = _declared_total_samples(path, meta)
@@ -1012,7 +1053,7 @@ def _json_line(obj):
     try:
         return json.dumps(_sanitize(obj), default=str, allow_nan=False)
     except (TypeError, ValueError) as e:
-        return json.dumps({"tipo": "error",
+        return json.dumps({"tipo": StreamEvent.ERROR.value,
                            "mensaje": f"result is not serialisable: {type(e).__name__}: {e}"})
 
 # ─── CACHE (Block 8) ─────────────────────────────────────────────────────────
@@ -1050,8 +1091,26 @@ def default_workers(n_files):
     nucleos = os.cpu_count() or 1
     return max(1, min(nucleos, MAX_WORKERS, n_files))
 
+class BatchTask(NamedTuple):
+    """Picklable unit of work for a single track in a batch run."""
+
+    index: int
+    path: str
+    mode: str
+    seconds: int | None
+    save_png: bool
+    use_cache: bool
+    pre_meta: dict | None = None
+    skip_cache_lookup: bool = False
+
+
 def _work_analysis(task):
     """Work for one file in a child process (it must be at module level)."""
+    if isinstance(task, BatchTask):
+        return analyze_file_data(
+            task.path, task.mode, task.seconds, task.save_png, task.use_cache,
+            _pre_meta=task.pre_meta, _skip_cache_lookup=task.skip_cache_lookup,
+        )
     if len(task) == 5:
         path, mode, seconds, save_png, use_cache = task
         return analyze_file_data(path, mode, seconds, save_png, use_cache)
@@ -1133,7 +1192,11 @@ def plan_batch_cache(files, mode, seconds, save_png, use_cache=True):
 
 def classify_batch_disposition(result) -> BatchDisposition:
     """Determines whether a track result streams right away or awaits quorum."""
-    if (result.get("veredicto") in ("SUSPICIOUS", "PROBABLE UPSCALE", "PROBABLY LOSSLESS")
+    if (result.get("veredicto") in (
+                Verdict.SUSPICIOUS.value,
+                Verdict.PROBABLE_UPSCALE.value,
+                Verdict.PROBABLY_LOSSLESS.value,
+            )
             and _deserves_album_coherence(result)):
         return BatchDisposition.DEFERRED
     if _deserves_album_lossy_coherence(result):
@@ -1154,11 +1217,11 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
         files, mode, seconds, save_png, use_cache=use_cache, check_signature=True
     )
     pending_entries = [
-        (path, status, pre_meta)
-        for _, path, status, _, pre_meta in plan_with_meta
+        (index, path, status, pre_meta)
+        for index, path, status, _, pre_meta in plan_with_meta
         if status is not CacheLookupStatus.FULL_HIT
     ]
-    pendientes = [path for path, _, _ in pending_entries]
+    pendientes = [path for _, path, _, _ in pending_entries]
     workers = workers if workers and workers > 0 else default_workers(len(files))
     parallel = (workers > 1 and len(pendientes) >= MIN_FILES_PARALLEL
                    and _probe_processes())
@@ -1170,26 +1233,29 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
     def calculate_pending():
         """Analyses in series or in parallel the files that were not in the cache."""
         tasks = [
-            (
-                path,
-                mode,
-                seconds,
-                save_png,
-                use_cache,
-                pre_meta,
-                status is CacheLookupStatus.MISS and pre_meta is not None,
+            BatchTask(
+                index=orig_index,
+                path=path,
+                mode=mode,
+                seconds=seconds,
+                save_png=save_png,
+                use_cache=use_cache,
+                pre_meta=pre_meta,
+                skip_cache_lookup=(
+                    status is CacheLookupStatus.MISS and pre_meta is not None
+                ),
             )
-            for path, status, pre_meta in pending_entries
+            for orig_index, path, status, pre_meta in pending_entries
         ]
         if not parallel:
             for task in tasks:
-                yield _work_analysis(task)
+                yield task.index, _work_analysis(task)
             return
         from concurrent.futures import ProcessPoolExecutor
 
         def _file_size_key(idx):
             try:
-                return -os.path.getsize(_normalize_path_fs(pendientes[idx]))
+                return -os.path.getsize(_normalize_path_fs(tasks[idx].path))
             except OSError:
                 return 0
 
@@ -1200,18 +1266,19 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                     idx: executor.submit(_work_analysis, tasks[idx])
                     for idx in lpt_order
                 }
-                for idx, path in enumerate(pendientes):
+                for idx, task in enumerate(tasks):
                     futuro = futures_by_index[idx]
                     try:
-                        yield futuro.result()
+                        yield task.index, futuro.result()
                     except Exception as e:
                         # A crashed process (memory, hang) cannot bring the batch down.
-                        yield {"archivo": os.path.basename(path), "ruta": path,
-                               "error": f"the analysis process failed "
-                                        f"({type(e).__name__}: {e})"}
+                        yield task.index, _make_error_result(
+                            task.path,
+                            f"the analysis process failed ({type(e).__name__}: {e})",
+                        )
         except (PermissionError, OSError):
             for task in tasks:
-                yield _work_analysis(task)
+                yield task.index, _work_analysis(task)
 
     def in_order():
         """Two-phase result stream:
@@ -1229,12 +1296,19 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
             if status is CacheLookupStatus.FULL_HIT and cached is not None:
                 result = dict(cached)
             else:
-                result = next(calculated, None) if calculated is not None else None
-                if result is None:
-                    result = {"archivo": os.path.basename(path), "ruta": path,
-                                 "error": "could not get the analysis result"}
+                calc_item = next(calculated, None) if calculated is not None else None
+                if calc_item is None:
+                    result = _make_error_result(
+                        path, "could not get the analysis result"
+                    )
                 else:
-                    result = dict(result)
+                    calc_index, calc_result = calc_item
+                    if calc_index != index:
+                        raise RuntimeError(
+                            f"batch result index mismatch: expected {index}, "
+                            f"got {calc_index}"
+                        )
+                    result = dict(calc_result)
             result["indice_original"] = index
             batch.append(result)
             # Everything that cannot be rescued by album context is streamed
@@ -1275,32 +1349,16 @@ def _hydrate_cached_png(path, meta, mode, seconds, cached, save_png=True):
         is_stereo = meta.get("canales", 0) >= 2 if meta.get("canales") else None
         expected_total = _declared_total_samples(path, meta)
 
-        def _make_acc():
-            return _SpectralAccumulator(
-                sr, is_stereo, save_png=True, path=path,
-                renderer=_save_spectrogram, mode=mode, seconds=seconds
-            )
-
-        acc = _make_acc()
+        acc = _SpectralAccumulator(
+            sr, is_stereo, save_png=True, path=path,
+            renderer=_save_spectrogram, mode=mode, seconds=seconds
+        )
         offset = 0
-        try:
-            for block in _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
-                if block.shape[0] == 0:
-                    continue
-                acc.add(block, offset)
-                offset += block.shape[0]
-        except Exception:
-            if offset == 0 and meta.get("bits_per_sample") == 32:
-                acc = _make_acc()
-                offset = 0
-                for block in _iter_blocks_s32_flac(path, meta=meta,
-                                                   frames_by_block=FRAMES_BY_BLOCK):
-                    if block.shape[0] == 0:
-                        continue
-                    acc.add(block, offset)
-                    offset += block.shape[0]
-            else:
-                raise
+        for block in _read_blocks(path, frames_by_block=FRAMES_BY_BLOCK):
+            if block.shape[0] == 0:
+                continue
+            acc.add(block, offset)
+            offset += block.shape[0]
         if expected_total and offset != expected_total:
             raise ValueError(f"decoded {offset} of the {expected_total} declared samples")
         spectrum.update(acc.render_png_only(
@@ -1321,6 +1379,8 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
     """Analyses one file and returns a dict. With `use_cache`, if the file has not
     changed since the last analysis the stored result is reused."""
     result = {"archivo": os.path.basename(path), "ruta": path}
+    meta = None
+    md5_info = None
 
     # Hardening: any unexpected failure in one file is reported as an error of
     # THAT file. Previously an exception escaped, killed the process and the
@@ -1330,15 +1390,15 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
             meta = _pre_meta
         else:
             if not verify_signature(path):
-                result["error"] = "Not a valid FLAC signature"
-                return result
+                return _make_error_result(path, "Not a valid FLAC signature")
 
             meta = verify_metadata(path)
             if not meta["valido"]:
                 detail = meta.get("error")
-                result["error"] = ("Could not read FLAC metadata"
-                                      + (f" ({detail})" if detail else ""))
-                return result
+                return _make_error_result(
+                    path,
+                    "Could not read FLAC metadata" + (f" ({detail})" if detail else ""),
+                )
         result["meta"] = meta
 
         # Cache: an already verified album is not decoded or drawn again.
@@ -1357,35 +1417,47 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
                         path, meta, mode, seconds, cached, save_png=save_png
                     )
                 except Exception as e:
-                    result["error"] = (
-                        f"Could not decode the audio ({type(e).__name__}: {e})"
+                    return _make_error_result(
+                        path,
+                        f"Could not decode the audio ({type(e).__name__}: {e})",
+                        meta=meta,
                     )
-                    return result
 
         # A single pass, memory bounded per block (Block 6). A decoding failure
         # here is a truncated or corrupt file.
         try:
             payload = _analyze_streaming(path, meta, mode, seconds, save_png)
         except Exception as e:
-            result["error"] = f"Could not decode the audio ({type(e).__name__}: {e})"
-            return result
+            return _make_error_result(
+                path,
+                f"Could not decode the audio ({type(e).__name__}: {e})",
+                meta=meta,
+            )
 
         # Silence guard (Block 2): with no signal there is nothing to analyse, and
         # any verdict would be invented. Previously a silent file came out as
         # "PROBABLY LOSSLESS" because its ceiling was measured as the whole Nyquist.
-        if payload["pico"] < 1.0 / float(1 << max(0, meta["bits_per_sample"] - 1)):
-            result["md5"] = payload["md5"]
-            result["error"] = ("digital silence: the file contains no analyzable signal "
-                                  "(no verdict is issued)")
-            return result
+        md5_info = payload["md5"]
+        if payload["pico"] < _silence_floor(meta["bits_per_sample"]):
+            return _make_error_result(
+                path,
+                "digital silence: the file contains no analyzable signal "
+                "(no verdict is issued)",
+                meta=meta,
+                md5=md5_info,
+            )
 
         # Integrity: if the MD5 does not match, the file is corrupt or its audio
         # was altered, so it gets neither verdict nor score.
-        result["md5"] = payload["md5"]
-        if result["md5"]["estado"] == "mismatch":
-            result["error"] = ("STREAMINFO MD5 does not match the decoded "
-                                  "audio — file corrupt or modified")
-            return result
+        result["md5"] = md5_info
+        if result["md5"]["estado"] == Md5Status.MISMATCH.value:
+            return _make_error_result(
+                path,
+                "STREAMINFO MD5 does not match the decoded "
+                "audio — file corrupt or modified",
+                meta=meta,
+                md5=md5_info,
+            )
 
         result["clip"] = payload["clip"]
         result["dr"]   = payload["dr"]
@@ -1402,7 +1474,10 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
             )
         if (
             (result.get("esp") or {}).get("es_estacionario")
-            and verdict in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+            and verdict in (
+                Verdict.GENUINE_LOSSLESS.value,
+                Verdict.PROBABLY_LOSSLESS.value,
+            )
         ):
             notes.append(
                 "Stationary harmonic/tonal programme: sustained drone/synth guard active"
@@ -1417,8 +1492,12 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
             write_cache(path, meta, mode, seconds, result)
         return result
     except Exception as e:
-        result["error"] = f"Unexpected failure in the analysis: {type(e).__name__}: {e}"
-        return result
+        return _make_error_result(
+            path,
+            f"Unexpected failure in the analysis: {type(e).__name__}: {e}",
+            meta=meta,
+            md5=md5_info,
+        )
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 # Usage: python motor_flac.py --path "C:/Music/album" --png --pdf
@@ -1438,6 +1517,19 @@ def natural_sort_key(path_or_name: str) -> tuple:
     return (parts, name.casefold(), name)
 
 
+def sort_results_by_original_index(results) -> list[dict]:
+    """Returns results ordered by valid integer `indice_original` (excluding bool)."""
+    def _sort_key(pair):
+        pos, item = pair
+        if isinstance(item, dict):
+            orig = item.get("indice_original")
+            if isinstance(orig, int) and not isinstance(orig, bool):
+                return (0, orig, pos)
+        return (1, pos, pos)
+
+    return [item for _, item in sorted(enumerate(results), key=_sort_key)]
+
+
 def generate_pdf_report(analyzed_path, results, mode=None, output_dir=None):
     """Generates the PDF report and is unable to abort anything.
 
@@ -1448,17 +1540,7 @@ def generate_pdf_report(analyzed_path, results, mode=None, output_dir=None):
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,
                 "error": f"could not load the report generator ({type(e).__name__}: {e})"}
-    ordered = [
-        item[1] for item in sorted(
-            enumerate(results),
-            key=lambda item: (
-                item[1].get("indice_original", item[0])
-                if isinstance(item[1], dict)
-                and isinstance(item[1].get("indice_original"), int)
-                else item[0]
-            ),
-        )
-    ]
+    ordered = sort_results_by_original_index(results)
     return informe_pdf.generate(analyzed_path, ordered, mode=mode, output_dir=output_dir)
 
 def main_cli(argv: "list[str] | None" = None) -> int:
@@ -1509,7 +1591,7 @@ def main_cli(argv: "list[str] | None" = None) -> int:
         try:
             entries = retry_io(lambda: os.listdir(_normalize_path_fs(path)))
         except OSError as exc:
-            print(_json_line({"tipo": "error",
+            print(_json_line({"tipo": StreamEvent.ERROR.value,
                               "mensaje": f"Could not list folder ({type(exc).__name__}: {exc})"}),
                   flush=True)
             return 1
@@ -1519,25 +1601,25 @@ def main_cli(argv: "list[str] | None" = None) -> int:
             if f.lower().endswith(".flac")
         ]
     else:
-        print(_json_line({"tipo": "error", "mensaje": "Invalid path"}), flush=True)
+        print(_json_line({"tipo": StreamEvent.ERROR.value, "mensaje": "Invalid path"}), flush=True)
         return 1
 
     total = len(files)
     if total == 0:
-        print(_json_line({"tipo": "error", "mensaje": "No .flac files found"}), flush=True)
+        print(_json_line({"tipo": StreamEvent.ERROR.value, "mensaje": "No .flac files found"}), flush=True)
         return 1
 
     analysis, workers = analyze_files(files, args.mode, seconds, save_png,
                                           workers=args.workers, use_cache=use_cache)
 
     # Line 1: how many files, with the processes and the cache that will be used
-    print(_json_line({"tipo": "inicio", "total": total, "workers": workers,
+    print(_json_line({"tipo": StreamEvent.START.value, "total": total, "workers": workers,
                        "paralelo": workers > 1, "cache": use_cache}), flush=True)
 
     results = []
     from_cache = 0
     for i, result in enumerate(analysis):
-        result["tipo"]   = "resultado"
+        result["tipo"]   = StreamEvent.RESULT.value
         result["indice"] = i + 1
         result["total"]  = total
         results.append(result)
@@ -1549,16 +1631,16 @@ def main_cli(argv: "list[str] | None" = None) -> int:
         report = generate_pdf_report(path, results, mode=args.mode,
                                      output_dir=output_dir)
         if report["ok"]:
-            print(_json_line({"tipo": "informe", "ruta": report["ruta"],
+            print(_json_line({"tipo": StreamEvent.REPORT.value, "ruta": report["ruta"],
                                "paginas": report["paginas"], "total": total,
                                "desde_cache": from_cache}), flush=True)
         else:
-            print(_json_line({"tipo": "aviso",
+            print(_json_line({"tipo": StreamEvent.WARNING.value,
                                "mensaje": "could not generate the PDF report: "
                                           + str(report["error"])}), flush=True)
 
     # Last line: end signal
-    print(_json_line({"tipo": "fin"}), flush=True)
+    print(_json_line({"tipo": StreamEvent.END.value}), flush=True)
     return 0
 
 if __name__ == "__main__":

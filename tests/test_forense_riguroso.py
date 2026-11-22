@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import motor_flac
 
 GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
-BAD_VERDICTS = ("SUSPICIOUS", "PROBABLE UPSCALE", "TRANSCODE")
+BAD_VERDICTS = ("SUSPICIOUS", "PROBABLE UPSCALE")
 
 
 def _create_track_reference(sr: int, duration: float = 8.0, seed: int = 2026) -> np.ndarray:
@@ -3054,14 +3054,13 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertIn("CELT-960", str(det_celt["mdct_lattice_family"]))
 
         opus_dark_meta = {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2}
+        # A 14.5 dB 20 kHz shelf sits below the 18.5/25 dB step cut-off detector,
+        # so cutoff assessment stays NO_CUTOFF while sospecha_corte_opus_20k +
+        # sub-threshold lattice SNR (4.2 >= 3.8) condemns the track on its own.
         opus_dark_spec = {
             "techo_hz": 20010,
             "techo_rel_nyquist": 0.834,
-            "clase_corte": "near_nyquist_cutoff",
-            "corte_detectado": True,
-            "frecuencia_corte": 20010,
-            "distancia_nyquist": 0.834,
-            "corte_artificial": True,
+            **motor_flac.CutoffAssessment.none().to_protocol_fields(),
             "ratio_aplica": True,
             "ratio": 0.002,
             "var_alta_db": 12.0,
@@ -4207,6 +4206,186 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
             rc_missing = bench.main(["--real-corpus", str(self.tmp_path / "missing.json")])
         self.assertEqual(rc_missing, 0, buf_missing.getvalue())
         self.assertIn("SKIP", buf_missing.getvalue())
+
+    def test_cutoff_assessment_verdict_and_pure_score_ledger_invariants(self):
+        """CutoffAssessment, Verdict <-> ENGINE_VERDICTS, and pure _ScoreLedger.evaluate()."""
+        none_cut = motor_flac.CutoffAssessment.none()
+        self.assertIs(none_cut.cutoff_class, motor_flac.CutoffClass.NO_CUTOFF)
+        self.assertFalse(none_cut.detected)
+        self.assertFalse(none_cut.is_artificial)
+        self.assertEqual(
+            none_cut.to_protocol_fields(),
+            {
+                "clase_corte": "no_cutoff",
+                "corte_detectado": False,
+                "frecuencia_corte": None,
+                "distancia_nyquist": None,
+                "corte_artificial": False,
+            },
+        )
+
+        near_cut = motor_flac.CutoffAssessment.from_cutoff(20000.0, 22050.0)
+        self.assertIs(near_cut.cutoff_class, motor_flac.CutoffClass.NEAR_NYQUIST)
+        self.assertTrue(near_cut.detected)
+        self.assertFalse(near_cut.is_artificial)
+        self.assertEqual(near_cut.to_protocol_fields()["frecuencia_corte"], 20000)
+        self.assertAlmostEqual(near_cut.to_protocol_fields()["distancia_nyquist"], 0.907, places=3)
+
+        far_cut = motor_flac.CutoffAssessment.from_cutoff(16000.0, 22050.0)
+        self.assertIs(far_cut.cutoff_class, motor_flac.CutoffClass.FAR_CUTOFF)
+        self.assertTrue(far_cut.detected)
+        self.assertTrue(far_cut.is_artificial)
+        self.assertTrue(far_cut.to_protocol_fields()["corte_artificial"])
+
+        self.assertEqual(
+            tuple(v.value for v in motor_flac.Verdict),
+            motor_flac.ENGINE_VERDICTS,
+        )
+
+        ledger = motor_flac._ScoreLedger()
+        ledger.add_votes(3.0, 6.0)
+        ledger.note("neutral note")
+        ledger.penalize(
+            "artificial cutoff",
+            0.40,
+            family=motor_flac.EvidenceFamily.SPECTRAL_CUTOFF,
+            code=motor_flac.FindingCode.ARTIFICIAL_CUTOFF,
+        )
+        self.assertTrue(ledger.is_blocked)
+        spec_probe = {"techo_hz": 16000}
+        spec_snapshot = dict(spec_probe)
+        evaluation = ledger.evaluate()
+        self.assertIsInstance(evaluation, motor_flac.ScoreEvaluation)
+        self.assertEqual(spec_probe, spec_snapshot)  # evaluate() must not mutate spectrum
+        self.assertIs(evaluation.verdict, motor_flac.Verdict.PROBABLE_UPSCALE)
+        self.assertTrue(evaluation.corroborated)
+        self.assertEqual(evaluation.finding_codes, ("artificial_cutoff",))
+
+        score, verdict, problems, notes = ledger.finalize(spec_probe, include_notes=True)
+        self.assertAlmostEqual(score, evaluation.score)
+        self.assertEqual(verdict, evaluation.verdict.value)
+        self.assertEqual(problems, list(evaluation.problems))
+        self.assertEqual(notes, list(evaluation.notes))
+        self.assertEqual(spec_probe["finding_codes"], ["artificial_cutoff"])
+        self.assertTrue(spec_probe["corroboracion_multifamilia"])
+
+    def test_album_coherence_is_idempotent_for_rescue_and_lossy_conviction(self):
+        """Calling apply_album_coherence twice on the same batch returns 0 on the
+        second call and never duplicates notes, problems, or evidence."""
+        # 1. Lossless rescue branch
+        rescue_dir = self.tmp_path / "idem_rescue"
+        rescue_dir.mkdir(parents=True, exist_ok=True)
+        rescue_batch = []
+        for idx in range(7):
+            rescue_batch.append({
+                "archivo": f"{idx + 1:02d}_clean.flac",
+                "ruta": str(rescue_dir / f"{idx + 1:02d}_clean.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+                "bdi": {"aplica": False},
+                "veredicto": motor_flac.Verdict.GENUINE_LOSSLESS.value,
+                "score": 0.95,
+                "problemas": [],
+                "notes": [],
+                "evidencias_forenses": [],
+                "esp": {
+                    "techo_hz": 21500,
+                    "techo_rel_nyquist": 0.975,
+                    **motor_flac.CutoffAssessment.none().to_protocol_fields(),
+                    "familias_evidencia_lossy": [],
+                    "finding_codes": [],
+                },
+            })
+        dark_track = {
+            "archivo": "08_acoustic.flac",
+            "ruta": str(rescue_dir / "08_acoustic.flac"),
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+            "bdi": {"aplica": False},
+            "veredicto": motor_flac.Verdict.SUSPICIOUS.value,
+            "score": 0.50,
+            "problemas": ["Severely truncated high frequencies (spectral ceiling 12.0 kHz)"],
+            "notes": [],
+            "evidencias_forenses": ["Spectral ceiling 12.0 kHz"],
+            "esp": {
+                "techo_hz": 12000,
+                "techo_rel_nyquist": 0.544,
+                **motor_flac.CutoffAssessment.none().to_protocol_fields(),
+                "iqr_corte_hz": 120.0,
+                "ratio_huecos_mdct": 0.0,
+                "familias_evidencia_lossy": [motor_flac.EvidenceFamily.SPECTRAL_CUTOFF.value],
+                "finding_codes": [motor_flac.FindingCode.LOW_SPECTRAL_CEILING.value],
+            },
+        }
+        rescue_batch.append(dark_track)
+
+        first_rescue = motor_flac.apply_album_coherence(rescue_batch)
+        self.assertEqual(first_rescue, 1)
+        self.assertEqual(dark_track["veredicto"], motor_flac.Verdict.PROBABLY_LOSSLESS.value)
+        self.assertTrue(dark_track["coherencia_album"])
+        notes_after_first = list(dark_track["notes"])
+        evid_after_first = list(dark_track["evidencias_forenses"])
+
+        second_rescue = motor_flac.apply_album_coherence(rescue_batch)
+        self.assertEqual(second_rescue, 0)
+        self.assertEqual(dark_track["notes"], notes_after_first)
+        self.assertEqual(dark_track["evidencias_forenses"], evid_after_first)
+        self.assertEqual(dark_track["problemas"], [])
+
+        # 2. Lossy conviction branch
+        lossy_dir = self.tmp_path / "idem_lossy"
+        lossy_dir.mkdir(parents=True, exist_ok=True)
+        lossy_batch = []
+        for idx in range(7):
+            lossy_batch.append({
+                "archivo": f"{idx + 1:02d}_mp3.flac",
+                "ruta": str(lossy_dir / f"{idx + 1:02d}_mp3.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+                "bdi": {"aplica": False},
+                "veredicto": motor_flac.Verdict.PROBABLE_UPSCALE.value,
+                "score": 0.20,
+                "problemas": ["Lapped lattice"],
+                "notes": [],
+                "evidencias_forenses": [],
+                "esp": {
+                    "techo_hz": 20500,
+                    "techo_rel_nyquist": 0.93,
+                    "mdct_lattice_detected": True,
+                    "mdct_lattice_snr": 15.0,
+                    "mdct_lattice_family": motor_flac.CodecLatticeFamily.PQMF_576.value,
+                },
+            })
+        hidden_lossy = {
+            "archivo": "08_intro.flac",
+            "ruta": str(lossy_dir / "08_intro.flac"),
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+            "bdi": {"aplica": False},
+            "veredicto": motor_flac.Verdict.PROBABLY_LOSSLESS.value,
+            "score": 0.72,
+            "problemas": [],
+            "notes": [],
+            "evidencias_forenses": [],
+            "esp": {
+                "techo_hz": 14000,
+                "techo_rel_nyquist": 0.635,
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 4.1,
+            },
+        }
+        lossy_batch.append(hidden_lossy)
+
+        first_convict = motor_flac.apply_album_coherence(lossy_batch)
+        self.assertEqual(first_convict, 1)
+        self.assertEqual(hidden_lossy["veredicto"], motor_flac.Verdict.PROBABLE_UPSCALE.value)
+        probs_after_first = list(hidden_lossy["problemas"])
+        evid_lossy_after_first = list(hidden_lossy["evidencias_forenses"])
+
+        second_convict = motor_flac.apply_album_coherence(lossy_batch)
+        self.assertEqual(second_convict, 0)
+        self.assertEqual(hidden_lossy["problemas"], probs_after_first)
+        self.assertEqual(hidden_lossy["evidencias_forenses"], evid_lossy_after_first)
 
 
 if __name__ == "__main__":

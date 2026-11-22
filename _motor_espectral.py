@@ -3,6 +3,9 @@
 Extracted from the motor facade in Phase 4. The STFT is float32 with
 sliding_window_view; the PNG is NumPy + Pillow (no matplotlib).
 """
+from dataclasses import dataclass
+from enum import Enum
+import functools
 import heapq
 import inspect
 import importlib.machinery
@@ -12,6 +15,87 @@ import os
 import sys
 
 import numpy as np
+
+
+class CutoffClass(str, Enum):
+    """Distance-to-Nyquist classification for a detected spectral step."""
+
+    NO_CUTOFF = "no_cutoff"
+    NEAR_NYQUIST = "near_nyquist_cutoff"
+    FAR_CUTOFF = "far_cutoff"
+
+
+class CodecLatticeFamily(str, Enum):
+    """Standardized lapped transform and filterbank families detected in PCM."""
+
+    MDCT_1024 = "MDCT-1024 (Vorbis/AAC)"
+    PQMF_576 = "PQMF-576 (MP3)"
+    PQMF_32 = "PQMF-32 (Musepack)"
+    CELT_960 = "CELT-960 (Opus)"
+
+
+@dataclass(frozen=True)
+class CutoffAssessment:
+    """Consistent value object for the coupled spectral cut-off protocol fields."""
+
+    cutoff_hz: int | None
+    distance_nyquist: float | None
+    cutoff_class: CutoffClass
+
+    @property
+    def detected(self) -> bool:
+        return self.cutoff_hz is not None
+
+    @property
+    def is_artificial(self) -> bool:
+        return self.cutoff_class is CutoffClass.FAR_CUTOFF
+
+    @classmethod
+    def none(cls) -> "CutoffAssessment":
+        return cls(
+            cutoff_hz=None,
+            distance_nyquist=None,
+            cutoff_class=CutoffClass.NO_CUTOFF,
+        )
+
+    @classmethod
+    def from_cutoff(
+        cls, cutoff_hz: float | None, nyquist: float
+    ) -> "CutoffAssessment":
+        if cutoff_hz is None or cutoff_hz <= 0.0 or nyquist <= 0.0:
+            return cls.none()
+        distance = float(cutoff_hz) / float(nyquist)
+        cutoff_class = (
+            CutoffClass.NEAR_NYQUIST if distance >= 0.88 else CutoffClass.FAR_CUTOFF
+        )
+        return cls(
+            cutoff_hz=round(cutoff_hz),
+            distance_nyquist=distance,
+            cutoff_class=cutoff_class,
+        )
+
+    def to_protocol_fields(self) -> dict:
+        return {
+            "clase_corte": self.cutoff_class.value,
+            "corte_detectado": self.detected,
+            "frecuencia_corte": self.cutoff_hz,
+            "distancia_nyquist": (
+                round(self.distance_nyquist, 4)
+                if self.distance_nyquist is not None
+                else None
+            ),
+            "corte_artificial": self.is_artificial,
+        }
+
+
+@dataclass(frozen=True)
+class PsychoacousticSummary:
+    """Immutable summary of frame-level psychoacoustic STFT metrics."""
+
+    metrics: dict
+    ms_p95_db: float = 0.0
+    ms_dynamic_collapse: bool = False
+    error: str | None = None
 
 _POCKETFFT_MOD = None
 
@@ -191,13 +275,10 @@ def _create_lut_inferno_256():
     return lut
 
 _LUT_SPECTROGRAM = _create_lut_inferno_256()
-_FONT_CACHE = {}
 
+@functools.lru_cache(maxsize=32)
 def _source_png(font_size=14):
     """TrueType font with support for the em dash; bitmap fallback otherwise."""
-    cached = _FONT_CACHE.get(font_size)
-    if cached is not None:
-        return cached
     loaded = None
     for name in ("arial.ttf", "segoeui.ttf", "DejaVuSans.ttf"):
         try:
@@ -210,7 +291,6 @@ def _source_png(font_size=14):
             loaded = ImageFont.load_default(size=font_size)
         except TypeError:                  # very old Pillow: no size parameter
             loaded = ImageFont.load_default()
-    _FONT_CACHE[font_size] = loaded
     return loaded
 
 def _text_vertical(canvas, xy, text, source, color):
@@ -1064,12 +1144,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # signature or a mastering filter. A legitimate anti-alias filter lives right
     # at the Nyquist; only a cut-off below 88% of Nyquist is flagged.
     nyquist = samplerate / 2.0
-    if cutoff_hz is None:
-        category_cutoff = "no_cutoff"
-        distance   = None
-    else:
-        distance   = cutoff_hz / nyquist
-        category_cutoff = ("near_nyquist_cutoff" if distance >= 0.88 else "far_cutoff")
+    cutoff = CutoffAssessment.from_cutoff(cutoff_hz, nyquist)
 
     mask_a = freqs > 18000
     mask_m = (freqs > 15000) & (freqs < 18000)
@@ -1121,10 +1196,8 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # the noise-shaping ramp continues above it. That edge is the passband of the
     # format, not a codec band limit and not a Nyquist-relative step, so it is not
     # reported as a cut-off at all: the ramp itself rules the truncation out.
-    if hires["es_transferencia_dsd"] and cutoff_hz is not None:
-        cutoff_hz = None
-        category_cutoff = "no_cutoff"
-        distance = None
+    if hires["es_transferencia_dsd"] and cutoff.detected:
+        cutoff = CutoffAssessment.none()
 
     # Transition-band slope around the ceiling: distinguishes a studio
     # anti-aliasing filter (gentle) from a brickwall or a resampler (a cliff).
@@ -1138,10 +1211,10 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     centroid_hz = (float(np.sum(freqs * power) / sum_power)
                     if sum_power > 1e-30 else 0.0)
     near_nyq_high = (
-        cutoff_hz is None
-        or (category_cutoff == "near_nyquist_cutoff"
-            and distance is not None
-            and distance >= 0.94)
+        not cutoff.detected
+        or (cutoff.cutoff_class is CutoffClass.NEAR_NYQUIST
+            and cutoff.distance_nyquist is not None
+            and cutoff.distance_nyquist >= 0.94)
     )
     gentle_post_ceiling = False
     if (samplerate <= 48000 and near_nyq_high
@@ -1238,14 +1311,10 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "error":              None,
         "techo_hz":           round(ceiling_hz),
         "techo_rel_nyquist":  round(ceiling_hz / nyquist, 4) if nyquist else 0.0,
-        "clase_corte":        category_cutoff,
-        "corte_detectado":    cutoff_hz is not None,
-        "frecuencia_corte":   round(cutoff_hz) if cutoff_hz else None,
-        "distancia_nyquist":  round(distance, 4) if distance is not None else None,
         # Compatibility: "corte_artificial" now means "confirmed accusation"
         # (a cut-off clearly below the Nyquist). It used to be enabled by any
         # step, including the filter of a master.
-        "corte_artificial":   category_cutoff == "far_cutoff",
+        **cutoff.to_protocol_fields(),
         "ratio":              ratio,
         "ratio_aplica":       ratio_applies,
         "var_alta_db":        var_high,
@@ -1533,6 +1602,14 @@ class PsychoacousticSTFTAccumulator:
         self._ms_dynamic_collapse = False
         self._slice_key = None
         self._cached_slices = None
+        self._state = AccumulatorState.COLLECTING
+        self._finalized = False
+        self._cached_summary = None
+
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
 
     def _get_cached_slices(self, freqs, window, n):
         sum_w = float(np.sum(window, dtype=np.float64))
@@ -1589,6 +1666,8 @@ class PsychoacousticSTFTAccumulator:
 
     def add(self, power, freqs, window, power_mid=None, power_side=None):
         """Consumes the (frames, bins) power of one selected block."""
+        if self._finalized:
+            raise RuntimeError("cannot add audio blocks after completion")
         if self._error or power.shape[0] == 0:
             return
         try:
@@ -1705,8 +1784,12 @@ class PsychoacousticSTFTAccumulator:
             self._frames_with_gap += int(np.count_nonzero(gap))
         except Exception as e:             # never abort the analysis of a file
             self._error = str(e)
+            self._state = AccumulatorState.FAILED
 
-    def result(self):
+    def summary(self) -> PsychoacousticSummary:
+        """Finalizes and returns the immutable psychoacoustic summary."""
+        if self._cached_summary is not None:
+            return self._cached_summary
         fc = np.asarray(self._fc, dtype=np.float64)
         if fc.size >= self.MIN_FRAMES_FC and np.all(np.isfinite(fc)):
             iqr = float(np.percentile(fc, 75) - np.percentile(fc, 25))
@@ -1908,7 +1991,7 @@ class PsychoacousticSTFTAccumulator:
                         iqr = min(iqr, 350.0)
                         self._ms_dynamic_collapse = False
 
-        return {
+        metrics = {
             "iqr_corte_hz":      round(iqr, 1) if math.isfinite(iqr) else 0.0,
             "ratio_huecos_mdct": round(ratio, 4) if math.isfinite(ratio) else 0.0,
             "caida_opus_20k_db": (round(fall_opus, 2)
@@ -1931,84 +2014,89 @@ class PsychoacousticSTFTAccumulator:
             "modulacion_psicoacustica_20k": psycho_mod_20k,
             "es_estacionario":          is_stationary,
         }
+        summary = PsychoacousticSummary(
+            metrics=metrics,
+            ms_p95_db=self._ms_p95_db,
+            ms_dynamic_collapse=self._ms_dynamic_collapse,
+            error=self._error,
+        )
+        self._finalized = True
+        self._state = (
+            AccumulatorState.FAILED if self._error else AccumulatorState.COMPLETED
+        )
+        self._cached_summary = summary
+        return summary
+
+    def result(self):
+        return dict(self.summary().metrics)
 
 
-_VORBIS_WIN_2048 = None
-_KBD_WIN_2048 = None
-_SINE_WIN_2048 = None
-_CELT_WIN_1920 = None
-_PQMF_BANK_CACHE = {}
-_MDCT36_BASIS = None
-_POLYPHASE_160_147 = None
-
-
+@functools.lru_cache(maxsize=None)
 def _get_vorbis_2048():
-    global _VORBIS_WIN_2048
-    if _VORBIS_WIN_2048 is None:
-        n = np.arange(2048, dtype=np.float32)
-        _VORBIS_WIN_2048 = np.sin(
-            0.5 * np.pi * (np.sin(np.pi / 2048.0 * (n + 0.5)) ** 2)
-        ).astype(np.float32)
-    return _VORBIS_WIN_2048
+    n = np.arange(2048, dtype=np.float32)
+    win = np.sin(
+        0.5 * np.pi * (np.sin(np.pi / 2048.0 * (n + 0.5)) ** 2)
+    ).astype(np.float32)
+    win.setflags(write=False)
+    return win
 
 
+@functools.lru_cache(maxsize=None)
 def _get_kbd_2048():
     """ISO/IEC 14496-3 MPEG-4 AAC Kaiser-Bessel Derived (KBD, alpha=4) window."""
-    global _KBD_WIN_2048
-    if _KBD_WIN_2048 is None:
-        cs = np.cumsum(np.kaiser(1025, 4.0 * np.pi), dtype=np.float64)
-        half = np.sqrt(cs[:1024] / cs[1024]).astype(np.float32)
-        _KBD_WIN_2048 = np.concatenate([half, half[::-1]])
-    return _KBD_WIN_2048
+    cs = np.cumsum(np.kaiser(1025, 4.0 * np.pi), dtype=np.float64)
+    half = np.sqrt(cs[:1024] / cs[1024]).astype(np.float32)
+    win = np.concatenate([half, half[::-1]])
+    win.setflags(write=False)
+    return win
 
 
+@functools.lru_cache(maxsize=None)
 def _get_sine_2048():
     """ISO/IEC 14496-3 AAC / WMA 2048-sample Sine analysis window."""
-    global _SINE_WIN_2048
-    if _SINE_WIN_2048 is None:
-        n = np.arange(2048, dtype=np.float32)
-        _SINE_WIN_2048 = np.sin(np.pi / 2048.0 * (n + 0.5)).astype(np.float32)
-    return _SINE_WIN_2048
+    n = np.arange(2048, dtype=np.float32)
+    win = np.sin(np.pi / 2048.0 * (n + 0.5)).astype(np.float32)
+    win.setflags(write=False)
+    return win
 
 
+@functools.lru_cache(maxsize=None)
 def _get_celt_1920():
-    global _CELT_WIN_1920
-    if _CELT_WIN_1920 is None:
-        n_mdct, span_ov = 960, 120
-        two_n = 1920
-        pad = (n_mdct - span_ov) // 2
-        w = np.zeros(two_n, dtype=np.float32)
-        n = np.arange(span_ov, dtype=np.float32)
-        trans = np.sin(
-            0.5 * np.pi * (np.sin(0.5 * np.pi * (n + 0.5) / span_ov) ** 2)
-        ).astype(np.float32)
-        w[pad : pad + span_ov] = trans
-        w[pad + span_ov : two_n - pad - span_ov] = 1.0
-        w[two_n - pad - span_ov : two_n - pad] = trans[::-1]
-        _CELT_WIN_1920 = w
-    return _CELT_WIN_1920
+    n_mdct, span_ov = 960, 120
+    two_n = 1920
+    pad = (n_mdct - span_ov) // 2
+    w = np.zeros(two_n, dtype=np.float32)
+    n = np.arange(span_ov, dtype=np.float32)
+    trans = np.sin(
+        0.5 * np.pi * (np.sin(0.5 * np.pi * (n + 0.5) / span_ov) ** 2)
+    ).astype(np.float32)
+    w[pad : pad + span_ov] = trans
+    w[pad + span_ov : two_n - pad - span_ov] = 1.0
+    w[two_n - pad - span_ov : two_n - pad] = trans[::-1]
+    w.setflags(write=False)
+    return w
+
+
+@functools.lru_cache(maxsize=8)
+def _get_pqmf_fast_cached(n_fft: int, sb_indices: tuple[int, ...]):
+    m_tap = np.arange(512, dtype=np.float64) - 256.0
+    win_kaiser = np.concatenate(([0.0], np.kaiser(511, 9.0)))
+    h_raw = (1.0 / 64.0) * np.sinc(m_tap / 64.0) * win_kaiser
+    h = (h_raw / np.sum(h_raw)).astype(np.float32)
+    n_idx = np.arange(512, dtype=np.float32)
+    bank = np.stack([
+        h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32)
+        for s in sb_indices
+    ], axis=0)
+    bank_fft = _rfft_f32(bank, n=n_fft, axis=1)
+    win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
+    bank_fft.setflags(write=False)
+    win36.setflags(write=False)
+    return bank_fft, win36
 
 
 def _get_pqmf_fast(n_fft, sb_indices=(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)):
-    sb_key = (int(n_fft), tuple(sb_indices))
-    cached = _PQMF_BANK_CACHE.get(sb_key)
-    if cached is None:
-        if len(_PQMF_BANK_CACHE) >= 8:
-            _PQMF_BANK_CACHE.clear()
-        m_tap = np.arange(512, dtype=np.float64) - 256.0
-        win_kaiser = np.concatenate(([0.0], np.kaiser(511, 9.0)))
-        h_raw = (1.0 / 64.0) * np.sinc(m_tap / 64.0) * win_kaiser
-        h = (h_raw / np.sum(h_raw)).astype(np.float32)
-        n_idx = np.arange(512, dtype=np.float32)
-        bank = np.stack([
-            h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16)).astype(np.float32)
-            for s in sb_indices
-        ], axis=0)
-        bank_fft = _rfft_f32(bank, n=n_fft, axis=1)
-        win36 = np.sin(np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)).astype(np.float32)
-        cached = (bank_fft, win36)
-        _PQMF_BANK_CACHE[sb_key] = cached
-    return cached[0], cached[1]
+    return _get_pqmf_fast_cached(int(n_fft), tuple(sb_indices))
 
 
 def _robust_z_peak(values, min_scale=1e-3):
@@ -2133,37 +2221,37 @@ def _fast_mdct_f32(frames, window):
     return _dct4_ortho_f32(folded, axis=-1, overwrite_x=True)
 
 
+@functools.lru_cache(maxsize=None)
 def _get_mdct36_basis():
     """Cached (36, 18) float32 transform matrix for PQMF-576 36-tap MDCT."""
-    global _MDCT36_BASIS
-    if _MDCT36_BASIS is None:
-        win36 = np.sin(
-            np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)
-        ).astype(np.float32)
-        _MDCT36_BASIS = np.ascontiguousarray(
-            _fast_mdct_f32(np.eye(36, dtype=np.float32), win36), dtype=np.float32
-        )
-    return _MDCT36_BASIS
+    win36 = np.sin(
+        np.pi / 36.0 * (np.arange(36, dtype=np.float32) + 0.5)
+    ).astype(np.float32)
+    basis = np.ascontiguousarray(
+        _fast_mdct_f32(np.eye(36, dtype=np.float32), win36), dtype=np.float32
+    )
+    basis.setflags(write=False)
+    return basis
 
 
+@functools.lru_cache(maxsize=None)
 def _get_polyphase_160_147_f32():
     """Cached (160, 21) Kaiser (beta=8.6) FIR polyphase bank for 44.1 -> 48 kHz."""
-    global _POLYPHASE_160_147
-    if _POLYPHASE_160_147 is None:
-        up, down = 160, 147
-        half_len = 10 * up
-        n_taps = 2 * half_len + 1
-        idx = np.arange(n_taps, dtype=np.float64) - half_len
-        h64 = np.sinc((1.0 / up) * idx) * np.kaiser(n_taps, 8.6)
-        h64 *= up / np.sum(h64)
-        bank = np.zeros((up, 21), dtype=np.float32)
-        for p in range(up):
-            for k, j in enumerate(range(-10, 11)):
-                t_idx = half_len + p - j * up
-                if 0 <= t_idx < n_taps:
-                    bank[p, k] = np.float32(h64[t_idx])
-        _POLYPHASE_160_147 = np.ascontiguousarray(bank, dtype=np.float32)
-    return _POLYPHASE_160_147
+    up, down = 160, 147
+    half_len = 10 * up
+    n_taps = 2 * half_len + 1
+    idx = np.arange(n_taps, dtype=np.float64) - half_len
+    h64 = np.sinc((1.0 / up) * idx) * np.kaiser(n_taps, 8.6)
+    h64 *= up / np.sum(h64)
+    bank = np.zeros((up, 21), dtype=np.float32)
+    for p in range(up):
+        for k, j in enumerate(range(-10, 11)):
+            t_idx = half_len + p - j * up
+            if 0 <= t_idx < n_taps:
+                bank[p, k] = np.float32(h64[t_idx])
+    out = np.ascontiguousarray(bank, dtype=np.float32)
+    out.setflags(write=False)
+    return out
 
 
 def _resample_celt_44k_to_48k_slice(seg_src, start_out, length_out):
@@ -2384,7 +2472,7 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z1024), 2),
-                "mdct_lattice_family": "MDCT-1024 (Vorbis/AAC)",
+                "mdct_lattice_family": CodecLatticeFamily.MDCT_1024.value,
             }
 
         # 2. PQMF-576 (MP3 hybrid filterbank) & PQMF-32 (Musepack subband frames)
@@ -2524,14 +2612,14 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z576), 2),
-                "mdct_lattice_family": "PQMF-576 (MP3)",
+                "mdct_lattice_family": CodecLatticeFamily.PQMF_576.value,
             }
 
         if z_mpc >= 6.5:
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z_mpc), 2),
-                "mdct_lattice_family": "PQMF-32 (Musepack)",
+                "mdct_lattice_family": CodecLatticeFamily.PQMF_32.value,
             }
 
         # 3. CELT-960 (Opus 20.00 kHz TDAC stopband boundary cancellation)
@@ -2585,7 +2673,7 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z_opus), 2),
-                "mdct_lattice_family": "CELT-960 (Opus)",
+                "mdct_lattice_family": CodecLatticeFamily.CELT_960.value,
             }
 
         best_z = max(z1024, z576, z_mpc, z_opus, z_opus_sub)
@@ -2708,6 +2796,7 @@ class _SpectralAccumulator:
         self._last = None
         self._error = None
         self._state = AccumulatorState.COLLECTING
+        self._finalized = False
         self._cached_result = None
         self._psycho = PsychoacousticSTFTAccumulator(self.sr)
         self._diff_buf = np.empty(16384, dtype=np.float64)
@@ -2725,7 +2814,7 @@ class _SpectralAccumulator:
         )
 
     def add(self, block, start=0, mono=None, int_scale=None):
-        if self._state is AccumulatorState.COMPLETED:
+        if self._finalized:
             raise RuntimeError("cannot add audio blocks after completion")
         if self._error or block.shape[0] == 0:
             return
@@ -2810,16 +2899,21 @@ class _SpectralAccumulator:
             freqs, times, mix, self.sr, self.path, ceiling_hz, cutoff_hz
         )
 
+    def _finish_error(self, message):
+        err_out = {"error": message}
+        self._state = AccumulatorState.FAILED
+        self._finalized = True
+        self._cached_result = dict(err_out)
+        return err_out
+
     def result(self):
         if self._cached_result is not None:
             return dict(self._cached_result)
         if self._error:
-            self._state = AccumulatorState.FAILED
-            return {"error": self._error}
+            return self._finish_error(self._error)
         chosen = self._seleccion or ([self._backup] if self._backup else [])
         if not chosen:
-            self._state = AccumulatorState.FAILED
-            return {"error": "could not analyze the spectrum"}
+            return self._finish_error("could not analyze the spectrum")
         chosen = sorted(chosen, key=lambda item: item[2])   # chronological
 
         is_multichannel = any(
@@ -2828,10 +2922,7 @@ class _SpectralAccumulator:
         if is_multichannel:
             mc_active, mc_pair = _select_multichannel_layout(chosen)
             if not mc_active:
-                err_out = {"error": "insufficient signal energy for spectral analysis"}
-                self._state = AccumulatorState.COMPLETED
-                self._cached_result = dict(err_out)
-                return err_out
+                return self._finish_error("insufficient signal energy for spectral analysis")
             effective_stereo = len(mc_active) >= 2
         else:
             mc_active = ()
@@ -2852,7 +2943,7 @@ class _SpectralAccumulator:
         frames_estimados = sum((n - nperseg) // hop + 1
                                for n in lengths if n >= nperseg)
         if frames_estimados <= 0:
-            return {"error": "could not analyze the spectrum"}
+            return self._finish_error("could not analyze the spectrum")
         step_png = max(1, frames_estimados // MAX_FRAMES_PNG)
         # Display-only cap: a 75-87 % overlap gives far more frames than the PNG
         # can show, and that per-column detail is random noise that JPEG cannot
@@ -3072,7 +3163,7 @@ class _SpectralAccumulator:
             frames += n_frames_blk
 
         if frames == 0:
-            return {"error": "could not analyze the spectrum"}
+            return self._finish_error("could not analyze the spectrum")
         if not effective_stereo:
             sum_r = sum_l
             sum_total = sum_l
@@ -3088,26 +3179,24 @@ class _SpectralAccumulator:
                                     power_mid=mean_mid, power_side=mean_side,
                                     gain_noise=gain_noise)
         if spectrum.get("error"):
-            self._state = AccumulatorState.COMPLETED
+            self._state = AccumulatorState.FAILED
+            self._finalized = True
             self._cached_result = dict(spectrum)
             return spectrum
-        spectrum.update(self._psycho.result())
+        psycho = self._psycho.summary()
+        spectrum.update(psycho.metrics)
         if spectrum.get("es_estacionario"):
             if (spectrum.get("sospecha_joint_stereo")
                     and (spectrum.get("delta_corte_ms_hz") or 0.0) < 2500.0):
                 spectrum["sospecha_joint_stereo"] = False
             if ((spectrum.get("techo_rel_nyquist") or 0.0) >= 0.88
-                    and spectrum.get("clase_corte") == "far_cutoff"
+                    and spectrum.get("clase_corte") == CutoffClass.FAR_CUTOFF.value
                     and (spectrum.get("frecuencia_corte") or 0) < 0.85 * (spectrum.get("techo_hz") or 0)):
-                spectrum["corte_detectado"] = False
-                spectrum["frecuencia_corte"] = None
-                spectrum["distancia_nyquist"] = None
-                spectrum["clase_corte"] = "no_cutoff"
-                spectrum["corte_artificial"] = False
+                spectrum.update(CutoffAssessment.none().to_protocol_fields())
         ceiling_val = spectrum.get("techo_hz", 0)
         hires_clean_rolloff = bool(
             self.sr >= 88200
-            and spectrum.get("clase_corte") == "no_cutoff"
+            and spectrum.get("clase_corte") == CutoffClass.NO_CUTOFF.value
             and (spectrum.get("rolloff_analogico_genuino")
                  or spectrum.get("es_transferencia_dsd"))
         )
@@ -3115,7 +3204,7 @@ class _SpectralAccumulator:
             cur_iqr = float(spectrum.get("iqr_corte_hz") or 0.0)
             if cur_iqr > 350.0:
                 spectrum["iqr_corte_hz"] = 350.0
-        ms_p95 = float(getattr(self._psycho, "_ms_p95_db", 0.0))
+        ms_p95 = float(psycho.ms_p95_db)
         delta_cutoff = float(spectrum.get("delta_corte_ms_hz") or 0.0)
         collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
         centered_hf_vocal = False
@@ -3143,7 +3232,7 @@ class _SpectralAccumulator:
                         float(np.median(side_us_db)) > -85.0
                         and float(np.median(mid_us_db - side_us_db)) < 12.0
                     )
-        if (getattr(self._psycho, "_ms_dynamic_collapse", False)
+        if (psycho.ms_dynamic_collapse
                 and not spectrum.get("es_dual_mono")
                 and not spectrum.get("es_estacionario")
                 and not narrow_midrange_stereo
@@ -3157,7 +3246,7 @@ class _SpectralAccumulator:
                 spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
         if (41000 <= self.sr <= 48000
                 and ceiling_val >= 7000
-                and spectrum.get("clase_corte") != "far_cutoff"):
+                and spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value):
             ranked_blks = sorted(
                 chosen, key=lambda item: (len(item[4]) >= 24576, item[0]), reverse=True)
             best_blk = ranked_blks[0][4]
@@ -3219,7 +3308,7 @@ class _SpectralAccumulator:
                 lat_sec = _detect_lapped_codec_grid(sec_mono, self.sr, ceiling_hz=ceiling_val)
                 if lat_sec.get("mdct_lattice_detected") and (
                     sec_idx == 0
-                    or "CELT-960" in str(lat_sec.get("mdct_lattice_family") or "")
+                    or lat_sec.get("mdct_lattice_family") == CodecLatticeFamily.CELT_960.value
                 ):
                     lat = lat_sec
             spectrum.update(lat)
@@ -3241,7 +3330,7 @@ class _SpectralAccumulator:
                 spectrum["iqr_corte_hz"] = 350.0
         if (self.sr >= 32000
                 and ceiling_val >= 14500
-                and spectrum.get("clase_corte") != "far_cutoff"
+                and spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value
                 and not spectrum.get("mdct_lattice_detected")):
             target_samples = int(self.sr * 6)
             mid_parts = []
@@ -3277,6 +3366,7 @@ class _SpectralAccumulator:
             if error:
                 spectrum["espectrograma_error"] = error
         self._state = AccumulatorState.COMPLETED
+        self._finalized = True
         self._cached_result = dict(spectrum)
         return spectrum
 
@@ -3284,11 +3374,17 @@ class _SpectralAccumulator:
         """Lightweight spectrogram render from selected active blocks when cached
         spectral metrics are already valid and only the PNG is missing."""
         if self._error:
+            self._state = AccumulatorState.FAILED
+            self._finalized = True
             return {"espectrograma": None, "espectrograma_error": self._error}
         if not self.save_png:
+            self._state = AccumulatorState.COMPLETED
+            self._finalized = True
             return {"espectrograma": None}
         chosen = self._seleccion or ([self._backup] if self._backup else [])
         if not chosen:
+            self._state = AccumulatorState.FAILED
+            self._finalized = True
             return {"espectrograma": None,
                     "espectrograma_error": "could not analyze the spectrum"}
         chosen = sorted(chosen, key=lambda item: item[2])
@@ -3299,6 +3395,8 @@ class _SpectralAccumulator:
         if is_multichannel:
             mc_active, _ = _select_multichannel_layout(chosen)
             if not mc_active:
+                self._state = AccumulatorState.FAILED
+                self._finalized = True
                 return {"espectrograma": None,
                         "espectrograma_error": "insufficient signal energy for spectral analysis"}
         else:
@@ -3317,6 +3415,8 @@ class _SpectralAccumulator:
         frames_estimados = sum((n - nperseg) // hop + 1
                                for n in lengths if n >= nperseg)
         if frames_estimados <= 0:
+            self._state = AccumulatorState.FAILED
+            self._finalized = True
             return {"espectrograma": None,
                     "espectrograma_error": "could not analyze the spectrum"}
         step_png = max(1, frames_estimados // MAX_FRAMES_PNG)
@@ -3380,6 +3480,8 @@ class _SpectralAccumulator:
             frames_global += n_frames_blk
 
         if not png_power:
+            self._state = AccumulatorState.COMPLETED
+            self._finalized = True
             return {"espectrograma": None}
         png_path, error = self._invoke_renderer(
             freqs, np.concatenate(png_times),
@@ -3389,4 +3491,8 @@ class _SpectralAccumulator:
         out = {"espectrograma": png_path}
         if error:
             out["espectrograma_error"] = error
+            self._state = AccumulatorState.FAILED
+        else:
+            self._state = AccumulatorState.COMPLETED
+        self._finalized = True
         return out

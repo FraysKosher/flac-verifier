@@ -271,6 +271,92 @@ class TestTransientIoRetry(unittest.TestCase):
                     self.assertTrue(state["seek_failed"])
                 mock_sleep.assert_called()
 
+    def test_retry_does_not_seek_closed_handle_after_reopen_failure(self):
+        """After seek() fails and closes the handle, a transient reopen failure
+        must not call seek() on the closed handle on the next retry."""
+        path = self.fx["ok24"]
+        expected = engine.analyze_file_data(path, "center", None, False, use_cache=False)
+        self.assertEqual(expected["md5"]["estado"], engine.Md5Status.MATCH.value)
+
+        real_soundfile = sf.SoundFile
+        block_size = 16384
+        tracker = {
+            "read_failed": False,
+            "seek_failed": False,
+            "reopen_failed": False,
+            "seek_after_close": 0,
+        }
+
+        class _StrictHandleProxy:
+            def __init__(self, inner_path):
+                self._sf = real_soundfile(inner_path)
+                self._closed = False
+
+            def __getattr__(self, name):
+                return getattr(self._sf, name)
+
+            def seek(self, offset):
+                if self._closed:
+                    tracker["seek_after_close"] += 1
+                    raise RuntimeError("seek called on closed handle")
+                if tracker["read_failed"] and not tracker["seek_failed"]:
+                    tracker["seek_failed"] = True
+                    raise OSError("stale handle on seek")
+                return self._sf.seek(offset)
+
+            def read(self, *args, **kwargs):
+                if not tracker["read_failed"] and self._sf.tell() == block_size:
+                    tracker["read_failed"] = True
+                    raise sf.LibsndfileError(2, "transient SMB read")
+                return self._sf.read(*args, **kwargs)
+
+            def close(self):
+                self._closed = True
+                return self._sf.close()
+
+        def _open_soundfile(inner_path):
+            if tracker["seek_failed"] and not tracker["reopen_failed"]:
+                tracker["reopen_failed"] = True
+                raise OSError("transient reopen error")
+            return _StrictHandleProxy(inner_path)
+
+        with mock.patch.object(engine, "FRAMES_BY_BLOCK", block_size), \
+             mock.patch.object(engine.sf, "SoundFile", side_effect=_open_soundfile), \
+             mock.patch("time.sleep") as mock_sleep:
+            recovered = engine.analyze_file_data(
+                path, "center", None, False, use_cache=False
+            )
+
+        self.assertEqual(tracker["seek_after_close"], 0)
+        self.assertTrue(tracker["read_failed"])
+        self.assertTrue(tracker["seek_failed"])
+        self.assertTrue(tracker["reopen_failed"])
+        self.assertEqual(recovered["md5"]["estado"], engine.Md5Status.MATCH.value)
+        self.assertEqual(
+            recovered["md5"]["calculado"], expected["md5"]["calculado"]
+        )
+        self.assertEqual(recovered["veredicto"], expected["veredicto"])
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_late_exception_after_verdict_preserves_error_xor_verdict(self):
+        """Exceptions raised after verdict/score assignment must still return
+        a pure error payload with no verdict or score keys."""
+        path = self.fx["ok16"]
+        for hook_name in ("forensic_evidence", "write_cache"):
+            with self.subTest(hook=hook_name):
+                with mock.patch.object(
+                    engine, hook_name, side_effect=RuntimeError("late failure")
+                ):
+                    res = engine.analyze_file_data(
+                        path, "center", None, False, use_cache=True
+                    )
+                self.assertIn("error", res)
+                self.assertNotIn("veredicto", res)
+                self.assertNotIn("score", res)
+                self.assertIn("late failure", res["error"])
+                self.assertIn("meta", res)
+                self.assertIn("md5", res)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
