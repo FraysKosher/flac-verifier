@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.3] - 2026-11-21
+
+### Added
+
+- Typed `FindingCode(str, Enum)` covering all 23 canonical forensic penalty
+  codes in `_motor_veredicto.py` (re-exported in `motor_flac.py`), recorded in
+  `esp["finding_codes"]` by `_ScoreLedger` and evaluated deterministically by
+  `_deserves_album_coherence` (with automatic fallback to legacy substring
+  matching when `finding_codes` is absent or out of sync).
+- Observable runtime failure diagnostics (`sbr_detector_error` and
+  `mdct_detector_error`) in `_detect_sbr_qmf_replication`,
+  `_eval_lapped_codec_grid`, and `_detect_lapped_codec_grid` fallback paths
+  (`_motor_espectral.py`), omitted on clean execution.
+- Privacy-safe `--real-corpus [MANIFEST_JSON]` real-album validation mode in
+  `tests/benchmark_validacion.py` (defaulting to gitignored `.local_corpus.json`),
+  combinable with `--check`, non-mutating, and gracefully skipping missing
+  manifests or unmounted paths.
+- 4 focused unit tests in `tests/test_forense_riguroso.py` bringing the
+  automated suite from **402** to **406 tests**: `FindingCode` emission across
+  `calculate_score`, typed album coherence rescue & shallow-copy clearing with
+  legacy fallback, detector error diagnostics & fallback propagation, and
+  `--real-corpus` manifest pass/mismatch/skip behaviour.
+
+### Changed
+
+- Raised `CACHE_SCHEMA_VERSION` to **`"2.6.0"`** (`motor_flac.py`) for the new
+  `esp["finding_codes"]` field while keeping `ENGINE_VERSION = "14.7"` unchanged
+  (zero changes to scores or verdicts), and bumped application version to
+  **`2.10.3`** (`main.py`, `pyproject.toml`, `version_info.txt`).
+- Consolidated physical exemption predicates in `_motor_veredicto.py` into
+  single-source helpers (`_has_clean_active_24bit_lattice`,
+  `_is_codec_clean_core`, `_allows_dark_sparse_iqr_rescue`,
+  `_allows_24b_dark_vhs_rescue`) while keeping every scoring edge case
+  bit-identical.
+- Internal code and test hygiene: removed dead `"CONFIRMED LOSSY"` literal in
+  `_is_lossy_codec_quorum_track`, renamed `_BlockAnalysis._dr_slope` to
+  `_dr_remainder`, renamed `gives` to `dh` in `_spectral_metrics`, and removed
+  built-in `input` variable shadowing in `_motor_cache.py`,
+  `tests/test_cache_y_paralelo.py`, and `tests/test_estructura.py`.
+
 ## [2.10.2] - 2026-11-21
 
 ### Added

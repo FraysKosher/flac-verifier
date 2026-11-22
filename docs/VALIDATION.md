@@ -1,4 +1,4 @@
-# FLAC VERIFIER 14.7 (v2.10.2) — Validation Report (2026-11-16)
+# FLAC VERIFIER 14.7 (v2.10.3) — Validation Report (2026-11-16)
 
 <!-- BENCHMARK:START -->
 ## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 260)

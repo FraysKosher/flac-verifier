@@ -5,9 +5,9 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.10.2](https://img.shields.io/badge/version-2.10.2-blue)](CHANGELOG.md)
+[![Version: 2.10.3](https://img.shields.io/badge/version-2.10.3-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 402](https://img.shields.io/badge/tests-402-brightgreen)](#tests)
+[![Tests: 406](https://img.shields.io/badge/tests-406-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
 lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
@@ -62,13 +62,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.10.2](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.10.2)**,
+Download **[FLAC Verifier 2.10.3](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.10.3)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.10.2.txt`:
+To verify the download with `SHA256SUMS_2.10.3.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.10.2-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.10.3-win64.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -176,7 +176,7 @@ FLAC VERIFIER/
 ├── comprobar_ejecutable.py   12-check verification suite for the frozen .exe
 ├── pyproject.toml            PEP 621 metadata & uv / pipx console scripts
 ├── docs/                     technical reference, design system, validation & comparison
-└── tests/                    402 unit tests (stdlib unittest, synthetic fixtures)
+└── tests/                    406 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -187,7 +187,7 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 402-test suite (~70 s, no external audio files needed)
+# Run the full 406-test suite (~70 s, no external audio files needed)
 python -m unittest discover -s tests
 
 # Skip GUI tests in headless environments
@@ -210,7 +210,7 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.10.2`).
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.10.3`).
 - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 260-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
 - **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.
