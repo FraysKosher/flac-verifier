@@ -1431,7 +1431,7 @@ def natural_sort_key(path_or_name: str) -> tuple:
     appear in numeric order rather than ASCII lexicographical order."""
     name = os.path.basename(str(path_or_name))
     parts = [
-        (0, int(token), "") if token.isdigit() else (1, 0, token.casefold())
+        (0, int(token), "") if token.isdecimal() else (1, 0, token.casefold())
         for token in re.split(r"(\d+)", name)
         if token
     ]

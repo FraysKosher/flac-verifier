@@ -1999,8 +1999,11 @@ class TestAlbumQueueAndQuickFilters(unittest.TestCase):
 
     def test_natural_sort_key_handles_non_decimal_unicode_digits(self):
         self.assertEqual(
-            sorted(("Album²", "Album10", "Album2"), key=gui.natural_sort_key),
-            ["Album2", "Album10", "Album²"],
+            sorted(
+                ("Album²", "Album2²", "Album10", "Album2", "²", "①01 - Intro.flac", "０１", "2"),
+                key=gui.natural_sort_key,
+            ),
+            ["０１", "2", "Album2", "Album2²", "Album10", "Album²", "²", "①01 - Intro.flac"],
         )
 
     def test_discover_album_queue_single_file_and_flat_folder(self):

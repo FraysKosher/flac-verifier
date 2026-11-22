@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unicode non-decimal digits in natural sorting (`gui.py`, `motor_flac.py`)**:
+  switched `natural_sort_key()` from `str.isdigit()` to `str.isdecimal()` so
+  folder and track names containing isolated non-decimal Unicode digits (such
+  as `²` in `"Album2²"` or `①` in `"①01 - Intro.flac"`) no longer raise
+  `ValueError` during `int()` conversion, while preserving numeric sorting for
+  fullwidth decimal digits (`"０１"`). Thanks to `@chropic` (PR #15). Added
+  regression coverage in `tests/test_gui.py` and `tests/test_cache_y_paralelo.py`
+  bringing the suite from **406** to **408 tests**.
+
 ## [2.10.3] - 2026-11-21
 
 ### Added

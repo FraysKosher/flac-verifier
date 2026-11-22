@@ -82,7 +82,7 @@ FALSE_POSITIVES = {
     "album", "compatible", "control", "pie", "solo", "dos", "pro",
     "volatile", "cached", "nonexistent", "anchor", "variable",
     "error", "total", "cache", "ratio", "output", "normal",
-    "controls", "decimals",
+    "controls", "decimal", "decimals", "isdecimal",
 }   # English names that happen to contain a Spanish fragment or are homographs
 
 # The lexicon is vendored so the guard does not depend on a regex written by

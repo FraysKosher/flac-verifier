@@ -432,6 +432,22 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
             ],
         )
 
+    def test_natural_sort_key_handles_non_decimal_unicode_digits(self):
+        names = (
+            "Album²",
+            "Album2²",
+            "Album10",
+            "Album2",
+            "²",
+            "①01 - Intro.flac",
+            "０１",
+            "2",
+        )
+        self.assertEqual(
+            sorted(names, key=engine.natural_sort_key),
+            ["０１", "2", "Album2", "Album2²", "Album10", "Album²", "²", "①01 - Intro.flac"],
+        )
+
 
 class test_renderer(unittest.TestCase):
 
