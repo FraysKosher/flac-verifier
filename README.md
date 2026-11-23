@@ -5,7 +5,7 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.10.5](https://img.shields.io/badge/version-2.10.5-blue)](CHANGELOG.md)
+[![Version: 2.10.6](https://img.shields.io/badge/version-2.10.6-blue)](CHANGELOG.md)
 [![License: AGPL v3+](https://img.shields.io/badge/license-AGPL_v3%2B-blue)](LICENSE)
 [![Tests: 428](https://img.shields.io/badge/tests-428-brightgreen)](#tests)
 
@@ -62,13 +62,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.10.5](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.10.5)**,
+Download **[FLAC Verifier 2.10.6](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.10.6)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.10.5.txt`:
+To verify the download with `SHA256SUMS_2.10.6.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.10.5-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.10.6-win64.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -210,7 +210,7 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.10.5`).
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.10.6`).
 - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 260-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
 - **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.
