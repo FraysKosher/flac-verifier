@@ -73,9 +73,10 @@ from _motor_espectral import (
 )
 from _motor_veredicto import (
     LIMIT_CD_HZ, ALBUM_COHERENCE_NOTE, Verdict, EvidenceTier, EvidenceFamily,
-    FindingCode, VerdictCap, ScoreEvaluation, _ScoreLedger, calculate_score,
+    FindingCode, VerdictCap, AlbumCoherenceAction, AlbumQuorumKind,
+    AlbumQuorumDecision, ScoreEvaluation, _ScoreLedger, calculate_score,
     _deserves_album_coherence, _deserves_album_lossy_coherence,
-    _is_clean_quorum_track,
+    _is_clean_quorum_track, _evaluate_album_quorum,
     apply_album_coherence, forensic_evidence,
 )
 from _motor_cache import (

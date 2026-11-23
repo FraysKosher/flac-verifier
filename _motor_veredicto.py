@@ -78,6 +78,47 @@ class VerdictCap(IntEnum):
     PROBABLE_UPSCALE = 1
 
 
+_VERDICT_TO_CAP_RANK = {
+    Verdict.GENUINE_LOSSLESS: VerdictCap.GENUINE_LOSSLESS,
+    Verdict.PROBABLY_LOSSLESS: VerdictCap.PROBABLY_LOSSLESS,
+    Verdict.SUSPICIOUS: VerdictCap.SUSPICIOUS,
+    Verdict.PROBABLE_UPSCALE: VerdictCap.PROBABLE_UPSCALE,
+}
+_CAP_RANK_TO_VERDICT = {
+    VerdictCap.GENUINE_LOSSLESS: Verdict.GENUINE_LOSSLESS,
+    VerdictCap.PROBABLY_LOSSLESS: Verdict.PROBABLY_LOSSLESS,
+    VerdictCap.SUSPICIOUS: Verdict.SUSPICIOUS,
+    VerdictCap.PROBABLE_UPSCALE: Verdict.PROBABLE_UPSCALE,
+}
+
+
+class AlbumCoherenceAction(str, Enum):
+    """Explicit action stamped on tracks modified by album-level coherence."""
+
+    NONE = "none"
+    RESCUED_LOSSLESS = "rescued_lossless"
+    CONVICTED_LOSSY = "convicted_lossy"
+
+
+class AlbumQuorumKind(str, Enum):
+    """Directory-level quorum outcome resolved by `_evaluate_album_quorum()`."""
+
+    NONE = "none"
+    CLEAN_STANDARD = "clean_standard"
+    CLEAN_MIXED_VHS = "clean_mixed_vhs"
+    LOSSY_CODEC = "lossy_codec"
+
+
+@dataclass(frozen=True)
+class AlbumQuorumDecision:
+    """Pure album-level quorum decision for a single directory batch."""
+
+    kind: AlbumQuorumKind
+    reference_format: tuple[int, int] | None = None
+    candidates: tuple[dict, ...] = ()
+    dominant_family: str | None = None
+
+
 @dataclass(frozen=True)
 class ScoreEvaluation:
     """Pure, immutable output of `_ScoreLedger.evaluate()`."""
@@ -125,8 +166,9 @@ class _ScoreLedger:
             self.families.append(family_name)
 
     def lower_cap(self, target_cap):
-        if target_cap < self.cap:
-            self.cap = target_cap
+        coerced = VerdictCap(target_cap)
+        if coerced < self.cap:
+            self.cap = coerced
 
     def penalize(
         self,
@@ -176,22 +218,29 @@ class _ScoreLedger:
         if self.is_blocked and not corroborated and score < 0.50:
             score = 0.50
 
-        if self.is_blocked:
+        if self.cap is VerdictCap.PROBABLE_UPSCALE:
+            verdict = (
+                Verdict.PROBABLE_UPSCALE if corroborated else Verdict.SUSPICIOUS
+            )
+        elif self.cap is VerdictCap.SUSPICIOUS:
             verdict = (
                 Verdict.SUSPICIOUS
                 if (score >= 0.50 or not corroborated)
                 else Verdict.PROBABLE_UPSCALE
             )
-        elif score >= 0.80:
-            verdict = Verdict.GENUINE_LOSSLESS
-        elif score >= 0.60:
-            verdict = Verdict.PROBABLY_LOSSLESS
-        elif score >= 0.40:
-            verdict = Verdict.SUSPICIOUS
         else:
-            verdict = (
-                Verdict.PROBABLE_UPSCALE if corroborated else Verdict.SUSPICIOUS
-            )
+            if score >= 0.80:
+                verdict = Verdict.GENUINE_LOSSLESS
+            elif score >= 0.60:
+                verdict = Verdict.PROBABLY_LOSSLESS
+            elif score >= 0.40:
+                verdict = Verdict.SUSPICIOUS
+            else:
+                verdict = (
+                    Verdict.PROBABLE_UPSCALE if corroborated else Verdict.SUSPICIOUS
+                )
+            if _VERDICT_TO_CAP_RANK[verdict] > self.cap:
+                verdict = _CAP_RANK_TO_VERDICT[self.cap]
 
         return ScoreEvaluation(
             score=score,
@@ -232,6 +281,37 @@ def _has_non_opus_codec_signature(spectrum) -> bool:
         or spectrum.get("islas_mdct_sfb21")
         or spectrum.get("sbr_qmf_detectado")
     )
+
+
+def _opus_corroboration_flags(spectrum) -> tuple[bool, bool, bool]:
+    """Return `(iqr_suppressed_by_opus, other_corroboration, sub_lattice)` for
+    both 20.00 kHz Opus shelf scoring stages."""
+    opus_eligible = bool(
+        spectrum.get("sospecha_corte_opus_20k")
+        and not (
+            spectrum.get("es_transferencia_dsd")
+            or spectrum.get("rolloff_analogico_genuino")
+        )
+    )
+    if not opus_eligible:
+        return False, False, False
+    iqr = spectrum.get("iqr_corte_hz") or 0.0
+    holes = spectrum.get("ratio_huecos_mdct") or 0.0
+    iqr_suppressed_by_opus = bool(
+        spectrum.get("sospecha_joint_stereo")
+        or iqr > 550.0
+        or holes > 0.10
+    )
+    other_corroboration = bool(
+        iqr_suppressed_by_opus
+        or spectrum.get("modulacion_psicoacustica_20k")
+        or spectrum.get("mdct_lattice_detected")
+    )
+    sub_lattice = bool(
+        not other_corroboration
+        and (spectrum.get("mdct_lattice_snr") or 0.0) >= 3.8
+    )
+    return iqr_suppressed_by_opus, other_corroboration, sub_lattice
 
 
 def _has_clean_active_24bit_lattice(bdi) -> bool:
@@ -534,12 +614,10 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
         iqr = spectrum.get("iqr_corte_hz") or 0.0
         # The jitter is already part of the Opus evidence: do not penalise the
         # same symptom twice when the 20.00 kHz cliff is already corroborated.
-        opus_corroborado = bool(spectrum.get("sospecha_corte_opus_20k") and
-                                not (spectrum.get("es_transferencia_dsd") or
-                                     spectrum.get("rolloff_analogico_genuino")) and
-                                (spectrum.get("sospecha_joint_stereo") or iqr > 550.0 or
-                                 (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10))
-        if iqr > 550.0 and not opus_corroborado:
+        iqr_suppressed_by_opus, opus_other_corroboration, opus_sub_lattice = (
+            _opus_corroboration_flags(spectrum)
+        )
+        if iqr > 550.0 and not iqr_suppressed_by_opus:
             extreme_jitter = (
                 iqr > 1800.0
                 and not spectrum.get("es_estacionario")
@@ -645,19 +723,8 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
         if (spectrum.get("sospecha_corte_opus_20k")
                 and not (spectrum.get("es_transferencia_dsd")
                          or spectrum.get("rolloff_analogico_genuino"))):
-            other_corroboration = bool(
-                spectrum.get("sospecha_joint_stereo")
-                or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
-                or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
-                or spectrum.get("modulacion_psicoacustica_20k")
-                or spectrum.get("mdct_lattice_detected")
-            )
-            sub_lattice = bool(
-                not other_corroboration
-                and (spectrum.get("mdct_lattice_snr") or 0.0) >= 3.8
-            )
-            corroborado = other_corroboration or sub_lattice
-            if corroborado:
+            corroborated_20k = opus_other_corroboration or opus_sub_lattice
+            if corroborated_20k:
                 drop_20k = spectrum.get("caida_opus_20k_db", 0.0)
                 if _has_non_opus_codec_signature(spectrum):
                     msg_20k = (
@@ -671,8 +738,8 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     )
                 ledger.penalize(
                     msg_20k,
-                    0.45 if sub_lattice else 0.20,
-                    blocks_max_verdict=sub_lattice,
+                    0.45 if opus_sub_lattice else 0.20,
+                    blocks_max_verdict=opus_sub_lattice,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
                     code=FindingCode.OPUS_20K_CUTOFF,
                 )
@@ -1079,6 +1146,158 @@ def _is_clean_batch_track(result):
     return True
 
 
+def _evaluate_album_quorum(valid_tracks) -> AlbumQuorumDecision:
+    """Resolve the directory-level coherence decision for a single folder."""
+    from collections import Counter
+
+    if len(valid_tracks) < 2:
+        return AlbumQuorumDecision(AlbumQuorumKind.NONE)
+
+    quorum_tracks = [r for r in valid_tracks if _is_clean_quorum_track(r)]
+    if quorum_tracks:
+        reference = Counter(
+            (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
+            for r in quorum_tracks
+        ).most_common(1)[0][0]
+        quorum_ref = [
+            r for r in quorum_tracks
+            if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == reference
+        ]
+        support_ref = [
+            r for r in valid_tracks
+            if _is_clean_album_support_track(r, reference)
+        ]
+        has_strong_anchor = any(
+            r.get("veredicto") == Verdict.GENUINE_LOSSLESS.value
+            or float(r.get("score") or 0.0) >= 0.75
+            or (
+                (r.get("md5") or {}).get("estado") == Md5Status.ABSENT.value
+                and float(r.get("score") or 0.0) >= 0.70
+                and float((r.get("esp") or {}).get("techo_rel_nyquist") or 0.0) >= 0.90
+                and not ((r.get("esp") or {}).get("familias_evidencia_lossy") or [])
+            )
+            for r in quorum_ref
+        )
+        support_ratio = len(support_ref) / float(len(valid_tracks))
+        standard_clean_ok = bool(has_strong_anchor and support_ratio >= 0.75)
+        mixed_vhs_ok = False
+        if not standard_clean_ok:
+            non_green = [
+                r for r in valid_tracks
+                if r.get("veredicto") not in (
+                    Verdict.GENUINE_LOSSLESS.value,
+                    Verdict.PROBABLY_LOSSLESS.value,
+                )
+            ]
+            green = [
+                r for r in valid_tracks
+                if r.get("veredicto") in (
+                    Verdict.GENUINE_LOSSLESS.value,
+                    Verdict.PROBABLY_LOSSLESS.value,
+                )
+            ]
+            mixed_vhs_ok = bool(
+                has_strong_anchor
+                and len(valid_tracks) >= 6
+                and len(support_ref) >= 3
+                and support_ratio >= 0.40
+                and non_green
+                and all(_is_clean_batch_track(r) for r in green)
+                and all(
+                    (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == reference
+                    and _deserves_album_coherence(r)
+                    for r in non_green
+                )
+            )
+        if standard_clean_ok or mixed_vhs_ok:
+            candidates = []
+            for r in valid_tracks:
+                if (r.get("coherencia_album") is True
+                        and r.get("veredicto") == Verdict.PROBABLY_LOSSLESS.value):
+                    continue
+                if r.get("veredicto") not in (
+                    Verdict.SUSPICIOUS.value,
+                    Verdict.PROBABLE_UPSCALE.value,
+                    Verdict.PROBABLY_LOSSLESS.value,
+                ):
+                    continue
+                meta = r.get("meta") or {}
+                if (meta.get("sample_rate"), meta.get("bits_per_sample")) != reference:
+                    continue
+                if _deserves_album_coherence(r):
+                    candidates.append(r)
+            rescue_candidates = [
+                r for r in candidates
+                if r.get("veredicto") in (
+                    Verdict.SUSPICIOUS.value,
+                    Verdict.PROBABLE_UPSCALE.value,
+                )
+            ]
+            max_candidates = max(2, len(valid_tracks) // 4)
+            within_cap = (
+                True if mixed_vhs_ok
+                else len(rescue_candidates) <= max_candidates
+            )
+            if candidates and within_cap:
+                return AlbumQuorumDecision(
+                    kind=(
+                        AlbumQuorumKind.CLEAN_STANDARD
+                        if standard_clean_ok
+                        else AlbumQuorumKind.CLEAN_MIXED_VHS
+                    ),
+                    reference_format=reference,
+                    candidates=tuple(candidates),
+                )
+
+    if len(valid_tracks) < 3:
+        return AlbumQuorumDecision(AlbumQuorumKind.NONE)
+    lattice_tracks = [
+        r for r in valid_tracks
+        if _is_lossy_codec_quorum_track(r)
+    ]
+    if not lattice_tracks:
+        return AlbumQuorumDecision(AlbumQuorumKind.NONE)
+    lossy_ref_key = Counter(
+        (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
+        for r in lattice_tracks
+    ).most_common(1)[0][0]
+    lattice_ref = [
+        r for r in lattice_tracks
+        if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == lossy_ref_key
+    ]
+    if len(lattice_ref) / float(len(valid_tracks)) < 0.75:
+        return AlbumQuorumDecision(AlbumQuorumKind.NONE)
+    explicit_families = [
+        (r.get("esp") or {}).get("mdct_lattice_family")
+        for r in lattice_ref
+        if (r.get("esp") or {}).get("mdct_lattice_family")
+    ]
+    dominant_family = (
+        Counter(explicit_families).most_common(1)[0][0]
+        if explicit_families
+        else "20 kHz lossy/Opus"
+    )
+    lossy_candidates = []
+    for r in valid_tracks:
+        if (r.get("coherencia_album") is True
+                and r.get("veredicto") == Verdict.PROBABLE_UPSCALE.value):
+            continue
+        meta = r.get("meta") or {}
+        if (meta.get("sample_rate"), meta.get("bits_per_sample")) != lossy_ref_key:
+            continue
+        if _deserves_album_lossy_coherence(r):
+            lossy_candidates.append(r)
+    max_lossy = max(2, len(valid_tracks) // 4)
+    if not 1 <= len(lossy_candidates) <= max_lossy:
+        return AlbumQuorumDecision(AlbumQuorumKind.NONE)
+    return AlbumQuorumDecision(
+        kind=AlbumQuorumKind.LOSSY_CODEC,
+        reference_format=lossy_ref_key,
+        candidates=tuple(lossy_candidates),
+        dominant_family=dominant_family,
+    )
+
+
 def apply_album_coherence(results):
     """Vector 6: rescue acoustic/low-HF tracks of a consistent album.
 
@@ -1095,9 +1314,7 @@ def apply_album_coherence(results):
     PROBABLY LOSSLESS. That mark exists only in this batch: it is never written
     into the per-file cache, so analysing the track alone does not inherit it.
     Returns how many tracks were raised or validated. Modifies the list in place."""
-    from collections import Counter
-
-    grupos = {}
+    groups = {}
     for result in results:
         if not isinstance(result, dict) or result.get("error"):
             continue
@@ -1107,190 +1324,79 @@ def apply_album_coherence(results):
         folder_key = os.path.normcase(
             os.path.normpath(os.path.abspath(os.path.dirname(os.path.abspath(str(path)))))
         )
-        grupos.setdefault(folder_key, []).append(result)
+        groups.setdefault(folder_key, []).append(result)
 
-    elevados = 0
-    for tracks in grupos.values():
-        validas = [r for r in tracks
-                   if (r.get("meta") or {}).get("sample_rate")
-                   and r.get("veredicto")]
-        if len(validas) < 2:
-            continue
-        quorum_tracks = [r for r in validas if _is_clean_quorum_track(r)]
-        if quorum_tracks:
-            reference = Counter(
-                (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
-                for r in quorum_tracks).most_common(1)[0][0]
-            quorum_ref = [r for r in quorum_tracks
-                          if (r["meta"]["sample_rate"],
-                              r["meta"]["bits_per_sample"]) == reference]
-            support_ref = [
-                r for r in validas
-                if _is_clean_album_support_track(r, reference)
-            ]
-            has_strong_anchor = any(
-                r.get("veredicto") == Verdict.GENUINE_LOSSLESS.value
-                or float(r.get("score") or 0.0) >= 0.75
-                or (
-                    (r.get("md5") or {}).get("estado") == Md5Status.ABSENT.value
-                    and float(r.get("score") or 0.0) >= 0.70
-                    and float((r.get("esp") or {}).get("techo_rel_nyquist") or 0.0) >= 0.90
-                    and not ((r.get("esp") or {}).get("familias_evidencia_lossy") or [])
-                )
-                for r in quorum_ref
-            )
-            support_ratio = len(support_ref) / float(len(validas))
-            mixed_vhs_ok = False
-            if not (has_strong_anchor and support_ratio >= 0.75):
-                non_verde = [
-                    r for r in validas
-                    if r.get("veredicto") not in (
-                        Verdict.GENUINE_LOSSLESS.value,
-                        Verdict.PROBABLY_LOSSLESS.value,
-                    )
-                ]
-                verde = [
-                    r for r in validas
-                    if r.get("veredicto") in (
-                        Verdict.GENUINE_LOSSLESS.value,
-                        Verdict.PROBABLY_LOSSLESS.value,
-                    )
-                ]
-                mixed_vhs_ok = bool(
-                    has_strong_anchor
-                    and len(validas) >= 6
-                    and len(support_ref) >= 3
-                    and support_ratio >= 0.40
-                    and non_verde
-                    and all(_is_clean_batch_track(r) for r in verde)
-                    and all(
-                        (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == reference
-                        and _deserves_album_coherence(r)
-                        for r in non_verde
-                    )
-                )
-            if (has_strong_anchor and support_ratio >= 0.75) or mixed_vhs_ok:
-                candidatos = []
-                for r in validas:
-                    if (r.get("coherencia_album") is True
-                            and r.get("veredicto") == Verdict.PROBABLY_LOSSLESS.value):
-                        continue
-                    if r.get("veredicto") not in (
-                        Verdict.SUSPICIOUS.value,
-                        Verdict.PROBABLE_UPSCALE.value,
-                        Verdict.PROBABLY_LOSSLESS.value,
-                    ):
-                        continue
-                    meta = r.get("meta") or {}
-                    if (meta.get("sample_rate"), meta.get("bits_per_sample")) != reference:
-                        continue
-                    if _deserves_album_coherence(r):
-                        candidatos.append(r)
-                rescue_candidates = [
-                    r for r in candidatos
-                    if r.get("veredicto") in (
-                        Verdict.SUSPICIOUS.value,
-                        Verdict.PROBABLE_UPSCALE.value,
-                    )
-                ]
-                max_candidates = max(2, len(validas) // 4)
-                within_cap = (
-                    True if mixed_vhs_ok
-                    else len(rescue_candidates) <= max_candidates
-                )
-                if candidatos and within_cap:
-                    for r in candidatos:
-                        r["veredicto"] = Verdict.PROBABLY_LOSSLESS.value
-                        r["score"] = max(float(r.get("score") or 0.0), 0.60)
-                        old_problems = list(r.get("problemas") or [])
-                        notes = list(r.get("notes") or [])
-                        for item in old_problems:
-                            if item not in notes:
-                                notes.append(item)
-                        if ALBUM_COHERENCE_NOTE not in notes:
-                            notes.append(ALBUM_COHERENCE_NOTE)
-                        r["problemas"] = []
-                        if isinstance(r.get("esp"), dict) and "finding_codes" in r["esp"]:
-                            r["esp"] = {**r["esp"], "finding_codes": []}
-                        r["notes"] = notes
-                        evid = list(r.get("evidencias_forenses") or [])
-                        if ALBUM_COHERENCE_NOTE not in evid:
-                            evid.append(ALBUM_COHERENCE_NOTE)
-                        r["evidencias_forenses"] = evid
-                        r["coherencia_album"] = True
-                        r["album_coherence_note"] = ALBUM_COHERENCE_NOTE
-                        elevados += 1
+    updated = 0
+    for tracks in groups.values():
+        valid_tracks = [
+            r for r in tracks
+            if (r.get("meta") or {}).get("sample_rate")
+            and r.get("veredicto")
+        ]
+        decision = _evaluate_album_quorum(valid_tracks)
+        if decision.kind in (
+            AlbumQuorumKind.CLEAN_STANDARD,
+            AlbumQuorumKind.CLEAN_MIXED_VHS,
+        ):
+            for r in decision.candidates:
+                r["veredicto"] = Verdict.PROBABLY_LOSSLESS.value
+                r["score"] = max(float(r.get("score") or 0.0), 0.60)
+                old_problems = list(r.get("problemas") or [])
+                notes = list(r.get("notes") or [])
+                for item in old_problems:
+                    if item not in notes:
+                        notes.append(item)
+                if ALBUM_COHERENCE_NOTE not in notes:
+                    notes.append(ALBUM_COHERENCE_NOTE)
+                r["problemas"] = []
+                if isinstance(r.get("esp"), dict) and "finding_codes" in r["esp"]:
+                    r["esp"] = {**r["esp"], "finding_codes": []}
+                r["notes"] = notes
+                evid = list(r.get("evidencias_forenses") or [])
+                if ALBUM_COHERENCE_NOTE not in evid:
+                    evid.append(ALBUM_COHERENCE_NOTE)
+                r["evidencias_forenses"] = evid
+                r["coherencia_album"] = True
+                r["album_coherence_note"] = ALBUM_COHERENCE_NOTE
+                r["album_coherence_action"] = AlbumCoherenceAction.RESCUED_LOSSLESS.value
+                updated += 1
+        elif decision.kind is AlbumQuorumKind.LOSSY_CODEC:
+            dominant_family = decision.dominant_family or "20 kHz lossy/Opus"
+            for r in decision.candidates:
+                if (r.get("coherencia_album") is True
+                        and r.get("veredicto") == Verdict.PROBABLE_UPSCALE.value):
                     continue
-
-        if len(validas) < 3:
-            continue
-        lattice_tracks = [
-            r for r in validas
-            if _is_lossy_codec_quorum_track(r)
-        ]
-        if not lattice_tracks:
-            continue
-        lossy_ref_key = Counter(
-            (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
-            for r in lattice_tracks
-        ).most_common(1)[0][0]
-        lattice_ref = [
-            r for r in lattice_tracks
-            if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == lossy_ref_key
-        ]
-        if len(lattice_ref) / float(len(validas)) < 0.75:
-            continue
-        explicit_families = [
-            (r.get("esp") or {}).get("mdct_lattice_family")
-            for r in lattice_ref
-            if (r.get("esp") or {}).get("mdct_lattice_family")
-        ]
-        dominant_family = (
-            Counter(explicit_families).most_common(1)[0][0]
-            if explicit_families
-            else "20 kHz lossy/Opus"
-        )
-        lossy_candidates = []
-        for r in validas:
-            meta = r.get("meta") or {}
-            if (meta.get("sample_rate"), meta.get("bits_per_sample")) != lossy_ref_key:
-                continue
-            if _deserves_album_lossy_coherence(r):
-                lossy_candidates.append(r)
-        max_lossy = max(2, len(validas) // 4)
-        if not 1 <= len(lossy_candidates) <= max_lossy:
-            continue
-        for r in lossy_candidates:
-            spec = r.get("esp") or {}
-            if spec.get("sospecha_corte_opus_20k"):
-                spread_db = float(spec.get("brecha_modulacion_20k_db") or 0.0)
-                note = (
-                    f"Likely {dominant_family} transcode by album consistency: "
-                    f"20.00 kHz shelf track in a confirmed lossy batch "
-                    f"(upper-band spread {spread_db:.1f} dB)"
-                )
-            else:
-                snr_val = float(spec.get("mdct_lattice_snr") or 0.0)
-                note = (
-                    f"Likely {dominant_family} transcode by album consistency: "
-                    f"low-ceiling track in a confirmed lossy batch "
-                    f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
-                )
-            r["veredicto"] = Verdict.PROBABLE_UPSCALE.value
-            r["score"] = min(float(r.get("score") or 0.0), 0.35)
-            r["problemas"] = list(r.get("problemas") or []) + [note]
-            if isinstance(r.get("esp"), dict):
-                existing_codes = list(r["esp"].get("finding_codes") or [])
-                r["esp"] = {
-                    **r["esp"],
-                    "finding_codes": existing_codes
-                    + [FindingCode.ALBUM_LOSSY_CONSISTENCY.value],
-                }
-            r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [note]
-            r["coherencia_album"] = True
-            r["album_coherence_note"] = note
-            elevados += 1
-    return elevados
+                spec = r.get("esp") or {}
+                if spec.get("sospecha_corte_opus_20k"):
+                    spread_db = float(spec.get("brecha_modulacion_20k_db") or 0.0)
+                    note = (
+                        f"Likely {dominant_family} transcode by album consistency: "
+                        f"20.00 kHz shelf track in a confirmed lossy batch "
+                        f"(upper-band spread {spread_db:.1f} dB)"
+                    )
+                else:
+                    snr_val = float(spec.get("mdct_lattice_snr") or 0.0)
+                    note = (
+                        f"Likely {dominant_family} transcode by album consistency: "
+                        f"low-ceiling track in a confirmed lossy batch "
+                        f"(sub-threshold lattice Z = {snr_val:.1f} sigma)"
+                    )
+                r["veredicto"] = Verdict.PROBABLE_UPSCALE.value
+                r["score"] = min(float(r.get("score") or 0.0), 0.35)
+                r["problemas"] = list(r.get("problemas") or []) + [note]
+                if isinstance(r.get("esp"), dict):
+                    existing_codes = list(r["esp"].get("finding_codes") or [])
+                    r["esp"] = {
+                        **r["esp"],
+                        "finding_codes": existing_codes
+                        + [FindingCode.ALBUM_LOSSY_CONSISTENCY.value],
+                    }
+                r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [note]
+                r["coherencia_album"] = True
+                r["album_coherence_note"] = note
+                r["album_coherence_action"] = AlbumCoherenceAction.CONVICTED_LOSSY.value
+                updated += 1
+    return updated
 
 def forensic_evidence(result):
     """Short English technical evidence lines shown next to the verdict.
