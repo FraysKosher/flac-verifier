@@ -20,10 +20,37 @@ the same in Tk and 700 looks bold.
 """
 from __future__ import annotations
 
+from enum import Enum
 import json
 import os
 import tempfile
 from typing import Any
+
+
+class ThemeMode(str, Enum):
+    """Canonical appearance modes supported by the interface."""
+
+    DARK = "dark"
+    LIGHT = "light"
+
+    @classmethod
+    def coerce(
+        cls,
+        raw: "ThemeMode | str | None",
+        default: "ThemeMode | None" = None,
+    ) -> "ThemeMode":
+        fallback = cls.DARK if default is None else default
+        if isinstance(raw, cls):
+            return raw
+        if raw is None:
+            return fallback
+        token = str(raw).strip().lower()
+        if not token:
+            return fallback
+        for member in cls:
+            if member.value == token:
+                return member
+        return fallback
 
 # ─── Colour ─────────────────────────────────────────────────────────────────
 
@@ -109,13 +136,24 @@ for _tone_name in ("ok", "warn", "bad", "unknown", "danger"):
     if _tone_name != "danger":
         LIGHT[f"{_tone_name}.border"] = mix(_hue, LIGHT["bg.surface"], 0.30)
 
-PALETTE = {"dark": DARK, "light": LIGHT}
-MODE = "dark"
+PALETTE = {ThemeMode.DARK.value: DARK, ThemeMode.LIGHT.value: LIGHT}
+MODE = ThemeMode.DARK.value
 
 
-def color(token: str, mode: str | None = None) -> str:
+def set_mode(mode: ThemeMode | str) -> str:
+    """Explicitly update the active appearance mode and return its canonical name."""
+    global MODE
+    token = mode.value if isinstance(mode, ThemeMode) else str(mode).strip().lower()
+    if token not in PALETTE:
+        raise ValueError(f"unsupported theme mode: {mode!r}")
+    MODE = token
+    return MODE
+
+
+def color(token: str, mode: ThemeMode | str | None = None) -> str:
     """Hex value of a token in the given (or current) appearance mode."""
-    return PALETTE[mode or MODE][token]
+    resolved = mode.value if isinstance(mode, ThemeMode) else (mode or MODE)
+    return PALETTE[resolved][token]
 
 
 # ─── Persisted preference ───────────────────────────────────────────────────
@@ -137,24 +175,20 @@ def settings_path() -> str:
 
 def load_preference() -> str:
     """Reads the saved mode, defaults to dark and sets `MODE`. Never raises."""
-    global MODE
-    mode = "dark"
+    mode = ThemeMode.DARK
     try:
         with open(settings_path(), encoding="utf-8") as stream:
             data = json.load(stream)
-        candidate = str(data.get("theme", "")).strip().lower()
-        if candidate in PALETTE:
-            mode = candidate
+        mode = ThemeMode.coerce(data.get("theme", ""), default=ThemeMode.DARK)
     except Exception:                      # missing, malformed, unreadable…
-        mode = "dark"
-    MODE = mode
-    return mode
+        mode = ThemeMode.DARK
+    return set_mode(mode)
 
 
-def save_preference(mode: str) -> bool:
-    """Stores the mode atomically. Returns False instead of raising."""
-    mode = str(mode).strip().lower()
-    if mode not in PALETTE:
+def save_preference(mode: ThemeMode | str) -> bool:
+    """Stores the mode atomically without mutating `MODE`. Returns False on error."""
+    token = mode.value if isinstance(mode, ThemeMode) else str(mode).strip().lower()
+    if token not in PALETTE:
         return False
     path = settings_path()
     folder = os.path.dirname(path)
@@ -164,7 +198,7 @@ def save_preference(mode: str) -> bool:
         descriptor, temporary = tempfile.mkstemp(prefix=".settings-",
                                                  suffix=".json", dir=folder)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump({"theme": mode}, stream)
+            json.dump({"theme": token}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

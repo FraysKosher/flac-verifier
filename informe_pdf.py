@@ -12,13 +12,14 @@ Report structure:
        spectrogram.
     3. Final page: global table of every song.
 """
+from collections.abc import MutableSequence
+from dataclasses import dataclass
 import html
 import os
 import re
 import shutil
 import tempfile
 import time
-from collections.abc import MutableSequence
 
 import theme
 
@@ -71,14 +72,14 @@ def _tone(hue: str) -> tuple[str, str, str]:
             theme.mix(hue, PAPER, 0.30))
 
 
-OK_TONE = _tone(theme.color("ok"))
+OK_TONE = _tone(theme.color("ok", "dark"))
 PROBABLE_TONE = _tone(
     theme.mix(theme.color("ok", "dark"), theme.color("accent", "dark"), 0.55)
 )
-WARN_TONE = _tone(theme.color("warn"))
-BAD_TONE = _tone(theme.color("bad"))
-UNKNOWN_TONE = _tone(theme.color("unknown"))
-DANGER_TONE = _tone(theme.color("danger"))
+WARN_TONE = _tone(theme.color("warn", "dark"))
+BAD_TONE = _tone(theme.color("bad", "dark"))
+UNKNOWN_TONE = _tone(theme.color("unknown", "dark"))
+DANGER_TONE = _tone(theme.color("danger", "dark"))
 
 # Canonical verdict -> (label, text, border, background, border). The first
 # three entries are the ones the interface uses; the fourth is the badge border.
@@ -628,6 +629,19 @@ _RULE_COLOR = colors.HexColor(RULE) if REPORTLAB_OK else None
 _INK_SEC_COLOR = colors.HexColor(INK_SECONDARY) if REPORTLAB_OK else None
 
 
+@dataclass
+class _RenderCounters:
+    """Mutable render statistics shared with the ReportLab page footer callback."""
+
+    pages: int = 0
+
+
+def _reset_engine_version_cache() -> None:
+    """Clear the cached engine version string (used by tests)."""
+    global _ENGINE_VERSION_CACHED
+    _ENGINE_VERSION_CACHED = None
+
+
 def _engine_version():
     """Version of the engine that produced the records, for the footer."""
     global _ENGINE_VERSION_CACHED
@@ -642,7 +656,7 @@ def _engine_version():
 
 def _page_footer(canvas, doc, album, counter):
     """Footer: album, page number and engine version, in tertiary text."""
-    counter["paginas"] = max(counter["paginas"], canvas.getPageNumber())
+    counter.pages = max(counter.pages, canvas.getPageNumber())
     canvas.saveState()
     canvas.setStrokeColor(_RULE_COLOR if _RULE_COLOR is not None else colors.HexColor(RULE))
     canvas.setLineWidth(0.4)
@@ -674,14 +688,21 @@ class _LazyStream(MutableSequence):
     def __init__(self, generator):
         self._generator = generator
         self._buffer = []
-        self._agotado = False
+        self._exhausted = False
 
     def _fill(self, how_many):
-        while not self._agotado and len(self._buffer) < how_many:
+        while not self._exhausted and len(self._buffer) < how_many:
             try:
                 self._buffer.append(next(self._generator))
             except StopIteration:
-                self._agotado = True
+                self._exhausted = True
+
+    def _fill_all(self):
+        while not self._exhausted:
+            try:
+                self._buffer.append(next(self._generator))
+            except StopIteration:
+                self._exhausted = True
 
     def __len__(self):
         self._fill(1)                    # just enough to know if there is one
@@ -689,26 +710,49 @@ class _LazyStream(MutableSequence):
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            if index.stop is not None:
+            if (index.stop is None
+                    or index.stop < 0
+                    or (index.start is not None and index.start < 0)):
+                self._fill_all()
+            else:
                 self._fill(index.stop)
             return self._buffer[index]
-        self._fill(index + 1)
+        if index < 0:
+            self._fill_all()
+        else:
+            self._fill(index + 1)
         return self._buffer[index]
 
     def __setitem__(self, index, value):
         if isinstance(index, slice):
+            if (index.stop is None
+                    or index.stop < 0
+                    or (index.start is not None and index.start < 0)):
+                self._fill_all()
+            else:
+                self._fill(index.stop)
             self._buffer[index] = list(value)
         else:
-            self._fill(index + 1)
+            if index < 0:
+                self._fill_all()
+            else:
+                self._fill(index + 1)
             self._buffer[index] = value
 
     def __delitem__(self, index):
         if isinstance(index, slice):
-            if index.stop is not None:
+            if (index.stop is None
+                    or index.stop < 0
+                    or (index.start is not None and index.start < 0)):
+                self._fill_all()
+            else:
                 self._fill(index.stop)
             del self._buffer[index]
         else:
-            self._fill(index + 1)
+            if index < 0:
+                self._fill_all()
+            else:
+                self._fill(index + 1)
             del self._buffer[index]
 
     def insert(self, position, value):
@@ -741,7 +785,7 @@ def generate(analyzed_path, results, destination=None, mode=None, output_dir=Non
 
     Returns {"ok": bool, "ruta": str|None, "error": str|None, "paginas": int}.
     """
-    counter = {"paginas": 0}
+    counter = _RenderCounters()
     temporal = None
     try:
         if not REPORTLAB_OK:
@@ -776,7 +820,7 @@ def generate(analyzed_path, results, destination=None, mode=None, output_dir=Non
         document.build(
             _LazyStream(_elements(analyzed_path, results, mode, styles, temporal)),
             onFirstPage=footer, onLaterPages=footer)
-        pages = counter["paginas"]
+        pages = counter.pages
         return {"ok": True, "ruta": destination, "error": None, "paginas": pages}
     except Exception as e:
         return {"ok": False, "ruta": None, "paginas": 0,

@@ -36,6 +36,7 @@ import threading
 import time
 import tkinter
 from collections import OrderedDict, deque
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Iterable
 
@@ -101,6 +102,76 @@ class VerdictFilter(str, Enum):
     FLAGGED = "flagged"
     SUSPICIOUS = "suspicious"
     ERRORS = "errors"
+
+
+class PdfDestinationMode(str, Enum):
+    """Where generated PDF reports are written."""
+
+    ALBUM = "album"
+    CUSTOM = "custom"
+
+
+@dataclass
+class BatchQueueState:
+    """Mutable multi-album queue and progress state for a GUI batch run."""
+
+    queue: deque[str] = field(default_factory=deque)
+    root: str = ""
+    total_count: int = 1
+    current_index: int = 1
+    current_path: str = ""
+    failed_batches: list[tuple[int, str, str]] = field(default_factory=list)
+    pdf_paths: list[str] = field(default_factory=list)
+    album_total: int = 0
+    album_received: int = 0
+
+    def reset(self, root: str, discovered: Iterable[str]) -> None:
+        items = list(discovered)
+        self.root = root
+        self.queue = deque(items)
+        self.total_count = len(items)
+        self.current_index = 0
+        self.current_path = ""
+        self.failed_batches = []
+        self.pdf_paths = []
+        self.album_total = 0
+        self.album_received = 0
+
+    def advance(self) -> str | None:
+        if not self.queue:
+            return None
+        next_path = self.queue.popleft()
+        self.current_index += 1
+        self.current_path = next_path
+        self.album_total = 0
+        self.album_received = 0
+        return next_path
+
+
+@dataclass
+class _ButtonUiSpec:
+    """Typed button theme/state spec with dict-compatible access."""
+
+    spec: dict[str, Any]
+    parent: str
+    border: str | None
+    focused: bool
+    states: dict[str, str]
+    icon: tuple[str, int, str] | None
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        setattr(self, key, value)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and hasattr(self, key)
 
 
 LOG_LEVEL_TAGS: dict[str, str] = {
@@ -178,7 +249,8 @@ def packaging() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
-def engine_path() -> list[str]:
+def engine_path(frozen: bool | None = None,
+                executable: str | None = None) -> list[str]:
     """How the engine must be invoked, depending on how this is being run.
 
     - Packaged: the engine executable sitting next to it is preferred (it has its
@@ -192,13 +264,15 @@ def engine_path() -> list[str]:
     binary this is. (Without it, `FLAC_Verifier.exe` would open its window instead
     of analyzing: the GUI would sit waiting for events that never arrive.)
     """
-    if packaging():
-        folder = os.path.dirname(os.path.abspath(sys.executable))
+    is_frozen = packaging() if frozen is None else bool(frozen)
+    exe_path = sys.executable if executable is None else executable
+    if is_frozen:
+        folder = os.path.dirname(os.path.abspath(exe_path))
         engine_exe = os.path.join(folder, ENGINE_EXE_NAME)
         if os.path.exists(engine_exe):
             return [engine_exe, FLAG_ENGINE_CLI]
-        return [sys.executable, FLAG_ENGINE_CLI]
-    return [sys.executable, "-u", ENGINE]
+        return [exe_path, FLAG_ENGINE_CLI]
+    return [exe_path, "-u", ENGINE]
 
 # Visual identity: the assets are generated with Logo/generar_logo.py, which
 # defines the design. If they are missing, the window still works (it only warns).
@@ -1435,24 +1509,16 @@ if CTK_OK:
             self.manager = ProcessManager(self.message_queue, engine=engine)
             self.run_state: RunState = RunState.IDLE
             self.active_run_id = 0
-            self._cancelled_run_ids: set[int] = set()
+            self._cancelled_run_ids: deque[int] = deque(maxlen=64)
             self.surface_mode: SurfaceMode = SurfaceMode.EMPTY
             self.hero_mode: HeroMode = HeroMode.ALBUM
-            self._detail_visible: bool | None = None
             self.spectrogram_state: SpectrogramState = SpectrogramState.NONE
             # Bounded: a very long batch must not grow the window's memory forever.
             self.events: "deque[Event]" = deque(maxlen=MAX_EVENTS_IN_MEMORY)
             self.total = 0
             self.recibidos = 0
             self.pdf_path: str | None = None
-            self._batch_queue: deque[str] = deque()
-            self._batch_root = ""
-            self._batch_total_count = 1
-            self._batch_current_index = 1
-            self._batch_current_path = ""
-            self._failed_batches: list[tuple[int, str, str]] = []
-            self._album_total = 0
-            self._album_received = 0
+            self._batch_state = BatchQueueState()
             self.active_filter: VerdictFilter = VerdictFilter.ALL
             self._filter_counts: dict[str, int] = {
                 VerdictFilter.ALL.value: 0,
@@ -1526,6 +1592,7 @@ if CTK_OK:
             self._spec_worker: threading.Thread | None = None
             self._spectrogram_path_value = ""
             self._hero_layout_scheduled = False
+            self._hero_layout_deferred = False
 
             self.grid_columnconfigure(0, weight=1)
             self.grid_rowconfigure(0, weight=1)
@@ -1557,6 +1624,71 @@ if CTK_OK:
             if not os.path.isdir(ICON_FOLDER):
                 self._log("Icon set not found (Logo/icons); the buttons show text only.",
                           "aviso")
+
+        # ── batch-state compatibility properties ────────────────────────────
+        @property
+        def _batch_queue(self) -> deque[str]:
+            return self._batch_state.queue
+
+        @_batch_queue.setter
+        def _batch_queue(self, value: deque[str]) -> None:
+            self._batch_state.queue = value
+
+        @property
+        def _batch_root(self) -> str:
+            return self._batch_state.root
+
+        @_batch_root.setter
+        def _batch_root(self, value: str) -> None:
+            self._batch_state.root = value
+
+        @property
+        def _batch_total_count(self) -> int:
+            return self._batch_state.total_count
+
+        @_batch_total_count.setter
+        def _batch_total_count(self, value: int) -> None:
+            self._batch_state.total_count = value
+
+        @property
+        def _batch_current_index(self) -> int:
+            return self._batch_state.current_index
+
+        @_batch_current_index.setter
+        def _batch_current_index(self, value: int) -> None:
+            self._batch_state.current_index = value
+
+        @property
+        def _batch_current_path(self) -> str:
+            return self._batch_state.current_path
+
+        @_batch_current_path.setter
+        def _batch_current_path(self, value: str) -> None:
+            self._batch_state.current_path = value
+
+        @property
+        def _failed_batches(self) -> list[tuple[int, str, str]]:
+            return self._batch_state.failed_batches
+
+        @_failed_batches.setter
+        def _failed_batches(self, value: list[tuple[int, str, str]]) -> None:
+            self._batch_state.failed_batches = value
+
+        @property
+        def _album_total(self) -> int:
+            return self._batch_state.album_total
+
+        @_album_total.setter
+        def _album_total(self, value: int) -> None:
+            self._batch_state.album_total = value
+
+        @property
+        def _album_received(self) -> int:
+            return self._batch_state.album_received
+
+        @_album_received.setter
+        def _album_received(self, value: int) -> None:
+            self._batch_state.album_received = value
 
         # ── presentation helpers ────────────────────────────────────────────
         def _icon(self, name: str, size: int = 16, color: str | None = None) -> Any:
@@ -1659,15 +1791,19 @@ if CTK_OK:
                 font=theme.font(spec["size"], spec["weight"]),
                 image=image, compound="left", cursor="hand2")
             self._buttons.append(button)
-            button.ui_spec = {
-                "spec": spec, "parent": behind, "border": spec["border"],
-                "focused": False,
-                "states": {"normal": spec["fill"] if spec["fill"] != "transparent"
-                                       else "transparent",
-                           "hover": spec["hover"],
-                           "pressed": spec["pressed"]},
-                "icon": (icon, icon_size, spec["text"]) if icon else None,
-            }
+            button.ui_spec = _ButtonUiSpec(
+                spec=spec,
+                parent=behind,
+                border=spec["border"],
+                focused=False,
+                states={
+                    "normal": (spec["fill"] if spec["fill"] != "transparent"
+                               else "transparent"),
+                    "hover": spec["hover"],
+                    "pressed": spec["pressed"],
+                },
+                icon=(icon, icon_size, spec["text"]) if icon else None,
+            )
             # takefocus is not an option CustomTkinter forwards, so it is set on
             # the underlying Tk frame directly.
             tkinter.Frame.configure(button, takefocus=True)
@@ -1882,7 +2018,6 @@ if CTK_OK:
             self.var_pdf = ctk.BooleanVar(value=False)
             self.check_pdf = ctk.CTkCheckBox(
                 self.pdf_group, text="Generate PDF report", variable=self.var_pdf,
-                command=self._change_pdf,
                 checkbox_width=18, checkbox_height=18,
                 corner_radius=theme.RADIUS["xs"], border_width=1,
                 border_color=c("border.strong"), fg_color=c("accent"),
@@ -1891,7 +2026,7 @@ if CTK_OK:
                 text_color_disabled=c("text.tertiary"), font=theme.font(13))
             self.check_pdf.grid(row=0, column=0, sticky="w")
             self._ring_highlight(self.check_pdf, "bg.surface")
-            self._toggle_on_space(self.check_pdf, self.var_pdf, self._change_pdf)
+            self._toggle_on_space(self.check_pdf, self.var_pdf)
 
             self.pdf_output_row = ctk.CTkFrame(
                 self.pdf_group, fg_color=c("bg.raised"),
@@ -1908,12 +2043,12 @@ if CTK_OK:
                 row=0, column=0, sticky="ew",
                 padx=theme.SPACE["sm"], pady=(theme.SPACE["xs"], theme.SPACE["2xs"]),
             )
-            self.var_pdf_dest_mode = ctk.StringVar(value="album")
+            self.var_pdf_dest_mode = ctk.StringVar(value=PdfDestinationMode.ALBUM.value)
             self.radio_pdf_album = ctk.CTkRadioButton(
                 self.pdf_output_row,
                 text="Save in each album folder",
                 variable=self.var_pdf_dest_mode,
-                value="album",
+                value=PdfDestinationMode.ALBUM.value,
                 command=self._change_pdf_dest_mode,
                 radiobutton_width=16,
                 radiobutton_height=16,
@@ -1934,7 +2069,7 @@ if CTK_OK:
                 self.pdf_output_row,
                 text="Save in custom folder...",
                 variable=self.var_pdf_dest_mode,
-                value="custom",
+                value=PdfDestinationMode.CUSTOM.value,
                 command=self._change_pdf_dest_mode,
                 radiobutton_width=16,
                 radiobutton_height=16,
@@ -2273,6 +2408,11 @@ if CTK_OK:
                                            icon="folder",
                                            background="bg.surface")
             self.btn_reveal.grid(row=0, column=1, padx=(theme.SPACE["xs"], 0))
+
+            for widget in (self.btn_close_detail, self.hero_evidence,
+                           self.hero_problems, self.spectrogram_frame,
+                           self.btn_open_spectrogram):
+                widget.grid_remove()
 
             self.hero.bind("<Configure>", self._on_hero_configure)
 
@@ -3393,9 +3533,8 @@ if CTK_OK:
         def _show_detail(self, visible: bool) -> None:
             """Shows or hides the inspector parts of the hero (7.8, phase 3)."""
             target_mode = HeroMode.INSPECTOR if visible else HeroMode.ALBUM
-            if self._detail_visible is visible and self.hero_mode is target_mode:
+            if self.hero_mode is target_mode:
                 return
-            self._detail_visible = visible
             self.hero_mode = target_mode
             widgets = (self.btn_close_detail, self.hero_evidence,
                        self.hero_problems, self.spectrogram_frame,
@@ -3663,6 +3802,16 @@ if CTK_OK:
                 self.spectrogram_hint.configure(text="The file was moved")
                 self._set_enabled(self.btn_open_spectrogram, False)
 
+        def _reset_spectrogram_cache(self) -> None:
+            """Clear cached thumbnails and negative-cache paths before a fresh run."""
+            with self._spec_lock:
+                self._spec_bad_paths.clear()
+                self._pil_spectrograms.clear()
+                self._spec_deque.clear()
+                self._spec_queued.clear()
+                self._spec_priority.clear()
+            self._spectrograms.clear()
+
         def _enqueue_spectrogram(self, path: str, priority: bool = False) -> None:
             """Queues PNG decoding onto the background worker (LIFO priority on click)."""
             if not path or path in self._spectrograms:
@@ -3871,6 +4020,7 @@ if CTK_OK:
         def _apply_hero_layout(self) -> None:
             self._hero_layout_scheduled = False
             if self._retheming:
+                self._hero_layout_deferred = True
                 return
             self._refit_hero_texts()
             width = self._usable_width(self.hero_left, 520) - 8
@@ -4313,27 +4463,27 @@ if CTK_OK:
                 initialdir=initial if os.path.isdir(initial) else None,
             )
             if chosen:
-                self.var_pdf_dest_mode.set("custom")
+                self.var_pdf_dest_mode.set(PdfDestinationMode.CUSTOM.value)
                 self.var_output_dir.set(chosen)
                 self._change_pdf_dest_mode()
                 self._log(f"PDF output folder: {chosen}")
 
         def _clear_output_dir(self) -> None:
             self.var_output_dir.set("")
-            self.var_pdf_dest_mode.set("album")
+            self.var_pdf_dest_mode.set(PdfDestinationMode.ALBUM.value)
             self._change_pdf_dest_mode()
             self._log("PDF destination set to each album folder.")
 
         def _on_output_dir_var_changed(self, *_args: Any) -> None:
             if (self.var_output_dir.get().strip()
-                    and self.var_pdf_dest_mode.get() != "custom"):
-                self.var_pdf_dest_mode.set("custom")
+                    and self.var_pdf_dest_mode.get() != PdfDestinationMode.CUSTOM.value):
+                self.var_pdf_dest_mode.set(PdfDestinationMode.CUSTOM.value)
                 self._change_pdf_dest_mode()
 
         def _change_pdf_dest_mode(self) -> None:
             if not hasattr(self, "pdf_custom_dir_row"):
                 return
-            is_custom = self.var_pdf_dest_mode.get() == "custom"
+            is_custom = self.var_pdf_dest_mode.get() == PdfDestinationMode.CUSTOM.value
             if is_custom:
                 self.pdf_custom_dir_row.grid()
                 self.label_pdf_dest_hint.configure(
@@ -4355,7 +4505,7 @@ if CTK_OK:
 
         def _effective_output_dir(self) -> str | None:
             if getattr(self, "var_pdf_dest_mode", None) is not None:
-                if self.var_pdf_dest_mode.get() != "custom":
+                if self.var_pdf_dest_mode.get() != PdfDestinationMode.CUSTOM.value:
                     return None
             raw = self.var_output_dir.get().strip().strip('"')
             return raw or None
@@ -4513,7 +4663,7 @@ if CTK_OK:
             overlay = self._theme_overlay()
             frozen = freeze_redraw(self)
             try:
-                theme.MODE = mode
+                theme.set_mode(mode)
                 self._set_appearance(mode)
                 self._icons.clear()
                 self._tk_icons.clear()
@@ -4611,6 +4761,9 @@ if CTK_OK:
             finally:
                 thaw_redraw(self, frozen)
                 self._retheming = False
+                if self._hero_layout_deferred:
+                    self._hero_layout_deferred = False
+                    self._schedule_hero_layout()
             # The title bar is recoloured after the redraw and before the
             # snapshot goes away, so the frame and the client change together.
             self._apply_titlebar(mode)
@@ -4756,7 +4909,7 @@ if CTK_OK:
                 self._alert("Path does not exist", f"Not found:\n{path}", error=True)
                 return
             if (bool(self.var_pdf.get())
-                    and self.var_pdf_dest_mode.get() == "custom"
+                    and self.var_pdf_dest_mode.get() == PdfDestinationMode.CUSTOM.value
                     and not self._effective_output_dir()):
                 self._alert(
                     "PDF folder missing",
@@ -4776,14 +4929,8 @@ if CTK_OK:
             self.total = 0
             self.recibidos = 0
             self.pdf_path = None
-            self._batch_root = path
-            self._batch_queue = deque(discovered)
-            self._batch_total_count = len(discovered)
-            self._batch_current_index = 0
-            self._batch_current_path = ""
-            self._failed_batches = []
-            self._album_total = 0
-            self._album_received = 0
+            self._reset_spectrogram_cache()
+            self._batch_state.reset(path, discovered)
             self.barra.set(0)
             self.label_progress.configure(text="")
             self.selected_event = None
@@ -4803,11 +4950,9 @@ if CTK_OK:
         def _start_next_batch(self) -> bool:
             """Starts the next album batch in `self._batch_queue`."""
             while self._batch_queue:
-                next_path = self._batch_queue.popleft()
-                self._batch_current_index += 1
-                self._batch_current_path = next_path
-                self._album_total = 0
-                self._album_received = 0
+                next_path = self._batch_state.advance()
+                if next_path is None:
+                    break
                 # Ensure a finished fake or exited process does not trip start().
                 if not self.manager.active:
                     self.manager.process = None
@@ -4878,8 +5023,8 @@ if CTK_OK:
                 self._drain_queue()
                 if self.run_state != RunState.RUNNING:
                     return
-            if self.active_run_id:
-                self._cancelled_run_ids.add(self.active_run_id)
+            if self.active_run_id and self.active_run_id not in self._cancelled_run_ids:
+                self._cancelled_run_ids.append(self.active_run_id)
             self._log("Cancelling the analysis and its child processes…", "aviso")
             self.manager.cancel()
             self._set_run_state(RunState.CANCELLED)
@@ -5050,6 +5195,8 @@ if CTK_OK:
             elif kind == "informe":
                 self._order_batch_results()
                 self.pdf_path = event.get("ruta")
+                if self.pdf_path and self.pdf_path not in self._batch_state.pdf_paths:
+                    self._batch_state.pdf_paths.append(self.pdf_path)
                 self._log(f"PDF report: {self.pdf_path} "
                           f"({event.get('paginas', '?')} pages)", "ok")
                 self._update_state()
