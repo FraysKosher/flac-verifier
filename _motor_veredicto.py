@@ -48,6 +48,7 @@ class FindingCode(str, Enum):
     HIRES_UPSCALE_CUTOFF = "hires_upscale_cutoff"
     ARTIFICIAL_CUTOFF = "artificial_cutoff"
     JOINT_STEREO_COLLAPSE = "joint_stereo_collapse"
+    STEREO_PHASE_COUPLING = "stereo_phase_coupling"
     CUTOFF_JITTER = "cutoff_jitter"
     MDCT_SPECTRAL_HOLES = "mdct_spectral_holes"
     MP3_SFB21_ISLANDS = "mp3_sfb21_islands"
@@ -619,6 +620,18 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.30,
                 family=EvidenceFamily.STEREO_COLLAPSE,
                 code=FindingCode.JOINT_STEREO_COLLAPSE,
+            )
+        elif spectrum.get("stereo_phase_coupling"):
+            ledger.penalize(
+                f"Lossy intensity-stereo / channel-coupling signature: "
+                f"inter-channel coherence snaps from {spectrum.get('msc_lo', 0.0):.2f} "
+                f"to {spectrum.get('msc_hi', 0.0):.2f} (step +{spectrum.get('msc_step_hf', 0.0):.2f}) "
+                f"with {spectrum.get('ipd_phase_lock_hf', 0.0)*100:.0f}% IPD phase lock",
+                0.25,
+                blocks_max_verdict=True,
+                family=EvidenceFamily.STEREO_COLLAPSE,
+                tier=EvidenceTier.SOFT_BLOCKING,
+                code=FindingCode.STEREO_PHASE_COUPLING,
             )
         iqr = spectrum.get("iqr_corte_hz") or 0.0
         # The jitter is already part of the Opus evidence: do not penalise the
@@ -1458,6 +1471,10 @@ def forensic_evidence(result):
         evidence.append(f"Side channel (L-R) collapse: "
                           f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, "
                           f"cut-off delta {spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz")
+    elif spectrum.get("stereo_phase_coupling"):
+        evidence.append(f"Inter-channel stereo coupling (MSC {spectrum.get('msc_lo', 0.0):.2f} -> "
+                          f"{spectrum.get('msc_hi', 0.0):.2f}, IPD lock "
+                          f"{spectrum.get('ipd_phase_lock_hf', 0.0)*100:.0f}%)")
     if spectrum.get("es_dual_mono"):
         evidence.append("Dual-mono: left and right carry the same programme")
     if (spectrum.get("iqr_corte_hz") or 0.0) > 550.0:

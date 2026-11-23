@@ -1463,6 +1463,11 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "delta_corte_ms_hz":    asymmetry["delta_corte_ms_hz"],
         "sospecha_joint_stereo": asymmetry["sospecha_joint_stereo"],
         "es_dual_mono":         asymmetry["es_dual_mono"],
+        "msc_lo":               0.0,
+        "msc_hi":               0.0,
+        "msc_step_hf":          0.0,
+        "ipd_phase_lock_hf":    0.0,
+        "stereo_phase_coupling": False,
         # Vector 3 (additive keys: old consumers ignore them).
         "muro_brickwall_nyquist":   hires["muro_brickwall_nyquist"],
         "espejo_aliasing_detectado": hires["espejo_aliasing_detectado"],
@@ -3528,6 +3533,106 @@ def _analyze_quiet_24bit_floor(quiet_audio, samplerate, is_stationary=False):
     }
 
 
+def _analyze_stereo_phase_coupling(
+    freqs,
+    sum_l64,
+    sum_r64,
+    sum_cross_re,
+    sum_cross_im,
+    samplerate,
+    is_dual_mono=False,
+    is_stationary=False,
+):
+    """Inter-channel MSC and IPD phase-lock detector for Intensity Stereo /
+    Channel Coupling (AC-3, E-AC-3, low-bitrate Opus/MP3/AAC).
+
+    Scans 6.0-16.5 kHz for a discontinuous upward coherence cliff (1 kHz
+    windows separated by 1.5 kHz) where genuinely decorrelated stereo
+    (`pre_msc < 0.35`, `msc_lo < 0.35`) snaps into phase-locked coupling
+    (`post_msc > 0.85`, `step > 0.60`, `median(|sin(IPD)|) < 0.08`). Real
+    mixes with wide guitars and centered hi-hats/overheads transition smoothly
+    across 4-8 kHz without a razor-sharp high-band step cliff.
+    """
+    neutral = {
+        "msc_lo": 0.0,
+        "msc_hi": 0.0,
+        "msc_step_hf": 0.0,
+        "ipd_phase_lock_hf": 0.0,
+        "stereo_phase_coupling": False,
+    }
+    if (sum_l64 is None or sum_r64 is None
+            or sum_cross_re is None or sum_cross_im is None
+            or int(samplerate) < 32000 or freqs.size < 32):
+        return neutral
+    df = float(freqs[1] - freqs[0])
+    if df <= 0.0:
+        return neutral
+    sl_lo, ok_lo = _freq_slice(freqs, 2000.0, 6000.0, True)
+    sl_hi_default, ok_hi_def = _freq_slice(
+        freqs, 10000.0, min(16000.0, float(samplerate) * 0.42), True
+    )
+    if not (ok_lo and ok_hi_def):
+        return neutral
+    denom = np.maximum(sum_l64 * sum_r64, 1e-30)
+    msc = np.clip((sum_cross_re * sum_cross_re + sum_cross_im * sum_cross_im) / denom, 0.0, 1.0)
+    msc_lo_2_6 = float(np.median(msc[sl_lo]))
+
+    # Sliding 1 kHz coherence-cliff scan across [6.0 kHz .. min(16.5 kHz, 0.43*sr - 1.5 kHz)].
+    w_bins = max(4, int(round(1000.0 / df)))
+    gap_bins = max(w_bins, int(round(1500.0 / df)))
+    f_scan_hi = min(18500.0, float(samplerate) * 0.43)
+    k_lo = int(round(6000.0 / df))
+    k_hi = min(msc.size - w_bins, int(round(f_scan_hi / df)) - w_bins)
+    if k_hi <= k_lo + gap_bins:
+        return neutral
+
+    cs = np.empty(msc.size + 1, dtype=np.float64)
+    cs[0] = 0.0
+    np.cumsum(msc, dtype=np.float64, out=cs[1:])
+    avg_1k = (cs[w_bins:] - cs[:-w_bins]) / float(w_bins)
+    pre_arr = avg_1k[k_lo : k_hi - gap_bins]
+    post_arr = avg_1k[k_lo + gap_bins : k_hi]
+    steps = post_arr - pre_arr
+    if steps.size == 0:
+        return neutral
+
+    best_idx = int(np.argmax(steps))
+    best_step = float(steps[best_idx])
+    pre_msc = float(pre_arr[best_idx])
+    post_msc = float(post_arr[best_idx])
+    k_post_start = k_lo + best_idx + gap_bins
+    k_post_end = min(msc.size, k_post_start + max(w_bins, int(round(2000.0 / df))))
+    if k_post_end <= k_post_start + 2:
+        return neutral
+
+    ipd_post = np.arctan2(
+        sum_cross_im[k_post_start:k_post_end],
+        sum_cross_re[k_post_start:k_post_end],
+    )
+    sine_ipd_med = float(np.median(np.abs(np.sin(ipd_post))))
+    phase_lock = max(0.0, min(1.0, 1.0 - sine_ipd_med))
+    if not (math.isfinite(msc_lo_2_6) and math.isfinite(post_msc)
+            and math.isfinite(best_step) and math.isfinite(sine_ipd_med)):
+        return neutral
+
+    detected = bool(
+        not is_dual_mono
+        and not is_stationary
+        and msc_lo_2_6 < 0.35
+        and pre_msc < 0.35
+        and post_msc > 0.85
+        and best_step > 0.60
+        and sine_ipd_med < 0.08
+    )
+    return {
+        "msc_lo": round(pre_msc, 4),
+        "msc_hi": round(post_msc, 4),
+        "msc_step_hf": round(best_step, 4),
+        "ipd_phase_lock_hf": round(phase_lock, 4),
+        "stereo_phase_coupling": detected,
+    }
+
+
 class _SpectralAccumulator:
     """Keeps the K most active blocks in memory and runs the STFT on them at the
     end. Shared by the streaming path and the array path so both give the same
@@ -3744,6 +3849,10 @@ class _SpectralAccumulator:
         sum_total = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
         sum_mid = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
         sum_side = np.zeros(n_bins, dtype=np.float32) if effective_stereo else None
+        sum_l64 = np.zeros(n_bins, dtype=np.float64) if effective_stereo else None
+        sum_r64 = np.zeros(n_bins, dtype=np.float64) if effective_stereo else None
+        sum_cross_re = np.zeros(n_bins, dtype=np.float64) if effective_stereo else None
+        sum_cross_im = np.zeros(n_bins, dtype=np.float64) if effective_stereo else None
         freqs = np.fft.rfftfreq(nperseg, 1.0 / self.sr)
         frames = 0
         frames_global = 0
@@ -3820,6 +3929,17 @@ class _SpectralAccumulator:
                         np.maximum(raw_r, _FLOOR_F32, out=tmp_f)
                         sum_r += tmp_f.sum(axis=0, dtype=np.float32)
 
+                        sum_l64 += raw_l.sum(axis=0, dtype=np.float64)
+                        sum_r64 += raw_r.sum(axis=0, dtype=np.float64)
+                        np.multiply(zl_t.real, zr_t.real, out=tmp_f)
+                        sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                        np.multiply(zl_t.imag, zr_t.imag, out=tmp_f)
+                        sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                        np.multiply(zl_t.imag, zr_t.real, out=tmp_f)
+                        sum_cross_im += tmp_f.sum(axis=0, dtype=np.float64)
+                        np.multiply(zl_t.real, zr_t.imag, out=tmp_f)
+                        sum_cross_im -= tmp_f.sum(axis=0, dtype=np.float64)
+
                         np.add(raw_l, raw_r, out=raw_l)
                         raw_l *= medium
                         np.subtract(zl_t, zr_t, out=zl_t)
@@ -3879,6 +3999,17 @@ class _SpectralAccumulator:
                     np.add(tsq[:, 0::2], tsq[:, 1::2], out=raw_r)
                     np.maximum(raw_r, _FLOOR_F32, out=tmp_f)
                     sum_r += tmp_f.sum(axis=0, dtype=np.float32)
+
+                    sum_l64 += raw_l.sum(axis=0, dtype=np.float64)
+                    sum_r64 += raw_r.sum(axis=0, dtype=np.float64)
+                    np.multiply(zl_t.real, zr_t.real, out=tmp_f)
+                    sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                    np.multiply(zl_t.imag, zr_t.imag, out=tmp_f)
+                    sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                    np.multiply(zl_t.imag, zr_t.real, out=tmp_f)
+                    sum_cross_im += tmp_f.sum(axis=0, dtype=np.float64)
+                    np.multiply(zl_t.real, zr_t.imag, out=tmp_f)
+                    sum_cross_im -= tmp_f.sum(axis=0, dtype=np.float64)
 
                     # Exact Parseval Mid/Side identity: |ZM|^2 + |ZS|^2 = 0.5*(|ZL|^2 + |ZR|^2).
                     np.add(raw_l, raw_r, out=raw_l)
@@ -3974,6 +4105,19 @@ class _SpectralAccumulator:
         _apply_stationary_and_ms_guards(
             spectrum, psycho, freqs, mean_mid, mean_side, gain_noise, self.sr
         )
+        if effective_stereo:
+            spectrum.update(
+                _analyze_stereo_phase_coupling(
+                    freqs,
+                    sum_l64,
+                    sum_r64,
+                    sum_cross_re,
+                    sum_cross_im,
+                    self.sr,
+                    is_dual_mono=bool(spectrum.get("es_dual_mono")),
+                    is_stationary=bool(spectrum.get("es_estacionario")),
+                )
+            )
         ceiling_val = spectrum.get("techo_hz", 0)
         if 41000 <= self.sr <= 48000 and ceiling_val >= 7000:
             spectrum.update(

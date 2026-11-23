@@ -4114,7 +4114,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
     def test_finding_code_emission_across_calculate_score(self):
         """Every calculate_score penalty emits its canonical FindingCode while notes emit none."""
         fc = motor_flac.FindingCode
-        self.assertEqual(len(list(fc)), 25)
+        self.assertEqual(len(list(fc)), 26)
 
         # Clean track with notes (low high/mid ratio, dual-mono, mastering limiter) emits zero codes.
         spec_clean = {
@@ -5149,6 +5149,147 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
                 r_tape = motor_flac.analyze_file_data(str(p_tape), use_cache=False)
                 self.assertIs(r_tape["esp"]["noise_shaped_16_in_24"], False, r_tape["esp"])
                 self.assertIn(r_tape["veredicto"], GOOD_VERDICTS)
+
+    def test_53_interchannel_msc_ipd_stereo_phase_coupling(self):
+        """Engine 15.0: STFT L2-tile MSC/IPD detects abrupt channel coupling /
+        intensity stereo (AC-3 192k, E-AC-3 192k, Opus 64k/96k) as SOFT_BLOCKING
+        without double-penalising joint stereo and with 0 FP across stereo,
+        dual-mono, narrow, azimuth-skewed, and wide-guitar+mono-hihat controls."""
+        import shutil
+        import subprocess
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            self.skipTest("ffmpeg is not available on PATH")
+
+        sr = 48000
+        rng = np.random.default_rng(1530)
+        sig_st = _create_track_reference(sr, duration=6.0, seed=1531)
+        wav48 = self.tmp_path / "msc_ref48.wav"
+        sf.write(wav48, sig_st, sr, subtype="PCM_16")
+
+        # 1. Real ffmpeg channel coupling / intensity stereo cases
+        for name, ext, codec_args in (
+            ("ac3_192_cpl", ".ac3", ["-c:a", "ac3", "-b:a", "192k"]),
+            ("eac3_192_cpl", ".eac3", ["-c:a", "eac3", "-b:a", "192k"]),
+            ("opus_64_is", ".opus", ["-c:a", "libopus", "-b:a", "64k"]),
+            ("opus_96_is", ".opus", ["-c:a", "libopus", "-b:a", "96k"]),
+        ):
+            with self.subTest(case=name):
+                tmp_l = self.tmp_path / f"{name}{ext}"
+                out_f = self.tmp_path / f"{name}.flac"
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(wav48)]
+                    + codec_args + [str(tmp_l)],
+                    check=True,
+                )
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(tmp_l),
+                     "-sample_fmt", "s16", str(out_f)],
+                    check=True,
+                )
+                res = motor_flac.analyze_file_data(str(out_f), use_cache=False)
+                spec = res["esp"]
+                self.assertIs(spec["stereo_phase_coupling"], True, spec)
+                self.assertGreater(spec["msc_step_hf"], 0.60)
+                self.assertGreater(spec["msc_hi"], 0.85)
+                self.assertGreater(spec["ipd_phase_lock_hf"], 0.92)
+                self.assertEqual(res["veredicto"], "PROBABLE UPSCALE")
+
+        # 2. Controls must never trigger stereo_phase_coupling
+        mono_m = 0.5 * (sig_st[:, 0] + sig_st[:, 1])
+        # Analog dual-mono
+        adm = np.column_stack([
+            mono_m * 1.01 + rng.normal(0.0, 10.0 ** (-75.0 / 20.0), len(mono_m)),
+            mono_m * 0.99 + rng.normal(0.0, 10.0 ** (-75.0 / 20.0), len(mono_m)),
+        ])
+        # Narrow stereo
+        narrow = np.column_stack([
+            0.85 * mono_m + 0.15 * sig_st[:, 0],
+            0.85 * mono_m + 0.15 * sig_st[:, 1],
+        ])
+        # Azimuth-skewed 1.5-sample tape (both stereo and mono-on-tape)
+        freqs_n = np.fft.rfftfreq(len(sig_st), 1.0 / float(sr))
+        phase_ramp = np.exp(-2j * np.pi * freqs_n * (1.5 / float(sr)))
+        r_azim = np.fft.irfft(np.fft.rfft(sig_st[:, 1]) * phase_ramp, len(sig_st))
+        azim_st = np.column_stack([sig_st[:, 0], r_azim])
+        m_azim = np.fft.irfft(np.fft.rfft(mono_m) * phase_ramp, len(mono_m))
+        azim_dm = np.column_stack([mono_m, m_azim])
+        # Hard-panned wide guitar (200-7000 Hz) + mono centered hi-hat (6-19 kHz)
+        wide_g_l = signal.sosfilt(
+            signal.butter(3, [200.0, 7000.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(len(sig_st)) * 0.25,
+        )
+        wide_g_r = signal.sosfilt(
+            signal.butter(3, [200.0, 7000.0], btype="band", fs=sr, output="sos"),
+            rng.standard_normal(len(sig_st)) * 0.25,
+        )
+        mono_hh = signal.sosfilt(
+            signal.butter(2, 6000.0, btype="high", fs=sr, output="sos"),
+            rng.standard_normal(len(sig_st)) * 0.07,
+        )
+        # Include realistic stereo room ambience so Side is not digitally zeroed.
+        mix_ghh = np.column_stack([
+            wide_g_l + mono_hh + 0.20 * sig_st[:, 0],
+            wide_g_r + mono_hh + 0.20 * sig_st[:, 1],
+        ])
+        mix_ghh /= np.max(np.abs(mix_ghh)) * 1.15
+
+        for lbl, arr in (
+            ("ctrl_stereo", sig_st),
+            ("ctrl_dig_dmono", np.column_stack([mono_m, mono_m])),
+            ("ctrl_ana_dmono", adm),
+            ("ctrl_narrow", narrow),
+            ("ctrl_azim_st", azim_st),
+            ("ctrl_azim_dm", azim_dm),
+            ("ctrl_wide_guitar_mono_hh", mix_ghh),
+        ):
+            with self.subTest(control=lbl):
+                p_c = self.tmp_path / f"{lbl}.flac"
+                sf.write(p_c, np.clip(arr, -0.99, 0.99), sr, subtype="PCM_16")
+                r_c = motor_flac.analyze_file_data(str(p_c), use_cache=False)
+                self.assertIs(r_c["esp"]["stereo_phase_coupling"], False, f"{lbl}: {r_c['esp']}")
+                self.assertIn(r_c["veredicto"], GOOD_VERDICTS, lbl)
+
+        # 3. Scoring invariants: isolated stereo_phase_coupling is SOFT_BLOCKING
+        # (caps at SUSPICIOUS) and never double-penalizes sospecha_joint_stereo.
+        base_meta = {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2}
+        spec_iso = {
+            "techo_hz": 23500,
+            "techo_rel_nyquist": 23500 / 24000.0,
+            "clase_corte": "no_cutoff",
+            "frecuencia_corte": None,
+            "distancia_nyquist": None,
+            "ratio_aplica": True,
+            "ratio": 0.20,
+            "var_alta_db": 15.0,
+            "separacion_stereo": 0.5,
+            "stereo_phase_coupling": True,
+            "msc_lo": 0.02,
+            "msc_hi": 0.97,
+            "msc_step_hf": 0.95,
+            "ipd_phase_lock_hf": 0.99,
+        }
+        sc_iso, verd_iso, probs_iso = motor_flac.calculate_score(
+            base_meta, spec_iso, {"aplica": False}
+        )
+        self.assertEqual(verd_iso, "SUSPICIOUS")
+        self.assertGreaterEqual(sc_iso, 0.50)
+        self.assertEqual(
+            spec_iso["finding_codes"],
+            [motor_flac.FindingCode.STEREO_PHASE_COUPLING.value],
+        )
+        self.assertEqual(len(probs_iso), 1)
+
+        spec_both = dict(
+            spec_iso,
+            sospecha_joint_stereo=True,
+            caida_side_agudos_db=18.0,
+            delta_corte_ms_hz=1500.0,
+        )
+        _, _, _ = motor_flac.calculate_score(base_meta, spec_both, {"aplica": False})
+        self.assertIn(motor_flac.FindingCode.JOINT_STEREO_COLLAPSE.value, spec_both["finding_codes"])
+        self.assertNotIn(motor_flac.FindingCode.STEREO_PHASE_COUPLING.value, spec_both["finding_codes"])
 
 
 if __name__ == "__main__":
