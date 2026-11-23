@@ -2743,7 +2743,7 @@ def _detect_sbr_qmf_replication(mono, sr):
         return {**neutral, "sbr_detector_error": f"{type(exc).__name__}: {exc}"}
 
 
-def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
+def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
     """Single-mode lapped transform & subband lattice evaluator."""
     neutral = {
         "mdct_lattice_detected": False,
@@ -3028,7 +3028,8 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
         n_blocks_opus = 14
         need_48 = 16000
         need_src = (need_48 * sr) // 48000
-        if ((fullband_mode or (ceiling_hz is not None and ceiling_hz >= 14500.0))
+        if (not skip_celt
+                and (fullband_mode or (ceiling_hz is not None and ceiling_hz >= 14500.0))
                 and mono.size >= need_src and sr in (44100, 48000)):
             w_celt = _get_celt_1920()
             for seg_src in _select_hf_subwindow_candidates(mono, need_src, max_windows=3):
@@ -3086,7 +3087,7 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
         return {**neutral, "mdct_detector_error": f"{type(exc).__name__}: {exc}"}
 
 
-def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
+def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
     """Phase 11/12/13.2/14.7: orthogonal lapped transform & subband inversion.
 
     Evaluates five standardized codec filterbanks across sample-level phase offsets:
@@ -3112,13 +3113,14 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
             "mdct_lattice_snr": 0.0,
             "mdct_lattice_family": None,
         }
+    eval_kw = {"skip_celt": True} if skip_celt else {}
     if ceiling_hz is None or ceiling_hz >= 17500.0:
-        return _eval_lapped_codec_grid(mono, sr, ceiling_hz=ceiling_hz)
+        return _eval_lapped_codec_grid(mono, sr, ceiling_hz=ceiling_hz, **eval_kw)
     eff_ceil = max(9500.0, float(ceiling_hz))
-    res_adapt = _eval_lapped_codec_grid(mono, sr, ceiling_hz=eff_ceil)
+    res_adapt = _eval_lapped_codec_grid(mono, sr, ceiling_hz=eff_ceil, **eval_kw)
     if res_adapt.get("mdct_lattice_detected"):
         return res_adapt
-    res_fb = _eval_lapped_codec_grid(mono, sr, ceiling_hz=None)
+    res_fb = _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, **eval_kw)
     if res_fb.get("mdct_lattice_detected"):
         return res_fb
     if "mdct_detector_error" in res_fb and "mdct_detector_error" not in res_adapt:
@@ -3393,7 +3395,7 @@ def _probe_hires_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
         opp_blk = None
         asym_ch = False
 
-    eff_ceil = None if (ceiling_val is None or ceiling_val >= 17500) else ceiling_val
+    eff_ceil = None if (ceiling_val is None or ceiling_val >= 16500) else ceiling_val
     first_error = None
 
     def _record_error(probe_res):
@@ -3409,7 +3411,12 @@ def _probe_hires_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
             )
             if sig_dec.size < 24576:
                 continue
-            cand = _detect_lapped_codec_grid(sig_dec, tgt_sr, ceiling_hz=eff_ceil)
+            cand = _detect_lapped_codec_grid(
+                sig_dec,
+                tgt_sr,
+                ceiling_hz=eff_ceil,
+                skip_celt=(tgt_sr == 44100 and 48000 in target_rates),
+            )
             _record_error(cand)
             if _rank_hires_lattice(cand) > _rank_hires_lattice(best_res):
                 best_res = cand
@@ -3422,7 +3429,7 @@ def _probe_hires_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
     if (not (lat.get("mdct_lattice_detected")
              and lat.get("mdct_lattice_family") in _HIGH_SELECTIVITY_LATTICE_FAMILIES)
             and opp_blk is not None
-            and (asym_ch or float(lat.get("mdct_lattice_snr") or 0.0) >= 5.0)):
+            and (asym_ch or float(lat.get("mdct_lattice_snr") or 0.0) >= 6.5)):
         lat_opp = _probe_channel(opp_blk)
         if _rank_hires_lattice(lat_opp) > _rank_hires_lattice(lat):
             lat = lat_opp
@@ -3929,16 +3936,16 @@ class _SpectralAccumulator:
                         np.maximum(raw_r, _FLOOR_F32, out=tmp_f)
                         sum_r += tmp_f.sum(axis=0, dtype=np.float32)
 
-                        sum_l64 += raw_l.sum(axis=0, dtype=np.float64)
-                        sum_r64 += raw_r.sum(axis=0, dtype=np.float64)
+                        sum_l64 += raw_l.sum(axis=0, dtype=np.float32)
+                        sum_r64 += raw_r.sum(axis=0, dtype=np.float32)
                         np.multiply(zl_t.real, zr_t.real, out=tmp_f)
-                        sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                        sum_cross_re += tmp_f.sum(axis=0, dtype=np.float32)
                         np.multiply(zl_t.imag, zr_t.imag, out=tmp_f)
-                        sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                        sum_cross_re += tmp_f.sum(axis=0, dtype=np.float32)
                         np.multiply(zl_t.imag, zr_t.real, out=tmp_f)
-                        sum_cross_im += tmp_f.sum(axis=0, dtype=np.float64)
+                        sum_cross_im += tmp_f.sum(axis=0, dtype=np.float32)
                         np.multiply(zl_t.real, zr_t.imag, out=tmp_f)
-                        sum_cross_im -= tmp_f.sum(axis=0, dtype=np.float64)
+                        sum_cross_im -= tmp_f.sum(axis=0, dtype=np.float32)
 
                         np.add(raw_l, raw_r, out=raw_l)
                         raw_l *= medium
@@ -4000,16 +4007,16 @@ class _SpectralAccumulator:
                     np.maximum(raw_r, _FLOOR_F32, out=tmp_f)
                     sum_r += tmp_f.sum(axis=0, dtype=np.float32)
 
-                    sum_l64 += raw_l.sum(axis=0, dtype=np.float64)
-                    sum_r64 += raw_r.sum(axis=0, dtype=np.float64)
+                    sum_l64 += raw_l.sum(axis=0, dtype=np.float32)
+                    sum_r64 += raw_r.sum(axis=0, dtype=np.float32)
                     np.multiply(zl_t.real, zr_t.real, out=tmp_f)
-                    sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                    sum_cross_re += tmp_f.sum(axis=0, dtype=np.float32)
                     np.multiply(zl_t.imag, zr_t.imag, out=tmp_f)
-                    sum_cross_re += tmp_f.sum(axis=0, dtype=np.float64)
+                    sum_cross_re += tmp_f.sum(axis=0, dtype=np.float32)
                     np.multiply(zl_t.imag, zr_t.real, out=tmp_f)
-                    sum_cross_im += tmp_f.sum(axis=0, dtype=np.float64)
+                    sum_cross_im += tmp_f.sum(axis=0, dtype=np.float32)
                     np.multiply(zl_t.real, zr_t.imag, out=tmp_f)
-                    sum_cross_im -= tmp_f.sum(axis=0, dtype=np.float64)
+                    sum_cross_im -= tmp_f.sum(axis=0, dtype=np.float32)
 
                     # Exact Parseval Mid/Side identity: |ZM|^2 + |ZS|^2 = 0.5*(|ZL|^2 + |ZR|^2).
                     np.add(raw_l, raw_r, out=raw_l)
