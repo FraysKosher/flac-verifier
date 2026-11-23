@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Result cache: identity, atomic read/write and Windows retries.
 
 Extracted from the motor facade in Phase 4. The version and the render

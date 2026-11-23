@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Automates the build of the FLAC VERIFIER executable.
 
     python build.py                # clean, check PyInstaller and build

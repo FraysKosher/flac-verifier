@@ -317,7 +317,7 @@ class TestSpecification(unittest.TestCase):
         self.assertIn("version=VERSION", self.source)
 
     def test_includes_assets_logo(self):
-        for asset in ("logo_flac_verifier.png", "logo_flac_verifier_128.png",
+        for asset in ("LICENSE", "logo_flac_verifier.png", "logo_flac_verifier_128.png",
                       "icono_app.ico", "Logo/icons"):
             with self.subTest(asset=asset):
                 self.assertIn(asset, self.source)
@@ -478,7 +478,17 @@ class TestPyprojectToml(unittest.TestCase):
         self.assertEqual(project["name"], "flac-verifier")
         self.assertEqual(project["version"], main.VERSION)
         self.assertEqual(project["requires-python"], ">=3.10")
-        self.assertEqual(project["license"], {"text": "MIT"})
+        self.assertEqual(project["license"], {"text": "AGPL-3.0-or-later"})
+        self.assertIn(
+            "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+            project["classifiers"],
+        )
+        license_path = os.path.join(ROOT, "LICENSE")
+        self.assertTrue(os.path.isfile(license_path))
+        with open(license_path, encoding="utf-8") as license_fh:
+            license_text = license_fh.read()
+        self.assertIn("GNU AFFERO GENERAL PUBLIC LICENSE", license_text)
+        self.assertIn("Version 3, 19 November 2007", license_text)
 
         req_path = os.path.join(ROOT, "requirements.txt")
         core_deps = []

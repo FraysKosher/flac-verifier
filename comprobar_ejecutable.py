@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Checks the already built executable (dist/FLAC_Verifier).
 
 It runs on the build machine, after `python build.py`:

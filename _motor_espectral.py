@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Spectral analysis, spectrogram rendering and forensic spectral detectors.
 
 Extracted from the motor facade in Phase 4. The STFT is float32 with

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Design tokens for the FLAC VERIFIER interface (see DESIGN.md, section 5).
 
 This module holds values and nothing else: no widget code, no analysis, no

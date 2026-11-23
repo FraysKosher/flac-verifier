@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
 [![Version: 2.10.5](https://img.shields.io/badge/version-2.10.5-blue)](CHANGELOG.md)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: AGPL v3+](https://img.shields.io/badge/license-AGPL_v3%2B-blue)](LICENSE)
 [![Tests: 428](https://img.shields.io/badge/tests-428-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
@@ -251,4 +251,4 @@ raised to PROBABLY LOSSLESS with `coherencia_album = true`:
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [`LICENSE`](LICENSE).

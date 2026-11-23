@@ -116,6 +116,7 @@ hiddenimports += [
 # ─── Own data: the visual identity ─────────────────────────────────────────
 # They go to the bundle folder, so gui.py finds them by their relative path.
 datas += [
+    ("LICENSE", "."),
     ("Logo/logo_flac_verifier.png", "Logo"),
     ("Logo/logo_flac_verifier_transparente.png", "Logo"),
     ("Logo/logo_flac_verifier_128.png", "Logo"),

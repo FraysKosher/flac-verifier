@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Verdict tree, scoring and album-level coherence.
 
 Extracted from the motor facade in Phase 4.

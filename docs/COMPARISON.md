@@ -39,7 +39,7 @@ every figure, so you can choose the one that fits your workflow (or use both).
 | **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (8,780 lines), or 12 modules (9,580 lines) including build/verification scripts |
 | **Automated tests** | 772 test functions across 82 files (`pytest`) | 428 test functions across 13 files (`unittest`, zero external audio files) + 260-track real-encoder benchmark + 12-check frozen `.exe` gate |
 | **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.10.5` (`ENGINE_VERSION = "14.8"`, 2026-11-22) |
-| **Licence** | MIT | MIT |
+| **Licence** | MIT | AGPL-3.0-or-later |
 
 ---
 
@@ -134,7 +134,7 @@ find tests -name 'test_*.py' | wc -l                                            
 grep -rE '^\s*def test_' tests | wc -l                                           # 772
 ```
 
-Both projects are MIT licensed.
+FLAC Detective is MIT licensed; FLAC VERIFIER is licensed under GNU AGPLv3+ (`AGPL-3.0-or-later`).
 
 <!-- BENCHMARK:START -->
 ## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 260)

@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **License migration to GNU AGPLv3+ (`AGPL-3.0-or-later`)**: relicensed the
+  project from MIT to the GNU Affero General Public License v3.0 or later
+  (`AGPL-3.0-or-later`), updated `LICENSE`, `pyproject.toml`, `README.md`,
+  `docs/COMPARISON.md`, and bundled `LICENSE` in the PyInstaller distribution
+  (`flac_verifier.spec`). Releases `v2.10.5` and earlier remain under the MIT
+  terms under which they were published.
+
 ## [2.10.5] - 2026-11-22
 
 ### Added

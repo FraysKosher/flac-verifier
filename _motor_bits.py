@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Integrity, native-bit audit, clipping and dynamic range.
 
 Extracted from the motor facade in Phase 4. Nothing here imports the spectral
