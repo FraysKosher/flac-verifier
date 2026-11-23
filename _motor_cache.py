@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 
 from _motor_bits import _normalize_path_fs, retry_io
@@ -19,6 +20,35 @@ class CacheLookupStatus(str, Enum):
     FULL_HIT = "full_hit"
     METRICS_HIT_NEEDS_PNG = "metrics_hit_needs_png"
     MISS = "miss"
+
+
+class SpectralMode(str, Enum):
+    """Canonical spectral scanning modes shared by cache keys, PNG names, and STFT."""
+
+    FULL = "full"
+    CENTER = "center"
+    SECONDS = "seconds"
+
+    @classmethod
+    def coerce(cls, raw, default=None) -> "SpectralMode":
+        """Normalizes a mode enum, string, or empty/None into a valid SpectralMode."""
+        if default is None:
+            fallback = cls.FULL
+        elif isinstance(default, cls):
+            fallback = default
+        else:
+            fallback = cls(str(default).strip().lower())
+        if raw is None:
+            return fallback
+        if isinstance(raw, cls):
+            return raw
+        text = str(raw).strip().lower()
+        if not text:
+            return fallback
+        try:
+            return cls(text)
+        except ValueError as exc:
+            raise ValueError(f"unknown spectral mode: {raw!r}") from exc
 
 
 def _sanitize(obj):
@@ -78,9 +108,9 @@ def _png_folder(audio_path):
 def _png_path(audio_path, mode="full", seconds=None):
     """Mode-scoped spectrogram PNG path so partial modes do not overwrite full PNGs."""
     name = os.path.splitext(os.path.basename(audio_path))[0]
-    mode_norm = mode or "full"
+    mode_norm = SpectralMode.coerce(mode, default=SpectralMode.FULL).value
     sec_tag = f"{seconds}" if seconds not in (None, "") else ""
-    if mode_norm == "full" and not sec_tag:
+    if mode_norm == SpectralMode.FULL.value and not sec_tag:
         filename = f"{name}_espectrograma.png"
     else:
         filename = f"{name}.{mode_norm}{sec_tag}_espectrograma.png"
@@ -103,7 +133,8 @@ def _cache_path(audio_path, mode, seconds):
     """One entry per file AND per mode: analysing in 'center' does not erase the
     cache of the analysis in 'full', so the two can be alternated without
     recomputing."""
-    key = f"{mode}{seconds if seconds else ''}"
+    mode_norm = SpectralMode.coerce(mode, default=SpectralMode.FULL).value
+    key = f"{mode_norm}{seconds if seconds else ''}"
     return os.path.join(_png_folder(audio_path), "_cache",
                         f"{os.path.basename(audio_path)}.{key}.json")
 
@@ -117,8 +148,9 @@ def _identity(path, meta):
         return None
 
 def _analysis_key(mode, seconds, version, schema):
+    mode_norm = SpectralMode.coerce(mode, default=SpectralMode.FULL).value
     return {"motor": version, "esquema": schema,
-            "modo": mode, "seconds": seconds}
+            "modo": mode_norm, "seconds": seconds}
 
 def read_cache_entry(path, meta, mode, seconds, requires_png, version, schema,
                      render):
@@ -150,7 +182,7 @@ def read_cache_entry(path, meta, mode, seconds, requires_png, version, schema,
             nested_val = result.get(nested_key)
             if nested_val is not None and not isinstance(nested_val, dict):
                 return CacheLookupStatus.MISS, None
-        for list_key in ("problemas", "notas"):
+        for list_key in ("problemas", "notes"):
             if list_key in result and not isinstance(result.get(list_key), list):
                 return CacheLookupStatus.MISS, None
 
@@ -219,7 +251,7 @@ def write_cache(path, meta, mode, seconds, result, version, schema,
             "resultado": result,
         }
         destination = _normalize_path_fs(_cache_path(path, mode, seconds))
-        temporal = f"{destination}.{os.getpid()}.tmp"
+        temporal = f"{destination}.{os.getpid()}.{threading.get_ident()}.tmp"
         with open(temporal, "w", encoding="utf-8") as f:
             json.dump(_sanitize(cache_entry), f, ensure_ascii=False)
         _replace_with_retries(temporal, destination)  # atomic, with a short retry

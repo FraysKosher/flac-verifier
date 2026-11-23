@@ -68,6 +68,20 @@ class LsbStatus(str, Enum):
     ACTIVE = "active"
     INDETERMINATE = "indeterminate"
 
+
+class BitStorageTier(str, Enum):
+    """Memory tier for 24/32-bit native integer lattice bitmaps."""
+
+    INACTIVE = "inactive"
+    COMPACT_HI16 = "compact_hi16"
+    FULL_24BIT = "full_24bit"
+
+
+# DoP 1.0 alternating top-byte framing marker pairs (0x05/0xFA and 0x06/0xF9).
+DOP_MARKER_PAIRS = ((0x05, 0xFA), (0x06, 0xF9))
+
+SHORT_CLIP_RUN_MAX = 2
+
 FRAMES_BY_BLOCK = 1 << 18            # 262 144 frames (~6 s at 44.1 kHz) per read
 
 MAX_SAMPLES_BITS = 1 << 20            # sample for the LSB test
@@ -319,8 +333,18 @@ class _StreamingBitDepthAccumulator:
         """Current streaming lifecycle phase."""
         return self._state
 
+    @property
+    def _is_finalized(self) -> bool:
+        return self._cached_result is not None
+
+    def _finalize(self, output: dict, state: AccumulatorState) -> dict:
+        self._state = state
+        self._finalized = True
+        self._cached_result = dict(output)
+        return dict(output)
+
     def add_block(self, offset, block_f64=None, q_int=None, abs_q=None):
-        if self._finalized:
+        if self._is_finalized:
             raise RuntimeError("cannot add audio blocks after completion")
         if self.bits <= 16 or self._sampled_frames >= MAX_SAMPLES_BITS or self._error:
             return
@@ -373,28 +397,18 @@ class _StreamingBitDepthAccumulator:
         if self._cached_result is not None:
             return dict(self._cached_result)
         if self.bits <= 16:
-            output = {"aplica": False}
-            self._state = AccumulatorState.COMPLETED
-            self._finalized = True
-            self._cached_result = dict(output)
-            return output
-        if self._error:
+            return self._finalize({"aplica": False}, AccumulatorState.COMPLETED)
+        if self._error or self._state is AccumulatorState.FAILED:
             output = {
                 "aplica": True,
                 "lsbs": LsbStatus.INDETERMINATE.value,
-                "error": self._error,
+                "error": self._error or "bit-depth accumulator failed",
             }
-            self._state = AccumulatorState.FAILED
-            self._finalized = True
-            self._cached_result = dict(output)
-            return output
+            return self._finalize(output, AccumulatorState.FAILED)
         output = _format_bit_depth_result(
             self.bits, self._n_active, self._n_grid16, self._counts_idx
         )
-        self._state = AccumulatorState.COMPLETED
-        self._finalized = True
-        self._cached_result = dict(output)
-        return output
+        return self._finalize(output, AccumulatorState.COMPLETED)
 
 
 def analyze_bit_depth(data, meta, include_forensic=True):
@@ -477,6 +491,29 @@ def _streaks(en, previous_count=0):
     return lengths, 0
 
 
+def _accumulate_clip_run(
+    events: int,
+    short_events: int,
+    clip_runs: int,
+    total_samples: int,
+    max_streak: int,
+    length: int,
+) -> tuple[int, int, int, int, int]:
+    """Single-source classifier for a single closed full-scale run."""
+    run_len = int(length)
+    if run_len <= 0:
+        return events, short_events, clip_runs, total_samples, max_streak
+    events += 1
+    total_samples += run_len
+    if run_len <= SHORT_CLIP_RUN_MAX:
+        short_events += 1
+    else:
+        clip_runs += 1
+    if run_len > max_streak:
+        max_streak = run_len
+    return events, short_events, clip_runs, total_samples, max_streak
+
+
 class _ClippingAccumulator:
     """Bounded O(channels) per-channel clipping streak tracker.
 
@@ -516,17 +553,20 @@ class _ClippingAccumulator:
             self._open.extend([0] * (n_ch - len(self._open)))
 
     def _close_run_len(self, length):
-        length = int(length)
-        if length <= 0:
-            return
-        self._events += 1
-        self._total_samples += length
-        if length <= 2:
-            self._short_events += 1
-        else:
-            self._clip_runs += 1
-        if length > self._max_streak:
-            self._max_streak = length
+        (
+            self._events,
+            self._short_events,
+            self._clip_runs,
+            self._total_samples,
+            self._max_streak,
+        ) = _accumulate_clip_run(
+            self._events,
+            self._short_events,
+            self._clip_runs,
+            self._total_samples,
+            self._max_streak,
+            length,
+        )
 
     def _close_channel_open(self, ch):
         prev = self._open[ch]
@@ -574,7 +614,7 @@ class _ClippingAccumulator:
             closed = lengths
         if closed.size:
             self._events += int(closed.size)
-            n_short = int(np.count_nonzero(closed <= 2))
+            n_short = int(np.count_nonzero(closed <= SHORT_CLIP_RUN_MAX))
             self._short_events += n_short
             self._clip_runs += int(closed.size) - n_short
             self._total_samples += int(closed.sum())
@@ -611,12 +651,38 @@ class _ClippingAccumulator:
         thr = int(threshold)
         if block_i16.ndim <= 1:
             self._ensure_channels(1)
+            if int(np.max(block_i16)) < thr and int(np.min(block_i16)) > -thr:
+                self._close_channel_open(0)
+                return
             self._record_channel(0, (block_i16 >= thr) | (block_i16 <= -thr))
             return
         n_ch = block_i16.shape[1]
         self._ensure_channels(n_ch)
         for ch in range(n_ch):
             col = block_i16[:, ch]
+            if int(np.max(col)) < thr and int(np.min(col)) > -thr:
+                self._close_channel_open(ch)
+            else:
+                self._record_channel(ch, (col >= thr) | (col <= -thr))
+
+    def add_int_threshold_block(self, block_int, threshold):
+        """Validated integer full-scale block ingestion (signed >= thr or <= -thr)."""
+        self._require_collecting()
+        arr = np.asarray(block_int)
+        if arr.size == 0:
+            return
+        thr = int(threshold)
+        if arr.ndim <= 1:
+            self._ensure_channels(1)
+            if int(np.max(arr)) < thr and int(np.min(arr)) > -thr:
+                self._close_channel_open(0)
+                return
+            self._record_channel(0, (arr >= thr) | (arr <= -thr))
+            return
+        n_ch = arr.shape[1]
+        self._ensure_channels(n_ch)
+        for ch in range(n_ch):
+            col = arr[:, ch]
             if int(np.max(col)) < thr and int(np.min(col)) > -thr:
                 self._close_channel_open(ch)
             else:
@@ -629,6 +695,9 @@ class _ClippingAccumulator:
         thr = int(threshold)
         if abs_q.ndim <= 1:
             self._ensure_channels(1)
+            if int(np.max(abs_q)) < thr:
+                self._close_channel_open(0)
+                return
             self._record_channel(0, abs_q >= thr)
             return
         n_ch = abs_q.shape[1]
@@ -649,14 +718,11 @@ class _ClippingAccumulator:
         clip_runs = self._clip_runs
         for open_len in self._open:
             if open_len > 0:
-                events += 1
-                total_samples += open_len
-                if open_len <= 2:
-                    short_events += 1
-                else:
-                    clip_runs += 1
-                if open_len > max_streak:
-                    max_streak = open_len
+                events, short_events, clip_runs, total_samples, max_streak = (
+                    _accumulate_clip_run(
+                        events, short_events, clip_runs, total_samples, max_streak, open_len
+                    )
+                )
         return events, short_events, total_samples, max_streak, clip_runs
 
     def clip_dict(self):
@@ -779,12 +845,7 @@ def _classify_clipping_nature(samples_int, max_val_integer,
         thr = int(max_val_integer)
         n_ch = arr.shape[1] if arr.ndim > 1 else 1
         acc = _ClippingAccumulator(n_ch)
-        if arr.ndim <= 1:
-            acc._record_channel(0, (arr >= thr) | (arr <= -thr))
-        else:
-            for ch in range(n_ch):
-                col = arr[:, ch]
-                acc._record_channel(ch, (col >= thr) | (col <= -thr))
+        acc.add_int_threshold_block(arr, thr)
         return acc.classify(ceiling_hz=ceiling_hz,
                             frequency_cutoff=frequency_cutoff,
                             nyquist=nyquist)
@@ -870,7 +931,7 @@ class ForensicBitsAccumulator:
         if self.bits in (24, 32):
             self._bitmap_global = np.zeros(int(self.grid_max) + 1, dtype=bool)
             self._bitmap_hi16 = np.zeros((int(self.grid_max) >> 8) + 1, dtype=bool)
-            self._hi16_only = True
+            self._storage_tier = BitStorageTier.COMPACT_HI16
             self._bitmap_low = self._bitmap_global[self.low_int : self.high_int + 1]
             self._bitmap_reb1 = self._bitmap_global[SLICE_1_BASE : SLICE_1_BASE + SLICE_WIDTH]
             self._bitmap_reb2 = self._bitmap_global[SLICE_2_BASE : SLICE_2_BASE + SLICE_WIDTH]
@@ -880,7 +941,7 @@ class ForensicBitsAccumulator:
             self._bitmap_reb2 = None
             self._bitmap_global = None
             self._bitmap_hi16 = None
-            self._hi16_only = False
+            self._storage_tier = BitStorageTier.INACTIVE
 
         # Samples that fed each bitmap: they decide whether it is judged at all.
         self._samples_low = 0
@@ -895,15 +956,26 @@ class ForensicBitsAccumulator:
         self._state = AccumulatorState.COLLECTING
         self._cached_result = None
 
+    @property
+    def storage_tier(self) -> BitStorageTier:
+        """Current bitmap storage tier for native 24/32-bit levels."""
+        return self._storage_tier
+
+    @property
+    def _hi16_only(self) -> bool:
+        return self._storage_tier is BitStorageTier.COMPACT_HI16
+
     def _flush_hi16_bitmap(self):
         """Materialises the compact upper-16-bit bitmap into the full 24-bit map."""
-        if not self._hi16_only:
+        if self._storage_tier is not BitStorageTier.COMPACT_HI16:
             return
-        nz = np.flatnonzero(self._bitmap_hi16)
-        if nz.size:
-            self._bitmap_global[nz << 8] = True
+        if self._bitmap_hi16 is not None:
+            nz = np.flatnonzero(self._bitmap_hi16)
+            if nz.size:
+                self._bitmap_global[nz << 8] = True
+            self._bitmap_hi16 = None
         self._bitmap_global[0] = False
-        self._hi16_only = False
+        self._storage_tier = BitStorageTier.FULL_24BIT
 
     @property
     def state(self) -> AccumulatorState:
@@ -928,15 +1000,19 @@ class ForensicBitsAccumulator:
         if vista.shape[0] == 0:
             return
         tops = ((vista >> 16) & 0xFF).astype(np.int16)
-        if self._dop_last is not None and self._dop_last.shape[0] == tops.shape[1]:
-            tops = np.vstack((self._dop_last[None, :], tops))
+        if self._dop_last is not None:
+            if self._dop_last.shape[0] == tops.shape[1]:
+                tops = np.vstack((self._dop_last[None, :], tops))
+            else:
+                self._dop_last = None
         if tops.shape[0] >= 2:
             previous = tops[:-1, :]
             following = tops[1:, :]
-            valid = (((previous == 0x05) & (following == 0xFA))
-                       | ((previous == 0xFA) & (following == 0x05))
-                       | ((previous == 0x06) & (following == 0xF9))
-                       | ((previous == 0xF9) & (following == 0x06)))
+            valid = np.zeros(previous.shape, dtype=bool)
+            for first_marker, second_marker in DOP_MARKER_PAIRS:
+                valid |= ((previous == first_marker) & (following == second_marker)) | (
+                    (previous == second_marker) & (following == first_marker)
+                )
             self._dop_pares += int(valid.size)
             self._dop_valid += int(np.count_nonzero(valid))
         self._dop_last = tops[-1, :].copy()
@@ -1071,6 +1147,8 @@ class ForensicBitsAccumulator:
         }
 
     def result(self):
+        if self._state is AccumulatorState.FAILED:
+            raise RuntimeError("cannot finalize failed bit-depth accumulator")
         if self._cached_result is not None:
             return dict(self._cached_result)
         if self.bits not in (24, 32) or self._samples == 0:

@@ -6,8 +6,10 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 from typing import NamedTuple
+import weakref
 
 # ─── BLAS THREADS (before numpy/scipy are imported) ──────────────────────────
 # The album is analysed by a pool of processes; if every process opened its own
@@ -44,7 +46,7 @@ import _motor_veredicto
 from _motor_espectral import Image
 
 from _motor_bits import (
-    AccumulatorState, Md5Status, LsbStatus,
+    AccumulatorState, Md5Status, LsbStatus, BitStorageTier, DOP_MARKER_PAIRS,
     IO_RETRY_DELAYS, _is_transient_io_error, retry_io,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
     _normalize_path_fs, _Int24Packer, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
@@ -76,7 +78,7 @@ from _motor_veredicto import (
 )
 from _motor_cache import (
     PNG_FOLDER_NAME, PNG_MAGIC, CACHE_ENV_VAR, cache_root, _album_bucket_hash,
-    CacheLookupStatus, _png_folder, _png_path, _cache_path, _identity,
+    CacheLookupStatus, SpectralMode, _png_folder, _png_path, _cache_path, _identity,
     _analysis_key, _replace_with_retries, _sanitize,
     read_cache_entry as _cache_read_entry,
     read_cache as _cache_read, write_cache as _cache_write,
@@ -585,6 +587,22 @@ def read_audio(path):
 # float64 and the whole STFT was built: a 10-minute 24/96 asked for ~2.8 GB.
 
 
+class _HandleState(Enum):
+    """Explicit handle liveness state for bounded transient I/O retries."""
+
+    ALIVE = "alive"
+    STALE_CLOSED = "stale_closed"
+
+
+def _close_handle_quietly(handle) -> None:
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
 def _read_sf_block_with_retry(
     sf_handle, norm_path, offset, read_call, delays=IO_RETRY_DELAYS, sleep_fn=None
 ):
@@ -597,36 +615,44 @@ def _read_sf_block_with_retry(
             raise
         wait = time.sleep if sleep_fn is None else sleep_fn
         last_exc = exc
+        state = _HandleState.ALIVE if handle is not None else _HandleState.STALE_CLOSED
         for delay in tuple(delays):
             wait(delay)
-            if handle is not None:
+            if state is _HandleState.ALIVE and handle is not None:
                 try:
                     handle.seek(offset)
-                    return handle, read_call(handle)
-                except Exception as retry_exc:
-                    if not _is_transient_io_error(retry_exc):
-                        raise
-                    last_exc = retry_exc
-                try:
-                    handle.close()
-                except Exception:
-                    pass
-                handle = None
-            try:
-                handle = sf.SoundFile(norm_path)
-                if offset:
-                    handle.seek(offset)
-                return handle, read_call(handle)
-            except Exception as reopen_exc:
-                if handle is not None:
-                    try:
-                        handle.close()
-                    except Exception:
-                        pass
+                except Exception as seek_exc:
+                    _close_handle_quietly(handle)
                     handle = None
-                if not _is_transient_io_error(reopen_exc):
-                    raise
-                last_exc = reopen_exc
+                    state = _HandleState.STALE_CLOSED
+                    if not _is_transient_io_error(seek_exc):
+                        raise
+                    last_exc = seek_exc
+                else:
+                    try:
+                        return handle, read_call(handle)
+                    except Exception as read_exc:
+                        _close_handle_quietly(handle)
+                        handle = None
+                        state = _HandleState.STALE_CLOSED
+                        if not _is_transient_io_error(read_exc):
+                            raise
+                        last_exc = read_exc
+                        continue
+            if state is _HandleState.STALE_CLOSED:
+                try:
+                    handle = sf.SoundFile(norm_path)
+                    state = _HandleState.ALIVE
+                    if offset:
+                        handle.seek(offset)
+                    return handle, read_call(handle)
+                except Exception as reopen_exc:
+                    _close_handle_quietly(handle)
+                    handle = None
+                    state = _HandleState.STALE_CLOSED
+                    if not _is_transient_io_error(reopen_exc):
+                        raise
+                    last_exc = reopen_exc
         raise last_exc
 
 
@@ -753,26 +779,33 @@ class _BlockAnalysis:
             f"state={self._state.value!r}, path={self.path!r})"
         )
 
-    def add(self, block, offset):
-        if self._state is AccumulatorState.COMPLETED:
+    def _require_collecting(self) -> None:
+        if self._state is not AccumulatorState.COLLECTING:
             raise RuntimeError("cannot add audio blocks after completion")
-        q_int = None
-        if self.bits == 24 and (self._md5 is not None
-                                or self._forensic_bits is not None):
-            q_int = np.clip(
-                np.rint(np.asarray(block, dtype=np.float64) * 8388608.0),
-                -8388608.0, 8388607.0).astype("<i4")
-        elif self.bits == 32 and (self._md5 is not None
-                                  or self._forensic_bits is not None):
-            q_int = np.clip(
-                np.rint(np.asarray(block, dtype=np.float64) * 2147483648.0),
-                -2147483648.0, 2147483647.0).astype("<i4")
-        self._integrity_and_clipping(block, q_int=q_int)
-        mono = self._dynamic_range(block)
-        self._sample_bits(block, offset)
-        if self._forensic_bits is not None:
-            self._forensic_bits.add(block, q_int=q_int)
-        self._spectrum_acc.add(block, offset, mono=mono)
+
+    def add(self, block, offset):
+        self._require_collecting()
+        try:
+            q_int = None
+            if self.bits == 24 and (self._md5 is not None
+                                    or self._forensic_bits is not None):
+                q_int = np.clip(
+                    np.rint(np.asarray(block, dtype=np.float64) * 8388608.0),
+                    -8388608.0, 8388607.0).astype("<i4")
+            elif self.bits == 32 and (self._md5 is not None
+                                      or self._forensic_bits is not None):
+                q_int = np.clip(
+                    np.rint(np.asarray(block, dtype=np.float64) * 2147483648.0),
+                    -2147483648.0, 2147483647.0).astype("<i4")
+            self._integrity_and_clipping(block, q_int=q_int)
+            mono = self._dynamic_range(block)
+            self._sample_bits(block, offset)
+            if self._forensic_bits is not None:
+                self._forensic_bits.add(block, q_int=q_int)
+            self._spectrum_acc.add(block, offset, mono=mono)
+        except Exception:
+            self._state = AccumulatorState.FAILED
+            raise
 
     # ── per block ────────────────────────────────────────────────────────────
     def _integrity_and_clipping(self, block, q_int=None):
@@ -803,69 +836,75 @@ class _BlockAnalysis:
 
     def add_int16(self, block_i16, offset):
         """Streaming path for native little-endian int16 PCM blocks."""
-        if self._state is AccumulatorState.COMPLETED:
-            raise RuntimeError("cannot add audio blocks after completion")
-        if block_i16.shape[0] == 0:
-            return
-        if self._md5 is not None:
-            self._md5.update(_pcm_bytes(None, 16, self._md5_width, q_int=block_i16))
-        max_abs = 0
-        if block_i16.size:
-            max_abs = max(int(np.max(block_i16)), -int(np.min(block_i16)))
-            peak = max_abs * (1.0 / 32768.0)
-            if peak > self._peak:
-                self._peak = peak
-        n_ch = block_i16.shape[1]
-        if n_ch == 2:
-            mono = (
-                block_i16[:, 0].astype(np.int32) + block_i16[:, 1].astype(np.int32)
-            ) * (0.5 / 32768.0)
-        elif n_ch == 1:
-            mono = block_i16[:, 0] * (1.0 / 32768.0)
-        else:
-            mono = block_i16.mean(axis=1, dtype=np.float64) * (1.0 / 32768.0)
-        # |sample| / 32768.0 >= 0.9999 iff |sample| >= 32765.
-        if max_abs < 32765:
-            self._clip_acc.flush_zeros()
-        else:
-            self._clip_acc.add_int16_block(block_i16, threshold=32765)
-        self._dynamic_range_from_mono(mono)
-        self._spectrum_acc.add(block_i16, offset, mono=mono, int_scale=1.0 / 32768.0)
+        self._require_collecting()
+        try:
+            if block_i16.shape[0] == 0:
+                return
+            if self._md5 is not None:
+                self._md5.update(_pcm_bytes(None, 16, self._md5_width, q_int=block_i16))
+            max_abs = 0
+            if block_i16.size:
+                max_abs = max(int(np.max(block_i16)), -int(np.min(block_i16)))
+                peak = max_abs * (1.0 / 32768.0)
+                if peak > self._peak:
+                    self._peak = peak
+            n_ch = block_i16.shape[1]
+            if n_ch == 2:
+                mono = (
+                    block_i16[:, 0].astype(np.int32) + block_i16[:, 1].astype(np.int32)
+                ) * (0.5 / 32768.0)
+            elif n_ch == 1:
+                mono = block_i16[:, 0] * (1.0 / 32768.0)
+            else:
+                mono = block_i16.mean(axis=1, dtype=np.float64) * (1.0 / 32768.0)
+            # |sample| / 32768.0 >= 0.9999 iff |sample| >= 32765.
+            if max_abs < 32765:
+                self._clip_acc.flush_zeros()
+            else:
+                self._clip_acc.add_int16_block(block_i16, threshold=32765)
+            self._dynamic_range_from_mono(mono)
+            self._spectrum_acc.add(block_i16, offset, mono=mono, int_scale=1.0 / 32768.0)
+        except Exception:
+            self._state = AccumulatorState.FAILED
+            raise
 
     def add_int24_s32(self, q_i32, offset):
         """Streaming path for signed 24-bit integers stored in <i4 containers."""
-        if self._state is AccumulatorState.COMPLETED:
-            raise RuntimeError("cannot add audio blocks after completion")
-        if q_i32.shape[0] == 0:
-            return
-        if self._md5 is not None:
-            self._md5.update(_pcm_bytes(None, 24, self._md5_width, q_int=q_i32,
-                                        packer24=self._packer24))
-        if self._abs_i32_buf is None or self._abs_i32_buf.shape != q_i32.shape:
-            self._abs_i32_buf = np.empty(q_i32.shape, dtype=np.int32)
-        abs_view = self._abs_i32_buf
-        np.abs(q_i32, out=abs_view)
-        max_abs = int(np.max(abs_view)) if abs_view.size else 0
-        peak = max_abs * (1.0 / 8388608.0)
-        if peak > self._peak:
-            self._peak = peak
-        n_ch = q_i32.shape[1]
-        if n_ch == 2:
-            mono = (q_i32[:, 0] + q_i32[:, 1]) * (0.5 / 8388608.0)
-        elif n_ch == 1:
-            mono = q_i32[:, 0] * (1.0 / 8388608.0)
-        else:
-            mono = q_i32.mean(axis=1, dtype=np.float64) * (1.0 / 8388608.0)
-        # |sample| / 8388608.0 >= 0.9999 iff |sample| >= 8387770.
-        if max_abs < 8387770:
-            self._clip_acc.flush_zeros()
-        else:
-            self._clip_acc.add_abs_int_block(abs_view, threshold=8387770)
-        self._dynamic_range_from_mono(mono)
-        self._bdi_acc.add_block(offset, q_int=q_i32, abs_q=abs_view)
-        if self._forensic_bits is not None:
-            self._forensic_bits.add(q_i32, q_int=q_i32, abs_q=abs_view)
-        self._spectrum_acc.add(q_i32, offset, mono=mono, int_scale=1.0 / 8388608.0)
+        self._require_collecting()
+        try:
+            if q_i32.shape[0] == 0:
+                return
+            if self._md5 is not None:
+                self._md5.update(_pcm_bytes(None, 24, self._md5_width, q_int=q_i32,
+                                            packer24=self._packer24))
+            if self._abs_i32_buf is None or self._abs_i32_buf.shape != q_i32.shape:
+                self._abs_i32_buf = np.empty(q_i32.shape, dtype=np.int32)
+            abs_view = self._abs_i32_buf
+            np.abs(q_i32, out=abs_view)
+            max_abs = int(np.max(abs_view)) if abs_view.size else 0
+            peak = max_abs * (1.0 / 8388608.0)
+            if peak > self._peak:
+                self._peak = peak
+            n_ch = q_i32.shape[1]
+            if n_ch == 2:
+                mono = (q_i32[:, 0] + q_i32[:, 1]) * (0.5 / 8388608.0)
+            elif n_ch == 1:
+                mono = q_i32[:, 0] * (1.0 / 8388608.0)
+            else:
+                mono = q_i32.mean(axis=1, dtype=np.float64) * (1.0 / 8388608.0)
+            # |sample| / 8388608.0 >= 0.9999 iff |sample| >= 8387770.
+            if max_abs < 8387770:
+                self._clip_acc.flush_zeros()
+            else:
+                self._clip_acc.add_abs_int_block(abs_view, threshold=8387770)
+            self._dynamic_range_from_mono(mono)
+            self._bdi_acc.add_block(offset, q_int=q_i32, abs_q=abs_view)
+            if self._forensic_bits is not None:
+                self._forensic_bits.add(q_i32, q_int=q_i32, abs_q=abs_view)
+            self._spectrum_acc.add(q_i32, offset, mono=mono, int_scale=1.0 / 8388608.0)
+        except Exception:
+            self._state = AccumulatorState.FAILED
+            raise
 
     def _dynamic_range_from_mono(self, mono):
         block_mono = mono
@@ -902,6 +941,8 @@ class _BlockAnalysis:
 
     # ── result ───────────────────────────────────────────────────────────────
     def result(self):
+        if self._state is AccumulatorState.FAILED:
+            raise RuntimeError("cannot finalize failed block analysis")
         if self._cached_result is not None:
             return dict(self._cached_result)
         self._clip_acc.finalize()
@@ -1110,6 +1151,7 @@ class BatchTask(NamedTuple):
     use_cache: bool
     pre_meta: dict | None = None
     skip_cache_lookup: bool = False
+    cached_entry: dict | None = None
 
 
 def _work_analysis(task):
@@ -1117,7 +1159,9 @@ def _work_analysis(task):
     if isinstance(task, BatchTask):
         return analyze_file_data(
             task.path, task.mode, task.seconds, task.save_png, task.use_cache,
-            _pre_meta=task.pre_meta, _skip_cache_lookup=task.skip_cache_lookup,
+            _pre_meta=task.pre_meta,
+            _skip_cache_lookup=task.skip_cache_lookup,
+            _pre_cached_entry=task.cached_entry,
         )
     if len(task) == 5:
         path, mode, seconds, save_png, use_cache = task
@@ -1128,7 +1172,16 @@ def _work_analysis(task):
         _pre_meta=pre_meta, _skip_cache_lookup=skip_cache_lookup,
     )
 
+_PROBE_PROCESSES_LOCK = threading.Lock()
 _PROBE_PROCESSES_CACHE = None
+
+
+def _reset_process_probe_for_tests():
+    """Resets the cached process-spawning probe result for deterministic tests."""
+    global _PROBE_PROCESSES_CACHE
+    with _PROBE_PROCESSES_LOCK:
+        _PROBE_PROCESSES_CACHE = None
+
 
 def _probe_processes():
     """Can processes be created in this environment?
@@ -1138,17 +1191,18 @@ def _probe_processes():
     child interpreter; ProcessPoolExecutor also falls back serially on error.
     """
     global _PROBE_PROCESSES_CACHE
-    if _PROBE_PROCESSES_CACHE is None:
-        try:
-            import multiprocessing
-            ctx = multiprocessing.get_context()
-            q = ctx.Queue()
-            q.close()
-            q.join_thread()
-            _PROBE_PROCESSES_CACHE = True
-        except Exception:
-            _PROBE_PROCESSES_CACHE = False
-    return _PROBE_PROCESSES_CACHE
+    with _PROBE_PROCESSES_LOCK:
+        if _PROBE_PROCESSES_CACHE is None:
+            try:
+                import multiprocessing
+                ctx = multiprocessing.get_context()
+                q = ctx.Queue()
+                q.close()
+                q.join_thread()
+                _PROBE_PROCESSES_CACHE = True
+            except Exception:
+                _PROBE_PROCESSES_CACHE = False
+        return _PROBE_PROCESSES_CACHE
 
 
 def _plan_batch_cache_with_meta(files, mode, seconds, save_png, use_cache=True,
@@ -1212,6 +1266,16 @@ def classify_batch_disposition(result) -> BatchDisposition:
     return BatchDisposition.IMMEDIATE
 
 
+def _shutdown_unused_executor(pool_ref) -> None:
+    executor = pool_ref[0]
+    pool_ref[0] = None
+    if executor is not None:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+
 def analyze_files(files, mode, seconds, save_png, workers=None,
                       use_cache=True):
     """Yields the results in order. Returns (generator, workers_efectivos).
@@ -1225,16 +1289,23 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
         files, mode, seconds, save_png, use_cache=use_cache, check_signature=True
     )
     pending_entries = [
-        (index, path, status, pre_meta)
-        for index, path, status, _, pre_meta in plan_with_meta
+        (index, path, status, cached, pre_meta)
+        for index, path, status, cached, pre_meta in plan_with_meta
         if status is not CacheLookupStatus.FULL_HIT
     ]
-    pendientes = [path for _, path, _, _ in pending_entries]
+    pendientes = [path for _, path, _, _, _ in pending_entries]
     workers = workers if workers and workers > 0 else default_workers(len(files))
     parallel = (workers > 1 and len(pendientes) >= MIN_FILES_PARALLEL
                    and _probe_processes())
+    pool_ref = [None]
     if parallel:
         workers_efectivos = min(workers, len(pendientes))
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            pool_ref[0] = ProcessPoolExecutor(max_workers=workers_efectivos)
+        except (PermissionError, OSError):
+            parallel = False
+            workers_efectivos = 1
     else:
         workers_efectivos = 1
 
@@ -1252,8 +1323,13 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                 skip_cache_lookup=(
                     status is CacheLookupStatus.MISS and pre_meta is not None
                 ),
+                cached_entry=(
+                    cached
+                    if status is CacheLookupStatus.METRICS_HIT_NEEDS_PNG
+                    else None
+                ),
             )
-            for orig_index, path, status, pre_meta in pending_entries
+            for orig_index, path, status, cached, pre_meta in pending_entries
         ]
         if not parallel:
             for task in tasks:
@@ -1268,8 +1344,12 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
                 return 0
 
         lpt_order = sorted(range(len(tasks)), key=_file_size_key)
+        executor = pool_ref[0]
+        pool_ref[0] = None
         try:
-            with ProcessPoolExecutor(max_workers=workers_efectivos) as executor:
+            if executor is None:
+                executor = ProcessPoolExecutor(max_workers=workers_efectivos)
+            with executor:
                 futures_by_index = {
                     idx: executor.submit(_work_analysis, tasks[idx])
                     for idx in lpt_order
@@ -1300,37 +1380,39 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
         calculated = calculate_pending() if pendientes else None
         batch = []
         retenidas = []
-        for index, path, status, cached, _ in plan_with_meta:
-            if status is CacheLookupStatus.FULL_HIT and cached is not None:
-                result = dict(cached)
-            else:
-                calc_item = next(calculated, None) if calculated is not None else None
-                if calc_item is None:
-                    result = _make_error_result(
-                        path, "could not get the analysis result"
-                    )
+        try:
+            for index, path, status, cached, _ in plan_with_meta:
+                if status is CacheLookupStatus.FULL_HIT and cached is not None:
+                    result = dict(cached)
                 else:
-                    calc_index, calc_result = calc_item
-                    if calc_index != index:
-                        raise RuntimeError(
-                            f"batch result index mismatch: expected {index}, "
-                            f"got {calc_index}"
+                    calc_item = next(calculated, None) if calculated is not None else None
+                    if calc_item is None:
+                        result = _make_error_result(
+                            path, "could not get the analysis result"
                         )
-                    result = dict(calc_result)
-            result["indice_original"] = index
-            batch.append(result)
-            # Everything that cannot be rescued by album context is streamed
-            # immediately. Only tracks that `_deserves_album_coherence` could
-            # elevate are held back until the whole batch is known: a low
-            # ceiling is suspicious (SUSPICIOUS/PROBABLE UPSCALE) or already
-            # excused on its own by the acoustic exemption (PROBABLY LOSSLESS).
-            if classify_batch_disposition(result) is BatchDisposition.DEFERRED:
-                retenidas.append((path, result))
-            else:
-                yield result
-
-        if calculated is not None:
-            calculated.close()
+                    else:
+                        calc_index, calc_result = calc_item
+                        if calc_index != index:
+                            raise RuntimeError(
+                                f"batch result index mismatch: expected {index}, "
+                                f"got {calc_index}"
+                            )
+                        result = dict(calc_result)
+                result["indice_original"] = index
+                batch.append(result)
+                # Everything that cannot be rescued by album context is streamed
+                # immediately. Only tracks that `_deserves_album_coherence` could
+                # elevate are held back until the whole batch is known: a low
+                # ceiling is suspicious (SUSPICIOUS/PROBABLE UPSCALE) or already
+                # excused on its own by the acoustic exemption (PROBABLY LOSSLESS).
+                if classify_batch_disposition(result) is BatchDisposition.DEFERRED:
+                    retenidas.append((path, result))
+                else:
+                    yield result
+        finally:
+            if calculated is not None:
+                calculated.close()
+            _shutdown_unused_executor(pool_ref)
 
         # Album-level consistency needs the whole directory before deciding.
         apply_album_coherence(batch)
@@ -1340,7 +1422,10 @@ def analyze_files(files, mode, seconds, save_png, workers=None,
             # alone later does not inherit an album-level elevation.
             yield result
 
-    return in_order(), workers_efectivos
+    gen = in_order()
+    if pool_ref[0] is not None:
+        weakref.finalize(gen, _shutdown_unused_executor, pool_ref)
+    return gen, workers_efectivos
 
 # ─── ANALYSIS OF ONE FILE (returns a dict, does not print) ───────────────────
 
@@ -1373,17 +1458,19 @@ def _hydrate_cached_png(path, meta, mode, seconds, cached, save_png=True):
             ceiling_hz=spectrum.get("techo_hz"),
             cutoff_hz=spectrum.get("frecuencia_corte"),
         ))
-    else:
-        spectrum["espectrograma"] = None
-        spectrum.pop("espectrograma_error", None)
+        result["desde_cache"] = False
+        write_cache(path, meta, mode, seconds, result)
+        return result
+    spectrum["espectrograma"] = None
+    spectrum.pop("espectrograma_error", None)
     result["desde_cache"] = False
-    write_cache(path, meta, mode, seconds, result)
     return result
 
 
 def analyze_file_data(path, mode="full", seconds=None, save_png=False,
                            use_cache=True, _pre_meta=None,
-                           _skip_cache_lookup=False):
+                           _skip_cache_lookup=False,
+                           _pre_cached_entry=None):
     """Analyses one file and returns a dict. With `use_cache`, if the file has not
     changed since the last analysis the stored result is reused."""
     result = {"archivo": os.path.basename(path), "ruta": path}
@@ -1411,6 +1498,17 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
 
         # Cache: an already verified album is not decoded or drawn again.
         if use_cache and not _skip_cache_lookup:
+            if _pre_cached_entry is not None:
+                try:
+                    return _hydrate_cached_png(
+                        path, meta, mode, seconds, _pre_cached_entry, save_png=save_png
+                    )
+                except Exception as e:
+                    return _make_error_result(
+                        path,
+                        f"Could not decode the audio ({type(e).__name__}: {e})",
+                        meta=meta,
+                    )
             status, cached = read_cache_entry(
                 path, meta, mode, seconds, requires_png=save_png
             )
