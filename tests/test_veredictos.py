@@ -290,6 +290,34 @@ class TestHiRes(unittest.TestCase):
             evidence,
         )
 
+    def test_16bit_grid_tolerance_parity_int24_vs_float64(self):
+        """Engine 15.0: float64 and native int24 16-bit grid checks share the
+        exact 25/256 (|x*32768 - rint| < 12.5/256) boundary."""
+        import numpy as np
+        import _motor_bits
+
+        # Construct one full period mod 256 above the active threshold (8389).
+        base = np.int32(32768)  # 128 * 256, well above 8389
+        q_int = (base + np.arange(256, dtype=np.int32)).reshape(-1, 1)
+        q_int = np.tile(q_int, (8, 1))  # 2048 samples -> exact 8 full periods
+        block_f64 = q_int.astype(np.float64) / 8388608.0
+
+        acc_i24 = _motor_bits._StreamingBitDepthAccumulator(24, len(q_int))
+        acc_i24.add_block(0, q_int=q_int, abs_q=np.abs(q_int))
+        res_i24 = acc_i24.result()
+
+        acc_f64 = _motor_bits._StreamingBitDepthAccumulator(24, len(q_int))
+        acc_f64.add_block(0, block_f64=block_f64)
+        res_f64 = acc_f64.result()
+
+        res_arr = _motor_bits.analyze_bit_depth(
+            block_f64, {"bits_per_sample": 24, "sample_rate": 44100},
+            include_forensic=False,
+        )
+        self.assertEqual(res_i24["fraccion_16bit_grid"], res_f64["fraccion_16bit_grid"])
+        self.assertEqual(res_i24["fraccion_16bit_grid"], res_arr["fraccion_16bit_grid"])
+        self.assertAlmostEqual(res_i24["fraccion_16bit_grid"], round(25.0 / 256.0 * 100.0, 1))
+
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is not on the PATH")
 class TestMP3Real(unittest.TestCase):

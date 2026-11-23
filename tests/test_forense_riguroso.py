@@ -4114,7 +4114,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
     def test_finding_code_emission_across_calculate_score(self):
         """Every calculate_score penalty emits its canonical FindingCode while notes emit none."""
         fc = motor_flac.FindingCode
-        self.assertEqual(len(list(fc)), 24)
+        self.assertEqual(len(list(fc)), 25)
 
         # Clean track with notes (low high/mid ratio, dual-mono, mastering limiter) emits zero codes.
         spec_clean = {
@@ -5038,6 +5038,117 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
             r_c = motor_flac.analyze_file_data(str(p_ctrl), use_cache=False)
             self.assertIn(r_c["veredicto"], GOOD_VERDICTS, lbl)
             self.assertIs(r_c["esp"]["mdct_lattice_detected"], False, f"{lbl}: {r_c['esp']}")
+
+    def test_52_native_24_44_tail_and_noise_shaped_16_in_24_guard(self):
+        """Engine 15.0: genuine 24/44.1 high-DR warm masters with <= -105 dBFS
+        ADC stopband pass standalone while 16-bit TPDF repackages stay caught,
+        and rising noise-shaped 16-in-24 dither triggers SOFT_BLOCKING without
+        false positives on analogue tape (-70/-82/-92 dBFS)."""
+        sr = 44100
+        rng = np.random.default_rng(1520)
+
+        # 1. Genuine 24/44.1 warm/acoustic master with ADC stopband <= -115 dBFS.
+        n = sr * 7
+        t = np.arange(n, dtype=np.float64) / float(sr)
+        body = signal.sosfilt(
+            signal.butter(2, 2400.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)) * 0.16,
+            axis=0,
+        )
+        strum = (0.30 + 0.70 * (np.sin(2.0 * np.pi * 1.4 * t) ** 2))[:, None]
+        warm_air = signal.sosfilt(
+            signal.butter(3, 13500.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)) * 0.005,
+            axis=0,
+        ) * strum
+        adc_tail = signal.sosfilt(
+            signal.butter(6, 20900.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)) * 0.0006,
+            axis=0,
+        )
+        chords = sum(
+            0.055 * np.sin(2.0 * np.pi * f0 * t)[:, None]
+            for f0 in (164.81, 246.94, 329.63, 493.88)
+        )
+        warm_24_44 = np.clip(
+            body + chords + warm_air + adc_tail
+            + rng.normal(0.0, 10.0 ** (-118.0 / 20.0), (n, 2)),
+            -0.88,
+            0.88,
+        )
+        p_gen = self.tmp_path / "gen_warm_24_44.flac"
+        sf.write(p_gen, warm_24_44, sr, subtype="PCM_24")
+        r_gen = motor_flac.analyze_file_data(str(p_gen), use_cache=False)
+        self.assertIs(r_gen["esp"]["native_24bit_hf_tail"], True, r_gen["esp"])
+        self.assertIs(r_gen["esp"]["noise_shaped_16_in_24"], False)
+        self.assertIn(r_gen["veredicto"], GOOD_VERDICTS, r_gen["problemas"])
+
+        # Counterexample: same warm signal quantized to 16-bit + full 16-bit TPDF
+        # cannot exploit native_24bit_hf_tail because stopband sits near -96 dBFS.
+        lsb16 = 1.0 / 32768.0
+        warm_16_tpdf = (
+            np.round(warm_24_44 * 32768.0) / 32768.0
+            + (rng.random(warm_24_44.shape) - rng.random(warm_24_44.shape)) * lsb16
+        )
+        p_fake_tpdf = self.tmp_path / "fake_warm_cd_16tpdf_24_44.flac"
+        sf.write(p_fake_tpdf, np.clip(warm_16_tpdf, -0.99, 0.99), sr, subtype="PCM_24")
+        r_fake_tpdf = motor_flac.analyze_file_data(str(p_fake_tpdf), use_cache=False)
+        self.assertIs(r_fake_tpdf["esp"]["native_24bit_hf_tail"], False)
+        self.assertNotIn(r_fake_tpdf["veredicto"], GOOD_VERDICTS)
+
+        # 2. Noise-shaped 16-in-24 dither on a track with a quiet intro block
+        # (RMS in [-92, -40] dBFS) triggers SOFT_BLOCKING (SUSPICIOUS alone).
+        n_q = sr * 6
+        t_q = np.linspace(0.0, 6.0, n_q, endpoint=False)
+        fade = np.where(t_q < 3.5, 1e-5, ((t_q - 3.5) / 2.5) ** 2 * 0.015)
+        quiet_part = rng.standard_normal((n_q, 2)) * fade[:, None]
+        loud_part = _create_track_reference(sr, duration=6.0, seed=1521)
+        full_sig = np.vstack([quiet_part, loud_part])
+
+        d_ns = (rng.random(full_sig.shape) - rng.random(full_sig.shape)) * lsb16
+        ns_out = np.empty_like(full_sig)
+        for ch in range(2):
+            e1 = 0.0
+            e2 = 0.0
+            src_c = full_sig[:, ch]
+            d_c = d_ns[:, ch]
+            dst_c = ns_out[:, ch]
+            for idx_i in range(len(src_c)):
+                val = src_c[idx_i] + 1.5 * e1 - 0.6 * e2
+                q_val = round((val + d_c[idx_i]) * 32768.0) / 32768.0
+                q_val = max(-0.99, min(0.99, q_val))
+                e2 = e1
+                e1 = val - q_val
+                dst_c[idx_i] = q_val
+        ns_16in24 = ns_out + (rng.random(full_sig.shape) - rng.random(full_sig.shape)) * lsb16
+        p_ns = self.tmp_path / "fake_ns_16in24.flac"
+        sf.write(p_ns, np.clip(ns_16in24, -0.99, 0.99), sr, subtype="PCM_24")
+        r_ns = motor_flac.analyze_file_data(str(p_ns), use_cache=False)
+        self.assertIs(r_ns["esp"]["noise_shaped_16_in_24"], True, r_ns["esp"])
+        self.assertGreaterEqual(r_ns["esp"]["quiet_hf_slope_db"], 3.5)
+        self.assertGreaterEqual(r_ns["esp"]["quiet_hf_flatness"], 0.90)
+        self.assertGreaterEqual(r_ns["esp"]["quiet_hf_floor_dbfs"], -96.0)
+        self.assertEqual(r_ns["veredicto"], "SUSPICIOUS")
+        self.assertIn(
+            motor_flac.FindingCode.NOISE_SHAPED_16_IN_24.value,
+            r_ns["esp"]["finding_codes"],
+        )
+
+        # 3. Analogue tape (-70 / -82 / -92 dBFS) and flat thermal floors must
+        # never trigger noise_shaped_16_in_24.
+        for floor_db in (-70.0, -82.0, -92.0):
+            with self.subTest(tape_floor_db=floor_db):
+                hiss = signal.sosfilt(
+                    signal.butter(1, 17500.0, btype="low", fs=sr, output="sos"),
+                    rng.standard_normal(full_sig.shape),
+                    axis=0,
+                )
+                hiss *= (10.0 ** (floor_db / 20.0)) / (np.std(hiss) + 1e-12)
+                p_tape = self.tmp_path / f"gen_tape_{int(abs(floor_db))}.flac"
+                sf.write(p_tape, np.clip(full_sig + hiss, -0.99, 0.99), sr, subtype="PCM_24")
+                r_tape = motor_flac.analyze_file_data(str(p_tape), use_cache=False)
+                self.assertIs(r_tape["esp"]["noise_shaped_16_in_24"], False, r_tape["esp"])
+                self.assertIn(r_tape["veredicto"], GOOD_VERDICTS)
 
 
 if __name__ == "__main__":

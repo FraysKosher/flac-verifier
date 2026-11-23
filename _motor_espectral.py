@@ -1419,15 +1419,14 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
             )
 
     # Sub-ceiling 24-bit converter roll-off: on high-DR (DR 13-16+) or warm
-    # acoustic/indie 24-bit studio masters at <= 48 kHz, the -60 dB activity
+    # acoustic/indie 24-bit studio masters at 44.1-48 kHz, the -60 dB activity
     # contour (`ceiling_hz`) can cross early around 13-19 kHz while genuine
     # musical overtones and studio room/tape air continue below -60 dB right up
-    # to the ADC anti-aliasing filter near Nyquist. A 44.1 -> 48 kHz CD upscale
-    # or a band-limited lossy source repackaged with 24-bit dither flattens out
-    # into its stopband floor instead of tapering monotonically through 0.84-0.96
-    # of Nyquist (above the 22.05 kHz CD limit on 48 kHz streams).
+    # to the ADC anti-aliasing filter near Nyquist. At 44.1 kHz, the stopband
+    # floor must sit strictly below the -96 dBFS 16-bit TPDF ceiling (<= -105 dBFS)
+    # so 16/44.1 CDs re-dithered to 24-bit can never exploit this exemption.
     native_24bit_hf_tail = False
-    if 44100 < samplerate <= 48000 and near_nyq_high and ceiling_hz >= 10500.0:
+    if 44100 <= samplerate <= 48000 and near_nyq_high and ceiling_hz >= 10500.0:
         s_hi, ok_hi = _freq_slice(freqs, 0.84 * nyquist, 0.90 * nyquist)
         s_vhi, ok_vhi = _freq_slice(freqs, 0.90 * nyquist, 0.94 * nyquist)
         s_acd, ok_acd = _freq_slice(freqs, 0.925 * nyquist, 0.958 * nyquist)
@@ -1437,8 +1436,10 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
             e_vhi = float(np.median(spectrum_mid_db[s_vhi]))
             e_acd = float(np.median(spectrum_mid_db[s_acd]))
             e_stop = float(np.median(spectrum_mid_db[s_stop]))
+            stop_lo = -130.0 if samplerate == 44100 else -125.0
+            stop_hi = -105.0 if samplerate == 44100 else -90.0
             native_24bit_hf_tail = bool(
-                -125.0 <= e_stop <= -90.0
+                stop_lo <= e_stop <= stop_hi
                 and (e_hi - e_stop) >= 12.0
                 and (e_vhi - e_stop) >= 6.0
                 and (e_acd - e_stop) >= 2.8
@@ -1478,6 +1479,10 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "decaimiento_acustico_suave": smooth_acoustic_decay,
         "rolloff_banda_limitada_genuina": smooth_band_limited_rolloff,
         "native_24bit_hf_tail":     native_24bit_hf_tail,
+        "noise_shaped_16_in_24":    False,
+        "quiet_hf_slope_db":        0.0,
+        "quiet_hf_flatness":        0.0,
+        "quiet_hf_floor_dbfs":      None,
         # Psychoacoustic metrics: the streaming path overwrites them with
         # _psycho.resultado(). Direct callers get the neutral default so every key
         # exists without an STFT-driven accumulator.
@@ -1508,7 +1513,8 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "espectrograma":      None,
     }
 
-def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=None):
+def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=None,
+                     bits_per_sample=None):
     """Spectral analysis over an already loaded array (direct API and oracle of
     the tests). The production path uses _BlockAnalysis, which does not load
     the track. Both paths share the selector and the float32 STFT, so they must
@@ -1518,7 +1524,8 @@ def analyze_spectrum(data, samplerate, mode, seconds=None, save_png=False, path=
         accumulator = _SpectralAccumulator(
             samplerate, is_stereo,
             save_png=bool(save_png) and PIL_OK and bool(path),
-            path=path, mode=mode, seconds=seconds)
+            path=path, mode=mode, seconds=seconds,
+            bits_per_sample=bits_per_sample)
         for start in range(0, len(data), FRAMES_BY_BLOCK):
             accumulator.add(data[start : start + FRAMES_BY_BLOCK], start)
         return accumulator.result()
@@ -3454,6 +3461,73 @@ def _probe_sbr_qmf_from_chosen(chosen, mc_pair, sr, ceiling_val):
     return _detect_sbr_qmf_replication(mid_parts, sr)
 
 
+def _analyze_quiet_24bit_floor(quiet_audio, samplerate, is_stationary=False):
+    """Audits one quiet non-silent block (RMS in [-92, -40] dBFS) of a >16-bit
+    <=48 kHz container using the per-bin 10th percentile across STFT frames.
+
+    Only clearly rising noise-shaped 16-bit dither (slope >= +3.5 dB from
+    8-12 kHz to 19-21.5 kHz, spectral flatness >= 0.90, calibrated floor
+    >= -96.0 dBFS) triggers `noise_shaped_16_in_24`; flat or rolling-off
+    analogue tape/preamp floors are never flagged.
+    """
+    neutral = {
+        "noise_shaped_16_in_24": False,
+        "quiet_hf_slope_db": 0.0,
+        "quiet_hf_flatness": 0.0,
+        "quiet_hf_floor_dbfs": None,
+    }
+    if quiet_audio is None or not (41000 <= int(samplerate) <= 48000):
+        return neutral
+    ch0 = (
+        np.ascontiguousarray(quiet_audio[:, 0], dtype=np.float32)
+        if quiet_audio.ndim > 1
+        else np.ascontiguousarray(quiet_audio, dtype=np.float32)
+    )
+    nperseg = 4096
+    hop = 512
+    if ch0.size < nperseg + hop * 7:
+        return neutral
+    window = np.hanning(nperseg + 1)[:-1].astype(np.float32)
+    scale = np.float32(1.0 / float(window.sum()))
+    gain = _white_noise_gain(nperseg, window)
+    if gain <= 0.0:
+        return neutral
+    freqs = np.fft.rfftfreq(nperseg, 1.0 / float(samplerate))
+    z_q = _stft_complex(ch0, nperseg, hop, window, scale)
+    if z_q.shape[0] < 8:
+        return neutral
+    p_q = _power_from_fft(z_q).astype(np.float64) / gain
+    # Per-bin 10th percentile removes transient fade-ins; dividing by the exact
+    # Exp(1) P10 quantile (-ln(0.9)) recovers the calibrated white-noise dBFS.
+    p10_cal = np.percentile(p_q, 10, axis=0) / (-math.log(0.9))
+    sl_mid, ok_mid = _freq_slice(freqs, 8000.0, 12000.0, True)
+    sl_hi, ok_hi = _freq_slice(
+        freqs, 19000.0, min(21500.0, float(samplerate) * 0.488), True
+    )
+    if not (ok_mid and ok_hi):
+        return neutral
+    mid_vals = np.maximum(p10_cal[sl_mid], 1e-28)
+    hi_vals = np.maximum(p10_cal[sl_hi], 1e-28)
+    mid_db = float(10.0 * math.log10(max(float(np.median(mid_vals)), 1e-28)))
+    hi_db = float(10.0 * math.log10(max(float(np.median(hi_vals)), 1e-28)))
+    slope_db = hi_db - mid_db
+    flatness = float(math.exp(float(np.mean(np.log(hi_vals)))) / float(np.mean(hi_vals)))
+    if not (math.isfinite(slope_db) and math.isfinite(flatness) and math.isfinite(hi_db)):
+        return neutral
+    detected = bool(
+        not is_stationary
+        and slope_db >= 3.5
+        and flatness >= 0.90
+        and hi_db >= -96.0
+    )
+    return {
+        "noise_shaped_16_in_24": detected,
+        "quiet_hf_slope_db": round(slope_db, 2),
+        "quiet_hf_flatness": round(flatness, 4),
+        "quiet_hf_floor_dbfs": round(hi_db, 2),
+    }
+
+
 class _SpectralAccumulator:
     """Keeps the K most active blocks in memory and runs the STFT on them at the
     end. Shared by the streaming path and the array path so both give the same
@@ -3461,13 +3535,20 @@ class _SpectralAccumulator:
     between two non-adjacent blocks, which would invent high-frequency content."""
 
     def __init__(self, samplerate, is_stereo=None, save_png=False, path=None,
-                 renderer=None, mode="center", seconds=None):
+                 renderer=None, mode="center", seconds=None, bits_per_sample=None):
         self.sr = int(samplerate)
         self.is_stereo = is_stereo
         self.save_png = bool(save_png)
         self.path = path
         self.mode = SpectralMode.coerce(mode, default=SpectralMode.CENTER).value
         self.seconds = seconds
+        self.bits_per_sample = int(bits_per_sample) if bits_per_sample is not None else None
+        self._track_quiet_24 = bool(
+            self.bits_per_sample is not None
+            and self.bits_per_sample > 16
+            and 41000 <= self.sr <= 48000
+        )
+        self._quiet_block = None    # (rms_db, audio_f32) for 1 quiet non-silent block
         self._max_sample = (
             int(round(max(1.0, float(seconds if seconds is not None else 15.0)) * self.sr))
             if self.mode == SpectralMode.SECONDS.value else None
@@ -3542,7 +3623,13 @@ class _SpectralAccumulator:
                 len(self._seleccion) < self._k
                 or (e_diff, -index) > self._seleccion[0][:2]
             )
-            if not needs_backup and not needs_heap:
+            needs_quiet = (
+                self._track_quiet_24
+                and block.shape[0] >= 8192
+                and -92.0 <= rms_db <= -40.0
+                and (self._quiet_block is None or rms_db < self._quiet_block[0])
+            )
+            if not needs_backup and not needs_heap and not needs_quiet:
                 return
 
             if int_scale is not None:
@@ -3552,6 +3639,8 @@ class _SpectralAccumulator:
                 audio = np.asarray(block, dtype=np.float32)
             if needs_backup:
                 self._backup = (rms_db, -index, index, int(start), audio)
+            if needs_quiet:
+                self._quiet_block = (rms_db, audio)
             if needs_heap:
                 entry = (e_diff, -index, index, int(start), audio)
                 if len(self._seleccion) < self._k:
@@ -3916,6 +4005,14 @@ class _SpectralAccumulator:
                 and not spectrum.get("mdct_lattice_detected")):
             spectrum.update(
                 _probe_sbr_qmf_from_chosen(chosen, mc_pair, self.sr, ceiling_val)
+            )
+        if self._track_quiet_24 and self._quiet_block is not None:
+            spectrum.update(
+                _analyze_quiet_24bit_floor(
+                    self._quiet_block[1],
+                    self.sr,
+                    is_stationary=bool(spectrum.get("es_estacionario")),
+                )
             )
         if self.save_png and png_power:
             png_path, error = self._invoke_renderer(

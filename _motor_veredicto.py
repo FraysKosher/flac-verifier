@@ -63,6 +63,7 @@ class FindingCode(str, Enum):
     EMPTY_LSBS = "empty_lsbs"
     PARTIAL_LSBS = "partial_lsbs"
     GAIN_COMB_24 = "gain_comb_24"
+    NOISE_SHAPED_16_IN_24 = "noise_shaped_16_in_24"
     ALBUM_LOSSY_CONSISTENCY = "album_lossy_consistency"
 
 
@@ -564,7 +565,13 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
             # It is neither flagged nor rewarded unless a genuinely band-limited
             # ADC transition sits right on the Nyquist edge (>= 95%) with zero
             # codec evidence; otherwise it stays inconclusive.
-            if (0.75 <= rel_ceiling < 0.88
+            backed_24b_adc = bool(
+                bits > 16
+                and sr <= 48000
+                and (acoustic_exemption or band_limited_exemption)
+                and spectrum.get("native_24bit_hf_tail")
+            )
+            if ((0.75 <= rel_ceiling < 0.88 or backed_24b_adc)
                     and (rel_cutoff or 0.0) >= 0.95
                     and without_signatures_lossy):
                 ledger.add_votes(1.5)
@@ -916,6 +923,24 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 0.40,
                 family=EvidenceFamily.BIT_DEPTH_CONTAINER,
                 code=FindingCode.DITHER_16_IN_24,
+            )
+        if (spectrum.get("noise_shaped_16_in_24")
+                and lsbs != LsbStatus.EMPTY.value
+                and not forensic.get("es_padded_16_en_24")
+                and not forensic.get("es_24bit_escalado_en_peine")
+                and not forensic.get("es_16bit_dither_en_24")):
+            floor_q = spectrum.get("quiet_hf_floor_dbfs")
+            floor_txt = f"{floor_q:.1f} dBFS" if isinstance(floor_q, (int, float)) else "elevated"
+            ledger.penalize(
+                f"Noise-shaped 16-bit dither floor inside a {bits}-bit container "
+                f"(quiet 19-21.5 kHz floor {floor_txt}, "
+                f"+{spectrum.get('quiet_hf_slope_db', 0.0):.1f} dB upper-band rise, "
+                f"flatness {spectrum.get('quiet_hf_flatness', 0.0):.2f})",
+                0.30,
+                blocks_max_verdict=True,
+                family=EvidenceFamily.BIT_DEPTH_CONTAINER,
+                tier=EvidenceTier.SOFT_BLOCKING,
+                code=FindingCode.NOISE_SHAPED_16_IN_24,
             )
 
     # MD5: it is NO longer scored. Its check is reported as a fact of its own in
@@ -1489,6 +1514,13 @@ def forensic_evidence(result):
         occ = (forensic.get("lsb8_ocupacion_interior") or 0.0) * 100.0
         evidence.append(f"16-bit grid with boundary micro-dither in {bits_container}-bit "
                           f"(interior LSB8 occupancy {occ:.2f}%)")
+    if spectrum.get("noise_shaped_16_in_24"):
+        floor_q = spectrum.get("quiet_hf_floor_dbfs")
+        floor_txt = f"{floor_q:.1f} dBFS" if isinstance(floor_q, (int, float)) else "elevated"
+        evidence.append(
+            f"Noise-shaped 16-bit dither floor in {bits_container}-bit "
+            f"({floor_txt}, +{spectrum.get('quiet_hf_slope_db', 0.0):.1f} dB rise)"
+        )
     if forensic.get("es_flujo_dop"):
         evidence.append("DoP 1.0 framing markers (0x05/0xFA) detected in top byte")
     fams = spectrum.get("familias_evidencia_lossy") or []

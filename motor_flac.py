@@ -769,7 +769,8 @@ class _BlockAnalysis:
             self.sr, meta.get("canales", 0) >= 2 if meta.get("canales") else None,
             save_png=self.save_png, path=path,
             renderer=_save_spectrogram,
-            mode=mode, seconds=seconds)
+            mode=mode, seconds=seconds,
+            bits_per_sample=self.bits)
         self._state = AccumulatorState.COLLECTING
         self._cached_result = None
 

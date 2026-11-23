@@ -379,7 +379,8 @@ class _StreamingBitDepthAccumulator:
                 return
             self._n_active += int(active_mask.size)
             upscaled = active_mask * 32768.0
-            self._n_grid16 += int(np.count_nonzero(np.abs(upscaled - np.rint(upscaled)) < 0.05))
+            # Match the native int24 grid tolerance ((active + 12) & 0xFF) <= 24 -> 25/256.
+            self._n_grid16 += int(np.count_nonzero(np.abs(upscaled - np.rint(upscaled)) < (12.5 / 256.0)))
             scale_b = float(1 << (self.bits - 1))
             if self.bits < 32:
                 q = np.rint(active_mask * scale_b).astype(np.int32)
@@ -445,7 +446,8 @@ def analyze_bit_depth(data, meta, include_forensic=True):
 
         # 1) Are the samples on the 16-bit grid? (the classic upscale test)
         upscaled = active_mask * 32768.0
-        n_grid16 = int(np.count_nonzero(np.abs(upscaled - np.rint(upscaled)) < 0.05))
+        # Match the native int24 grid tolerance ((active + 12) & 0xFF) <= 24 -> 25/256.
+        n_grid16 = int(np.count_nonzero(np.abs(upscaled - np.rint(upscaled)) < (12.5 / 256.0)))
 
         # 2) Effective resolution: declared bits minus the mode of trailing zeros
         #    of the integer samples (16 bits inside 24 -> 8 zeros -> 16 bits).
