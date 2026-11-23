@@ -3876,8 +3876,8 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(iso_spec["finding_codes"], [motor_flac.FindingCode.LOW_SPECTRAL_CEILING.value])
         self.assertEqual(len(probs_iso), 1)
 
-        # 9. Invariant 2.7.0: ALBUM_LOSSY_CONSISTENCY + psycho_detector_error
-        self.assertEqual(len(list(motor_flac.FindingCode)), 24)
+        # 9. Invariant 2.7.0+: ALBUM_LOSSY_CONSISTENCY + psycho_detector_error
+        self.assertEqual(len(list(motor_flac.FindingCode)), 26)
         lossy_dir = self.base_path / "schema270_lossy_album"
         lossy_dir.mkdir(parents=True, exist_ok=True)
         lossy_batch = [
@@ -4230,6 +4230,55 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
             fc.EMPTY_LSBS.value,
         }
         self.assertTrue(expected_hr_subset.issubset(set(spec_hr["finding_codes"])))
+
+        # Engine 15.0 SOFT_BLOCKING codes: STEREO_PHASE_COUPLING and NOISE_SHAPED_16_IN_24,
+        # plus album-coherence rescue blocking for both flags.
+        spec_v15 = {
+            "techo_hz": 21500,
+            "techo_rel_nyquist": 21500 / 22050.0,
+            "clase_corte": "no_cutoff",
+            "frecuencia_corte": None,
+            "distancia_nyquist": None,
+            "ratio_aplica": True,
+            "ratio": 0.15,
+            "var_alta_db": 12.0,
+            "separacion_stereo": 0.4,
+            "stereo_phase_coupling": True,
+            "msc_lo": 0.02,
+            "msc_hi": 0.96,
+            "msc_step_hf": 0.94,
+            "ipd_phase_lock_hf": 0.99,
+            "noise_shaped_16_in_24": True,
+            "quiet_hf_floor_dbfs": -86.0,
+            "quiet_hf_slope_db": 5.5,
+            "quiet_hf_flatness": 0.96,
+        }
+        _, _, probs_v15 = motor_flac.calculate_score(
+            {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2},
+            spec_v15,
+            {"aplica": True, "lsbs": "active", "forense_bits": {}},
+        )
+        self.assertEqual(len(spec_v15["finding_codes"]), len(probs_v15))
+        self.assertIn(fc.STEREO_PHASE_COUPLING.value, spec_v15["finding_codes"])
+        self.assertIn(fc.NOISE_SHAPED_16_IN_24.value, spec_v15["finding_codes"])
+
+        for flag_key in ("noise_shaped_16_in_24", "stereo_phase_coupling"):
+            cand_res = {
+                "meta": {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2},
+                "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+                "bdi": {"aplica": True, "lsbs": "active", "forense_bits": {}},
+                "esp": {
+                    "techo_hz": 14000,
+                    "techo_rel_nyquist": 14000 / 22050.0,
+                    "clase_corte": "no_cutoff",
+                    "corte_artificial": False,
+                    "iqr_corte_hz": 100.0,
+                    "ratio_huecos_mdct": 0.0,
+                    flag_key: True,
+                },
+                "problemas": ["flagged"],
+            }
+            self.assertFalse(motor_flac._deserves_album_coherence(cand_res), flag_key)
 
     def test_typed_album_coherence_clearing_and_legacy_fallback(self):
         """Typed FindingCode gates rescue, clears codes on shallow copy, and preserves legacy fallback."""

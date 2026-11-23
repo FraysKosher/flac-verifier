@@ -44,7 +44,7 @@ for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
     os.environ.setdefault(_variable_blas, "1")
 del _variable_blas
 
-VERSION = "2.10.6"
+VERSION = "2.11.0"
 ENGINE_EXE_NAME = "flac_motor.exe"
 
 

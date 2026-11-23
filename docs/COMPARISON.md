@@ -3,8 +3,8 @@
 Both **FLAC VERIFIER** and **[FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective)**
 answer the same question — *is this lossless file genuinely lossless, or a
 lossy transcode / inflated container in disguise?* — from two different
-engineering philosophies. This page compares **FLAC VERIFIER `v2.10.6`** (`engine
-14.8`) and **FLAC Detective `v2.6.0`**, with the exact commands used to obtain
+engineering philosophies. This page compares **FLAC VERIFIER `v2.11.0`** (`engine
+15.0`) and **FLAC Detective `v2.6.0`**, with the exact commands used to obtain
 every figure, so you can choose the one that fits your workflow (or use both).
 
 - **FLAC Detective** is a Python package, CLI and library scanner meant to be
@@ -14,31 +14,33 @@ every figure, so you can choose the one that fits your workflow (or use both).
 - **FLAC VERIFIER** is a self-contained Windows desktop application (plus CLI
   and NDJSON engine) that requires no Python installation on the target machine,
   verifies bit-exact `STREAMINFO MD5` integrity alongside spectral,
-  lapped-transform (`MDCT-1024` Vorbis + AAC `KBD`/Sine, `PQMF-576`, `PQMF-32`,
-  `CELT-960`), seamless HE-AAC QMF SBR, multi-family corroboration, and
-  24/32-bit algebraic forensics in a single streaming pass, and produces an
-  archival per-album PDF report with embedded spectrograms.
+  lapped-transform (`MDCT-1024` Vorbis + AAC `KBD`/Sine, `PQMF-576`,
+  `MDCT-512` AC-3/E-AC-3, `PQMF-32`, `CELT-960`, including `88.2–192 kHz`
+  Hi-Res decimation), seamless HE-AAC QMF SBR, inter-channel `MSC`/`IPD`
+  stereo phase coupling, multi-family corroboration, and 24/32-bit algebraic
+  forensics in a single streaming pass, and produces an archival per-album PDF
+  report with embedded spectrograms.
 
 ---
 
 ## Side by side
 
-| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.10.6`, engine `14.8`) |
+| Dimension | FLAC Detective (`v2.6.0`) | FLAC VERIFIER (`v2.11.0`, engine `15.0`) |
 |---|---|---|
 | **Primary shape** | Python library + CLI + `beets` plugin + optional PySide6 GUI | Standalone Windows desktop app (`FLAC_Verifier.exe` + `flac_motor.exe`), `uv`/`pipx` CLI entry points & NDJSON engine |
 | **Installation** | `pip install flac-detective` (`[gui]`, `[ml]`, `[beets]`), Docker (`amd64`/`arm64`), built-in `--update` | Portable Windows ZIP (no Python required), `uv tool install ".[all]"`, or `pip install -r requirements.txt` |
 | **OS shell integration** | Windows Explorer right-click menu (`--install-context-menu`) | Drag-and-drop folder/file target (`tkinterdnd2`), dark/light live in-place theme switch |
 | **Input formats** | FLAC (8/16/24/32-bit), WAV, ALAC (`.m4a`), APE (`.ape`), Musepack | FLAC (8/16/24/32-bit, CD and Hi-Res up to 192 kHz) |
 | **Bit-exact integrity (`STREAMINFO MD5`)** | Not checked (`0` matches in `src/`); offers a separate FLAC stream repair tool (`flac_detective.repair`) | Reconstructs decoded PCM bytes and verifies the 128-bit `STREAMINFO MD5` in the same pass; mismatch is a hard error outside scoring |
-| **Transcode forensics** | 18 rules across independent evidence families: spectral cliff, MP3/Vorbis/Opus MDCT frame-alignment grids (including Vorbis block switching & CELT de-emphasis undo), HE-AAC QMF phase coherence (`Rule 17`), Side-channel step (`Rule 18`), plus optional stereo CNN (`Rule 12`) | Orthogonal lapped transform & subband inversion (`MDCT-1024` Vorbis + MPEG-4 AAC `KBD` $\alpha=4$ 128-subgrid across `L`/`R`/`Mid`, `PQMF-576` MP3 32-band polyphase + 18-MDCT, `PQMF-32` Musepack SV7/SV8 subband frame grid, `CELT-960` Opus TDAC boundary cancellation, plus adaptive passband/ATH-tail inversion for vintage masters) + seamless QMF subband transposition (`sbr_qmf_detectado` at 44.1–192 kHz) + stationarity guard (`es_estacionario`) + energy-guided full-track STFT |
-| **24-bit & Hi-Res upscale forensics** | Separate `hires_verdict` axis (`GENUINE_HIRES`, `UPSAMPLED`, `PADDED_DEPTH`): trailing-zero bit check across 8 windows + Welch cliff at `22.05/24/44.1/48 kHz` above a `-70 dB` void | Integrated into the forensic model: full-stream modulo-256 LSB8 & 32-bit audit (`es_padded_16_en_24`, `es_16bit_dither_en_24` for $\pm 1\dots 3\text{ LSB}_{24}$ micro-dither, `es_24bit_escalado_en_peine` gain comb, DoP markers), `22.05/24.0 kHz` Nyquist brickwall, `23–29 kHz` aliasing mirror, DSD64/Scarlet/DSD128 ultrasonic ramp recognition, and smooth vintage/analogue roll-off protection (`rolloff_banda_limitada_genuina`) |
+| **Transcode forensics** | 18 rules across independent evidence families: spectral cliff, MP3/Vorbis/Opus MDCT frame-alignment grids (including Vorbis block switching & CELT de-emphasis undo), HE-AAC QMF phase coherence (`Rule 17`), Side-channel step (`Rule 18`), plus optional stereo CNN (`Rule 12`) | Orthogonal lapped transform & subband inversion (`MDCT-1024` Vorbis + MPEG-4 AAC `KBD` $\alpha=4$ 128-subgrid across `L`/`R`/`Mid`, `PQMF-576` MP3 32-band polyphase + 18-MDCT, `MDCT-512` AC-3/E-AC-3 `KBD` $\alpha=5$, `PQMF-32` Musepack SV7/SV8 subband frame grid, `CELT-960` Opus TDAC boundary cancellation, plus pure-NumPy Hi-Res `88.2–192 kHz` decimation bridge and adaptive passband/ATH-tail inversion for vintage masters) + seamless QMF subband transposition (`sbr_qmf_detectado` at 44.1–192 kHz) + inter-channel `MSC`/`IPD` stereo phase coupling (`stereo_phase_coupling`) + stationarity guard (`es_estacionario`) + energy-guided full-track STFT |
+| **24-bit & Hi-Res upscale forensics** | Separate `hires_verdict` axis (`GENUINE_HIRES`, `UPSAMPLED`, `PADDED_DEPTH`): trailing-zero bit check across 8 windows + Welch cliff at `22.05/24/44.1/48 kHz` above a `-70 dB` void | Integrated into the forensic model: full-stream modulo-256 LSB8 & 32-bit audit (`es_padded_16_en_24`, `es_16bit_dither_en_24` for $\pm 1\dots 3\text{ LSB}_{24}$ micro-dither, `noise_shaped_16_in_24` quiet-block noise-shaped dither guard, `es_24bit_escalado_en_peine` gain comb, DoP markers), `native_24bit_hf_tail` on `44.1–48 kHz` studio masters, `22.05/24.0 kHz` Nyquist brickwall, `23–29 kHz` aliasing mirror, DSD64/Scarlet/DSD128 ultrasonic ramp recognition, and smooth vintage/analogue roll-off protection (`rolloff_banda_limitada_genuina`) |
 | **Album-level context** | Per-file independent evaluation | Album-level master coherence (`coherencia_album`) across the batch, plus natural numeric track ordering (`1, 2, …, 10, …, 100`) |
 | **Verdict model** | Two axes: transcode (`AUTHENTIC` / `WARNING` / `SUSPICIOUS` / `FAKE_CERTAIN`, 0–150 pts, conviction requires 2 evidence families) + `hires_verdict` | Single unified verdict (`GENUINE LOSSLESS` / `PROBABLY LOSSLESS` / `SUSPICIOUS` / `PROBABLE UPSCALE` / `indeterminate`), positive evidence minus confirmed defects; `PROBABLE UPSCALE` requires multi-family corroboration (`corroboracion_multifamilia`) or a deterministic filterbank/cutoff/bit-depth proof |
 | **Reports** | Text, CSV, JSON and self-contained HTML triage report with spectrum curves | Per-album PDF report (`flac_verifier_report.pdf`: executive cover, one page per song with embedded Pillow spectrogram and detected issues or technical notes, overall summary table) + NDJSON stream |
 | **Parallelism & caching** | Process pool (`cli/pool.py`) and in-run audio/window cache | Process pool (up to 8 workers) + persistent on-disk per-track JSON cache keyed by size, `mtime_ns`, `STREAMINFO MD5`, `ENGINE_VERSION` and render fingerprint |
-| **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (8,780 lines), or 12 modules (9,580 lines) including build/verification scripts |
-| **Automated tests** | 772 test functions across 82 files (`pytest`) | 428 test functions across 13 files (`unittest`, zero external audio files) + 260-track real-encoder benchmark + 12-check frozen `.exe` gate |
-| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.10.6` (`ENGINE_VERSION = "14.8"`, 2026-11-22) |
+| **Codebase size** | 89 Python files, 18,873 lines in `src/` | 10 application modules (16,229 lines), or 12 modules (17,147 lines) including build/verification scripts |
+| **Automated tests** | 772 test functions across 82 files (`pytest`) | 433 test functions across 13 files (`unittest`, zero external audio files) + 290-track real-encoder benchmark + 12-check frozen `.exe` gate |
+| **Version & commit checked** | `v2.6.0` (`52c51a5`, 2026-11-02) | `v2.11.0` (`ENGINE_VERSION = "15.0"`, 2026-11-23) |
 | **Licence** | MIT | AGPL-3.0-or-later |
 
 ---
@@ -80,16 +82,19 @@ and an archival album PDF**:
    streaming pass and hashes the raw little-endian PCM bytes against the
    128-bit MD5 stored in `STREAMINFO`. Corrupt or truncated files are caught
    deterministically and never assigned a speculative authenticity score.
-3. **Orthogonal lapped transform & subband inversion (`MDCT-1024`, `PQMF-576`, `PQMF-32`, `CELT-960`) + seamless QMF SBR:**
+3. **Orthogonal lapped transform & subband inversion (`MDCT-1024`, `PQMF-576`, `MDCT-512`, `PQMF-32`, `CELT-960`) + Hi-Res decimation & seamless QMF SBR:**
    Projects the decoded waveform onto forward codec filterbanks across all
    sample-level phase offsets (`128` Vorbis/AAC block-switching offsets, `576`
-   MP3 32-band PQMF × 18-MDCT granule phases, `32 × 36` Musepack `PQMF-32`
-   subband frame phases, and `120` Opus CELT short-block offsets after inverting
-   CELT post-emphasis) and sweeps local-whitened additive QMF shifts (`3.5–9.5
-   kHz`) for seamless HE-AAC SBR. When a recording's musical ceiling sits in
-   `9.5–17.5 kHz`, `MDCT-1024` and `PQMF-576` adapt to the passband and ATH
-   roll-off tail so genuine 1950s–1970s archival masters are spared while
-   transcoded vintage masters are still caught.
+   MP3 32-band PQMF × 18-MDCT granule phases, `256` AC-3/E-AC-3 `KBD` $\alpha=5$
+   MDCT-512 phases, `32 × 36` Musepack `PQMF-32` subband frame phases, and `120`
+   Opus CELT short-block offsets after inverting CELT post-emphasis), bridges
+   `88.2–192 kHz` Hi-Res containers down to `44.1/48 kHz` via pure-NumPy
+   decimation, sweeps local-whitened additive QMF shifts (`3.5–9.5 kHz`) for
+   seamless HE-AAC SBR, and computes inter-channel `MSC`/`IPD` phase coupling in
+   the streaming STFT. When a recording's musical ceiling sits in `9.5–17.5 kHz`,
+   `MDCT-1024` and `PQMF-576` adapt to the passband and ATH roll-off tail so
+   genuine 1950s–1970s archival masters are spared while transcoded vintage
+   masters are still caught.
 4. **Full-track 24-bit algebraic lattice & micro-dither detection:** Rather than
    only checking whether trailing bits are all zero, `_motor_bits.py` builds a
    modulo-256 LSB8 histogram across the track to catch:
@@ -137,21 +142,21 @@ grep -rE '^\s*def test_' tests | wc -l                                          
 FLAC Detective is MIT licensed; FLAC VERIFIER is licensed under GNU AGPLv3+ (`AGPL-3.0-or-later`).
 
 <!-- BENCHMARK:START -->
-## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 260)
+## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 290)
 
-Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `14.8`):
-- **110 authentic controls** across 11 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, and Stationary electronic synth drones & genuine 32-bit `PCM_32` masters.
-- **150 fake & adversarial tracks** across 21 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
+Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `15.0`):
+- **120 authentic controls** across 12 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, and Genuine 24/44.1 warm high-DR studio masters.
+- **170 fake & adversarial tracks** across 24 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|
-| Fake (n = 150) | **TP = 150** | FN = 0 |
-| Authentic (n = 110) | FP = 0 | **TN = 110** |
+| Fake (n = 170) | **TP = 170** | FN = 0 |
+| Authentic (n = 120) | FP = 0 | **TN = 120** |
 
 | Metric | Value | Wilson 95% CI |
 |---|---:|---:|
-| Sensitivity (TPR) | **100.0%** | 97.5% – 100.0% |
-| Specificity (TNR) | **100.0%** | 96.6% – 100.0% |
+| Sensitivity (TPR) | **100.0%** | 97.8% – 100.0% |
+| Specificity (TNR) | **100.0%** | 96.9% – 100.0% |
 
 Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **PASS**.
 

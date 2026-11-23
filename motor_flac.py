@@ -95,7 +95,14 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "14.8"
+ENGINE_VERSION = "15.0"
+# 15.0: Add MDCT-512 (KBD alpha=5) lattice detector for AC-3 / E-AC-3, pure-NumPy
+#       phase-aligned Hi-Res decimation bridge (88.2-192 kHz -> 44.1/48 kHz) with
+#       unlocked far_cutoff codec attribution, float64/int24 16-bit grid tolerance
+#       parity (25/256), 24/44.1 native_24bit_hf_tail (<= -105 dBFS stopband),
+#       quiet-block noise-shaped 16-in-24 guard (`noise_shaped_16_in_24`), and
+#       STFT L2-tile inter-channel MSC/IPD phase-coupling cliff detector
+#       (`stereo_phase_coupling`).
 # 14.8: Recognise clean digital solo-instrument masters (e.g. modern ECM solo
 #       piano at 7.5-10.5 kHz with smooth pre/post-ceiling decay and silent or
 #       noise-shaped digital floor), add a dedicated 6.5-12.5 kHz low-band
@@ -280,7 +287,7 @@ ENGINE_VERSION = "14.8"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.7.0"
+CACHE_SCHEMA_VERSION = "2.8.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 

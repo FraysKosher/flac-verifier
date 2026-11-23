@@ -981,10 +981,12 @@ def _deserves_album_coherence(result):
     if (spectrum.get("techo_rel_nyquist") or 1.0) >= max_coh_rel:
         return False
     for key in ("muro_brickwall_nyquist", "espejo_aliasing_detectado",
-                  "sospecha_joint_stereo", "sospecha_corte_opus_20k",
+                  "sospecha_joint_stereo", "stereo_phase_coupling",
+                  "sospecha_corte_opus_20k",
                   "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
                   "sospecha_excitador_armonico", "sbr_qmf_detectado",
-                  "modulacion_psicoacustica_20k", "mdct_lattice_detected"):
+                  "modulacion_psicoacustica_20k", "mdct_lattice_detected",
+                  "noise_shaped_16_in_24"):
         if spectrum.get(key):
             return False
     dark_sparse_iqr_ok = _allows_dark_sparse_iqr_rescue(sr, spectrum, md5_state)
@@ -1169,10 +1171,12 @@ def _is_clean_batch_track(result):
         return False
     for key in (
         "muro_brickwall_nyquist", "espejo_aliasing_detectado",
-        "sospecha_joint_stereo", "sospecha_corte_opus_20k",
+        "sospecha_joint_stereo", "stereo_phase_coupling",
+        "sospecha_corte_opus_20k",
         "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
         "sospecha_excitador_armonico", "sbr_qmf_detectado",
         "modulacion_psicoacustica_20k", "mdct_lattice_detected",
+        "noise_shaped_16_in_24",
     ):
         if spectrum.get(key):
             return False

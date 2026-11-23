@@ -1,16 +1,16 @@
-"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Phase 13).
+"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 15.0).
 
-Builds 260 tracks (110 authentic across 11 genuine mastering/archival/synth
-families and 150 fakes across 21 real-encoder, SBR, subband, KBD-asymmetric,
-upscale and 24/32-bit forensic families) with fixed deterministic seeds, runs
-the engine on every track, and reports the confusion matrix, sensitivity,
-specificity, Wilson 95% confidence intervals, per-family breakdown and corpus
-SHA-256 digest.
+Builds 290 tracks (120 authentic across 12 genuine mastering/archival/synth
+families and 170 fakes across 24 real-encoder, AC-3/E-AC-3, Hi-Res ultrasonic-
+masked transcode, SBR, subband, KBD-asymmetric, upscale and 24/32-bit forensic
+families) with fixed deterministic seeds, runs the engine on every track, and
+reports the confusion matrix, sensitivity, specificity, Wilson 95% confidence
+intervals, per-family breakdown and corpus SHA-256 digest.
 
 When `ffmpeg` is available on PATH, real external codec binaries (`libmp3lame`,
-`libshine`, `mp2`, `aac`, `aac_mf`, `libvorbis`, `libopus`, `wmav2`) encode and
-decode the lossy families; otherwise deterministic filterbank equivalents keep
-the benchmark runnable in minimal CI environments.
+`libshine`, `mp2`, `aac`, `aac_mf`, `libvorbis`, `libopus`, `wmav2`, `ac3`,
+`eac3`) encode and decode the lossy families; otherwise deterministic filterbank
+equivalents keep the benchmark runnable in minimal CI environments.
 
     python tests/benchmark_validacion.py
     python tests/benchmark_validacion.py --check
@@ -18,7 +18,7 @@ the benchmark runnable in minimal CI environments.
 Without `--check`, updates the validation tables in `docs/VALIDATION.md`,
 `README.md` and `docs/COMPARISON.md` and requires sensitivity >= 95%,
 specificity >= 95% and album coherence. With `--check`, runs non-mutating and
-requires 100% pass across all 260 tracks plus album coherence.
+requires 100% pass across all 290 tracks plus album coherence.
 """
 import argparse
 from concurrent.futures import ProcessPoolExecutor
@@ -40,7 +40,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import motor_flac
-from _motor_espectral import _fast_mdct_f32, _get_celt_1920, _get_kbd_2048, _get_vorbis_2048
+from _motor_espectral import (
+    _fast_mdct_f32, _get_celt_1920, _get_kbd_2048, _get_kbd_512_ac3, _get_vorbis_2048
+)
 
 SEED = 2026
 GOOD_VERDICTS = ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
@@ -317,6 +319,26 @@ def _musepack_pqmf32(x, sr=44100, block_len=12, seed=31):
     return out / (np.max(np.abs(out)) * 1.14)
 
 
+def _mdct512_ac3_roundtrip(x, sr=44100, zero_prob=0.45, seed=23):
+    rng = np.random.default_rng(seed)
+    w = _get_kbd_512_ac3()
+    nyq = sr / 2.0
+    k_lo = int(11000.0 / nyq * 256)
+    k_hi = int(min(20000.0, sr * 0.455) / nyq * 256)
+    out = []
+    for ch in range(x.shape[1]):
+        padded = np.pad(x[:, ch].astype(np.float32), (512, 512))
+        n_fr = (padded.size - 512) // 256
+        frames = np.lib.stride_tricks.sliding_window_view(padded, 512)[::256][:n_fr]
+        c = _fast_mdct_f32(frames, w)
+        mask = rng.random((n_fr, k_hi - k_lo)) < zero_prob
+        c[:, k_lo:k_hi] = np.where(mask, 0.0, c[:, k_lo:k_hi] * np.sqrt(1.0 / (1.0 - zero_prob)))
+        rec = _imdct_overlap_add(c, w)
+        out.append(rec[512 + 29 : 512 + 29 + len(x)])
+    y = np.column_stack(out).astype(np.float64)
+    return y / (np.max(np.abs(y)) * 1.14)
+
+
 def _save(path, x, sr, subtype):
     sf.write(path, np.clip(x, -0.99, 0.99), sr, subtype=subtype)
 
@@ -345,10 +367,10 @@ def _ffmpeg_encode_decode(wav_in, out_flac, lossy_ext, codec_args, out_sr=None):
                 pass
 
 
-# ─── DATASET (n = 260: 110 authentic + 150 fake) ────────────────────────────
+# ─── DATASET (n = 290: 120 authentic + 170 fake) ────────────────────────────
 
 def create_dataset(directory):
-    """Returns [(path, authentic_bool, class_name, backend)] for n = 260 tracks."""
+    """Returns [(path, authentic_bool, class_name, backend)] for n = 290 tracks."""
     cases = []
     sr = 44100
 
@@ -475,6 +497,41 @@ def create_dataset(directory):
                 _save(p, x32, sr, "PCM_24")
                 backend = "dsp_fallback"
         cases.append((p, True, "GEN 11: Stationary synth drone & 32-bit PCM_32", backend))
+
+    # 12. Genuine 24/44.1 high-DR warm studio master (<= -105 dBFS ADC stopband)
+    for i in range(10):
+        p = os.path.join(directory, f"gen_warm_24_44_{i:02d}.flac")
+        rng = np.random.default_rng(2010 + i)
+        n_w = int(sr * 6.0)
+        t_w = np.arange(n_w, dtype=np.float64) / float(sr)
+        body = signal.sosfilt(
+            signal.butter(2, 2400.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n_w, 2)) * 0.16,
+            axis=0,
+        )
+        strum = (0.30 + 0.70 * (np.sin(2.0 * np.pi * (1.2 + 0.1 * i) * t_w) ** 2))[:, None]
+        warm_air = signal.sosfilt(
+            signal.butter(3, 13500.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n_w, 2)) * 0.005,
+            axis=0,
+        ) * strum
+        adc_tail = signal.sosfilt(
+            signal.butter(6, 20900.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n_w, 2)) * 0.0006,
+            axis=0,
+        )
+        chords = sum(
+            0.055 * np.sin(2.0 * np.pi * f0 * t_w)[:, None]
+            for f0 in (164.81, 246.94, 329.63, 493.88)
+        )
+        warm_24 = np.clip(
+            body + chords + warm_air + adc_tail
+            + rng.normal(0.0, 10.0 ** (-118.0 / 20.0), (n_w, 2)),
+            -0.88,
+            0.88,
+        )
+        _save(p, warm_24, sr, "PCM_24")
+        cases.append((p, True, "GEN 12: Genuine 24/44.1 warm high-DR master", "native_dsp"))
 
     # Pre-render 7 reference WAVs at 44.1 kHz for real ffmpeg codecs
     wav_refs = []
@@ -718,6 +775,97 @@ def create_dataset(directory):
                 backend = "dsp_fallback"
         cases.append((p, False, "FAKE 21: AAC KBD-1024 asymmetric & 16-in-32 bloat", backend))
 
+    # 22. AC-3 & E-AC-3 (16-bit 44.1/48 kHz MDCT-512)
+    for i in range(7):
+        p = os.path.join(directory, f"fake_ac3_eac3_{i:02d}.flac")
+        if i < 4:
+            ext_a, br_a = (".ac3", ["192k", "384k", "448k", "640k"][i])
+            c_args = ["-c:a", "ac3", "-b:a", br_a]
+        else:
+            ext_a, br_a = (".eac3", ["192k", "384k", "640k"][i - 4])
+            c_args = ["-c:a", "eac3", "-b:a", br_a]
+        used_ffmpeg = _ffmpeg_encode_decode(wav_refs[i], p, ext_a, c_args)
+        if not used_ffmpeg:
+            y_a = _mdct512_ac3_roundtrip(track_reference(sr, 5.0, 8100 + i), sr, seed=8150 + i)
+            _save(p, y_a, sr, "PCM_16")
+        cases.append((p, False, "FAKE 22: AC-3 / E-AC-3 16-bit (MDCT-512)",
+                      "ffmpeg" if used_ffmpeg else "dsp_fallback"))
+
+    # 23. Hi-Res 96 kHz transcodes masked with gentle ultrasonic hiss
+    hr_specs = [
+        (".mp3", ["-c:a", "libmp3lame", "-b:a", "320k", "-cutoff", "22050"]),
+        (".m4a", ["-c:a", "aac", "-b:a", "320k", "-cutoff", "22000"]),
+        (".ogg", ["-c:a", "libvorbis", "-q:a", "9"]),
+        (".mp3", ["-c:a", "libmp3lame", "-b:a", "320k", "-cutoff", "22050"]),
+        (".m4a", ["-c:a", "aac", "-b:a", "320k", "-cutoff", "22000"]),
+        (".ogg", ["-c:a", "libvorbis", "-q:a", "9"]),
+        (".opus", ["-c:a", "libopus", "-b:a", "256k"]),
+    ]
+    for i, (ext_h, c_args_h) in enumerate(hr_specs):
+        p = os.path.join(directory, f"fake_hires_masked_{i:02d}.flac")
+        rng_h = np.random.default_rng(8200 + i)
+        tmp_dec = os.path.join(directory, f"_tmp_hrm_{i}.flac")
+        if ext_h == ".opus":
+            w48_h = os.path.join(directory, f"_tmp_w48_{i}.wav")
+            _save(w48_h, track_reference(48000, 6.0, 8250 + i), 48000, "PCM_24")
+            used_ffmpeg = _ffmpeg_encode_decode(w48_h, tmp_dec, ext_h, c_args_h, out_sr=48000)
+            if os.path.exists(w48_h):
+                os.remove(w48_h)
+            up_h, dn_h, u_lo_h, u_ord_h = 2, 1, 23500.0, 8
+        else:
+            w44_h = os.path.join(directory, f"_tmp_w44_{i}.wav")
+            _save(w44_h, track_reference(sr, 6.0, 8250 + i), sr, "PCM_24")
+            used_ffmpeg = _ffmpeg_encode_decode(w44_h, tmp_dec, ext_h, c_args_h)
+            if os.path.exists(w44_h):
+                os.remove(w44_h)
+            up_h, dn_h, u_lo_h, u_ord_h = 320, 147, 22200.0, 6
+        if used_ffmpeg and os.path.exists(tmp_dec):
+            x_d, _ = sf.read(tmp_dec, dtype="float64", always_2d=True)
+            os.remove(tmp_dec)
+            backend = "ffmpeg"
+        else:
+            x_d = _mdct1024_roundtrip(track_reference(sr, 6.0, 8250 + i), sr, 12000.0, 20500.0, 0.40, 8280 + i)
+            up_h, dn_h, u_lo_h, u_ord_h = 320, 147, 22200.0, 6
+            backend = "dsp_fallback"
+        x96_m = signal.resample_poly(x_d, up_h, dn_h, axis=0)
+        u_h = signal.sosfilt(
+            signal.butter(u_ord_h, [u_lo_h, 40000.0], btype="band", fs=96000, output="sos"),
+            rng_h.standard_normal(x96_m.shape),
+            axis=0,
+        )
+        u_h *= (10.0 ** (-56.0 / 20.0)) / (np.std(u_h) + 1e-12)
+        _save(p, x96_m + u_h, 96000, "PCM_24")
+        cases.append((p, False, "FAKE 23: Hi-Res 96k transcode + ultrasonic mask", backend))
+
+    # 24. 16-in-24 noise-shaped dither (quiet-passage floor guard)
+    lsb16 = 1.0 / 32768.0
+    for i in range(6):
+        p = os.path.join(directory, f"fake_ns_16in24_{i:02d}.flac")
+        rng_n = np.random.default_rng(8300 + i)
+        n_q = sr * 6
+        t_q = np.linspace(0.0, 6.0, n_q, endpoint=False)
+        fade = np.where(t_q < 3.5, 1e-5, ((t_q - 3.5) / 2.5) ** 2 * 0.015)
+        quiet_p = rng_n.standard_normal((n_q, 2)) * fade[:, None]
+        loud_p = track_reference(sr, 4.5, 8350 + i)
+        full_n = np.vstack([quiet_p, loud_p])
+        d_n = (rng_n.random(full_n.shape) - rng_n.random(full_n.shape)) * lsb16
+        ns_o = np.empty_like(full_n)
+        for ch in range(2):
+            e1 = 0.0
+            e2 = 0.0
+            sc_c = full_n[:, ch]
+            dc_c = d_n[:, ch]
+            oc_c = ns_o[:, ch]
+            for idx_k in range(len(sc_c)):
+                val = sc_c[idx_k] + 1.5 * e1 - 0.6 * e2
+                qv = max(-0.99, min(0.99, round((val + dc_c[idx_k]) * 32768.0) / 32768.0))
+                e2 = e1
+                e1 = val - qv
+                oc_c[idx_k] = qv
+        ns_24 = ns_o + (rng_n.random(full_n.shape) - rng_n.random(full_n.shape)) * lsb16
+        _save(p, ns_24, sr, "PCM_24")
+        cases.append((p, False, "FAKE 24: 16-in-24 noise-shaped dither", "native_dsp"))
+
     for w_path in wav_refs:
         if os.path.exists(w_path):
             os.remove(w_path)
@@ -826,8 +974,8 @@ def _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok):
 ## Validation benchmark ({mode_txt}, n = {n_total})
 
 Generated by `tests/benchmark_validacion.py` (fixed seed `{SEED}`, engine `{motor_flac.ENGINE_VERSION}`):
-- **{n_auth} authentic controls** across 11 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, and Stationary electronic synth drones & genuine 32-bit `PCM_32` masters.
-- **{n_fake} fake & adversarial tracks** across 21 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
+- **{n_auth} authentic controls** across 12 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, and Genuine 24/44.1 warm high-DR studio masters.
+- **{n_fake} fake & adversarial tracks** across 24 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|
@@ -865,11 +1013,11 @@ def _detailed_validation_doc(section, rows):
 
     from main import VERSION as APP_VERSION
     lines = [
-        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v{APP_VERSION}) — Validation Report (2026-11-16)",
+        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v{APP_VERSION}) — Validation Report (2026-11-23)",
         "",
         section,
         "",
-        "## Per-family breakdown (32 families, n = 260)",
+        f"## Per-family breakdown ({len(by_category)} families, n = {len(rows)})",
         "",
         f"- **Corpus manifest SHA-256**: `{corpus_hash}`",
         f"- **External encoder backend**: `{'ffmpeg on PATH' if HAS_FFMPEG else 'deterministic DSP fallback'}`",
@@ -1013,7 +1161,7 @@ def evaluate_real_corpus(manifest_path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run the 260-track forensic validation benchmark."
+        description="Run the 290-track forensic validation benchmark."
     )
     parser.add_argument(
         "--check", action="store_true",

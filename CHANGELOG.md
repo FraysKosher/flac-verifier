@@ -5,6 +5,68 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.0] - 2026-11-23
+
+### Added
+
+- **AC-3 / E-AC-3 `MDCT-512` (KBD $\alpha = 5$) filterbank lattice detector (`_motor_espectral.py`, engine `15.0`)**:
+  added `CodecLatticeFamily.MDCT_512_AC3 = "MDCT-512 (AC-3/E-AC-3)"` with a
+  pure-NumPy Kaiser-Bessel Derived (`np.i0`) 512-sample window (`hop = 256`,
+  32 blocks, `Z >= 10.0`), ordered before `PQMF-32` so AC-3 and E-AC-3
+  transcodes at `44.1/48 kHz` (`192–640 kbps`, even with `-cutoff 23500` in
+  16-bit FLAC) are caught deterministically with accurate family attribution.
+- **Pure-NumPy Hi-Res lapped-lattice decimation bridge (`88.2–192 kHz`, `_motor_espectral.py`)**:
+  added integer Kaiser-FIR FFT decimation (`2:1` / `4:1`) and a cached
+  `147/320` polyphase FIR bank (`96 -> 44.1 kHz`, reused after `2:1`
+  decimation for `192 -> 44.1 kHz`) with phase-locked sample-index alignment
+  and a single-block latency cap. Full-bandwidth `MP3 320`, `AAC 320`,
+  `Vorbis -q9`, `Opus 256`, and `AC-3` transcodes upsampled into Hi-Res
+  containers — even when masked by synthetic ultrasonic hiss above `22 kHz` —
+  now trigger `mdct_lattice_detected` (`HARD_PROOF`) without `scipy` imports.
+- **Quiet-block 16-in-24 noise-shaped dither guard (`_motor_espectral.py`, `_motor_veredicto.py`)**:
+  added `noise_shaped_16_in_24` (plus diagnostic fields `quiet_hf_slope_db`,
+  `quiet_hf_flatness`, `quiet_hf_floor_dbfs`) and
+  `FindingCode.NOISE_SHAPED_16_IN_24` (`SOFT_BLOCKING`, `-0.30`) using
+  P10-calibrated per-bin floor estimation on quiet blocks (`-92..-40 dBFS`
+  RMS) so POW-r / Shibata / F-weighted 16-bit dither re-exported into 24-bit
+  cannot hide behind `native_24bit_hf_tail`.
+- **Inter-channel MSC & IPD high-frequency stereo coupling detector (`_motor_espectral.py`, `_motor_veredicto.py`)**:
+  computed float64 cross-spectral magnitude-squared coherence (`MSC`) and
+  inter-channel phase difference (`IPD`) inside the existing STFT L2 tile with
+  a sliding `1 kHz` coherence-cliff scan over `6.0–18.5 kHz`, exposing English
+  diagnostic keys (`msc_lo`, `msc_hi`, `msc_step_hf`, `ipd_phase_lock_hf`,
+  `stereo_phase_coupling`) and `FindingCode.STEREO_PHASE_COUPLING`
+  (`SOFT_BLOCKING`, `-0.25`, evaluated via `elif` after `sospecha_joint_stereo`).
+- **Expanded test & benchmark coverage**: added 5 regression/adversarial tests
+  (bringing the automated suite from **428** to **433 tests**) and expanded
+  `tests/benchmark_validacion.py` from **260** to **290 tracks** (36 families)
+  covering 24/44.1 warm high-DR masters, AC-3/E-AC-3 16-bit transcodes,
+  Hi-Res upsampled transcodes with ultrasonic hiss masks, and noise-shaped
+  16-in-24 dither.
+
+### Changed
+
+- **Engine & cache schema bump (`14.8` -> `15.0`, schema `2.7.0` -> `2.8.0`, version `2.10.6` -> `2.11.0`)**:
+  bumped `ENGINE_VERSION`, `CACHE_SCHEMA_VERSION`, `main.py`, `pyproject.toml`,
+  `version_info.txt`, and documentation; integrated `noise_shaped_16_in_24`
+  and `stereo_phase_coupling` into album-coherence rescue and batch-cleanliness
+  guards (`_motor_veredicto.py`).
+- **Unlocked codec family attribution on `far_cutoff` tracks (`_motor_espectral.py`)**:
+  removed the `clase_corte != "far_cutoff"` skip before lattice probing (keeping
+  `ceiling_val >= 7000 Hz`) so `128–192 kbps` transcodes report their exact
+  encoder family alongside the artificial cut-off.
+
+### Fixed
+
+- **16-bit grid tolerance parity (`_motor_bits.py`)**: aligned the float64
+  fallback paths in `_StreamingBitDepthAccumulator` to `< 12.5 / 256.0`
+  (`~0.048828`, matching the integer `int24` tolerance `(active + 12) & 0xFF <= 24`).
+- **24-bit / 44.1 kHz warm studio master exemption (`_motor_espectral.py`, `_motor_veredicto.py`)**:
+  extended `native_24bit_hf_tail` to `44.1 kHz` with a strict `<= -105 dBFS`
+  converter stopband check and credited Rule 3 for verified `>= 95%` Nyquist
+  24-bit ADC edges, eliminating standalone false positives on warm 24/44.1
+  analog/synth studio masters while keeping `noise_shaped_16_in_24` blocked.
+
 ## [2.10.6] - 2026-11-22
 
 ### Changed

@@ -114,6 +114,9 @@ with `error` and the process continues until it emits `fin`.
 | `esp.caida_side_agudos_db` | Extra Mid−Side drop in 15.5–19.8 kHz versus 2–8 kHz (joint-stereo collapse) |
 | `esp.delta_corte_ms_hz` | Mid cut-off minus Side cut-off: a lossy joint-stereo encoder cuts Side first |
 | `esp.sospecha_joint_stereo` | `true` when the Side channel collapses and cuts before Mid |
+| `esp.msc_lo` / `esp.msc_hi` | Inter-channel magnitude-squared coherence (MSC) in `2–6 kHz` and peak post-cliff HF coherence (`6–18.5 kHz` sliding 1 kHz step) |
+| `esp.msc_step_hf` / `esp.ipd_phase_lock_hf` | Sharpest 1 kHz HF coherence jump (`post - pre`) and median `|sin(IPD)|` phase-lock residual above the cliff |
+| `esp.stereo_phase_coupling` | `true` when independent stereo transitions abruptly into phase-locked high-frequency coupling (AC-3 channel coupling / Opus intensity stereo; `SOFT_BLOCKING`) |
 | `esp.es_dual_mono` | `true` when L and R are identical (Side more than 45 dB below Mid) |
 | `esp.iqr_corte_hz` | Interquartile range of the per-frame cut-off in high-energy frames (codec jitter) |
 | `esp.ratio_huecos_mdct` | Fraction of high-energy frames with a 600 Hz MDCT hole (> 22 dB below both neighbours) |
@@ -129,14 +132,16 @@ with `error` and the process continues until it emits `fin`.
 | `esp.centroide_hz` | Spectral centroid: a low-centroid acoustic mix sits below 1800 Hz |
 | `esp.decaimiento_acustico_suave` | `true` for a low-centroid, no-cutoff acoustic decay with a gentle (< 20 dB/kHz) edge (≥ 11 kHz, or 7.5–10.5 kHz with an analogue floor or continuous post-ceiling acoustic decay): the acoustic exemption candidate |
 | `esp.rolloff_banda_limitada_genuina` | `true` for a smooth (< 18 dB/kHz), no-cutoff, 10–15.4 kHz ceiling with an analogue noise floor: vintage/archival/vinyl band-limited roll-off candidate |
-| `esp.native_24bit_hf_tail` | `true` on > 44.1 to 48 kHz streams when sub-ceiling high-frequency energy tapers monotonically above the 22.05 kHz CD band into a genuine 24-bit studio converter stopband floor |
+| `esp.native_24bit_hf_tail` | `true` on `44.1–48 kHz` streams when sub-ceiling high-frequency energy tapers monotonically into a genuine 24-bit studio converter stopband floor (`<= -105 dBFS` at `44.1 kHz`, `<= -98 dBFS` above `44.1 kHz`) |
+| `esp.noise_shaped_16_in_24` | `true` on 24-bit containers when a quiet block reveals a rising noise-shaped 16-bit dither shelf (`+6 dB` slope `12–16 -> 18–21.5 kHz`, flat noise floor `>= -94 dBFS`, no 16-bit grid alignment) |
+| `esp.quiet_hf_slope_db` / `quiet_hf_flatness` / `quiet_hf_floor_dbfs` | Quiet-block `12–16 -> 18–21.5 kHz` noise-floor slope (dB), spectral flatness (`GM/AM`), and P10-calibrated floor level (dBFS) used by `noise_shaped_16_in_24` |
 | `esp.brecha_p90_p10_agudos_db` | P90–P10 energy gap in 16–20.5 kHz: large values expose intermittent sfb21 islands |
 | `esp.ratio_apagado_sfb21` | Fraction of high-energy frames whose sfb21 band is switched off |
 | `esp.islas_mdct_sfb21` | `true` for intermittent 16–20.5 kHz islands (28 dB gap, 0.25–0.85 shut-off): lowpass-disabled codec signature |
 | `esp.caida_modulacion_20k_db` / `brecha_modulacion_20k_db` | Median drop and P95–P05 modulation gap between 16.0–19.5 kHz and 20.2–21.8 kHz across active frames |
 | `esp.modulacion_psicoacustica_20k` | `true` when the 20.2–21.8 kHz band exhibits both a deep drop and dynamic psychoacoustic modulation |
-| `esp.mdct_lattice_detected` | `true` when orthogonal lapped transform / subband inversion recovers a phase-locked codec quantization lattice (`MDCT-1024`, `PQMF-576`, `PQMF-32` or `CELT-960`) |
-| `esp.mdct_lattice_snr` / `esp.mdct_lattice_family` | Peak robust Z-score / harmonic SNR across sample offsets and identified filterbank family (`MDCT-1024 (Vorbis/AAC)`, `PQMF-576 (MP3)`, `PQMF-32 (Musepack)` or `CELT-960 (Opus)`) |
+| `esp.mdct_lattice_detected` | `true` when orthogonal lapped transform / subband inversion recovers a phase-locked codec quantization lattice (`MDCT-1024`, `PQMF-576`, `MDCT-512`, `PQMF-32` or `CELT-960`) at CD/48 kHz or via pure-NumPy Hi-Res decimation (`88.2–192 kHz`) |
+| `esp.mdct_lattice_snr` / `esp.mdct_lattice_family` | Peak robust Z-score / harmonic SNR across sample offsets and identified filterbank family (`MDCT-1024 (Vorbis/AAC)`, `PQMF-576 (MP3)`, `MDCT-512 (AC-3/E-AC-3)`, `PQMF-32 (Musepack)` or `CELT-960 (Opus)`) |
 | `esp.corr_env_excitador` | Correlation between the 8–14 kHz envelope and the high band |
 | `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
 | `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / notched SBR signature |
@@ -197,13 +202,15 @@ contribute.
 | Hi-res with no high content | 0.40 | ≥ 88.2 kHz and ceiling < 18 kHz (blocks) |
 | Empty LSBs | 0.40 | > 97 % of samples on the 16-bit grid (blocks) |
 | Partially inactive LSBs | 0.15 | 80–97 % (does not block) |
-| Declared resolution with no support | 0.25 | Claims > 16 bits at CD/48 kHz rate with no content above the CD band (blocks, unless backed by active 24-bit LSBs, smooth acoustic decay and `native_24bit_hf_tail`) |
+| Declared resolution with no support | 0.25 | Claims > 16 bits at CD/48 kHz rate with no content above the CD band (blocks, unless backed by active 24-bit LSBs, smooth acoustic/archival decay and `native_24bit_hf_tail`) |
+| Noise-shaped 16-in-24 dither | 0.30 | Rising 16-bit noise-shaped dither shelf in quiet 24-bit blocks (`noise_shaped_16_in_24`, soft-blocking) |
 | Joint-stereo collapse | 0.30 | Side channel drops at HF (`sospecha_joint_stereo`, blocks) |
+| High-frequency stereo phase coupling | 0.25 | Abrupt MSC coherence cliff with near-zero IPD residual (`stereo_phase_coupling`, soft-blocking; checked via `elif` after `sospecha_joint_stereo`) |
 | Cut-off jitter | 0.20 / 0.30 | Moderate (550–1800 Hz): 0.20 advisory. Extreme (> 1800 Hz without stationarity, analogue roll-off or DSD): 0.30 (blocks at `SUSPICIOUS`) |
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
 | sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
 | Upper-band 20 kHz modulation | 0.30 | Frame-level drop and psychoacoustic modulation in 20.2–21.8 kHz (blocks) |
-| Lapped transform / subband lattice | 0.55 | Phase-locked `MDCT-1024`, `PQMF-576`, `PQMF-32` or `CELT-960` lattice (`mdct_lattice_detected`, blocks) |
+| Lapped transform / subband lattice | 0.55 | Phase-locked `MDCT-1024`, `PQMF-576`, `MDCT-512`, `PQMF-32` or `CELT-960` lattice (`mdct_lattice_detected`, blocks; also runs on `88.2–192 kHz` via pure-NumPy decimation) |
 | Harmonic exciter / notched SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
 | Seamless QMF SBR | 0.55 | Additive QMF subband transposition (`sbr_qmf_detectado`, blocks) |
 | Opus 20 kHz cliff | 0.20 | 20.00 kHz cliff with other codec evidence (does not block) |
@@ -250,9 +257,10 @@ never aborts the analysis.
 1. **Unconstrained ~500 kbps VBR or post-processed transcodes whose sample grid was destroyed:**
    full-bandwidth high-bitrate codecs up to 320 kbps (`Vorbis -q9`, `AAC 320`
    with `--cutoff 22000`, `LAME CBR 320` with `--lowpass -1`, `LAME V0`,
-   `Musepack SV7/SV8`, `Opus 160/256`) are caught by Phase 11/12 orthogonal
-   lapped transform & subband inversion (`MDCT-1024`, `PQMF-576`, `PQMF-32`,
-   `CELT-960`) as long as the decoded sample grid is intact. At unconstrained
+   `Musepack SV7/SV8`, `Opus 160/256`, `AC-3 / E-AC-3`) are caught by Phase 11/12/15
+   orthogonal lapped transform & subband inversion (`MDCT-1024`, `PQMF-576`,
+   `MDCT-512`, `PQMF-32`, `CELT-960`, including `88.2–192 kHz` Hi-Res containers
+   via pure-NumPy decimation) as long as the decoded sample grid is intact. At unconstrained
    `Vorbis -q10` (~500 kbps, half-CD bitrate), perceptual dead-zone zeroing
    vanishes across the 1,024 MDCT bins, and if a transcode is pitch-shifted,
    time-stretched or re-recorded through an analogue loop, the sample-level
@@ -297,7 +305,7 @@ An entry is reused only if all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"14.8"`), `CACHE_SCHEMA_VERSION` (`"2.7.0"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"15.0"`), `CACHE_SCHEMA_VERSION` (`"2.8.0"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---
