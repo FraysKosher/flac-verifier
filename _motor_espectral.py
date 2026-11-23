@@ -13,6 +13,7 @@ import importlib.util
 import math
 import os
 import sys
+import threading
 
 import numpy as np
 
@@ -97,7 +98,70 @@ class PsychoacousticSummary:
     ms_dynamic_collapse: bool = False
     error: str | None = None
 
+
+class FftBackendKind(str, Enum):
+    """Resolved FFT backend source."""
+
+    SYS_MODULES = "sys_modules"
+    MEIPASS_EXT = "meipass_ext"
+    SCIPY_PRIVATE = "scipy_private"
+    SCIPY_ADAPTER = "scipy_adapter"
+
+
+class DsdProfile(str, Enum):
+    """Recognized DSD/SACD ultrasonic noise-shaping profiles."""
+
+    DIRECT_24_40K = "direct_24_40k"
+    SCARLET_30K = "scarlet_30k"
+    DSD128_40_80K = "dsd128_40_80k"
+
+
+class HiresMorphology(str, Enum):
+    """Mutually exclusive Hi-Res (>= 88.2 kHz) spectral morphology classification."""
+
+    NOT_APPLICABLE = "not_applicable"
+    DSD_TRANSFER = "dsd_transfer"
+    NYQUIST_BRICKWALL = "nyquist_brickwall"
+    ALIASING_MIRROR = "aliasing_mirror"
+    GENUINE_ANALOG_ROLLOFF = "genuine_analog_rolloff"
+    FULLBAND_NORMAL = "fullband_normal"
+
+
+@dataclass(frozen=True)
+class HiresAssessment:
+    """Mutually exclusive Hi-Res (>= 88.2 kHz) spectral morphology assessment."""
+
+    morphology: HiresMorphology = HiresMorphology.NOT_APPLICABLE
+    nyquist_gradient_db_khz: float = 0.0
+    ultrasonic_jump_db: float = 0.0
+    mirror_correlation_22k: float = 0.0
+    dsd_profile: DsdProfile | None = None
+
+    @classmethod
+    def not_applicable(cls) -> "HiresAssessment":
+        return cls(morphology=HiresMorphology.NOT_APPLICABLE)
+
+    def to_protocol_fields(self) -> dict:
+        is_dsd = self.morphology is HiresMorphology.DSD_TRANSFER
+        return {
+            "muro_brickwall_nyquist": self.morphology is HiresMorphology.NYQUIST_BRICKWALL,
+            "espejo_aliasing_detectado": self.morphology is HiresMorphology.ALIASING_MIRROR,
+            "rolloff_analogico_genuino": self.morphology is HiresMorphology.GENUINE_ANALOG_ROLLOFF,
+            "gradiente_nyquist_db_khz": round(abs(float(self.nyquist_gradient_db_khz)), 2),
+            "salto_ultrasonico_db": round(float(self.ultrasonic_jump_db), 2),
+            "correlacion_espejo_22k": round(float(self.mirror_correlation_22k), 3),
+            "es_transferencia_dsd": is_dsd,
+            "perfil_dsd": (
+                self.dsd_profile.value
+                if (is_dsd and self.dsd_profile is not None)
+                else None
+            ),
+        }
+
+
+_POCKETFFT_LOCK = threading.Lock()
 _POCKETFFT_MOD = None
+_POCKETFFT_KIND: FftBackendKind | None = None
 
 
 class _ScipyFftAdapter:
@@ -151,39 +215,47 @@ def _get_pocketfft():
     """Returns SciPy's compiled C++ pypocketfft extension without importing
     scipy.fft / scipy.special / scipy.linalg when running frozen, or a public
     scipy.fft adapter on SciPy >= 1.16 where _pocketfft was removed."""
-    global _POCKETFFT_MOD
+    global _POCKETFFT_MOD, _POCKETFFT_KIND
     if _POCKETFFT_MOD is not None:
         return _POCKETFFT_MOD
-    existing = (
-        sys.modules.get("scipy.fft._pocketfft.pypocketfft")
-        or sys.modules.get("pypocketfft")
-    )
-    if existing is not None:
-        _POCKETFFT_MOD = existing
-        return existing
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        for rel in (("scipy", "fft", "_pocketfft"), ()):
-            folder = os.path.join(meipass, *rel)
-            if not os.path.isdir(folder):
-                continue
-            for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-                candidate = os.path.join(folder, "pypocketfft" + suffix)
-                if os.path.isfile(candidate):
-                    spec = importlib.util.spec_from_file_location("pypocketfft", candidate)
-                    if spec is not None and spec.loader is not None:
-                        mod = importlib.util.module_from_spec(spec)
-                        sys.modules["pypocketfft"] = mod
-                        spec.loader.exec_module(mod)
-                        _POCKETFFT_MOD = mod
-                        return mod
-    try:
-        from scipy.fft._pocketfft import pypocketfft as mod
-    except ModuleNotFoundError:
-        from scipy import fft as sp_fft
-        mod = _ScipyFftAdapter(sp_fft)
-    _POCKETFFT_MOD = mod
-    return mod
+    with _POCKETFFT_LOCK:
+        if _POCKETFFT_MOD is not None:
+            return _POCKETFFT_MOD
+        existing = (
+            sys.modules.get("scipy.fft._pocketfft.pypocketfft")
+            or sys.modules.get("pypocketfft")
+        )
+        if existing is not None:
+            _POCKETFFT_MOD = existing
+            _POCKETFFT_KIND = FftBackendKind.SYS_MODULES
+            return existing
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            for rel in (("scipy", "fft", "_pocketfft"), ()):
+                folder = os.path.join(meipass, *rel)
+                if not os.path.isdir(folder):
+                    continue
+                for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+                    candidate = os.path.join(folder, "pypocketfft" + suffix)
+                    if os.path.isfile(candidate):
+                        spec = importlib.util.spec_from_file_location("pypocketfft", candidate)
+                        if spec is not None and spec.loader is not None:
+                            mod = importlib.util.module_from_spec(spec)
+                            sys.modules["pypocketfft"] = mod
+                            spec.loader.exec_module(mod)
+                            _POCKETFFT_MOD = mod
+                            _POCKETFFT_KIND = FftBackendKind.MEIPASS_EXT
+                            return mod
+        try:
+            from scipy.fft._pocketfft import pypocketfft as mod
+            kind = FftBackendKind.SCIPY_PRIVATE
+        except ModuleNotFoundError:
+            from scipy import fft as sp_fft
+            mod = _ScipyFftAdapter(sp_fft)
+            kind = FftBackendKind.SCIPY_ADAPTER
+        _POCKETFFT_MOD = mod
+        _POCKETFFT_KIND = kind
+        return mod
 
 
 def _rfft_f32(x, n=None, axis=-1, out=None):
@@ -236,7 +308,7 @@ from _motor_bits import (
     _classify_streaks,
     _normalize_path_fs,
 )
-from _motor_cache import _png_folder, _png_path, _replace_with_retries
+from _motor_cache import SpectralMode, _png_folder, _png_path, _replace_with_retries
 
 WIDTH_PNG = 2100                    # total canvas width (14 in at 150 dpi)
 
@@ -555,38 +627,21 @@ def _spectrum_dbfs(power, gain_noise=1.0):
     return 10.0 * np.log10(np.maximum(np.asarray(power, dtype=np.float64),
                                       1e-28) / gain)
 
-def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
-                                     cutoff_hz=None, ceiling_hz=None):
-    """Vector 3: morphology of a Hi-Res spectrum (>= 88.2 kHz).
+def _assess_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
+                               cutoff_hz=None, ceiling_hz=None) -> HiresAssessment:
+    """Vector 3: mutually exclusive morphology assessment for Hi-Res (>= 88.2 kHz).
 
-    Distinguishes three physically different cases that the old CD-limit rule
-    mixed together:
-      1. A brickwall at the CD/DAT Nyquist (22.05 / 24 kHz): upscale made with a
-         sinc filter. A steep spectral slope plus a jump into the digital void.
-      2. A spectral mirror around 22.05 kHz: upscale with an unfiltered
-         interpolator (folded aliasing).
-      3. A genuine analogue/acoustic roll-off (Queen case): no cliff, a smooth
-         slope and a continuous thermal/tape/dither floor above the CD limit.
-    A DSD/SACD transfer (88.2/176.4 kHz) adds a rising noise-shaping ramp in
-    24-40 kHz.
-
-    `spectrum_mid_db` is calibrated to dBFS per bin (see _spectrum_dbfs)."""
-    output = {
-        "muro_brickwall_nyquist":  False,
-        "espejo_aliasing_detectado": False,
-        "rolloff_analogico_genuino": False,
-        "gradiente_nyquist_db_khz": 0.0,
-        "salto_ultrasonico_db":     0.0,
-        "correlacion_espejo_22k":   0.0,
-        "es_transferencia_dsd":     False,
-        "perfil_dsd":               None,
-    }
+    Evaluates DSD first, then CD/DAT Nyquist brickwall (only if not DSD), then
+    spectral aliasing mirror (only if neither DSD nor brickwall), then genuine
+    analogue/acoustic roll-off (only if none of the above), returning a frozen
+    `HiresAssessment` value object.
+    """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     spectrum = np.asarray(spectrum_mid_db, dtype=np.float64)
     if sample_rate < 88200 or freqs.size < 8 or spectrum.shape != freqs.shape:
-        return output
+        return HiresAssessment.not_applicable()
     if not np.all(np.isfinite(spectrum)):
-        return output
+        return HiresAssessment.not_applicable()
 
     df = float(freqs[1] - freqs[0]) if freqs.size > 1 else 1.0
     # 1 kHz smoothing: a 250 Hz kernel lets the bin-to-bin variance of real
@@ -614,8 +669,80 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
                         if np.any(mask_after) else -140.0)
     jump_db = level_before_db - level_after_db
 
-    # 48 kHz -> 96/192 kHz upscale: the passband reaches 22.5 kHz intact and
-    # collapses across the 24.0 kHz Nyquist into the ultrasonic void.
+    # Stage 1: DSD64/128 to PCM rising noise-shaping ramp (24-40 / 23-31 / 40-80 kHz).
+    # Checked first because a DSD transfer always carries ultrasonic content and
+    # must never be flagged as a brickwall or aliasing mirror.
+    dsd_profile: DsdProfile | None = None
+    mask_dsd = (freqs >= 24000.0) & (freqs <= 40000.0)
+    if np.count_nonzero(mask_dsd) > 8:
+        y = curva[mask_dsd]
+        x = freqs[mask_dsd]
+        slope = float(np.polyfit(x, y, 1)[0] * 1000.0)
+        subida = float(y[-1] - y[0])
+        monotona = float(np.mean(np.diff(y) >= 0.0)) >= 0.6
+        if (slope > 0.8 and subida > 12.0 and monotona
+                and float(np.max(y)) > -90.0 and jump_db < 25.0):
+            dsd_profile = DsdProfile.DIRECT_24_40K
+
+    if dsd_profile is None:
+        mask_sb_subida = (freqs >= 23000.0) & (freqs <= 31000.0)
+        mask_sb_fall = ((freqs >= 31000.0)
+                         & (freqs <= min(40000.0, sample_rate * 0.45)))
+        if (np.count_nonzero(mask_sb_subida) >= 5
+                and np.count_nonzero(mask_sb_fall) >= 5):
+            y_up = curva[mask_sb_subida]
+            x_up = freqs[mask_sb_subida]
+            y_dn = curva[mask_sb_fall]
+            pend_up = float(np.polyfit(x_up, y_up, 1)[0] * 1000.0)
+            sub_up = float(np.max(y_up) - y_up[0])
+            mono_up = float(np.mean(np.diff(y_up) >= 0.0)) >= 0.60
+            fall_post_peak = float(np.max(y_up) - y_dn[-1])
+            if (pend_up > 0.8 and sub_up >= 8.0
+                    and mono_up and fall_post_peak >= 6.0
+                    and float(np.max(y_up)) > -90.0 and jump_db < 25.0):
+                dsd_profile = DsdProfile.SCARLET_30K
+
+    if dsd_profile is None and sample_rate >= 176400:
+        mask_c = ((freqs >= 40000.0)
+                  & (freqs <= min(80000.0, sample_rate * 0.45)))
+        if np.count_nonzero(mask_c) > 8:
+            y_c = curva[mask_c]
+            x_c = freqs[mask_c]
+            pend_c = float(np.polyfit(x_c, y_c, 1)[0] * 1000.0)
+            sub_c = float(y_c[-1] - y_c[0])
+            mono_c = float(np.mean(np.diff(y_c) >= 0.0)) >= 0.60
+            if (pend_c > 0.35 and sub_c > 12.0 and mono_c
+                    and float(np.max(y_c)) > -90.0 and jump_db < 25.0):
+                dsd_profile = DsdProfile.DSD128_40_80K
+
+    # Spectral mirror correlation around 22.05 kHz is always reported as a metric.
+    fine_bins = max(3, int(round(250.0 / df)))
+    fine_curve = np.convolve(spectrum,
+                             np.ones(fine_bins, dtype=np.float32) / fine_bins,
+                             mode="same")
+    deltas = np.linspace(1000.0, 7000.0, 48)
+    band_lower = np.interp(22050.0 - deltas, freqs, fine_curve)
+    band_upper = np.interp(22050.0 + deltas, freqs, fine_curve)
+    if (np.std(band_lower) > 0.5 and np.std(band_upper) > 0.5
+            and np.mean(band_upper) > -115.0):
+        def _detrended(values):
+            t = np.arange(values.size, dtype=np.float64)
+            return values - np.polyval(np.polyfit(t, values, 1), t)
+        mirror_correlation = float(np.corrcoef(_detrended(band_lower),
+                                        _detrended(band_upper))[0, 1])
+    else:
+        mirror_correlation = 0.0
+
+    if dsd_profile is not None:
+        return HiresAssessment(
+            morphology=HiresMorphology.DSD_TRANSFER,
+            nyquist_gradient_db_khz=worse_slope,
+            ultrasonic_jump_db=jump_db,
+            mirror_correlation_22k=mirror_correlation,
+            dsd_profile=dsd_profile,
+        )
+
+    # Stage 2: CD/DAT Nyquist brickwall & polyphase transition-skirt detectors.
     mask_pre_24k = (freqs >= 19500.0) & (freqs <= 22500.0)
     mask_post_24k = ((freqs >= 25000.0)
                      & (freqs <= min(38000.0, sample_rate * 0.44)))
@@ -630,13 +757,7 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and slope_24k < slope_base * 2.0
         and jump_24k_db > 22.0
     )
-    # Short-kernel polyphase resamplers (e.g. 32-tap swresample or default Kaiser
-    # half-band filters) extend their anti-imaging transition skirt to ~0.585*fs_in
-    # (~25.8 kHz from 44.1 kHz, ~28.1 kHz from 48 kHz), while 0 dBFS inter-sample
-    # clipping caps can lift the ultrasonic stopband floor to -95..-124 dBFS.
-    # Requiring substantial attenuation already inside the Nyquist skirt midpoint
-    # (23.8-25.8 kHz for 44.1 kHz, 26.2-28.2 kHz for 48 kHz) separates genuine
-    # 24/96 studio masters that apply a ~29-31 kHz ultrasonic mastering filter.
+
     mask_skirt_44k = (freqs >= 19800.0) & (freqs <= 26200.0)
     mask_skirt_48k = (freqs >= 22500.0) & (freqs <= 28500.0)
     mask_mid_44k = (freqs >= 23800.0) & (freqs <= 25800.0)
@@ -669,9 +790,6 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         level_ultra_top_db = -140.0
         decay_ultra_24_40k_db = 0.0
 
-    # Clipped hot 0 dBFS 44.1->96 kHz polyphase upscales can lift the 28.5-38.5
-    # kHz stopband to -65..-88 dBFS and smooth the skirt to -10..-20 dB/kHz, but
-    # they drop >25 dB across 19.8-25.8 kHz and flatten completely past 24.5 kHz.
     clipped_skirt_44k = (
         (
             ceiling_hz is not None
@@ -730,77 +848,9 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         or skirt_48k_brickwall
     )
 
-    # DSD64/128 to PCM: rising noise-shaping ramp between 24 and 40 kHz. It is
-    # checked before the mirror because an independent rising ultrasonic ramp can
-    # look correlated with the musical band after detrending. The profile does not
-    # depend on the sample rate being a multiple of 44.1 kHz: DSD transfers are
-    # also stored at 96 and 192 kHz.
-    #
-    # Guard: noise-shaped dither on a lossy transcode also rises above 24 kHz, but
-    # it lives in the thermal floor (below -90 dBFS per bin) and only appears after
-    # a massive cliff (more than 25 dB). A real delta-sigma transfer is loud and
-    # continuous, so both conditions must hold for every profile.
-    is_dsd = False
-    profile_dsd = None
-    mask_dsd = (freqs >= 24000.0) & (freqs <= 40000.0)
-    if np.count_nonzero(mask_dsd) > 8:
-        y = curva[mask_dsd]
-        x = freqs[mask_dsd]
-        slope = float(np.polyfit(x, y, 1)[0] * 1000.0)
-        subida = float(y[-1] - y[0])
-        monotona = float(np.mean(np.diff(y) >= 0.0)) >= 0.6
-        if (slope > 0.8 and subida > 12.0 and monotona
-                and float(np.max(y)) > -90.0 and jump_db < 25.0):
-            is_dsd = True
-            profile_dsd = "direct_24_40k"
-
-    # Profile B: a Scarlet Book (SACD) master keeps the noise-shaping hump around
-    # 30 kHz but the protective filter cuts the ramp Profile A needs: the band
-    # rises from 23 to 31 kHz and then falls into the filter. Both shapes are
-    # independent evidence, so either one marks the transfer as DSD.
-    if not is_dsd:
-        mask_sb_subida = (freqs >= 23000.0) & (freqs <= 31000.0)
-        mask_sb_fall = ((freqs >= 31000.0)
-                         & (freqs <= min(40000.0, sample_rate * 0.45)))
-        if (np.count_nonzero(mask_sb_subida) >= 5
-                and np.count_nonzero(mask_sb_fall) >= 5):
-            y_up = curva[mask_sb_subida]
-            x_up = freqs[mask_sb_subida]
-            y_dn = curva[mask_sb_fall]
-            pend_up = float(np.polyfit(x_up, y_up, 1)[0] * 1000.0)
-            sub_up = float(np.max(y_up) - y_up[0])
-            mono_up = float(np.mean(np.diff(y_up) >= 0.0)) >= 0.60
-            fall_post_peak = float(np.max(y_up) - y_dn[-1])
-            if (pend_up > 0.8 and sub_up >= 8.0
-                    and mono_up and fall_post_peak >= 6.0
-                    and float(np.max(y_up)) > -90.0 and jump_db < 25.0):
-                is_dsd = True
-                profile_dsd = "scarlet_30k"
-
-    # Profile C: a DSD128 transfer at 176.4/192 kHz has its own noise-shaping ramp
-    # one octave higher. The slope is gentler because the same power is spread
-    # over twice the band, so the threshold is 0.35 dB/kHz instead of 0.8.
-    if not is_dsd and sample_rate >= 176400:
-        mask_c = ((freqs >= 40000.0)
-                  & (freqs <= min(80000.0, sample_rate * 0.45)))
-        if np.count_nonzero(mask_c) > 8:
-            y_c = curva[mask_c]
-            x_c = freqs[mask_c]
-            pend_c = float(np.polyfit(x_c, y_c, 1)[0] * 1000.0)
-            sub_c = float(y_c[-1] - y_c[0])
-            mono_c = float(np.mean(np.diff(y_c) >= 0.0)) >= 0.60
-            if (pend_c > 0.35 and sub_c > 12.0 and mono_c
-                    and float(np.max(y_c)) > -90.0 and jump_db < 25.0):
-                is_dsd = True
-                profile_dsd = "dsd128_40_80k"
-
-    if is_dsd and muro_brickwall:
-        # A DSD transfer always has ultrasonic content: never a brickwall.
-        muro_brickwall = False
-
-    reported_slope = worse_slope
-    reported_jump = jump_db
     if muro_brickwall:
+        reported_slope = worse_slope
+        reported_jump = jump_db
         if muro_24k:
             reported_jump = max(reported_jump, jump_24k_db)
         if skirt_44k_brickwall:
@@ -809,48 +859,29 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         if skirt_48k_brickwall:
             reported_slope = min(reported_slope, slope_skirt_48k)
             reported_jump = max(reported_jump, jump_stop_48k_db)
+        return HiresAssessment(
+            morphology=HiresMorphology.NYQUIST_BRICKWALL,
+            nyquist_gradient_db_khz=reported_slope,
+            ultrasonic_jump_db=reported_jump,
+            mirror_correlation_22k=mirror_correlation,
+        )
 
-    # Spectral mirror around the CD Nyquist (unfiltered interpolation). The fine
-    # 250 Hz curve keeps the texture the mirror copies; the coarse curve is only
-    # for slopes and levels.
-    fine_bins = max(3, int(round(250.0 / df)))
-    fine_curve = np.convolve(spectrum,
-                             np.ones(fine_bins, dtype=np.float32) / fine_bins,
-                             mode="same")
-    deltas = np.linspace(1000.0, 7000.0, 48)
-    band_lower = np.interp(22050.0 - deltas, freqs, fine_curve)
-    band_upper = np.interp(22050.0 + deltas, freqs, fine_curve)
-    if (np.std(band_lower) > 0.5 and np.std(band_upper) > 0.5
-            and np.mean(band_upper) > -115.0):
-        # The interpolator's anti-imaging response tilts the mirror copy, so a
-        # raw Pearson coefficient can be negative even for a perfect mirror;
-        # the shape is what matters. Detrending both bands keeps r > 0.82 for a
-        # mirror and low for genuine independent ultrasonic noise.
-        def _detrended(values):
-            t = np.arange(values.size, dtype=np.float64)
-            return values - np.polyval(np.polyfit(t, values, 1), t)
-        mirror_correlation = float(np.corrcoef(_detrended(band_lower),
-                                        _detrended(band_upper))[0, 1])
-    else:
-        mirror_correlation = 0.0
-    mirror_aliasing = bool(mirror_correlation > 0.82 and jump_db < 18.0 and not is_dsd)
+    # Stage 3: Spectral aliasing mirror around 22.05 kHz.
+    if mirror_correlation > 0.82 and jump_db < 18.0:
+        return HiresAssessment(
+            morphology=HiresMorphology.ALIASING_MIRROR,
+            nyquist_gradient_db_khz=worse_slope,
+            ultrasonic_jump_db=jump_db,
+            mirror_correlation_22k=mirror_correlation,
+        )
 
-    # A genuine analogue roll-off falls from the mid-high band into the
-    # ultrasonic floor. A lossy source cut at 15-16 kHz and then re-sampled with
-    # a flat dither floor has no such 14-17 kHz drop and, crucially, a prior
-    # abrupt cut-off: it must never be excused as an analogue master.
+    # Stage 4: Genuine analogue/acoustic roll-off (only if no prior cut-off).
     mask_14_17k = (freqs >= 14000.0) & (freqs <= 17000.0)
     level_14_17k = (float(np.median(curva[mask_14_17k]))
                     if np.any(mask_14_17k) else -120.0)
     fall_14_17k_db = level_14_17k - level_after_db
     cutoff_previous = cutoff_hz is not None and cutoff_hz < 22050.0
 
-    base_rolloff_ok = (
-        not muro_brickwall
-        and not mirror_aliasing
-        and not is_dsd
-        and not cutoff_previous
-    )
     gentle_rolloff = (
         worse_slope > -17.5
         and jump_db < 14.5
@@ -890,7 +921,7 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and (level_14_17k - level_before_db) >= 4.0
     )
     rolloff_analog = bool(
-        base_rolloff_ok
+        not cutoff_previous
         and (
             gentle_rolloff
             or multipole_analog_rolloff
@@ -898,18 +929,28 @@ def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
             or continuous_steep_rolloff
         )
     )
+    morphology = (
+        HiresMorphology.GENUINE_ANALOG_ROLLOFF
+        if rolloff_analog
+        else HiresMorphology.FULLBAND_NORMAL
+    )
+    return HiresAssessment(
+        morphology=morphology,
+        nyquist_gradient_db_khz=worse_slope,
+        ultrasonic_jump_db=jump_db,
+        mirror_correlation_22k=mirror_correlation,
+    )
 
-    output.update({
-        "muro_brickwall_nyquist":   bool(muro_brickwall),
-        "espejo_aliasing_detectado": mirror_aliasing,
-        "rolloff_analogico_genuino": rolloff_analog,
-        "gradiente_nyquist_db_khz": round(abs(reported_slope), 2),
-        "salto_ultrasonico_db":     round(reported_jump, 2),
-        "correlacion_espejo_22k":   round(mirror_correlation, 3),
-        "es_transferencia_dsd":     is_dsd,
-        "perfil_dsd":               profile_dsd,
-    })
-    return output
+
+def _diagnose_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
+                                     cutoff_hz=None, ceiling_hz=None):
+    """Vector 3: morphology of a Hi-Res spectrum (>= 88.2 kHz).
+
+    `spectrum_mid_db` is calibrated to dBFS per bin (see _spectrum_dbfs)."""
+    return _assess_hires_authenticity(
+        freqs_hz, spectrum_mid_db, sample_rate,
+        cutoff_hz=cutoff_hz, ceiling_hz=ceiling_hz,
+    ).to_protocol_fields()
 
 
 def _has_centered_upper_mid_vocal(freqs, diff_db):
@@ -1486,9 +1527,10 @@ ACTIVE_RMS_THRESHOLD_DB = -65.0      # below this a block is silence for the sel
 def _needed_active_blocks(samplerate, mode="center", seconds=None):
     """K blocks, chosen so that the selected audio covers the requested window.
     With FRAMES_BY_BLOCK fixed, K grows with the sample rate."""
-    if mode == "full":
+    mode_enum = SpectralMode.coerce(mode, default=SpectralMode.CENTER)
+    if mode_enum is SpectralMode.FULL:
         target_sec = float(SPECTRO_SECONDS + 15)
-    elif mode == "seconds" and seconds is not None:
+    elif mode_enum is SpectralMode.SECONDS and seconds is not None:
         target_sec = max(1.0, float(seconds))
     else:
         target_sec = float(SPECTRO_SECONDS)
@@ -2864,6 +2906,193 @@ def _select_multichannel_layout(chosen):
     return active, pair
 
 
+def _apply_stationary_and_ms_guards(
+    spectrum, psycho, freqs, mean_mid, mean_side, gain_noise, sr
+):
+    """Post-STFT stage 1: fuse psychoacoustic summary, stationarity, and M/S guards."""
+    spectrum.update(psycho.metrics)
+    if psycho.error is not None:
+        spectrum["psycho_detector_error"] = psycho.error
+    if spectrum.get("es_estacionario"):
+        if (spectrum.get("sospecha_joint_stereo")
+                and (spectrum.get("delta_corte_ms_hz") or 0.0) < 2500.0):
+            spectrum["sospecha_joint_stereo"] = False
+        if ((spectrum.get("techo_rel_nyquist") or 0.0) >= 0.88
+                and spectrum.get("clase_corte") == CutoffClass.FAR_CUTOFF.value
+                and (spectrum.get("frecuencia_corte") or 0) < 0.85 * (spectrum.get("techo_hz") or 0)):
+            spectrum.update(CutoffAssessment.none().to_protocol_fields())
+    ceiling_val = spectrum.get("techo_hz", 0)
+    hires_clean_rolloff = bool(
+        sr >= 88200
+        and spectrum.get("clase_corte") == CutoffClass.NO_CUTOFF.value
+        and (spectrum.get("rolloff_analogico_genuino")
+             or spectrum.get("es_transferencia_dsd"))
+    )
+    if hires_clean_rolloff and ceiling_val < 13500:
+        cur_iqr = float(spectrum.get("iqr_corte_hz") or 0.0)
+        if cur_iqr > 350.0:
+            spectrum["iqr_corte_hz"] = 350.0
+    ms_p95 = float(psycho.ms_p95_db)
+    delta_cutoff = float(spectrum.get("delta_corte_ms_hz") or 0.0)
+    collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
+    centered_hf_vocal = False
+    hires_ultrasonic_stereo = False
+    narrow_midrange_stereo = False
+    if mean_mid is not None and mean_side is not None:
+        diff_ms_db = 10.0 * np.log10(
+            np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
+        )
+        mask_midrange = (freqs >= 2000.0) & (freqs <= 8000.0)
+        if np.any(mask_midrange):
+            med_midrange = float(np.median(diff_ms_db[mask_midrange]))
+            narrow_midrange_stereo = bool(
+                math.isfinite(med_midrange) and med_midrange >= 14.5
+            )
+        if delta_cutoff < 800.0 and math.isfinite(ms_p95) and ms_p95 < 42.0:
+            centered_hf_vocal = _has_centered_upper_mid_vocal(freqs, diff_ms_db)
+        if hires_clean_rolloff and delta_cutoff < 500.0:
+            mask_us = ((freqs >= 24000.0)
+                       & (freqs <= min(36000.0, sr * 0.42)))
+            if np.any(mask_us):
+                mid_us_db = _spectrum_dbfs(mean_mid[mask_us], gain_noise)
+                side_us_db = _spectrum_dbfs(mean_side[mask_us], gain_noise)
+                hires_ultrasonic_stereo = bool(
+                    float(np.median(side_us_db)) > -85.0
+                    and float(np.median(mid_us_db - side_us_db)) < 12.0
+                )
+    if (psycho.ms_dynamic_collapse
+            and not spectrum.get("es_dual_mono")
+            and not spectrum.get("es_estacionario")
+            and not narrow_midrange_stereo
+            and not centered_hf_vocal
+            and not hires_ultrasonic_stereo
+            and not (hires_clean_rolloff and ceiling_val < 13500)
+            and (delta_cutoff >= 800.0
+                 or (collapse >= 6.0 and math.isfinite(ms_p95) and ms_p95 >= 25.0))):
+        spectrum["sospecha_joint_stereo"] = True
+        if math.isfinite(ms_p95) and ms_p95 > collapse:
+            spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
+    return spectrum
+
+
+def _probe_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
+    """Post-STFT stage 2: multi-channel / multi-block lapped codec lattice probe."""
+    ranked_blks = sorted(
+        chosen, key=lambda item: (len(item[4]) >= 24576, item[0]), reverse=True
+    )
+    best_blk = ranked_blks[0][4]
+    if best_blk.ndim > 1 and len(mc_pair) >= 2:
+        c0, c1 = mc_pair[0], mc_pair[1]
+        dl = np.diff(best_blk[:, c0])
+        dr = np.diff(best_blk[:, c1])
+        el = float(np.dot(dl, dl))
+        er = float(np.dot(dr, dr))
+        primary_idx = c0 if el >= er else c1
+        opp_idx = c1 if primary_idx == c0 else c0
+        mono_blk = best_blk[:, primary_idx]
+        opp_blk = best_blk[:, opp_idx]
+        asym_ch = abs(el - er) > 0.25 * max(el, er, 1e-12)
+    else:
+        ch0 = mc_pair[0] if best_blk.ndim > 1 else 0
+        mono_blk = best_blk[:, ch0] if best_blk.ndim > 1 else best_blk
+        opp_blk = None
+        asym_ch = False
+
+    first_error = None
+
+    def _record_error(probe_res):
+        nonlocal first_error
+        if first_error is None and "mdct_detector_error" in probe_res:
+            first_error = probe_res["mdct_detector_error"]
+
+    lat = _detect_lapped_codec_grid(mono_blk, sr, ceiling_hz=ceiling_val)
+    _record_error(lat)
+    if (not lat.get("mdct_lattice_detected")
+            and opp_blk is not None
+            and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
+        lat_opp = _detect_lapped_codec_grid(opp_blk, sr, ceiling_hz=ceiling_val)
+        _record_error(lat_opp)
+        if (lat_opp.get("mdct_lattice_detected")
+                or lat_opp.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
+            lat = lat_opp
+    if (not lat.get("mdct_lattice_detected")
+            and best_blk.ndim > 1 and len(mc_pair) >= 2
+            and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
+        c0, c1 = mc_pair[0], mc_pair[1]
+        mid_blk = 0.5 * (best_blk[:, c0] + best_blk[:, c1])
+        if float(np.dot(mid_blk, mid_blk)) <= 1e-6 * max(
+            float(np.dot(best_blk[:, c0], best_blk[:, c0])),
+            float(np.dot(best_blk[:, c1], best_blk[:, c1])),
+            0.0,
+        ):
+            mid_blk = 0.5 * (best_blk[:, c0] - best_blk[:, c1])
+        lat_mid = _detect_lapped_codec_grid(mid_blk, sr, ceiling_hz=ceiling_val)
+        _record_error(lat_mid)
+        if (lat_mid.get("mdct_lattice_detected")
+                or lat_mid.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
+            lat = lat_mid
+    for sec_idx, sec_item in enumerate(ranked_blks[1:3]):
+        if lat.get("mdct_lattice_detected"):
+            break
+        sec_b = sec_item[4]
+        if len(sec_b) < 24576:
+            continue
+        if sec_b.ndim > 1 and len(mc_pair) >= 2:
+            c0, c1 = mc_pair[0], mc_pair[1]
+            dl2 = np.diff(sec_b[:, c0])
+            dr2 = np.diff(sec_b[:, c1])
+            el2 = float(np.dot(dl2, dl2))
+            er2 = float(np.dot(dr2, dr2))
+            sec_mono = sec_b[:, c0] if el2 >= er2 else sec_b[:, c1]
+        else:
+            ch0 = mc_pair[0] if sec_b.ndim > 1 else 0
+            sec_mono = sec_b[:, ch0] if sec_b.ndim > 1 else sec_b
+        lat_sec = _detect_lapped_codec_grid(sec_mono, sr, ceiling_hz=ceiling_val)
+        _record_error(lat_sec)
+        if lat_sec.get("mdct_lattice_detected") and (
+            sec_idx == 0
+            or lat_sec.get("mdct_lattice_family") == CodecLatticeFamily.CELT_960.value
+        ):
+            lat = lat_sec
+    if (not lat.get("mdct_lattice_detected")
+            and first_error is not None
+            and "mdct_detector_error" not in lat):
+        lat = {**lat, "mdct_detector_error": first_error}
+    return lat
+
+
+def _probe_sbr_qmf_from_chosen(chosen, mc_pair, sr, ceiling_val):
+    """Post-STFT stage 3: seamless HE-AAC SBR QMF replication probe."""
+    if sr < 32000 or ceiling_val < 14500:
+        return {}
+    target_samples = int(sr * 6)
+    mid_parts = []
+    gathered = 0
+    for item in sorted(chosen, key=lambda it: it[0], reverse=True):
+        blk = item[4]
+        if len(blk) == 0:
+            continue
+        if blk.ndim > 1 and len(mc_pair) >= 2:
+            c0, c1 = mc_pair[0], mc_pair[1]
+            mid_p = 0.5 * (blk[:, c0] + blk[:, c1])
+            if float(np.dot(mid_p, mid_p)) <= 1e-6 * max(
+                float(np.dot(blk[:, c0], blk[:, c0])),
+                float(np.dot(blk[:, c1], blk[:, c1])),
+                0.0,
+            ):
+                mid_p = 0.5 * (blk[:, c0] - blk[:, c1])
+        else:
+            ch0 = mc_pair[0] if blk.ndim > 1 else 0
+            mid_p = blk[:, ch0] if blk.ndim > 1 else blk
+        mid_parts.append(np.asarray(mid_p, dtype=np.float32))
+        gathered += len(mid_p)
+        if gathered >= target_samples:
+            break
+    if not mid_parts:
+        return {}
+    return _detect_sbr_qmf_replication(mid_parts, sr)
+
+
 class _SpectralAccumulator:
     """Keeps the K most active blocks in memory and runs the STFT on them at the
     end. Shared by the streaming path and the array path so both give the same
@@ -2876,11 +3105,11 @@ class _SpectralAccumulator:
         self.is_stereo = is_stereo
         self.save_png = bool(save_png)
         self.path = path
-        self.mode = mode or "center"
+        self.mode = SpectralMode.coerce(mode, default=SpectralMode.CENTER).value
         self.seconds = seconds
         self._max_sample = (
             int(round(max(1.0, float(seconds if seconds is not None else 15.0)) * self.sr))
-            if self.mode == "seconds" else None
+            if self.mode == SpectralMode.SECONDS.value else None
         )
         self._renderer = renderer or _save_spectrogram
         self._k = _needed_active_blocks(self.sr, mode=self.mode, seconds=self.seconds)
@@ -2892,6 +3121,7 @@ class _SpectralAccumulator:
         self._state = AccumulatorState.COLLECTING
         self._finalized = False
         self._cached_result = None
+        self._cached_png_result = None
         self._psycho = PsychoacousticSTFTAccumulator(self.sr)
         self._diff_buf = np.empty(16384, dtype=np.float64)
 
@@ -3000,7 +3230,17 @@ class _SpectralAccumulator:
         self._cached_result = dict(err_out)
         return err_out
 
+    def _finish_png_only(self, payload, state):
+        self._state = state
+        self._finalized = True
+        self._cached_png_result = dict(payload)
+        return payload
+
     def result(self):
+        if self._cached_png_result is not None:
+            raise RuntimeError(
+                "cannot call result() after render_png_only() finalized this accumulator"
+            )
         if self._cached_result is not None:
             return dict(self._cached_result)
         if self._error:
@@ -3281,133 +3521,16 @@ class _SpectralAccumulator:
         spectrum.update(psycho.metrics)
         if psycho.error is not None:
             spectrum["psycho_detector_error"] = psycho.error
-        if spectrum.get("es_estacionario"):
-            if (spectrum.get("sospecha_joint_stereo")
-                    and (spectrum.get("delta_corte_ms_hz") or 0.0) < 2500.0):
-                spectrum["sospecha_joint_stereo"] = False
-            if ((spectrum.get("techo_rel_nyquist") or 0.0) >= 0.88
-                    and spectrum.get("clase_corte") == CutoffClass.FAR_CUTOFF.value
-                    and (spectrum.get("frecuencia_corte") or 0) < 0.85 * (spectrum.get("techo_hz") or 0)):
-                spectrum.update(CutoffAssessment.none().to_protocol_fields())
-        ceiling_val = spectrum.get("techo_hz", 0)
-        hires_clean_rolloff = bool(
-            self.sr >= 88200
-            and spectrum.get("clase_corte") == CutoffClass.NO_CUTOFF.value
-            and (spectrum.get("rolloff_analogico_genuino")
-                 or spectrum.get("es_transferencia_dsd"))
+        _apply_stationary_and_ms_guards(
+            spectrum, psycho, freqs, mean_mid, mean_side, gain_noise, self.sr
         )
-        if hires_clean_rolloff and ceiling_val < 13500:
-            cur_iqr = float(spectrum.get("iqr_corte_hz") or 0.0)
-            if cur_iqr > 350.0:
-                spectrum["iqr_corte_hz"] = 350.0
-        ms_p95 = float(psycho.ms_p95_db)
-        delta_cutoff = float(spectrum.get("delta_corte_ms_hz") or 0.0)
-        collapse = float(spectrum.get("caida_side_agudos_db") or 0.0)
-        centered_hf_vocal = False
-        hires_ultrasonic_stereo = False
-        narrow_midrange_stereo = False
-        if mean_mid is not None and mean_side is not None:
-            diff_ms_db = 10.0 * np.log10(
-                np.maximum(mean_mid, 1e-28) / np.maximum(mean_side, 1e-28)
-            )
-            mask_midrange = (freqs >= 2000.0) & (freqs <= 8000.0)
-            if np.any(mask_midrange):
-                med_midrange = float(np.median(diff_ms_db[mask_midrange]))
-                narrow_midrange_stereo = bool(
-                    math.isfinite(med_midrange) and med_midrange >= 14.5
-                )
-            if delta_cutoff < 800.0 and math.isfinite(ms_p95) and ms_p95 < 42.0:
-                centered_hf_vocal = _has_centered_upper_mid_vocal(freqs, diff_ms_db)
-            if hires_clean_rolloff and delta_cutoff < 500.0:
-                mask_us = ((freqs >= 24000.0)
-                           & (freqs <= min(36000.0, self.sr * 0.42)))
-                if np.any(mask_us):
-                    mid_us_db = _spectrum_dbfs(mean_mid[mask_us], gain_noise)
-                    side_us_db = _spectrum_dbfs(mean_side[mask_us], gain_noise)
-                    hires_ultrasonic_stereo = bool(
-                        float(np.median(side_us_db)) > -85.0
-                        and float(np.median(mid_us_db - side_us_db)) < 12.0
-                    )
-        if (psycho.ms_dynamic_collapse
-                and not spectrum.get("es_dual_mono")
-                and not spectrum.get("es_estacionario")
-                and not narrow_midrange_stereo
-                and not centered_hf_vocal
-                and not hires_ultrasonic_stereo
-                and not (hires_clean_rolloff and ceiling_val < 13500)
-                and (delta_cutoff >= 800.0
-                     or (collapse >= 6.0 and math.isfinite(ms_p95) and ms_p95 >= 25.0))):
-            spectrum["sospecha_joint_stereo"] = True
-            if math.isfinite(ms_p95) and ms_p95 > collapse:
-                spectrum["caida_side_agudos_db"] = round(ms_p95, 2)
+        ceiling_val = spectrum.get("techo_hz", 0)
         if (41000 <= self.sr <= 48000
                 and ceiling_val >= 7000
                 and spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value):
-            ranked_blks = sorted(
-                chosen, key=lambda item: (len(item[4]) >= 24576, item[0]), reverse=True)
-            best_blk = ranked_blks[0][4]
-            if best_blk.ndim > 1 and len(mc_pair) >= 2:
-                c0, c1 = mc_pair[0], mc_pair[1]
-                dl = np.diff(best_blk[:, c0])
-                dr = np.diff(best_blk[:, c1])
-                el = float(np.dot(dl, dl))
-                er = float(np.dot(dr, dr))
-                primary_idx = c0 if el >= er else c1
-                opp_idx = c1 if primary_idx == c0 else c0
-                mono_blk = best_blk[:, primary_idx]
-                opp_blk = best_blk[:, opp_idx]
-                asym_ch = abs(el - er) > 0.25 * max(el, er, 1e-12)
-            else:
-                ch0 = mc_pair[0] if best_blk.ndim > 1 else 0
-                mono_blk = best_blk[:, ch0] if best_blk.ndim > 1 else best_blk
-                opp_blk = None
-                asym_ch = False
-            lat = _detect_lapped_codec_grid(mono_blk, self.sr, ceiling_hz=ceiling_val)
-            if (not lat.get("mdct_lattice_detected")
-                    and opp_blk is not None
-                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
-                lat_opp = _detect_lapped_codec_grid(opp_blk, self.sr, ceiling_hz=ceiling_val)
-                if (lat_opp.get("mdct_lattice_detected")
-                        or lat_opp.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
-                    lat = lat_opp
-            if (not lat.get("mdct_lattice_detected")
-                    and best_blk.ndim > 1 and len(mc_pair) >= 2
-                    and (asym_ch or lat.get("mdct_lattice_snr", 0.0) >= 3.2)):
-                c0, c1 = mc_pair[0], mc_pair[1]
-                mid_blk = 0.5 * (best_blk[:, c0] + best_blk[:, c1])
-                if float(np.dot(mid_blk, mid_blk)) <= 1e-6 * max(
-                    float(np.dot(best_blk[:, c0], best_blk[:, c0])),
-                    float(np.dot(best_blk[:, c1], best_blk[:, c1])),
-                    0.0,
-                ):
-                    mid_blk = 0.5 * (best_blk[:, c0] - best_blk[:, c1])
-                lat_mid = _detect_lapped_codec_grid(mid_blk, self.sr, ceiling_hz=ceiling_val)
-                if (lat_mid.get("mdct_lattice_detected")
-                        or lat_mid.get("mdct_lattice_snr", 0.0) > lat.get("mdct_lattice_snr", 0.0)):
-                    lat = lat_mid
-            for sec_idx, sec_item in enumerate(ranked_blks[1:3]):
-                if lat.get("mdct_lattice_detected"):
-                    break
-                sec_b = sec_item[4]
-                if len(sec_b) < 24576:
-                    continue
-                if sec_b.ndim > 1 and len(mc_pair) >= 2:
-                    c0, c1 = mc_pair[0], mc_pair[1]
-                    dl2 = np.diff(sec_b[:, c0])
-                    dr2 = np.diff(sec_b[:, c1])
-                    el2 = float(np.dot(dl2, dl2))
-                    er2 = float(np.dot(dr2, dr2))
-                    sec_mono = sec_b[:, c0] if el2 >= er2 else sec_b[:, c1]
-                else:
-                    ch0 = mc_pair[0] if sec_b.ndim > 1 else 0
-                    sec_mono = sec_b[:, ch0] if sec_b.ndim > 1 else sec_b
-                lat_sec = _detect_lapped_codec_grid(sec_mono, self.sr, ceiling_hz=ceiling_val)
-                if lat_sec.get("mdct_lattice_detected") and (
-                    sec_idx == 0
-                    or lat_sec.get("mdct_lattice_family") == CodecLatticeFamily.CELT_960.value
-                ):
-                    lat = lat_sec
-            spectrum.update(lat)
+            spectrum.update(
+                _probe_lapped_codec_lattice(chosen, mc_pair, self.sr, ceiling_val)
+            )
         low_centroid_smooth_iqr = bool(
             self.sr <= 48000
             and ceiling_val >= 14000
@@ -3428,31 +3551,9 @@ class _SpectralAccumulator:
                 and ceiling_val >= 14500
                 and spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value
                 and not spectrum.get("mdct_lattice_detected")):
-            target_samples = int(self.sr * 6)
-            mid_parts = []
-            gathered = 0
-            for item in sorted(chosen, key=lambda it: it[0], reverse=True):
-                blk = item[4]
-                if len(blk) == 0:
-                    continue
-                if blk.ndim > 1 and len(mc_pair) >= 2:
-                    c0, c1 = mc_pair[0], mc_pair[1]
-                    mid_p = 0.5 * (blk[:, c0] + blk[:, c1])
-                    if float(np.dot(mid_p, mid_p)) <= 1e-6 * max(
-                        float(np.dot(blk[:, c0], blk[:, c0])),
-                        float(np.dot(blk[:, c1], blk[:, c1])),
-                        0.0,
-                    ):
-                        mid_p = 0.5 * (blk[:, c0] - blk[:, c1])
-                else:
-                    ch0 = mc_pair[0] if blk.ndim > 1 else 0
-                    mid_p = blk[:, ch0] if blk.ndim > 1 else blk
-                mid_parts.append(np.asarray(mid_p, dtype=np.float32))
-                gathered += len(mid_p)
-                if gathered >= target_samples:
-                    break
-            if mid_parts:
-                spectrum.update(_detect_sbr_qmf_replication(mid_parts, self.sr))
+            spectrum.update(
+                _probe_sbr_qmf_from_chosen(chosen, mc_pair, self.sr, ceiling_val)
+            )
         if self.save_png and png_power:
             png_path, error = self._invoke_renderer(
                 freqs, np.concatenate(png_times),
@@ -3469,20 +3570,29 @@ class _SpectralAccumulator:
     def render_png_only(self, ceiling_hz=None, cutoff_hz=None):
         """Lightweight spectrogram render from selected active blocks when cached
         spectral metrics are already valid and only the PNG is missing."""
+        if self._cached_result is not None:
+            raise RuntimeError(
+                "cannot call render_png_only() after result() finalized this accumulator"
+            )
+        if self._cached_png_result is not None:
+            return dict(self._cached_png_result)
         if self._error:
-            self._state = AccumulatorState.FAILED
-            self._finalized = True
-            return {"espectrograma": None, "espectrograma_error": self._error}
+            return self._finish_png_only(
+                {"espectrograma": None, "espectrograma_error": self._error},
+                AccumulatorState.FAILED,
+            )
         if not self.save_png:
-            self._state = AccumulatorState.COMPLETED
-            self._finalized = True
-            return {"espectrograma": None}
+            return self._finish_png_only(
+                {"espectrograma": None},
+                AccumulatorState.COMPLETED,
+            )
         chosen = self._seleccion or ([self._backup] if self._backup else [])
         if not chosen:
-            self._state = AccumulatorState.FAILED
-            self._finalized = True
-            return {"espectrograma": None,
-                    "espectrograma_error": "could not analyze the spectrum"}
+            return self._finish_png_only(
+                {"espectrograma": None,
+                 "espectrograma_error": "could not analyze the spectrum"},
+                AccumulatorState.FAILED,
+            )
         chosen = sorted(chosen, key=lambda item: item[2])
 
         is_multichannel = any(
@@ -3491,12 +3601,15 @@ class _SpectralAccumulator:
         if is_multichannel:
             mc_active, _ = _select_multichannel_layout(chosen)
             if not mc_active:
-                self._state = AccumulatorState.FAILED
-                self._finalized = True
-                return {"espectrograma": None,
-                        "espectrograma_error": "insufficient signal energy for spectral analysis"}
+                return self._finish_png_only(
+                    {"espectrograma": None,
+                     "espectrograma_error": "insufficient signal energy for spectral analysis"},
+                    AccumulatorState.FAILED,
+                )
+            effective_stereo = len(mc_active) >= 2
         else:
             mc_active = ()
+            effective_stereo = bool(self.is_stereo)
 
         lengths = [len(item[4]) for item in chosen]
         total_samples = sum(lengths)
@@ -3511,10 +3624,11 @@ class _SpectralAccumulator:
         frames_estimados = sum((n - nperseg) // hop + 1
                                for n in lengths if n >= nperseg)
         if frames_estimados <= 0:
-            self._state = AccumulatorState.FAILED
-            self._finalized = True
-            return {"espectrograma": None,
-                    "espectrograma_error": "could not analyze the spectrum"}
+            return self._finish_png_only(
+                {"espectrograma": None,
+                 "espectrograma_error": "could not analyze the spectrum"},
+                AccumulatorState.FAILED,
+            )
         step_png = max(1, frames_estimados // MAX_FRAMES_PNG)
         step_png = max(step_png,
                        int(round(self.sr / (hop * float(PNG_SPECTROGRAM_FPS)))))
@@ -3545,7 +3659,7 @@ class _SpectralAccumulator:
                         power_total = np.mean(
                             np.maximum(_power_from_fft(z_all), _FLOOR_F32), axis=0
                         )
-                    elif self.is_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
+                    elif effective_stereo and audio.ndim > 1 and audio.shape[1] >= 2:
                         ch_l = np.ascontiguousarray(audio[:, 0], dtype=np.float32)
                         ch_r = np.ascontiguousarray(audio[:, 1], dtype=np.float32)
                         frames_l = np.lib.stride_tricks.sliding_window_view(
@@ -3576,9 +3690,10 @@ class _SpectralAccumulator:
             frames_global += n_frames_blk
 
         if not png_power:
-            self._state = AccumulatorState.COMPLETED
-            self._finalized = True
-            return {"espectrograma": None}
+            return self._finish_png_only(
+                {"espectrograma": None},
+                AccumulatorState.COMPLETED,
+            )
         png_path, error = self._invoke_renderer(
             freqs, np.concatenate(png_times),
             np.concatenate(png_power, axis=0).T,
@@ -3587,8 +3702,5 @@ class _SpectralAccumulator:
         out = {"espectrograma": png_path}
         if error:
             out["espectrograma_error"] = error
-            self._state = AccumulatorState.FAILED
-        else:
-            self._state = AccumulatorState.COMPLETED
-        self._finalized = True
-        return out
+            return self._finish_png_only(out, AccumulatorState.FAILED)
+        return self._finish_png_only(out, AccumulatorState.COMPLETED)

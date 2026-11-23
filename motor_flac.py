@@ -57,11 +57,13 @@ from _motor_bits import (
 )
 from _motor_espectral import (
     CutoffClass, CodecLatticeFamily, CutoffAssessment, PsychoacousticSummary,
+    FftBackendKind, DsdProfile, HiresMorphology, HiresAssessment,
     WIDTH_PNG, HEIGHT_PNG, PNG_SPECTROGRAM_FPS, SPECTRO_SECONDS,
     MAX_FRAMES_PNG, ACTIVE_RMS_THRESHOLD_DB, _LUT_SPECTROGRAM, _mean_safe, _power_db,
     _spectrum_dbfs, _white_noise_gain, _stft_complex,
     _power_from_fft, _needed_active_blocks, _activity_score,
-    _analyze_mid_side_asymmetry, _diagnose_hires_authenticity,
+    _analyze_mid_side_asymmetry, _assess_hires_authenticity,
+    _diagnose_hires_authenticity,
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
     _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
@@ -357,7 +359,7 @@ def _save_spectrogram(freqs, times, mix, samplerate, audio_path,
                           ceiling_hz, frequency_cutoff,
                           mode="full", seconds=None):
     """Facade seam: the tests inject renderer failures through `motor.Image`."""
-    if Image is None:
+    if Image is None or not PIL_OK or not _motor_espectral.PIL_OK:
         return None, "Image renderer is not available"
     return _spectrogram_save(freqs, times, mix, samplerate, audio_path,
                              ceiling_hz, frequency_cutoff,
