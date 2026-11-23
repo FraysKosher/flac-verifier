@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Cache worker: engine assets are cached on first use; the site itself is
 // network-first so deploys show up immediately.
 import { PYODIDE_INDEX_URL } from './runtime.js';

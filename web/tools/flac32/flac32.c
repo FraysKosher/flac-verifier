@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Decode an in-memory FLAC stream to interleaved int32 using libFLAC. */
 #include <stdint.h>
 #include <stdlib.h>

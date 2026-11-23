@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Shared Pyodide loader. Runs in a Worker and in Node; no Node APIs here.
 // The caller supplies fetchText(name) -> Promise<string> for engine files and
 // fetchBytes(path) -> Promise<Uint8Array> for vendor/ files (relative to the site root).

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 :root, [data-theme="dark"] {
   --bg-canvas:#0E1113; --bg-surface:#151A1D; --bg-raised:#1B2226; --bg-hover:#222B30;
   --border-subtle:#2A353C; --border-strong:#3A4852;
@@ -49,6 +50,8 @@ select, input[type=number] { background:var(--bg-raised); border:1px solid var(-
   display:flex; flex-direction:column; gap:14px; }
 .row { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--text-secondary); }
 .row.check { justify-content:flex-start; }
+#source { margin-top:auto; color:var(--text-tertiary); text-decoration:none; font-size:12px; align-self:flex-start; }
+#source:hover { color:var(--text-primary); text-decoration:underline; }
 #seconds { width:64px; }
 main { flex:1; min-width:0; display:flex; flex-direction:column; padding:16px; }
 #start { margin:auto; width:min(520px,100%); display:flex; flex-direction:column; gap:14px; align-items:center; }

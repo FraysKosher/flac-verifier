@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Native-vs-Pyodide parity: node tools/parity.mjs <dir-with-flac-files>
 // Native interpreter: repo .venv, then $FV_PYTHON, then python3.
 import { execFileSync } from 'node:child_process';

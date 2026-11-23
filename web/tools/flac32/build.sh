@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 # Rebuild web/vendor/flac32.{mjs,wasm} from libFLAC 1.5.0 with emscripten.
 # Requires: emsdk at $EMSDK_DIR (default ../../tools/emsdk beside the repo), cmake, curl.
 set -euo pipefail

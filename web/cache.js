@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Result cache keyed by file identity + analysis options. IndexedDB in the
 // browser; any {get, put, clear} backend can be injected (tests use memory).
 

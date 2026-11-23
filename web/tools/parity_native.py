@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Analyze every .flac in a directory natively; print {name: result} JSON.
 
 Interpreter choice is made by parity.mjs: repo .venv, then $FV_PYTHON, then python3.

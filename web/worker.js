@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Module worker: hosts the Pyodide engine. Protocol: see scheduler.js.
 import { decodeFlac32, TOO_LARGE } from './flac32.js';
 import { loadEngine, PYODIDE_INDEX_URL, ENGINE_FILES } from './runtime.js';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Album-aware scheduler. Mirrors analyze_files.in_order() (motor_flac.py):
 // albums in sorted order, tracks of one album fan out over the worker pool,
 // immediate results stream, deferred ones wait for album coherence.

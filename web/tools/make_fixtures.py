@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 FLAC VERIFIER Contributors
 """Generate the parity fixtures: python web/tools/make_fixtures.py <outdir>."""
 import os
 import subprocess

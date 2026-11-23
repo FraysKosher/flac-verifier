@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Exact 32-bit FLAC decoding (libFLAC 1.5.0 compiled to WebAssembly).
 // The decoder is fetched on first use only.
 export const TOO_LARGE = 'File is too large for the browser. Use the desktop app.';

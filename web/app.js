@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Browser UI: intake, scheduling and display only. No analysis logic here.
 import { buildAlbums, entriesFromInput, entriesFromDrop } from './intake.js';
 import { createScheduler } from './scheduler.js';
@@ -275,6 +276,11 @@ function setTheme(theme) {
 }
 
 function wire() {
+  const host = location.hostname;
+  const repo = location.pathname.split('/').filter(Boolean)[0];
+  if (host.endsWith('.github.io') && repo) {
+    $('source').href = `https://github.com/${host.slice(0, -10)}/${repo}`;
+  }
   let saved = 'dark';
   try { saved = localStorage.getItem('theme') || 'dark'; } catch { /* storage unavailable */ }
   setTheme(saved);

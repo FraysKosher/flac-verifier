@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Album discovery for the browser. Mirrors discover_album_queue and
 // IGNORED_SCAN_DIRS in gui.py. Only folder intake lives here; no analysis.
 

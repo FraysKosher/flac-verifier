@@ -103,7 +103,7 @@ drop) are optional; the engine and CLI work without them.
 
 ### Web version
 
-Open the [web version](https://melo-foundation.github.io/flac-verifier/) and choose an album folder.
+Open the [web version](https://frayskosher.github.io/flac-verifier/) and choose an album folder.
 
 Supported browsers: desktop Chromium and Firefox.
 
