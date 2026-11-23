@@ -2433,6 +2433,180 @@ def _resample_celt_44k_to_48k_slice(seg_src, start_out, length_out):
     return np.sum(windows * bank[phase], axis=1, dtype=np.float32)
 
 
+@functools.lru_cache(maxsize=8)
+def _get_decim_fir_f32(factor: int):
+    """Cached Kaiser (beta=9.0) low-pass FIR for integer Hi-Res decimation."""
+    f_int = int(factor)
+    half = 16 * f_int
+    n_taps = 2 * half + 1
+    idx = np.arange(n_taps, dtype=np.float64) - half
+    fc = 0.96 / float(f_int)
+    h = fc * np.sinc(fc * idx) * np.kaiser(n_taps, 9.0)
+    h /= np.sum(h)
+    out = np.ascontiguousarray(h, dtype=np.float32)
+    out.setflags(write=False)
+    return out
+
+
+def _decimate_int_f32(x, factor: int, trim_edges: bool = True):
+    """Pure-NumPy / pypocketfft integer-factor decimation with optional edge trim."""
+    arr = np.asarray(x, dtype=np.float32).reshape(-1)
+    f_int = int(factor)
+    if f_int <= 1 or arr.size == 0:
+        return np.ascontiguousarray(arr, dtype=np.float32)
+    h = _get_decim_fir_f32(f_int)
+    n = arr.size
+    n_taps = h.size
+    half = n_taps // 2
+    n_fft = 1 << int(math.ceil(math.log2(max(2, n + n_taps - 1))))
+    y_full = _irfft_f32(_rfft_f32(arr, n=n_fft) * _rfft_f32(h, n=n_fft), n=n_fft)
+    y_dec = y_full[half : half + n : f_int]
+    if trim_edges:
+        trim = min(16, max(0, (y_dec.size - 24576) // 2))
+        if trim > 0:
+            y_dec = y_dec[trim:-trim]
+    return np.ascontiguousarray(y_dec, dtype=np.float32)
+
+
+@functools.lru_cache(maxsize=None)
+def _get_polyphase_147_320_f32():
+    """Cached (147, 47) Kaiser (beta=8.6) FIR polyphase bank for 96 -> 44.1 kHz."""
+    up, down = 147, 320
+    half_len = 10 * down
+    n_taps = 2 * half_len + 1
+    idx = np.arange(n_taps, dtype=np.float64) - half_len
+    h64 = (1.0 / float(down)) * np.sinc((1.0 / float(down)) * idx) * np.kaiser(n_taps, 8.6)
+    h64 *= float(up) / np.sum(h64)
+    max_j = int(math.ceil(half_len / float(up))) + 1
+    width = 2 * max_j + 1
+    bank = np.zeros((up, width), dtype=np.float32)
+    for p in range(up):
+        for k, j in enumerate(range(-max_j, max_j + 1)):
+            t_idx = half_len + p - j * up
+            if 0 <= t_idx < n_taps:
+                bank[p, k] = np.float32(h64[t_idx])
+    out = np.ascontiguousarray(bank, dtype=np.float32)
+    out.setflags(write=False)
+    return out, max_j
+
+
+def _resample_96k_to_44k1_f32(x):
+    """Chunked pure-NumPy 147/320 polyphase resampler (96 -> 44.1 kHz) with trim."""
+    arr = np.asarray(x, dtype=np.float32).reshape(-1)
+    up, down = 147, 320
+    n_in = arr.size
+    n_out = (n_in * up) // down
+    if n_in == 0 or n_out <= 0:
+        return np.empty(0, dtype=np.float32)
+    bank, max_j = _get_polyphase_147_320_f32()
+    width = 2 * max_j + 1
+    m = np.arange(n_out, dtype=np.int64)
+    prod = m * down
+    base_i = prod // up
+    phase = prod % up
+    x_pad = np.empty(n_in + 2 * max_j + 2, dtype=np.float32)
+    x_pad[:max_j] = 0.0
+    x_pad[max_j : max_j + n_in] = arr
+    x_pad[max_j + n_in :] = 0.0
+    offsets = np.arange(width, dtype=np.int64)[None, :]
+    out = np.empty(n_out, dtype=np.float32)
+    chunk = 16384
+    for start in range(0, n_out, chunk):
+        end = min(start + chunk, n_out)
+        windows = x_pad[base_i[start:end, None] + offsets]
+        out[start:end] = np.sum(windows * bank[phase[start:end]], axis=1, dtype=np.float32)
+    trim = min(16, max(0, (out.size - 24576) // 2))
+    if trim > 0:
+        out = out[trim:-trim]
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+def _select_aligned_subwindow(mono, needed, block_start=0, align_mod=1):
+    """Selects an energetic contiguous slice whose file-global start index is
+    aligned to `align_mod`, preserving zero sub-sample phase offset for
+    rational polyphase decimation (e.g., 320 samples for 96 -> 44.1 kHz)."""
+    total = int(mono.size)
+    needed = int(needed)
+    mod = max(1, int(align_mod))
+    rem = int(block_start) % mod
+    first_aligned = (mod - rem) % mod
+    if total - first_aligned <= needed:
+        return np.ascontiguousarray(mono[first_aligned : first_aligned + needed], dtype=np.float32)
+    slack = total - first_aligned - needed
+    best_s0 = first_aligned + ((slack // 2) // mod) * mod
+    if slack < max(2048, mod):
+        return np.ascontiguousarray(mono[best_s0 : best_s0 + needed], dtype=np.float32)
+    candidates = []
+    for i in range(5):
+        raw_off = int(round(i * slack / 4.0))
+        s0 = first_aligned + (raw_off // mod) * mod
+        if s0 + needed <= total and s0 not in candidates:
+            candidates.append(s0)
+    if best_s0 not in candidates and best_s0 + needed <= total:
+        candidates.append(best_s0)
+    best_score = -1.0
+    chunk_len = max(256, needed // 16)
+    n_chunks = max(1, needed // chunk_len)
+    center_s0 = best_s0
+    for s0 in candidates:
+        sub = mono[s0 : s0 + n_chunks * chunk_len].reshape(n_chunks, chunk_len)
+        p20 = float(np.percentile(np.mean(sub * sub, axis=1), 20))
+        score = p20 * (1.02 if s0 == center_s0 else 1.0)
+        if score > best_score:
+            best_score = score
+            best_s0 = s0
+    return np.ascontiguousarray(mono[best_s0 : best_s0 + needed], dtype=np.float32)
+
+
+def _decimate_hires_to_target(mono_blk, sr, target_sr, block_start=0):
+    """Decimates one active Hi-Res channel slice to 48 kHz or 44.1 kHz."""
+    arr = np.asarray(mono_blk, dtype=np.float32).reshape(-1)
+    sr_int = int(sr)
+    tgt = int(target_sr)
+    if arr.size < 32768 or sr_int < 88200:
+        return np.empty(0, dtype=np.float32)
+    if sr_int % 48000 == 0:
+        ratio_96 = sr_int // 96000
+        if ratio_96 < 1 or (ratio_96 & (ratio_96 - 1)) != 0:
+            return np.empty(0, dtype=np.float32)
+        target_slice = min(arr.size, 98304 * ratio_96)
+        if tgt == 48000:
+            factor = 2 * ratio_96
+            seg = _select_aligned_subwindow(arr, target_slice, block_start, align_mod=factor)
+            return _decimate_int_f32(seg, factor)
+        if tgt == 44100:
+            align_m = 320 * ratio_96
+            seg = _select_aligned_subwindow(arr, target_slice, block_start, align_mod=align_m)
+            if ratio_96 > 1:
+                seg96 = _decimate_int_f32(seg, ratio_96, trim_edges=False)
+                if seg96.size > 640 + 56000:
+                    seg96 = seg96[320:-320]
+            else:
+                seg96 = seg
+            return _resample_96k_to_44k1_f32(seg96)
+        return np.empty(0, dtype=np.float32)
+    if sr_int % 44100 == 0:
+        ratio_88 = sr_int // 88200
+        if ratio_88 < 1 or (ratio_88 & (ratio_88 - 1)) != 0:
+            return np.empty(0, dtype=np.float32)
+        target_slice = min(arr.size, 98304 * ratio_88)
+        factor = 2 * ratio_88
+        if tgt == 44100:
+            seg = _select_aligned_subwindow(arr, target_slice, block_start, align_mod=factor)
+            return _decimate_int_f32(seg, factor)
+        if tgt == 48000:
+            align_m = 147 * factor
+            seg = _select_aligned_subwindow(arr, target_slice, block_start, align_mod=align_m)
+            seg44 = _decimate_int_f32(seg, factor, trim_edges=False)
+            if seg44.size > 294 + 26000:
+                seg44 = seg44[147:-147]
+            n_out = (seg44.size * 160) // 147
+            if n_out <= 64:
+                return np.empty(0, dtype=np.float32)
+            return _resample_celt_44k_to_48k_slice(seg44, 16, n_out - 32)
+    return np.empty(0, dtype=np.float32)
+
+
 def _detect_sbr_qmf_replication(mono, sr):
     """Phase 12: seamless QMF subband replication detector for HE-AAC v1/v2 SBR.
 
@@ -3140,6 +3314,114 @@ def _probe_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
     return lat
 
 
+_HIGH_SELECTIVITY_LATTICE_FAMILIES = frozenset((
+    CodecLatticeFamily.MDCT_1024.value,
+    CodecLatticeFamily.PQMF_576.value,
+    CodecLatticeFamily.MDCT_512_AC3.value,
+    CodecLatticeFamily.CELT_960.value,
+))
+
+
+def _rank_hires_lattice(probe_res):
+    """Tie-break key favoring high-selectivity families over cross-rate PQMF-32."""
+    detected = bool(probe_res.get("mdct_lattice_detected"))
+    fam = probe_res.get("mdct_lattice_family")
+    snr = float(probe_res.get("mdct_lattice_snr") or 0.0)
+    if detected and fam in _HIGH_SELECTIVITY_LATTICE_FAMILIES:
+        tier = 2
+    elif detected:
+        tier = 1
+    else:
+        tier = 0
+    return (tier, snr)
+
+
+def _probe_hires_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
+    """Post-STFT stage 2b: single-block Hi-Res (>= 88.2 kHz) decimation bridge.
+
+    Decimates a single active block (up to 98,304 samples at 88.2/96 kHz or
+    196,608 at 176.4/192 kHz) to 48 kHz and 44.1 kHz in pure NumPy to catch
+    full-band lossy transcodes upsampled into Hi-Res containers even when
+    ultrasonic noise masks the CD/DAT brickwall. Never short-circuits on
+    PQMF-32 before checking the alternate target rate.
+    """
+    neutral = {
+        "mdct_lattice_detected": False,
+        "mdct_lattice_snr": 0.0,
+        "mdct_lattice_family": None,
+    }
+    sr_int = int(sr)
+    if sr_int % 48000 == 0:
+        target_rates = (48000, 44100)
+    elif sr_int % 44100 == 0:
+        target_rates = (44100, 48000)
+    else:
+        return neutral
+
+    min_len = 65536 * max(1, sr_int // 88200)
+    ranked_blks = sorted(
+        chosen, key=lambda item: (len(item[4]) >= min_len, item[0]), reverse=True
+    )
+    best_start = int(ranked_blks[0][3])
+    best_blk = ranked_blks[0][4]
+    if best_blk.ndim > 1 and len(mc_pair) >= 2:
+        c0, c1 = mc_pair[0], mc_pair[1]
+        dl = np.diff(best_blk[:, c0])
+        dr = np.diff(best_blk[:, c1])
+        el = float(np.dot(dl, dl))
+        er = float(np.dot(dr, dr))
+        primary_idx = c0 if el >= er else c1
+        opp_idx = c1 if primary_idx == c0 else c0
+        mono_blk = best_blk[:, primary_idx]
+        opp_blk = best_blk[:, opp_idx]
+        asym_ch = min(el, er) < 0.25 * max(el, er, 1e-12)
+    else:
+        ch0 = mc_pair[0] if best_blk.ndim > 1 else 0
+        mono_blk = best_blk[:, ch0] if best_blk.ndim > 1 else best_blk
+        opp_blk = None
+        asym_ch = False
+
+    eff_ceil = None if (ceiling_val is None or ceiling_val >= 17500) else ceiling_val
+    first_error = None
+
+    def _record_error(probe_res):
+        nonlocal first_error
+        if first_error is None and "mdct_detector_error" in probe_res:
+            first_error = probe_res["mdct_detector_error"]
+
+    def _probe_channel(ch_blk):
+        best_res = neutral
+        for tgt_sr in target_rates:
+            sig_dec = _decimate_hires_to_target(
+                ch_blk, sr_int, tgt_sr, block_start=best_start
+            )
+            if sig_dec.size < 24576:
+                continue
+            cand = _detect_lapped_codec_grid(sig_dec, tgt_sr, ceiling_hz=eff_ceil)
+            _record_error(cand)
+            if _rank_hires_lattice(cand) > _rank_hires_lattice(best_res):
+                best_res = cand
+            if (cand.get("mdct_lattice_detected")
+                    and cand.get("mdct_lattice_family") in _HIGH_SELECTIVITY_LATTICE_FAMILIES):
+                return cand
+        return best_res
+
+    lat = _probe_channel(mono_blk)
+    if (not (lat.get("mdct_lattice_detected")
+             and lat.get("mdct_lattice_family") in _HIGH_SELECTIVITY_LATTICE_FAMILIES)
+            and opp_blk is not None
+            and (asym_ch or float(lat.get("mdct_lattice_snr") or 0.0) >= 5.0)):
+        lat_opp = _probe_channel(opp_blk)
+        if _rank_hires_lattice(lat_opp) > _rank_hires_lattice(lat):
+            lat = lat_opp
+
+    if (not lat.get("mdct_lattice_detected")
+            and first_error is not None
+            and "mdct_detector_error" not in lat):
+        lat = {**lat, "mdct_detector_error": first_error}
+    return lat
+
+
 def _probe_sbr_qmf_from_chosen(chosen, mc_pair, sr, ceiling_val):
     """Post-STFT stage 3: seamless HE-AAC SBR QMF replication probe."""
     if sr < 32000 or ceiling_val < 14500:
@@ -3604,11 +3886,13 @@ class _SpectralAccumulator:
             spectrum, psycho, freqs, mean_mid, mean_side, gain_noise, self.sr
         )
         ceiling_val = spectrum.get("techo_hz", 0)
-        if (41000 <= self.sr <= 48000
-                and ceiling_val >= 7000
-                and spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value):
+        if 41000 <= self.sr <= 48000 and ceiling_val >= 7000:
             spectrum.update(
                 _probe_lapped_codec_lattice(chosen, mc_pair, self.sr, ceiling_val)
+            )
+        elif self.sr >= 88200 and ceiling_val >= 7000:
+            spectrum.update(
+                _probe_hires_lapped_codec_lattice(chosen, mc_pair, self.sr, ceiling_val)
             )
         low_centroid_smooth_iqr = bool(
             self.sr <= 48000

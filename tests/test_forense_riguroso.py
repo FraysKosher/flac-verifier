@@ -4890,11 +4890,11 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
             ("eac3_44_192", wav44, ".eac3", ["-c:a", "eac3", "-b:a", "192k"], True),
             ("eac3_44_384", wav44, ".eac3", ["-c:a", "eac3", "-b:a", "384k"], True),
             ("eac3_44_640", wav44, ".eac3", ["-c:a", "eac3", "-b:a", "640k"], True),
-            ("ac3_48_192", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "192k"], False),
-            ("ac3_48_384", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "384k"], False),
+            ("ac3_48_192", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "192k"], True),
+            ("ac3_48_384", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "384k"], True),
             ("ac3_48_640_fb", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "640k", "-cutoff", "23500"], True),
-            ("eac3_48_192", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "192k"], False),
-            ("eac3_48_384", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "384k"], False),
+            ("eac3_48_192", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "192k"], True),
+            ("eac3_48_384", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "384k"], True),
             ("eac3_48_640_fb", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "640k", "-cutoff", "23500"], True),
         ]
         for name, src_wav, ext, codec_args, require_full_lattice in cases:
@@ -4931,6 +4931,113 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
                         res["esp"]["mdct_lattice_family"],
                         motor_flac.CodecLatticeFamily.MDCT_512_AC3.value,
                     )
+
+    def test_51_hires_decimation_bridge_and_far_cutoff_attribution(self):
+        """Engine 15.0: pure-NumPy Hi-Res decimation bridge catches ultrasonic-masked
+        96 kHz transcodes (MP3, AAC, Vorbis, Opus) with zero FP on clean 24/96,
+        24/192, and DSD64/128 controls, and attributes codec family under far_cutoff."""
+        import shutil
+        import subprocess
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            self.skipTest("ffmpeg is not available on PATH")
+
+        rng = np.random.default_rng(1510)
+        sig44 = _create_track_reference(44100, duration=6.0, seed=1511)
+        sig48 = _create_track_reference(48000, duration=6.0, seed=1512)
+        wav44 = self.tmp_path / "hr_ref44.wav"
+        wav48 = self.tmp_path / "hr_ref48.wav"
+        sf.write(wav44, sig44, 44100, subtype="PCM_24")
+        sf.write(wav48, sig48, 48000, subtype="PCM_24")
+
+        # 1. Ultrasonic-masked 96 kHz transcodes: muro_brickwall_nyquist is
+        # defeated by gentle ultrasonic hiss, yet the decimation bridge catches
+        # the underlying lapped codec lattice.
+        hires_fakes = [
+            ("mp3_44_96", wav44, ".mp3", ["-c:a", "libmp3lame", "-b:a", "320k", "-cutoff", "22050"],
+             320, 147, 22200.0, motor_flac.CodecLatticeFamily.PQMF_576.value, True),
+            ("aac_44_96", wav44, ".m4a", ["-c:a", "aac", "-b:a", "320k", "-cutoff", "22000"],
+             320, 147, 22200.0, motor_flac.CodecLatticeFamily.MDCT_1024.value, True),
+            ("vorbis_44_96", wav44, ".ogg", ["-c:a", "libvorbis", "-q:a", "9"],
+             320, 147, 22200.0, motor_flac.CodecLatticeFamily.MDCT_1024.value, True),
+            ("opus_48_96", wav48, ".opus", ["-c:a", "libopus", "-b:a", "256k"],
+             2, 1, 23500.0, motor_flac.CodecLatticeFamily.CELT_960.value, False),
+        ]
+        for name, src_wav, ext, codec_args, up, dn, u_lo, exp_fam, expect_no_brick in hires_fakes:
+            with self.subTest(case=name):
+                tmp_l = self.tmp_path / f"{name}{ext}"
+                tmp_w = self.tmp_path / f"{name}.wav"
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(src_wav)]
+                    + codec_args + [str(tmp_l)],
+                    check=True,
+                )
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(tmp_l),
+                     "-c:a", "pcm_s24le", str(tmp_w)],
+                    check=True,
+                )
+                x_dec, _ = sf.read(tmp_w, dtype="float64", always_2d=True)
+                x96 = signal.resample_poly(x_dec, up, dn, axis=0)
+                u_order = 8 if u_lo >= 23000.0 else 6
+                u_hiss = signal.sosfilt(
+                    signal.butter(u_order, [u_lo, 40000.0], btype="band", fs=96000, output="sos"),
+                    rng.standard_normal(x96.shape),
+                    axis=0,
+                )
+                u_hiss *= (10.0 ** (-56.0 / 20.0)) / (np.std(u_hiss) + 1e-12)
+                p96 = self.tmp_path / f"{name}.flac"
+                sf.write(p96, np.clip(x96 + u_hiss, -0.99, 0.99), 96000, subtype="PCM_24")
+
+                res = motor_flac.analyze_file_data(str(p96), use_cache=False)
+                spec = res["esp"]
+                self.assertEqual(res["veredicto"], "PROBABLE UPSCALE", spec)
+                if expect_no_brick:
+                    self.assertIs(spec["muro_brickwall_nyquist"], False, spec)
+                self.assertIs(spec["mdct_lattice_detected"], True, spec)
+                self.assertEqual(spec["mdct_lattice_family"], exp_fam, spec)
+
+        # 2. far_cutoff attribution unlocked: 128 kbps MP3 gets PQMF-576 family.
+        mp3_128 = self.tmp_path / "mp3_128_far.mp3"
+        mp3_128_flac = self.tmp_path / "mp3_128_far.flac"
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-v", "error", "-i", str(wav44),
+             "-c:a", "libmp3lame", "-b:a", "128k", str(mp3_128)],
+            check=True,
+        )
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-v", "error", "-i", str(mp3_128),
+             "-sample_fmt", "s16", str(mp3_128_flac)],
+            check=True,
+        )
+        r_far = motor_flac.analyze_file_data(str(mp3_128_flac), use_cache=False)
+        self.assertEqual(r_far["esp"]["clase_corte"], "far_cutoff")
+        self.assertIs(r_far["esp"]["mdct_lattice_detected"], True, r_far["esp"])
+        self.assertEqual(
+            r_far["esp"]["mdct_lattice_family"],
+            motor_flac.CodecLatticeFamily.PQMF_576.value,
+        )
+
+        # 3. Genuine 24/96, 24/192, and DSD64 controls must yield 0 false positives.
+        g96 = _create_track_reference(96000, duration=5.0, seed=1515)
+        g96 += rng.normal(0.0, 10.0 ** (-108.0 / 20.0), g96.shape)
+        p_g96 = self.tmp_path / "gen_hires_96.flac"
+        sf.write(p_g96, np.clip(g96, -0.99, 0.99), 96000, subtype="PCM_24")
+
+        g192 = _create_track_reference(192000, duration=3.5, seed=1516)
+        g192 += rng.normal(0.0, 10.0 ** (-110.0 / 20.0), g192.shape)
+        p_g192 = self.tmp_path / "gen_hires_192.flac"
+        sf.write(p_g192, np.clip(g192, -0.99, 0.99), 192000, subtype="PCM_24")
+
+        g_dsd = _dsd_like(88200, duration=4.5, seed=1517)
+        p_dsd = self.tmp_path / "gen_dsd64.flac"
+        sf.write(p_dsd, np.clip(g_dsd, -0.99, 0.99), 88200, subtype="PCM_24")
+
+        for lbl, p_ctrl in (("gen_96", p_g96), ("gen_192", p_g192), ("gen_dsd64", p_dsd)):
+            r_c = motor_flac.analyze_file_data(str(p_ctrl), use_cache=False)
+            self.assertIn(r_c["veredicto"], GOOD_VERDICTS, lbl)
+            self.assertIs(r_c["esp"]["mdct_lattice_detected"], False, f"{lbl}: {r_c['esp']}")
 
 
 if __name__ == "__main__":
