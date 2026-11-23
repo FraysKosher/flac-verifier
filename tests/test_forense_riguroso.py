@@ -4639,6 +4639,199 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         self.assertEqual(hidden_lossy["problemas"], probs_after_first)
         self.assertEqual(hidden_lossy["evidencias_forenses"], evid_lossy_after_first)
 
+    def test_48_hires_assessment_mutual_exclusion_and_lattice_error_propagation(self):
+        """HiresAssessment enforces mutually exclusive morphologies and
+        _SpectralAccumulator preserves fallback mdct_detector_error when snr == 0.0."""
+        import _motor_espectral
+        from unittest import mock
+
+        sr = 96000
+        freqs = np.fft.rfftfreq(4096, 1.0 / sr)
+        # Construct a 96 kHz spectrum with strong DSD64 noise shaping (smooth
+        # rising ramp across 24-40 kHz, jump_db < 25 dB) AND a sharp 22 kHz step
+        # plus symmetric sidebands around 22.05 kHz: DSD classification must stay
+        # mutually exclusive with NYQUIST_BRICKWALL and ALIASING_MIRROR.
+        power_db = np.full_like(freqs, -50.0, dtype=np.float64)
+        power_db[(freqs >= 15000) & (freqs <= 21200)] = -52.0
+        power_db[(freqs > 21200) & (freqs < 24000)] = -72.0
+        mask_ramp = (freqs >= 24000) & (freqs <= 40000)
+        power_db[mask_ramp] = -70.0 + 22.0 * ((freqs[mask_ramp] - 24000.0) / 16000.0)
+        power_db[freqs > 40000] = -48.0
+
+        assessment = _motor_espectral._assess_hires_authenticity(
+            freqs, power_db, sr
+        )
+        self.assertIsInstance(assessment, motor_flac.HiresAssessment)
+        self.assertIs(assessment.morphology, motor_flac.HiresMorphology.DSD_TRANSFER)
+        proto = assessment.to_protocol_fields()
+        self.assertTrue(proto["es_transferencia_dsd"])
+        self.assertFalse(proto["muro_brickwall_nyquist"])
+        self.assertFalse(proto["espejo_aliasing_detectado"])
+        self.assertFalse(proto["rolloff_analogico_genuino"])
+
+        # Fallback probe error propagation when mdct_lattice_snr == 0.0
+        rng = np.random.default_rng(4848)
+        n = 32768
+        left = rng.uniform(-0.3, 0.3, n).astype(np.float32)
+        right = (left * 0.1).astype(np.float32)
+        stereo = np.column_stack([left, right])
+        acc = _motor_espectral._SpectralAccumulator(44100, is_stereo=True)
+        acc.add(stereo, 0)
+
+        call_idx = {"n": 0}
+
+        def _fake_lattice_probe(_blk, _sr, ceiling_hz=None):
+            call_idx["n"] += 1
+            if call_idx["n"] == 2:
+                return {
+                    "mdct_lattice_detected": False,
+                    "mdct_lattice_snr": 0.0,
+                    "mdct_lattice_family": None,
+                    "mdct_detector_error": "fallback boom",
+                }
+            return {
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 0.0,
+                "mdct_lattice_family": None,
+            }
+
+        with mock.patch.object(
+            _motor_espectral, "_detect_lapped_codec_grid", side_effect=_fake_lattice_probe
+        ):
+            res = acc.result()
+        self.assertEqual(res.get("mdct_detector_error"), "fallback boom")
+        self.assertGreaterEqual(call_idx["n"], 2)
+
+    def test_49_verdict_cap_all_levels_and_album_coherence_actions(self):
+        """_ScoreLedger.evaluate enforces all 4 VerdictCap levels and
+        apply_album_coherence stamps explicit AlbumCoherenceAction values."""
+        # 1. VerdictCap.GENUINE_LOSSLESS allows GENUINE_LOSSLESS
+        l_gen = motor_flac._ScoreLedger()
+        l_gen.add_votes(5.0, 5.0)
+        self.assertIs(l_gen.evaluate().verdict, motor_flac.Verdict.GENUINE_LOSSLESS)
+
+        # 2. VerdictCap.PROBABLY_LOSSLESS clamps GENUINE_LOSSLESS -> PROBABLY_LOSSLESS
+        l_prob = motor_flac._ScoreLedger()
+        l_prob.add_votes(5.0, 5.0)
+        l_prob.lower_cap(motor_flac.VerdictCap.PROBABLY_LOSSLESS)
+        self.assertIs(l_prob.evaluate().verdict, motor_flac.Verdict.PROBABLY_LOSSLESS)
+
+        # 3. VerdictCap.SUSPICIOUS caps high score at SUSPICIOUS (or PROBABLE_UPSCALE if low & corroborated)
+        l_susp = motor_flac._ScoreLedger()
+        l_susp.add_votes(5.0, 5.0)
+        l_susp.lower_cap(motor_flac.VerdictCap.SUSPICIOUS)
+        self.assertIs(l_susp.evaluate().verdict, motor_flac.Verdict.SUSPICIOUS)
+
+        # 4. VerdictCap.PROBABLE_UPSCALE forces PROBABLE_UPSCALE when corroborated, else SUSPICIOUS
+        l_up_uncorr = motor_flac._ScoreLedger()
+        l_up_uncorr.add_votes(5.0, 5.0)
+        l_up_uncorr.lower_cap(motor_flac.VerdictCap.PROBABLE_UPSCALE)
+        self.assertIs(l_up_uncorr.evaluate().verdict, motor_flac.Verdict.SUSPICIOUS)
+
+        l_up_corr = motor_flac._ScoreLedger()
+        l_up_corr.add_votes(5.0, 5.0)
+        l_up_corr.has_hard_proof = True
+        l_up_corr.lower_cap(motor_flac.VerdictCap.PROBABLE_UPSCALE)
+        self.assertIs(l_up_corr.evaluate().verdict, motor_flac.Verdict.PROBABLE_UPSCALE)
+
+        # 5. AlbumCoherenceAction stamped on rescued and convicted tracks
+        rescue_dir = self.tmp_path / "action_rescue"
+        rescue_dir.mkdir(parents=True, exist_ok=True)
+        rescue_batch = [
+            {
+                "archivo": f"{i:02d}_ok.flac",
+                "ruta": str(rescue_dir / f"{i:02d}_ok.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+                "bdi": {"aplica": False},
+                "veredicto": motor_flac.Verdict.GENUINE_LOSSLESS.value,
+                "score": 1.0,
+                "problemas": [],
+                "notes": [],
+                "evidencias_forenses": [],
+                "esp": {"techo_hz": 21500, "techo_rel_nyquist": 0.975, "familias_evidencia_lossy": []},
+            }
+            for i in range(1, 5)
+        ]
+        rescued = {
+            "archivo": "05_dark.flac",
+            "ruta": str(rescue_dir / "05_dark.flac"),
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+            "bdi": {"aplica": False},
+            "veredicto": motor_flac.Verdict.SUSPICIOUS.value,
+            "score": 0.50,
+            "problemas": ["Low ceiling"],
+            "notes": [],
+            "evidencias_forenses": [],
+            "esp": {
+                "techo_hz": 12000,
+                "techo_rel_nyquist": 0.544,
+                **motor_flac.CutoffAssessment.none().to_protocol_fields(),
+                "iqr_corte_hz": 100.0,
+                "ratio_huecos_mdct": 0.0,
+                "familias_evidencia_lossy": [motor_flac.EvidenceFamily.SPECTRAL_CUTOFF.value],
+                "finding_codes": [motor_flac.FindingCode.LOW_SPECTRAL_CEILING.value],
+            },
+        }
+        rescue_batch.append(rescued)
+        self.assertEqual(motor_flac.apply_album_coherence(rescue_batch), 1)
+        self.assertTrue(rescued["coherencia_album"])
+        self.assertEqual(
+            rescued["album_coherence_action"],
+            motor_flac.AlbumCoherenceAction.RESCUED_LOSSLESS.value,
+        )
+
+        lossy_dir = self.tmp_path / "action_lossy"
+        lossy_dir.mkdir(parents=True, exist_ok=True)
+        lossy_batch = [
+            {
+                "archivo": f"{i:02d}_mp3.flac",
+                "ruta": str(lossy_dir / f"{i:02d}_mp3.flac"),
+                "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+                "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+                "bdi": {"aplica": False},
+                "veredicto": motor_flac.Verdict.PROBABLE_UPSCALE.value,
+                "score": 0.2,
+                "problemas": ["Lattice"],
+                "notes": [],
+                "evidencias_forenses": [],
+                "esp": {
+                    "techo_hz": 20500,
+                    "techo_rel_nyquist": 0.93,
+                    "mdct_lattice_detected": True,
+                    "mdct_lattice_snr": 15.0,
+                    "mdct_lattice_family": motor_flac.CodecLatticeFamily.PQMF_576.value,
+                },
+            }
+            for i in range(1, 5)
+        ]
+        convicted = {
+            "archivo": "05_quiet.flac",
+            "ruta": str(lossy_dir / "05_quiet.flac"),
+            "meta": {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2},
+            "md5": {"estado": motor_flac.Md5Status.MATCH.value},
+            "bdi": {"aplica": False},
+            "veredicto": motor_flac.Verdict.PROBABLY_LOSSLESS.value,
+            "score": 0.72,
+            "problemas": [],
+            "notes": [],
+            "evidencias_forenses": [],
+            "esp": {
+                "techo_hz": 14000,
+                "techo_rel_nyquist": 0.635,
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 4.2,
+            },
+        }
+        lossy_batch.append(convicted)
+        self.assertEqual(motor_flac.apply_album_coherence(lossy_batch), 1)
+        self.assertTrue(convicted["coherencia_album"])
+        self.assertEqual(
+            convicted["album_coherence_action"],
+            motor_flac.AlbumCoherenceAction.CONVICTED_LOSSY.value,
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

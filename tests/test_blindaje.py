@@ -357,6 +357,64 @@ class TestTransientIoRetry(unittest.TestCase):
                 self.assertIn("meta", res)
                 self.assertIn("md5", res)
 
+    def test_read_sf_block_with_retry_caps_transient_reads_per_delay(self):
+        """When seek() succeeds and read_call() keeps failing transiently,
+        _read_sf_block_with_retry performs at most len(delays) + 1 reads."""
+        import soundfile as sf
+
+        read_count = {"n": 0}
+        close_count = {"n": 0}
+
+        class _FlakyReadHandle:
+            def seek(self, _offset):
+                return 0
+
+            def close(self):
+                close_count["n"] += 1
+
+        def _read_call(_handle):
+            read_count["n"] += 1
+            raise sf.LibsndfileError(2, "transient read error")
+
+        delays = (0.01, 0.02, 0.03)
+        with mock.patch.object(
+            engine.sf, "SoundFile", side_effect=lambda _p: _FlakyReadHandle()
+        ), mock.patch("time.sleep") as mock_sleep:
+            with self.assertRaises(sf.LibsndfileError):
+                engine._read_sf_block_with_retry(
+                    _FlakyReadHandle(),
+                    "dummy.flac",
+                    offset=0,
+                    read_call=_read_call,
+                    delays=delays,
+                )
+
+        self.assertEqual(read_count["n"], len(delays) + 1)
+        self.assertEqual(mock_sleep.call_count, len(delays))
+        self.assertGreaterEqual(close_count["n"], len(delays))
+
+    def test_cli_order_buffer_announces_multiple_consecutive_holds(self):
+        """_CliOrderBuffer announces every held-back track index in order."""
+        import verificar_flac as cli
+
+        files = [f"/album/0{i}.flac" for i in range(1, 6)]
+        buf = cli._CliOrderBuffer(files)
+
+        ready, held = buf.accept(0, {"indice_original": 3, "ruta": files[3]})
+        self.assertEqual(ready, [])
+        self.assertEqual(held, [0, 1, 2])
+
+        ready2, held2 = buf.accept(1, {"indice_original": 4, "ruta": files[4]})
+        self.assertEqual(ready2, [])
+        self.assertEqual(held2, [])
+
+        ready3, held3 = buf.accept(2, {"indice_original": 0, "ruta": files[0]})
+        self.assertEqual([item[0] for item in ready3], [files[0]])
+        self.assertEqual(held3, [])
+
+        remaining = buf.flush_remaining()
+        self.assertEqual([item[0] for item in remaining], [files[3], files[4]])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

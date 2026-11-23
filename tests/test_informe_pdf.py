@@ -654,6 +654,62 @@ class test_report_pdf(unittest.TestCase):
         self.assertFalse(rep_err["ok"])
         self.assertIn("bad path", rep_err["error"])
 
+    def test_pdf_tones_independent_of_active_theme_mode(self):
+        """Reloading informe_pdf under light mode yields identical high-contrast print tones."""
+        import importlib
+        import theme
+
+        def _contrast_ratio(fg_hex, bg_hex):
+            def _lum(hex_val):
+                r, g, b = (int(hex_val.lstrip("#")[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+                lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+                return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+            l1, l2 = _lum(fg_hex), _lum(bg_hex)
+            hi, lo = max(l1, l2), min(l1, l2)
+            return (hi + 0.05) / (lo + 0.05)
+
+        prev_mode = theme.MODE
+        try:
+            theme.set_mode("dark")
+            importlib.reload(pdf)
+            dark_tones = (
+                pdf.OK_TONE,
+                pdf.PROBABLE_TONE,
+                pdf.WARN_TONE,
+                pdf.BAD_TONE,
+                pdf.UNKNOWN_TONE,
+                pdf.DANGER_TONE,
+            )
+            theme.set_mode("light")
+            importlib.reload(pdf)
+            light_tones = (
+                pdf.OK_TONE,
+                pdf.PROBABLE_TONE,
+                pdf.WARN_TONE,
+                pdf.BAD_TONE,
+                pdf.UNKNOWN_TONE,
+                pdf.DANGER_TONE,
+            )
+            self.assertEqual(light_tones, dark_tones)
+            for text_hex, _bg_hex, _border_hex in light_tones:
+                self.assertGreaterEqual(_contrast_ratio(text_hex, pdf.PAPER), 4.5)
+        finally:
+            theme.set_mode(prev_mode)
+            importlib.reload(pdf)
+
+    def test_lazy_stream_open_slices_materialize_remaining_items(self):
+        """_LazyStream open slices materialize tail elements on read and deletion."""
+        stream = pdf._LazyStream(iter([10, 20, 30, 40]))
+        self.assertEqual(stream[0], 10)
+        self.assertEqual(stream[1:], [20, 30, 40])
+        self.assertEqual(stream[:], [10, 20, 30, 40])
+
+        stream2 = pdf._LazyStream(iter(["a", "b", "c", "d"]))
+        self.assertEqual(stream2[:], ["a", "b", "c", "d"])
+        del stream2[1:]
+        self.assertEqual(stream2[:], ["a"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -604,6 +604,36 @@ class TestPyprojectToml(unittest.TestCase):
                 build.verify()
         self.assertIn("exit code 2", str(ctx.exception))
 
+    def test_executable_checker_distinguishes_skip_from_pass(self):
+        """comprobar_ejecutable.Checker distinguishes SKIP from PASS in summary()."""
+        import contextlib
+        import io
+        import comprobar_ejecutable as checker_mod
+
+        checker = checker_mod.Checker(ROOT)
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                checker.annotate("step ok", True, "good")
+                checker.annotate("step skip", checker_mod.CheckOutcome.SKIP, "no ffmpeg")
+                rc_ok = checker.summary()
+            self.assertEqual(rc_ok, 0)
+            text_ok = out.getvalue()
+            self.assertIn("PASS", text_ok)
+            self.assertIn("SKIP", text_ok)
+            self.assertIn("1 passed, 1 skipped, 0 failed", text_ok)
+
+            out_fail = io.StringIO()
+            with contextlib.redirect_stdout(out_fail):
+                checker.annotate("step fail", False, "broken")
+                rc_fail = checker.summary()
+            self.assertEqual(rc_fail, 1)
+            text_fail = out_fail.getvalue()
+            self.assertIn("FAIL", text_fail)
+            self.assertIn("1 failed, 1 passed, 1 skipped", text_fail)
+        finally:
+            checker.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1148,6 +1148,164 @@ class TestCacheHardeningAndStreams(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             psy.add(np.ones((4, freqs.size), dtype=np.float32), freqs, win)
 
+    def test_forensic_bits_failed_result_and_storage_tier_transition(self):
+        """ForensicBitsAccumulator keeps FAILED on result() and frees compact bitmap."""
+        import _motor_bits
+
+        fb_failed = _motor_bits.ForensicBitsAccumulator(24, sample_rate=44100)
+        with self.assertRaises(AttributeError):
+            fb_failed.add(object())
+        self.assertIs(fb_failed.state, engine.AccumulatorState.FAILED)
+        with self.assertRaises(RuntimeError):
+            fb_failed.result()
+        self.assertIs(fb_failed.state, engine.AccumulatorState.FAILED)
+
+        # Compact HI16 -> FULL_24BIT promotion releases `_bitmap_hi16`.
+        fb_tier = _motor_bits.ForensicBitsAccumulator(24, sample_rate=44100)
+        self.assertIs(fb_tier._storage_tier, engine.BitStorageTier.COMPACT_HI16)
+        self.assertTrue(fb_tier._hi16_only)
+        self.assertIsNotNone(fb_tier._bitmap_hi16)
+
+        hi16_samples = (np.arange(64, dtype=np.int32) << 8).reshape(32, 2)
+        fb_tier.add(hi16_samples, q_int=hi16_samples)
+        self.assertIs(fb_tier._storage_tier, engine.BitStorageTier.COMPACT_HI16)
+
+        # Sample with non-zero lower 8 bits inside the 24-bit integer payload
+        full24_samples = (np.arange(64, dtype=np.int32) * 257 + 13).reshape(32, 2)
+        fb_tier.add(full24_samples, q_int=full24_samples)
+        self.assertIs(fb_tier._storage_tier, engine.BitStorageTier.FULL_24BIT)
+        self.assertFalse(fb_tier._hi16_only)
+        self.assertIsNone(fb_tier._bitmap_hi16)
+        self.assertIsNotNone(fb_tier._bitmap_global)
+        res = fb_tier.result()
+        self.assertIs(fb_tier.state, engine.AccumulatorState.COMPLETED)
+        self.assertTrue(res["aplica"])
+
+    def test_cache_rejects_corrupt_notes_and_spectral_mode_coercion(self):
+        """read_cache_entry rejects malformed notes, and SpectralMode coerces None cleanly."""
+        self.assertIs(engine.SpectralMode.coerce(None), engine.SpectralMode.FULL)
+        self.assertIs(engine.SpectralMode.coerce(""), engine.SpectralMode.FULL)
+        self.assertIs(engine.SpectralMode.coerce("center"), engine.SpectralMode.CENTER)
+        self.assertIs(
+            engine.SpectralMode.coerce(engine.SpectralMode.SECONDS),
+            engine.SpectralMode.SECONDS,
+        )
+        with self.assertRaises(ValueError):
+            engine.SpectralMode.coerce("invalid_mode")
+
+        sample_path = self.fx["ok16"]
+        self.assertNotIn(".None.", engine._cache_path(sample_path, None, None))
+        self.assertNotIn(".None.", engine._png_path(sample_path, None, None))
+        self.assertEqual(
+            engine._cache_path(sample_path, None, None),
+            engine._cache_path(sample_path, "full", None),
+        )
+        self.assertEqual(
+            engine._png_path(sample_path, None, None),
+            engine._png_path(sample_path, "full", None),
+        )
+        self.assertEqual(
+            engine._analysis_key(None, None, engine.ENGINE_VERSION, engine.CACHE_SCHEMA_VERSION),
+            engine._analysis_key("full", None, engine.ENGINE_VERSION, engine.CACHE_SCHEMA_VERSION),
+        )
+
+        meta = engine.verify_metadata(sample_path)
+        with tempfile.TemporaryDirectory() as isolated_cache:
+            with mock.patch.dict(
+                os.environ, {"FLAC_VERIFIER_CACHE_DIR": isolated_cache}, clear=False
+            ):
+                analyzed = engine.analyze_file_data(
+                    sample_path, "center", None, False, use_cache=True
+                )
+                self.assertEqual(analyzed["veredicto"], "GENUINE LOSSLESS")
+                cache_file = engine._cache_path(sample_path, "center", None)
+                with open(cache_file, "r", encoding="utf-8") as fh:
+                    envelope = json.load(fh)
+                envelope["resultado"]["notes"] = 123
+                with open(cache_file, "w", encoding="utf-8") as fh:
+                    json.dump(envelope, fh)
+                status, loaded = engine.read_cache_entry(
+                    sample_path, meta, "center", None, requires_png=False
+                )
+                self.assertIs(status, engine.CacheLookupStatus.MISS)
+                self.assertIsNone(loaded)
+
+    def test_render_png_only_idempotent_effective_stereo_and_pool_cleanup(self):
+        """render_png_only is idempotent, honors effective_stereo, and analyze_files closes pools on early break."""
+        import _motor_espectral
+
+        rng = np.random.default_rng(909)
+        stereo = rng.uniform(-0.25, 0.25, (8192, 2)).astype(np.float32)
+        render_calls = []
+
+        def _fake_renderer(freqs, times, mix, sr, path, ceiling_hz, cutoff_hz, mode="full", seconds=None):
+            render_calls.append((mix.shape, mode))
+            return ("fake.png", None)
+
+        acc = _motor_espectral._SpectralAccumulator(
+            44100, is_stereo=True, save_png=True, path="track.flac", renderer=_fake_renderer
+        )
+        acc.add(stereo, 0)
+        first = acc.render_png_only(ceiling_hz=20000, cutoff_hz=None)
+        second = acc.render_png_only(ceiling_hz=20000, cutoff_hz=None)
+        self.assertEqual(first, {"espectrograma": "fake.png"})
+        self.assertEqual(second, first)
+        self.assertEqual(len(render_calls), 1)
+        with self.assertRaises(RuntimeError):
+            acc.result()
+
+        # Multichannel block with only 1 active channel still renders cleanly via effective_stereo.
+        mc = np.zeros((8192, 6), dtype=np.float32)
+        mc[:, 2] = stereo[:, 0]
+        mc_acc = _motor_espectral._SpectralAccumulator(
+            44100, is_stereo=True, save_png=True, path="mc.flac", renderer=_fake_renderer
+        )
+        mc_acc.add(mc, 0)
+        mc_out = mc_acc.render_png_only(ceiling_hz=20000, cutoff_hz=None)
+        self.assertEqual(mc_out, {"espectrograma": "fake.png"})
+
+        # Premature break out of analyze_files() closes the parallel pool deterministically.
+        probe = self.fx.subfolder("early_break_pool", ("ok16", "ok24", "corte_16k"))
+        files = sorted(
+            os.path.join(probe, name)
+            for name in os.listdir(probe)
+            if name.endswith(".flac")
+        )
+        closed_flag = {"closed": False}
+
+        import concurrent.futures
+
+        class _TrackingPool:
+            def __init__(self, max_workers=None):
+                self.max_workers = max_workers
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                self.shutdown(wait=True)
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                fut = concurrent.futures.Future()
+                fut.set_result(fn(*args, **kwargs))
+                return fut
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                closed_flag["closed"] = True
+
+        with mock.patch.object(engine, "_probe_processes", return_value=True), \
+             mock.patch("concurrent.futures.ProcessPoolExecutor", _TrackingPool):
+            gen, workers = engine.analyze_files(
+                files, mode="center", seconds=None, save_png=False,
+                workers=2, use_cache=False,
+            )
+            self.assertEqual(workers, 2)
+            for _item in gen:
+                break
+            gen.close()
+        self.assertTrue(closed_flag["closed"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

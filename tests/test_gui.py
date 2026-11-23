@@ -2690,6 +2690,71 @@ class TestPosixProcessGroupAndBatchErrors(unittest.TestCase):
             finally:
                 win.destroy()
 
+    def test_engine_path_accepts_explicit_frozen_and_executable_without_mutating_sys(self):
+        """gui.engine_path(frozen=..., executable=...) resolves cleanly without mutating sys."""
+        orig_frozen = getattr(sys, "frozen", None)
+        orig_exe = sys.executable
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_gui = os.path.join(tmpdir, "FLAC_Verifier.exe")
+            open(fake_gui, "wb").close()
+            cmd_fallback = gui.engine_path(frozen=True, executable=fake_gui)
+            self.assertEqual(cmd_fallback, [fake_gui, gui.FLAG_ENGINE_CLI])
+
+            fake_engine = os.path.join(tmpdir, gui.ENGINE_EXE_NAME)
+            open(fake_engine, "wb").close()
+            cmd_sibling = gui.engine_path(frozen=True, executable=fake_gui)
+            self.assertEqual(cmd_sibling, [fake_engine, gui.FLAG_ENGINE_CLI])
+
+        self.assertEqual(getattr(sys, "frozen", None), orig_frozen)
+        self.assertEqual(sys.executable, orig_exe)
+
+    @unittest.skipUnless(VISUAL, "customtkinter and a display are required")
+    def test_spectrogram_cache_reset_and_deferred_hero_layout_during_retheme(self):
+        """Fresh _analyze resets spectrogram caches; _apply_hero_layout defers during _retheme."""
+        with tempfile.TemporaryDirectory() as root:
+            track = os.path.join(root, "01.flac")
+            open(track, "wb").close()
+
+            class _StubManager:
+                def __init__(self):
+                    self.active = False
+                    self.process = None
+                    self.run_id = 0
+
+                def start(self, path, **kwargs):
+                    self.run_id += 1
+                    return ["flac_motor.exe", "--path", path]
+
+            win = gui.FlacVerifierWindow()
+            try:
+                win.withdraw()
+                win.manager = _StubManager()
+                win._spec_bad_paths.add("stale_missing.png")
+                win._spectrograms["stale.png"] = object()
+                win._pil_spectrograms["stale.png"] = (object(), (10, 10))
+                with mock.patch.object(win, "_drain_queue"):
+                    win.var_path.set(root)
+                    win._analyze()
+                self.assertEqual(len(win._spec_bad_paths), 0)
+                self.assertEqual(len(win._spectrograms), 0)
+                self.assertEqual(len(win._pil_spectrograms), 0)
+
+                # Simulate hero layout fired while _retheming is active.
+                win._retheming = True
+                win._hero_layout_deferred = False
+                win._apply_hero_layout()
+                self.assertTrue(win._hero_layout_deferred)
+                win._retheming = False
+                win._set_run_state(gui.RunState.FINISHED)
+
+                with mock.patch.object(win, "_schedule_hero_layout") as mock_sched:
+                    win._retheme("light")
+                    self.assertFalse(win._hero_layout_deferred)
+                    mock_sched.assert_called_once()
+                win._retheme("dark")
+            finally:
+                win.destroy()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -39,6 +39,7 @@ What is checked, in order:
 from __future__ import annotations
 
 import argparse
+from enum import Enum
 import json
 import os
 import shutil
@@ -238,18 +239,35 @@ def _utf8() -> None:
             pass
 
 
+class CheckOutcome(str, Enum):
+    """Explicit outcome recorded for each post-build executable check."""
+
+    PASS = "PASS"
+    SKIP = "SKIP"
+    FAIL = "FAIL"
+
+
 class Checker:
     def __init__(self, folder: str) -> None:
         self.folder = folder
         self.gui = os.path.join(folder, "FLAC_Verifier.exe")
         self.engine = os.path.join(folder, "flac_motor.exe")
-        self.results: list[tuple[str, bool, str]] = []
+        self.results: list[tuple[str, CheckOutcome, str]] = []
         self.temporal = tempfile.mkdtemp(prefix="flac_exe_")
 
     # ── utilities ───────────────────────────────────────────────────────────
-    def annotate(self, name: str, well: bool, detail: str = "") -> None:
-        self.results.append((name, well, detail))
-        print(f"  {'OK  ' if well else 'FALLA'} {name}"
+    def annotate(
+        self,
+        name: str,
+        well: bool | CheckOutcome,
+        detail: str = "",
+    ) -> None:
+        if isinstance(well, CheckOutcome):
+            outcome = well
+        else:
+            outcome = CheckOutcome.PASS if well else CheckOutcome.FAIL
+        self.results.append((name, outcome, detail))
+        print(f"  {outcome.value:<4} {name}"
               + (f"  ·  {detail}" if detail else ""))
 
     def launch(self, command: list[str], limit: int = LIMIT,
@@ -428,17 +446,7 @@ class Checker:
                         f"could not read gui.engine_path(): {type(e).__name__}: {e}"
                         " · install customtkinter on the build machine")
         else:
-            original_frozen, original_exe = getattr(sys, "frozen", None), sys.executable
-            try:
-                sys.frozen = True
-                sys.executable = self.gui
-                base = gui.engine_path()
-            finally:
-                if original_frozen is None:
-                    del sys.frozen
-                else:
-                    sys.frozen = original_frozen
-                sys.executable = original_exe
+            base = gui.engine_path(frozen=True, executable=self.gui)
             command = [*base, "--path", album, "--mode", "center",
                        "--workers", "1", "--no-cache"]
             code, text = self.launch(command, limit=180, label="packaged_gui")
@@ -544,8 +552,9 @@ class Checker:
         print("\n[8] The codec-lattice detector works inside the executable")
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
-            self.annotate("Opus transcode flagged by the executable", True,
-                          "SKIPPED: ffmpeg not found on PATH")
+            self.annotate("Opus transcode flagged by the executable",
+                          CheckOutcome.SKIP,
+                          "ffmpeg not found on PATH")
             return
         import numpy as np
         import soundfile as sf
@@ -575,8 +584,9 @@ class Checker:
                             "-ar", "44100", "-sample_fmt", "s16", fake],
                            check=True, creationflags=NO_WINDOW, timeout=120)
         except (OSError, subprocess.SubprocessError) as exc:
-            self.annotate("Opus transcode flagged by the executable", True,
-                          f"SKIPPED: ffmpeg cannot encode Opus ({type(exc).__name__})")
+            self.annotate("Opus transcode flagged by the executable",
+                          CheckOutcome.SKIP,
+                          f"ffmpeg cannot encode Opus ({type(exc).__name__})")
             return
         for leftover in (wav, opus):
             os.remove(leftover)
@@ -596,8 +606,9 @@ class Checker:
         from_source = lattice(text_source)
         from_exe = lattice(text_exe)
         if not from_source[0]:
-            self.annotate("Opus transcode flagged by the executable", True,
-                          "SKIPPED: the source code does not flag this signal "
+            self.annotate("Opus transcode flagged by the executable",
+                          CheckOutcome.SKIP,
+                          "the source code does not flag this signal "
                           "either, so it proves nothing")
             return
         self.annotate("Opus transcode flagged by the executable", from_exe == from_source,
@@ -605,14 +616,24 @@ class Checker:
 
     def summary(self) -> int:
         print("\n" + "=" * 72)
-        failures = [r for r in self.results if not r[1]]
+        passed = [r for r in self.results if r[1] is CheckOutcome.PASS]
+        skipped = [r for r in self.results if r[1] is CheckOutcome.SKIP]
+        failures = [r for r in self.results if r[1] is CheckOutcome.FAIL]
         if failures:
-            print(f"RESULT: {len(failures)} check(s) failed out of "
-                  f"{len(self.results)}")
+            print(
+                f"RESULT: {len(failures)} failed, {len(passed)} passed, "
+                f"{len(skipped)} skipped (out of {len(self.results)})"
+            )
             for name, _, detail in failures:
                 print(f"  ✗ {name}  {detail}")
             return 1
-        print(f"RESULT: all {len(self.results)} checks have passed")
+        if skipped:
+            print(
+                f"RESULT: {len(passed)} passed, {len(skipped)} skipped, "
+                f"0 failed (out of {len(self.results)})"
+            )
+        else:
+            print(f"RESULT: all {len(passed)} checks passed")
         return 0
 
 

@@ -5,6 +5,66 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.5] - 2026-11-22
+
+### Added
+
+- **Explicit state-machine enums & value objects across all layers**:
+  introduced `BitStorageTier` and `DOP_MARKER_PAIRS` (`_motor_bits.py`),
+  `SpectralMode` (`_motor_cache.py`), `FftBackendKind`, `DsdProfile`,
+  `HiresMorphology`, and `HiresAssessment` (`_motor_espectral.py`),
+  `AlbumCoherenceAction`, `AlbumQuorumKind`, and `AlbumQuorumDecision`
+  (`_motor_veredicto.py`), `_CliOrderBuffer` (`verificar_flac.py`),
+  `ThemeMode` and `set_mode()` (`theme.py`), `_RenderCounters`
+  (`informe_pdf.py`), `PdfDestinationMode`, `BatchQueueState`, and
+  `_ButtonUiSpec` (`gui.py`), and `CheckOutcome` (`comprobar_ejecutable.py`).
+- **State-machine invariant test coverage**: added 12 focused regression tests
+  across `tests/test_cache_y_paralelo.py`, `tests/test_blindaje.py`,
+  `tests/test_forense_riguroso.py`, `tests/test_informe_pdf.py`,
+  `tests/test_gui.py`, and `tests/test_empaquetado.py`, bringing the automated
+  suite from **416** to **428 tests** with zero changes to forensic thresholds,
+  scores, or verdicts (`ENGINE_VERSION = "14.8"`, `CACHE_SCHEMA_VERSION = "2.7.0"`).
+
+### Changed
+
+- **Application version bump (`2.10.4` -> `2.10.5`)**: updated `main.py`,
+  `pyproject.toml`, `version_info.txt`, and documentation while preserving
+  `ENGINE_VERSION = "14.8"` and `CACHE_SCHEMA_VERSION = "2.7.0"` unchanged
+  (no cache invalidation or verdict drift).
+- **Staged spectral post-processing & pure quorum evaluation (`_motor_espectral.py`, `_motor_veredicto.py`)**:
+  decomposed post-STFT guards into `_apply_stationary_and_ms_guards`,
+  `_probe_lapped_codec_lattice`, and `_probe_sbr_qmf_from_chosen`, extracted
+  `_opus_corroboration_flags` and `_evaluate_album_quorum`, and enforced all
+  four `VerdictCap` ranks in `_ScoreLedger.evaluate()`.
+- **CLI & post-build checker ergonomics (`verificar_flac.py`, `main.py`, `comprobar_ejecutable.py`, `gui.py`)**:
+  wrapped CLI folder listing in `retry_io`, emitted a clear notice when `--pdf`
+  enables spectrogram PNG generation, centralized `--gui`/`-g` flag dispatch in
+  `main.py`, added injectable `frozen`/`executable` parameters to
+  `gui.engine_path()`, and distinguished `PASS`, `SKIP`, and `FAIL` outcomes in
+  `comprobar_ejecutable.py`.
+
+### Fixed
+
+- **PDF import-order palette & lazy stream slicing (`informe_pdf.py`)**:
+  pinned `OK_TONE`, `WARN_TONE`, `BAD_TONE`, `UNKNOWN_TONE`, and `DANGER_TONE`
+  explicitly to the `"dark"` semantic hue source so importing `informe_pdf`
+  while `theme.MODE == "light"` preserves >= 4.5:1 print contrast; made
+  `_LazyStream` materialize remaining elements on open slices (`[:]`, `[1:]`).
+- **Cache validation, temp-file concurrency & PNG hydration (`_motor_cache.py`, `motor_flac.py`, `_motor_espectral.py`)**:
+  fixed `"notas"` -> `"notes"` list validation in `read_cache_entry()`,
+  normalized `mode=None` via `SpectralMode.coerce`, added thread IDs to atomic
+  cache temp filenames, eliminated duplicate cache JSON reads on
+  `METRICS_HIT_NEEDS_PNG`, made `render_png_only()` idempotent with
+  `effective_stereo` support, and closed process pools deterministically on
+  early generator exit.
+- **Accumulator, I/O backoff & GUI state invariants (`_motor_bits.py`, `motor_flac.py`, `gui.py`)**:
+  prevented `ForensicBitsAccumulator.result()` from flipping `FAILED` to
+  `COMPLETED` and released `_bitmap_hi16` on full-24-bit promotion; prevented
+  unthrottled double-reads inside `_read_sf_block_with_retry()` backoff loops;
+  reset spectrogram caches before fresh GUI runs; deferred hero layout during
+  `_retheme()` instead of dropping it; removed duplicate PDF checkbox triggers
+  and duplicate `_detail_visible` state; and bounded `_cancelled_run_ids`.
+
 ## [2.10.4] - 2026-11-22
 
 ### Added
