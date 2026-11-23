@@ -4832,6 +4832,106 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
             motor_flac.AlbumCoherenceAction.CONVICTED_LOSSY.value,
         )
 
+    def test_50_mdct_512_ac3_eac3_lapped_lattice_detected(self):
+        """Engine 15.0: MDCT-512 (KBD alpha=5) catches real ffmpeg AC-3 and
+        E-AC-3 transcodes packaged as 16-bit FLAC at 44.1/48 kHz without
+        relying on bit-depth penalties or brickwall cut-offs."""
+        import shutil
+        import subprocess
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            self.skipTest("ffmpeg is not available on PATH")
+
+        # Verify pure-NumPy KBD-512 window symmetry & energy normalization
+        w512 = motor_flac._get_kbd_512_ac3()
+        self.assertEqual(w512.shape, (512,))
+        self.assertEqual(w512.dtype, np.float32)
+        np.testing.assert_allclose(w512[:256], w512[256:][::-1], atol=1e-6)
+        np.testing.assert_allclose(w512[:256] ** 2 + w512[256:] ** 2, 1.0, atol=1e-5)
+
+        def _make_rich_stereo(sr, seed):
+            base = _create_track_reference(sr, duration=6.0, seed=seed)
+            n = len(base)
+            t = np.arange(n, dtype=np.float64) / float(sr)
+            rng = np.random.default_rng(seed + 100)
+            mix = base.copy()
+            for f0 in (220.0, 329.63, 440.0, 587.33):
+                for k in range(1, 24):
+                    fk = f0 * k
+                    if fk >= min(21500.0, sr * 0.46):
+                        break
+                    amp = 0.08 / (k ** 0.8)
+                    mix[:, 0] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0, 6.28))
+                    mix[:, 1] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0, 6.28))
+            return mix / (np.max(np.abs(mix)) * 1.15)
+
+        wav44 = self.tmp_path / "ac3_ref44.wav"
+        wav48 = self.tmp_path / "ac3_ref48.wav"
+        sig44 = _make_rich_stereo(44100, 1501)
+        sig48 = _make_rich_stereo(48000, 1502)
+        sf.write(wav44, sig44, 44100, subtype="PCM_16")
+        sf.write(wav48, sig48, 48000, subtype="PCM_16")
+
+        # Clean controls stay well below the MDCT-512 detection threshold.
+        for lbl, sig_c, sr_c in (("ctrl_44k", sig44, 44100), ("ctrl_48k", sig48, 48000)):
+            p_ctrl = self.tmp_path / f"{lbl}.flac"
+            sf.write(p_ctrl, sig_c, sr_c, subtype="PCM_16")
+            r_ctrl = motor_flac.analyze_file_data(str(p_ctrl), use_cache=False)
+            self.assertIn(r_ctrl["veredicto"], GOOD_VERDICTS, lbl)
+            self.assertIs(r_ctrl["esp"]["mdct_lattice_detected"], False, lbl)
+            self.assertLess(r_ctrl["esp"]["mdct_lattice_snr"], 6.0, lbl)
+
+        # Real ffmpeg AC-3 and E-AC-3 packaged as 16-bit FLAC (no 24-bit penalty).
+        cases = [
+            ("ac3_44_192", wav44, ".ac3", ["-c:a", "ac3", "-b:a", "192k"], True),
+            ("ac3_44_384", wav44, ".ac3", ["-c:a", "ac3", "-b:a", "384k"], True),
+            ("ac3_44_640", wav44, ".ac3", ["-c:a", "ac3", "-b:a", "640k"], True),
+            ("eac3_44_192", wav44, ".eac3", ["-c:a", "eac3", "-b:a", "192k"], True),
+            ("eac3_44_384", wav44, ".eac3", ["-c:a", "eac3", "-b:a", "384k"], True),
+            ("eac3_44_640", wav44, ".eac3", ["-c:a", "eac3", "-b:a", "640k"], True),
+            ("ac3_48_192", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "192k"], False),
+            ("ac3_48_384", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "384k"], False),
+            ("ac3_48_640_fb", wav48, ".ac3", ["-c:a", "ac3", "-b:a", "640k", "-cutoff", "23500"], True),
+            ("eac3_48_192", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "192k"], False),
+            ("eac3_48_384", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "384k"], False),
+            ("eac3_48_640_fb", wav48, ".eac3", ["-c:a", "eac3", "-b:a", "640k", "-cutoff", "23500"], True),
+        ]
+        for name, src_wav, ext, codec_args, require_full_lattice in cases:
+            with self.subTest(case=name):
+                tmp_lossy = self.tmp_path / f"{name}{ext}"
+                out_flac = self.tmp_path / f"{name}.flac"
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(src_wav)]
+                    + codec_args
+                    + [str(tmp_lossy)],
+                    check=True,
+                )
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(tmp_lossy),
+                     "-sample_fmt", "s16", str(out_flac)],
+                    check=True,
+                )
+                data_dec, sr_dec = sf.read(out_flac, dtype="float32", always_2d=True)
+                direct = motor_flac._detect_lapped_codec_grid(data_dec[:, 0], sr_dec)
+                self.assertIs(direct["mdct_lattice_detected"], True, direct)
+                self.assertEqual(
+                    direct["mdct_lattice_family"],
+                    motor_flac.CodecLatticeFamily.MDCT_512_AC3.value,
+                    direct,
+                )
+                self.assertGreaterEqual(direct["mdct_lattice_snr"], 10.0, direct)
+
+                res = motor_flac.analyze_file_data(str(out_flac), use_cache=False)
+                self.assertEqual(res["meta"]["bits_per_sample"], 16)
+                self.assertEqual(res["veredicto"], "PROBABLE UPSCALE", res["problemas"])
+                if require_full_lattice:
+                    self.assertIs(res["esp"]["mdct_lattice_detected"], True, res["esp"])
+                    self.assertEqual(
+                        res["esp"]["mdct_lattice_family"],
+                        motor_flac.CodecLatticeFamily.MDCT_512_AC3.value,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

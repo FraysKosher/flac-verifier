@@ -33,6 +33,7 @@ class CodecLatticeFamily(str, Enum):
 
     MDCT_1024 = "MDCT-1024 (Vorbis/AAC)"
     PQMF_576 = "PQMF-576 (MP3)"
+    MDCT_512_AC3 = "MDCT-512 (AC-3/E-AC-3)"
     PQMF_32 = "PQMF-32 (Musepack)"
     CELT_960 = "CELT-960 (Opus)"
 
@@ -2199,6 +2200,21 @@ def _get_sine_2048():
 
 
 @functools.lru_cache(maxsize=None)
+def _get_kbd_512_ac3():
+    """ATSC A/52 AC-3 / E-AC-3 512-sample Kaiser-Bessel Derived (alpha=5) window."""
+    n_half = 256
+    idx = np.arange(n_half + 1, dtype=np.float64)
+    beta = 5.0 * np.pi
+    arg = beta * np.sqrt(np.maximum(0.0, 1.0 - (2.0 * idx / float(n_half) - 1.0) ** 2))
+    w_kaiser = np.i0(arg) / np.i0(beta)
+    cs = np.cumsum(w_kaiser, dtype=np.float64)
+    half = np.sqrt(cs[:n_half] / cs[n_half]).astype(np.float32)
+    win = np.concatenate([half, half[::-1]])
+    win.setflags(write=False)
+    return win
+
+
+@functools.lru_cache(maxsize=None)
 def _get_celt_1920():
     n_mdct, span_ov = 960, 120
     two_n = 1920
@@ -2753,6 +2769,66 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
                 "mdct_lattice_family": CodecLatticeFamily.PQMF_576.value,
             }
 
+        # 2b. MDCT-512 (ATSC A/52 AC-3 / E-AC-3, KBD alpha=5, 256-sample hop).
+        # Evaluated before PQMF-32 so Dolby Digital streams are never hijacked
+        # by the lower-threshold Musepack subband harmonic test.
+        z512 = 0.0
+        n_blocks_512 = 32
+        needed_512 = n_blocks_512 * 256 + 512
+        if mono.size >= needed_512:
+            f_top_512 = min(
+                20200.0,
+                (ceiling_hz * 0.94)
+                if (ceiling_hz is not None and ceiling_hz < 18000.0)
+                else 20200.0,
+            )
+            bands_512 = (
+                (max(6000.0, f_top_512 * 0.55), f_top_512),
+                (max(9000.0, f_top_512 * 0.72), f_top_512),
+            )
+            valid_slices_512 = []
+            for f_lo_5, f_hi_5 in bands_512:
+                k_lo_5 = int(f_lo_5 / nyq * 256)
+                k_hi_5 = int(f_hi_5 / nyq * 256)
+                if k_hi_5 > k_lo_5 + 12:
+                    valid_slices_512.append((k_lo_5, k_hi_5))
+            if valid_slices_512:
+                seg_512 = _select_continuous_subwindow(mono, needed_512)
+                n_all_512 = n_blocks_512 * 256
+                frames_512 = np.lib.stride_tricks.sliding_window_view(seg_512, 512)[:n_all_512]
+                w_512 = _get_kbd_512_ac3()
+                sp_512_by_band = [
+                    np.empty(n_all_512, dtype=np.float32)
+                    for _ in valid_slices_512
+                ]
+                for i in range(0, n_all_512, 512):
+                    end_i = min(i + 512, n_all_512)
+                    c_chunk_5 = np.abs(_fast_mdct_f32(frames_512[i:end_i], w_512))
+                    for b_idx, (k_lo_5, k_hi_5) in enumerate(valid_slices_512):
+                        coeffs_5 = c_chunk_5[:, k_lo_5:k_hi_5]
+                        rms_5 = np.sqrt(
+                            np.mean(coeffs_5 * coeffs_5, axis=1, keepdims=True)
+                        ) + np.float32(1e-12)
+                        active_5 = rms_5[:, 0] > np.float32(1e-6)
+                        sp_5 = np.mean(coeffs_5 < (rms_5 * np.float32(0.05)), axis=1)
+                        sp_512_by_band[b_idx][i:end_i] = np.where(
+                            active_5, sp_5, np.float32(0.0)
+                        )
+                for sp_all_5 in sp_512_by_band:
+                    scores_512 = sp_all_5.reshape(n_blocks_512, 256).mean(axis=0)
+                    z_cand_5, med_5, mx_5 = _robust_z_peak(scores_512, min_scale=1e-3)
+                    if med_5 < 0.65 and (mx_5 - med_5) >= 0.008:
+                        z512 = max(z512, z_cand_5)
+                    if z512 >= 10.0:
+                        break
+
+        if z512 >= 10.0:
+            return {
+                "mdct_lattice_detected": True,
+                "mdct_lattice_snr": round(float(z512), 2),
+                "mdct_lattice_family": CodecLatticeFamily.MDCT_512_AC3.value,
+            }
+
         if z_mpc >= 6.5:
             return {
                 "mdct_lattice_detected": True,
@@ -2814,7 +2890,7 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
                 "mdct_lattice_family": CodecLatticeFamily.CELT_960.value,
             }
 
-        best_z = max(z1024, z576, z_mpc, z_opus, z_opus_sub)
+        best_z = max(z1024, z576, z512, z_mpc, z_opus, z_opus_sub)
         return {
             "mdct_lattice_detected": False,
             "mdct_lattice_snr": round(float(best_z), 2) if math.isfinite(best_z) else 0.0,
@@ -2827,11 +2903,12 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None):
 def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None):
     """Phase 11/12/13.2/14.7: orthogonal lapped transform & subband inversion.
 
-    Evaluates four standardized codec filterbanks across sample-level phase offsets:
+    Evaluates five standardized codec filterbanks across sample-level phase offsets:
       1. MDCT-1024 (Vorbis / AAC Sine & KBD) with 128-sample block-switching subgrids.
       2. PQMF-576 (MP3 32-band polyphase filterbank + 18-point MDCT).
-      3. PQMF-32 (Musepack SV7/SV8 32-band pure subband 36-sample frame grid).
-      4. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 preemphasis).
+      3. MDCT-512 (ATSC A/52 AC-3 / E-AC-3 KBD alpha=5, 256-sample hop).
+      4. PQMF-32 (Musepack SV7/SV8 32-band pure subband 36-sample frame grid).
+      5. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 preemphasis).
     When 7.0 kHz <= ceiling_hz < 17.5 kHz, checks the adaptive passband first and
     falls back to the fullband upper-hiss probe (12.0-20.5 kHz + CELT-960) so
     high-bitrate transcodes of dark ambient/tape recordings cannot hide below

@@ -69,7 +69,7 @@ from _motor_espectral import (
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
     _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
-    _get_kbd_2048, _get_sine_2048, _get_vorbis_2048, _get_pqmf_fast,
+    _get_kbd_2048, _get_kbd_512_ac3, _get_sine_2048, _get_vorbis_2048, _get_pqmf_fast,
     _robust_z_peak, _select_continuous_subwindow, _select_hf_subwindow_candidates,
     _save_spectrogram as _spectrogram_save,
 )
