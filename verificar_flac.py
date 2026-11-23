@@ -192,13 +192,60 @@ def analyze_file(path, mode="full", seconds=None, save_png=False, result=None):
     _body(result)
     return result
 
+class _CliOrderBuffer:
+    """Re-orders streaming track results by `indice_original` and tracks which
+    missing indices have already been announced as held for album coherence."""
+
+    def __init__(self, files):
+        self._files = list(files)
+        self._pending: dict[int, tuple[str, dict]] = {}
+        self._announced_holds: set[int] = set()
+        self._next_index = 0
+
+    def accept(self, seq_index: int, result: dict) -> tuple[list[tuple[str, dict]], list[int]]:
+        """Buffer one result and return `(ready_items, newly_held_indices)`."""
+        total = len(self._files)
+        original_index = result.get("indice_original", seq_index)
+        if not isinstance(original_index, int) or not (0 <= original_index < total):
+            original_index = min(seq_index, max(0, total - 1))
+        file_path = result.get("ruta") or self._files[original_index]
+        self._pending[original_index] = (file_path, result)
+
+        ready: list[tuple[str, dict]] = []
+        while self._next_index in self._pending:
+            ready.append(self._pending.pop(self._next_index))
+            self._next_index += 1
+
+        newly_held: list[int] = []
+        if original_index > self._next_index:
+            for missing_idx in range(self._next_index, original_index):
+                if (missing_idx not in self._pending
+                        and missing_idx not in self._announced_holds):
+                    self._announced_holds.add(missing_idx)
+                    newly_held.append(missing_idx)
+        return ready, newly_held
+
+    def flush_remaining(self) -> list[tuple[str, dict]]:
+        """Drain any remaining buffered items in ascending original order."""
+        remaining = [self._pending[idx] for idx in sorted(self._pending)]
+        self._pending.clear()
+        return remaining
+
+
 def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=False):
     is_folder = os.path.isdir(path)
     if os.path.isfile(path) and path.lower().endswith(".flac"):
         files = [path]
     elif is_folder:
+        try:
+            entries = engine.retry_io(
+                lambda: os.listdir(engine._normalize_path_fs(path))
+            )
+        except OSError as exc:
+            print(f"  ❌ Could not list folder: {exc}")
+            return
         files = [os.path.join(path, f)
-                    for f in sorted(os.listdir(path), key=engine.natural_sort_key)
+                    for f in sorted(entries, key=engine.natural_sort_key)
                     if f.lower().endswith(".flac")]
         if not files:
             print("  No .flac files found in that folder.")
@@ -210,6 +257,8 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
 
     # The PDF report needs the spectrograms: they are generated even when the PNG
     # files were not requested, so that the user does not have to combine options.
+    if save_pdf and not save_png:
+        print("  ℹ️  PDF report requires spectrograms: generating PNGs in cache.")
     if save_pdf:
         save_png = True
 
@@ -220,9 +269,7 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
     verdicts   = Counter()
     results = []
     failures     = 0
-    pending_by_index = {}
-    announced_holds = set()
-    next_index = 0
+    order_buffer = _CliOrderBuffer(files)
 
     def _emit_track(file_path, result):
         nonlocal failures
@@ -237,27 +284,18 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
             failures += 1
 
     for index, result in enumerate(analysis):
-        original_index = result.get("indice_original", index)
-        if not isinstance(original_index, int) or not (0 <= original_index < len(files)):
-            original_index = min(index, len(files) - 1)
-        file_path = result.get("ruta") or files[original_index]
-        pending_by_index[original_index] = (file_path, result)
-        while next_index in pending_by_index:
-            queued_path, queued_res = pending_by_index.pop(next_index)
+        ready, newly_held = order_buffer.accept(index, result)
+        for queued_path, queued_res in ready:
             _emit_track(queued_path, queued_res)
-            next_index += 1
-        if (original_index > next_index
-                and next_index not in announced_holds
-                and sys.stdout.isatty()):
-            print(
-                f"  ⏳ Holding {os.path.basename(files[next_index])} "
-                f"for album-level coherence check...",
-                flush=True,
-            )
-            announced_holds.add(next_index)
+        if newly_held and sys.stdout.isatty():
+            for held_idx in newly_held:
+                print(
+                    f"  ⏳ Holding {os.path.basename(files[held_idx])} "
+                    f"for album-level coherence check...",
+                    flush=True,
+                )
 
-    for original_index in sorted(pending_by_index):
-        queued_path, queued_res = pending_by_index[original_index]
+    for queued_path, queued_res in order_buffer.flush_remaining():
         _emit_track(queued_path, queued_res)
 
     if is_folder:
@@ -292,6 +330,25 @@ def execute_analysis(path, mode="full", seconds=None, save_png=False, save_pdf=F
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
+def _resolve_gui_redirect(arguments):
+    """Delegate `--gui`/`-g` flag parsing to `main.resolve_cli_dispatch`."""
+    if not arguments:
+        return False, None
+    try:
+        import main as entry
+        if arguments[0] in entry.GUI_OPTION_FLAGS:
+            target, payload = entry.resolve_cli_dispatch(
+                arguments, frozen_engine=False
+            )
+            if target is entry.CliTarget.GUI:
+                return True, (payload if isinstance(payload, str) else None)
+        return False, None
+    except Exception:
+        if arguments[0] in ("--gui", "-g"):
+            return True, (arguments[1] if len(arguments) > 1 else None)
+        return False, None
+
+
 def main(argv=None):
     """Interactive CLI. With `--gui` (or `-g`) it opens the graphical interface."""
     # Before printing ANYTHING: if the output is redirected on Windows, cp1252
@@ -300,14 +357,15 @@ def main(argv=None):
     engine.force_utf8_output()
 
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] in ("--gui", "-g"):
+    wants_gui, gui_path = _resolve_gui_redirect(arguments)
+    if wants_gui:
         try:
-            from gui import main as main_grafico
+            from gui import main as gui_main
         except Exception as e:
             print(f"⚠️  Could not load the graphical interface: {type(e).__name__}: {e}")
             print("   Install the dependencies with: pip install -r requirements.txt")
             return 1
-        return main_grafico(arguments[1] if len(arguments) > 1 else None)
+        return gui_main(gui_path)
 
     print(f"verificar_flac {VERSION} — advanced FLAC authenticity analysis")
     print("═" * 60)
@@ -334,8 +392,8 @@ def main(argv=None):
                 break
             execute_analysis(path, mode, seconds, save_png, save_pdf)
             print()
-            otra = input("Analyze another folder? (y/N): ").strip().lower()
-            if otra not in AFFIRMATIVE:
+            another = input("Analyze another folder? (y/N): ").strip().lower()
+            if another not in AFFIRMATIVE:
                 print('\nExiting. Goodbye!')
                 break
     except (EOFError, KeyboardInterrupt):

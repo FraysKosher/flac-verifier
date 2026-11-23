@@ -56,6 +56,8 @@ class CliTarget(str, Enum):
     GUI = "gui"
 
 
+GUI_OPTION_FLAGS = frozenset(("--gui", "-g"))
+
 ENGINE_OPTION_FLAGS = frozenset((
     "--path",
     "--mode",
@@ -118,7 +120,7 @@ def resolve_cli_dispatch(
     if args and args[0] == "--cli":
         return (CliTarget.CLI, args[1:])
 
-    explicit_gui = bool(args and args[0] in ("--gui", "-g"))
+    explicit_gui = bool(args and args[0] in GUI_OPTION_FLAGS)
     if frozen_engine and not explicit_gui:
         if not args:
             return (CliTarget.HELP, None)
@@ -154,12 +156,12 @@ def main(arguments: list[str] | None = None) -> int:
 
     path = payload if isinstance(payload, str) else None
     try:
-        from gui import main as main_grafico
+        from gui import main as gui_main
     except Exception as e:                       # without customtkinter, without Tk…
         print(f"Could not load the graphical interface: {type(e).__name__}: {e}")
         print("You can use the CLI instead:  FLAC_Verifier.exe --cli")
         return 1
-    return main_grafico(path)
+    return gui_main(path)
 
 
 if __name__ == "__main__":
