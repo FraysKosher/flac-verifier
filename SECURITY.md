@@ -6,8 +6,8 @@ Security fixes and forensic false-positive/false-negative patches are provided f
 
 | Version | Supported | Notes |
 | --- | --- | --- |
-| `2.11.x` | Yes | Active development and security fixes (current: `2.11.1`) |
-| `< 2.11` | No | Unsupported; upgrade to the latest `2.11.x` release |
+| `2.12.x` | Yes | Active development and security fixes (current: `2.12.0`) |
+| `< 2.12` | No | Unsupported; upgrade to the latest `2.12.x` release |
 
 ## Scope & Threat Model
 
@@ -36,5 +36,5 @@ Do **not** open a public GitHub issue for security vulnerabilities.
 Always verify downloaded Windows release archives against the `SHA256SUMS_<version>.txt` file published on the corresponding GitHub Release before running the executable:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.11.1-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.12.0-win64.zip -Algorithm SHA256
 ```

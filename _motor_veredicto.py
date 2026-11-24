@@ -585,9 +585,18 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
             ledger.add_votes(3.0)
 
         # 4. High-band metrics (not applicable if the file has no high band).
-        if (spectrum.get("ratio_aplica")
-                and not (band_limited_exemption
-                         or (acoustic_exemption and rel_ceiling < 0.70))):
+        if (
+            spectrum.get("ratio_aplica")
+            and not (
+                band_limited_exemption
+                or (acoustic_exemption and rel_ceiling < 0.70)
+                or (
+                    acoustic_exemption
+                    and rel_ceiling < 0.88
+                    and float(spectrum.get("ratio") or 0.0) <= 0.01
+                )
+            )
+        ):
             ledger.add_votes(0.0, 2.0)
             r = spectrum["ratio"]
             if r > 0.05:   ledger.add_votes(2.0)

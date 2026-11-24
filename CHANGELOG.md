@@ -5,6 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2026-11-24
+
+### Added
+
+- **Isolated narrowband spike filter (`_ceiling_without_isolated_spike`, `_motor_espectral.py`, engine `16.0`)**:
+  strips up to two isolated narrowband interference spikes (e.g. `15.734 kHz`
+  NTSC CRT horizontal-scan leakage) inside `10.0 kHz .. 0.88 * Nyquist` on
+  `<= 48 kHz` tracks whenever the spike sits above a continuous `>= 1,500 Hz`
+  dead void below `-60 dB` with `>= 12 dB` prominence, while leaving
+  `>= 0.88 * Nyquist` shimmer, harmonic synth drones, and broadband brickwalls
+  untouched.
+- **Half-sample `+0.50` KBD probe & full 10-block fractional TDAC refinement (`P1-1 v2`, `_motor_espectral.py`)**:
+  upgraded `MDCT-1024` fractional-sample TDAC refinement from `6` to `10`
+  blocks and added an `allow_half_probe=True` `+0.50` sample KBD probe (with
+  selective `+/-0.25` refinement when `max(z1024_trig, z_half_trig) >= 4.5`),
+  strictly restricted to the primary block-0 call in
+  `_probe_lapped_codec_lattice()` so fallback channels/blocks and Hi-Res
+  decimation keep zero extra cost on clean tracks.
+- **Expanded regression coverage**: added 3 deterministic regression/adversarial
+  tests (`test_58`–`test_60` in `tests/test_forense_riguroso.py`), bringing the
+  automated suite from **438** to **441 tests** while keeping the 320-track
+  real-encoder validation benchmark at **100.0% sensitivity / 100.0% specificity**.
+
+### Fixed
+
+- **Hardened `psychoacoustic_mod_20k` thresholds (`_motor_espectral.py`)**:
+  raised Branch 1 `drp_med` from `24.0` to `42.0 dB` and Branch 3 spread from
+  `30.0` to `34.0 dB`, eliminating false positives on clean CD masters
+  (`drp_med <= 36.8 dB`, `drp_iqr <= 28.7 dB`) while preserving deep
+  frame-adaptive `> 20 kHz` modulation detection.
+- **Guarded `opus_flat_shelf` below `19 kHz` (`_motor_espectral.py`)**:
+  cleared weak (`< 16.0 dB`) sub-`-60 dB` `20 kHz` noise-floor steps on dark
+  acoustic tracks (`techo_hz < 19000 Hz`) while preserving real Opus/WMA/MP3
+  shelf detections.
+- **Relaxed `gentle_fullband_crests` guard (`_motor_bits.py`, `motor_flac.py`)**:
+  raised the uncut full-band transition-edge guard from `18.0` to `25.0 dB/kHz`
+  and restricted `has_codec_sig` cut-off jitter blocking to extreme jitter
+  (`iqr_corte_hz > 1800.0 Hz`) so advisory jitter (`550–1800 Hz`) no longer
+  disables the analog crest guard.
+- **Fixed Rule 4 monotonicity inversion (`_motor_veredicto.py`)**:
+  exempted smooth acoustic tracks (`acoustic_exemption`) in
+  `0.70 <= rel_ceiling < 0.88` with `ratio <= 0.01` from the Rule 4 high/mid
+  energy vote penalty so smooth `16.7–18.8 kHz` acoustic tracks no longer score
+  lower (`0.55 SUSPICIOUS`) than darker `< 15.4 kHz` acoustic tracks
+  (`0.75 PROBABLY LOSSLESS`).
+
+### Changed
+
+- **Engine & version bump (`15.1` -> `16.0`, version `2.11.1` -> `2.12.0`, `CACHE_SCHEMA_VERSION = "2.9.0"` unchanged)**:
+  bumped `ENGINE_VERSION` to invalidate older caches, kept the JSON protocol
+  schema unchanged (`2.9.0`), and synced `main.py`, `pyproject.toml`,
+  `version_info.txt`, and documentation.
+
 ## [2.11.1] - 2026-11-23
 
 ### Added

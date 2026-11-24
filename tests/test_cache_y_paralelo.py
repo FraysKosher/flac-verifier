@@ -350,8 +350,12 @@ class test_cache_and_order_with_coherence(unittest.TestCase):
     def _acoustic(path):
         sr = 44100
         x = fx.full_band_noise(sr=sr, dur=4.0, seed=7)
-        y = signal.sosfilt(signal.butter(4, 15000.0, btype="low", fs=sr,
+        # Keep centroid above 1800 Hz so the fixture stays SUSPICIOUS standalone
+        # (non-acoustic exemption) while still qualifying for album coherence.
+        y = signal.sosfilt(signal.butter(2, 2200.0, btype="high", fs=sr,
                                           output="sos"), x, axis=0)
+        y = signal.sosfilt(signal.butter(4, 11000.0, btype="low", fs=sr,
+                                          output="sos"), y, axis=0)
         y /= max(1.0, np.max(np.abs(y)))
         sf.write(path, y, sr, subtype="PCM_16")
 

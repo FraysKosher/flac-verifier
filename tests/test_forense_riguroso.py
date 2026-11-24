@@ -4729,7 +4729,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
 
         call_idx = {"n": 0}
 
-        def _fake_lattice_probe(_blk, _sr, ceiling_hz=None):
+        def _fake_lattice_probe(_blk, _sr, ceiling_hz=None, **_kw):
             call_idx["n"] += 1
             if call_idx["n"] == 2:
                 return {
@@ -5623,6 +5623,353 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         sf.write(p_24, _create_track_reference(48000, duration=4.0, seed=5702), 48000, subtype="PCM_24")
         res_24 = motor_flac.analyze_file_data(str(p_24), use_cache=False)
         self.assertEqual(res_24["accuraterip"], {"aplica": False})
+
+    def test_58_isolated_narrowband_ntsc_spike_stripped_without_affecting_overtones_or_brickwalls(self):
+        """Engine 16.0: isolated narrowband interference spikes (e.g. 15.734 kHz
+        NTSC horizontal-scan leakage above a >= 1,500 Hz dead void) are stripped
+        from the ceiling without affecting >= 0.88*Nyquist shimmer, harmonic
+        synth drones, or 16 kHz broadband brickwall transcodes."""
+        import math
+
+        sr = 44100
+        rng = np.random.default_rng(5801)
+        n = int(sr * 5.0)
+        t = np.arange(n, dtype=np.float64) / float(sr)
+
+        # 1. Clean solo piano (~8.5 kHz ceiling) + strong narrowband 15,734 Hz NTSC scan tone
+        piano = np.zeros((n, 2), dtype=np.float64)
+        notes = [
+            (0.05, 130.81, 2.0, 0.85), (0.10, 196.00, 1.9, 0.72),
+            (0.15, 261.63, 1.8, 0.75), (0.20, 329.63, 1.6, 0.65),
+            (1.30, 146.83, 2.0, 0.80), (1.35, 220.00, 1.8, 0.72),
+            (1.40, 293.66, 1.7, 0.70), (1.45, 349.23, 1.5, 0.62),
+            (2.60, 110.00, 2.1, 0.85), (2.65, 220.00, 1.9, 0.75),
+            (2.70, 261.63, 1.7, 0.70), (2.75, 392.00, 1.5, 0.65),
+            (3.75, 130.81, 1.2, 0.82), (3.80, 246.94, 1.1, 0.68),
+            (3.85, 329.63, 1.1, 0.72), (3.90, 440.00, 1.0, 0.65),
+        ]
+        decay_db_khz = 56.0 / ((8500.0 - 500.0) / 1000.0)
+        for t0, f0, dur_n, vel in notes:
+            i0 = int(t0 * sr)
+            i1 = min(n, int((t0 + dur_n) * sr))
+            tn = np.arange(i1 - i0, dtype=np.float64) / float(sr)
+            atk = 1.0 - np.exp(-tn / 0.004)
+            pan = rng.uniform(0.38, 0.62)
+            gl, gr = float(np.cos(pan * np.pi * 0.5)), float(np.sin(pan * np.pi * 0.5))
+            nl = np.zeros(i1 - i0, dtype=np.float64)
+            nr = np.zeros(i1 - i0, dtype=np.float64)
+            for k in range(1, int(12500.0 // f0) + 1):
+                fk = f0 * k * math.sqrt(1.0 + 0.00025 * k * k)
+                if fk >= 13000.0:
+                    break
+                db_k = -decay_db_khz * max(0.0, (fk - 400.0) / 1000.0)
+                amp = vel * (10.0 ** (db_k / 20.0))
+                tau = max(0.08, 1.8 / (1.0 + (fk / 1200.0) ** 1.15))
+                w = amp * atk * np.exp(-tn / tau) * np.sin(2.0 * np.pi * fk * tn + rng.uniform(0.0, 6.28))
+                nl += w * gl
+                nr += w * gr
+            piano[i0:i1, 0] += nl
+            piano[i0:i1, 1] += nr
+        piano /= np.max(np.abs(piano)) * 1.15
+        room = signal.sosfilt(
+            signal.butter(2, 1800.0, btype="low", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)), axis=0,
+        ) * (10.0 ** (-82.0 / 20.0))
+        dither = (rng.random((n, 2)) - rng.random((n, 2))) / 32768.0
+        # Narrowband 15,734 Hz NTSC horizontal-scan tone (+35 dB above the -80 dB floor)
+        ntsc_tone = (10.0 ** (-42.0 / 20.0)) * np.sin(2.0 * np.pi * 15734.0 * t)[:, None]
+        piano_ntsc = np.clip(piano + room + dither + ntsc_tone, -0.99, 0.99)
+
+        p_ntsc = self.tmp_path / "piano_ntsc_15734.flac"
+        sf.write(p_ntsc, piano_ntsc, sr, subtype="PCM_16")
+        r_ntsc = motor_flac.analyze_file_data(str(p_ntsc), use_cache=False)
+        self.assertLess(r_ntsc["esp"]["techo_hz"], 11000, r_ntsc["esp"])
+        self.assertIs(r_ntsc["esp"]["decaimiento_acustico_suave"], True, r_ntsc["esp"])
+        self.assertEqual(r_ntsc["veredicto"], "PROBABLY LOSSLESS", r_ntsc["problemas"])
+        self.assertEqual(r_ntsc["problemas"], [])
+
+        # 2. Control A: 16 kHz broadband brickwall still caught as PROBABLE UPSCALE
+        src_bb = _create_track_reference(sr, duration=4.0, seed=5802)
+        brick_16k = signal.sosfilt(
+            signal.ellip(10, 0.1, 80.0, 16000.0, btype="low", fs=sr, output="sos"),
+            src_bb, axis=0,
+        )
+        p_brick = self.tmp_path / "brickwall_16k_ctrl.flac"
+        sf.write(p_brick, np.clip(brick_16k, -0.99, 0.99), sr, subtype="PCM_16")
+        r_brick = motor_flac.analyze_file_data(str(p_brick), use_cache=False)
+        self.assertGreaterEqual(r_brick["esp"]["techo_hz"], 15000)
+        self.assertEqual(r_brick["veredicto"], "PROBABLE UPSCALE")
+
+        # 3. Control B: test_33-style harmonic synth drone & >= 0.88*Nyquist shimmer stay untouched
+        drone = np.zeros((n, 2), dtype=np.float64)
+        for f0 in (110.0, 164.81, 220.0, 329.63):
+            for k in range(1, int(20600.0 // f0) + 1):
+                fk = f0 * k
+                amp = 0.18 / (k ** 0.72)
+                drone[:, 0] += amp * np.sin(2.0 * np.pi * fk * t)
+                drone[:, 1] += amp * np.sin(2.0 * np.pi * fk * t + 0.35)
+        drone /= np.max(np.abs(drone)) * 1.15
+        p_drone = self.tmp_path / "harmonic_drone_ctrl.flac"
+        sf.write(p_drone, np.clip(drone, -0.99, 0.99), sr, subtype="PCM_16")
+        r_drone = motor_flac.analyze_file_data(str(p_drone), use_cache=False)
+        self.assertGreaterEqual(r_drone["esp"]["techo_hz"], 19500)
+        self.assertIn(r_drone["veredicto"], GOOD_VERDICTS)
+
+        # High shimmer tones at 19.5 kHz and 20.75 kHz (>= 0.88 * Nyquist = 19,404 Hz)
+        shimmer = (
+            (10.0 ** (-35.0 / 20.0)) * np.sin(2.0 * np.pi * 19500.0 * t)[:, None]
+            + (10.0 ** (-35.0 / 20.0)) * np.sin(2.0 * np.pi * 20750.0 * t)[:, None]
+        )
+        p_shimmer = self.tmp_path / "piano_shimmer_ctrl.flac"
+        sf.write(p_shimmer, np.clip(piano + room + dither + shimmer, -0.99, 0.99), sr, subtype="PCM_16")
+        r_shimmer = motor_flac.analyze_file_data(str(p_shimmer), use_cache=False)
+        self.assertGreaterEqual(r_shimmer["esp"]["techo_hz"], 20500)
+
+    def test_59_p1_1_v2_half_sample_kbd_probe_and_fallback_latency_guard(self):
+        """Engine 16.0 (P1-1 v2): +0.50 KBD probe and 10-block fractional TDAC
+        refinement catch +0.25/+0.50 delayed AAC 320k fullband transcodes while
+        keeping clean controls false-positive free and restricting
+        allow_half_probe=True strictly to the primary block-0 call."""
+        import shutil
+        import subprocess
+        from unittest import mock
+        import _motor_espectral as spectral
+        from _motor_espectral import _fractional_shift_f32
+
+        sr = 44100
+        rng_spy = np.random.default_rng(5999)
+
+        # 1. Latency guardrail spy: allow_half_probe=True ONLY on primary block-0 call
+        n_blk = 32768
+        blk0 = np.column_stack([
+            rng_spy.standard_normal(n_blk).astype(np.float32) * 0.25,
+            rng_spy.standard_normal(n_blk).astype(np.float32) * 0.05,
+        ])
+        blk1 = np.column_stack([
+            rng_spy.standard_normal(n_blk).astype(np.float32) * 0.20,
+            rng_spy.standard_normal(n_blk).astype(np.float32) * 0.18,
+        ])
+        blk2 = np.column_stack([
+            rng_spy.standard_normal(n_blk).astype(np.float32) * 0.15,
+            rng_spy.standard_normal(n_blk).astype(np.float32) * 0.14,
+        ])
+        chosen = [
+            (0.05, 0, 0, 0, blk0),
+            (0.04, -1, 1, n_blk, blk1),
+            (0.03, -2, 2, 2 * n_blk, blk2),
+        ]
+        recorded_kwargs = []
+
+        def _spy_detect(_blk, _sr, ceiling_hz=None, **kw):
+            recorded_kwargs.append(dict(kw))
+            return {
+                "mdct_lattice_detected": False,
+                "mdct_lattice_snr": 3.5,
+                "mdct_lattice_family": None,
+            }
+
+        with mock.patch.object(spectral, "_detect_lapped_codec_grid", side_effect=_spy_detect):
+            spectral._probe_lapped_codec_lattice(chosen, (0, 1), sr, 21000)
+
+        self.assertGreaterEqual(len(recorded_kwargs), 4)
+        self.assertIs(recorded_kwargs[0].get("allow_half_probe"), True)
+        for idx_call, kw in enumerate(recorded_kwargs[1:], start=1):
+            self.assertFalse(kw.get("allow_half_probe", False), f"call #{idx_call}: {kw}")
+
+        # 2. Clean broadband control stays mdct_lattice_detected=False
+        rng = np.random.default_rng(5901)
+        base = _create_track_reference(sr, duration=5.0, seed=5902)
+        n = len(base)
+        t = np.arange(n, dtype=np.float64) / float(sr)
+        chord = rng.standard_normal((n, 2)) * 0.15
+        for f0 in (110.0, 164.81, 220.0, 329.63, 440.0, 587.33):
+            for k in range(1, 34):
+                fk = f0 * k
+                if fk >= 19500.0:
+                    break
+                amp = (1.0 / (k ** 0.85)) * (0.5 + 0.5 * np.sin(2.0 * np.pi * (0.6 + 0.15 * (k % 5)) * t))
+                chord[:, 0] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0.0, 6.28))
+                chord[:, 1] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0.0, 6.28))
+        chord /= np.max(np.abs(chord)) * 1.15
+        mix = 0.55 * chord + 0.45 * base
+        mix /= np.max(np.abs(mix)) * 1.12
+
+        det_ctrl = spectral._detect_lapped_codec_grid(
+            mix[:, 0].astype(np.float32), sr, ceiling_hz=21500.0, allow_half_probe=True
+        )
+        self.assertIs(det_ctrl["mdct_lattice_detected"], False, det_ctrl)
+
+        p_ctrl = self.tmp_path / "p1_1_v2_clean.flac"
+        sf.write(p_ctrl, mix, sr, subtype="PCM_16")
+        r_ctrl = motor_flac.analyze_file_data(str(p_ctrl), use_cache=False)
+        self.assertIs(r_ctrl["esp"]["mdct_lattice_detected"], False)
+        self.assertIn(r_ctrl["veredicto"], GOOD_VERDICTS)
+
+        # 3. Real ffmpeg AAC 320k -cutoff 22000 delayed by +0.25 and +0.50 samples
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            self.skipTest("ffmpeg is not available on PATH")
+
+        wav_src = self.tmp_path / "p1_1_v2_src.wav"
+        tmp_m4a = self.tmp_path / "p1_1_v2_aac320.m4a"
+        dec_flac = self.tmp_path / "p1_1_v2_aac320_dec.flac"
+        sf.write(wav_src, mix, sr, subtype="PCM_16")
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-v", "error", "-i", str(wav_src),
+             "-c:a", "aac", "-b:a", "320k", "-cutoff", "22000", str(tmp_m4a)],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-v", "error", "-i", str(tmp_m4a), str(dec_flac)],
+            check=True, capture_output=True, text=True,
+        )
+        dec, _ = sf.read(dec_flac, dtype="float32", always_2d=True)
+
+        for delta in (0.25, 0.50):
+            with self.subTest(delta=delta):
+                sh_l = _fractional_shift_f32(dec[:, 0], delta)
+                sh_r = _fractional_shift_f32(dec[:, 1], delta)
+                det_sh = spectral._detect_lapped_codec_grid(
+                    sh_l, sr, ceiling_hz=21500.0, allow_half_probe=True
+                )
+                self.assertIs(det_sh["mdct_lattice_detected"], True, det_sh)
+                self.assertEqual(
+                    det_sh["mdct_lattice_family"],
+                    motor_flac.CodecLatticeFamily.MDCT_1024.value,
+                )
+
+                p_sh = self.tmp_path / f"p1_1_v2_aac_{int(delta * 100)}.flac"
+                sf.write(p_sh, np.clip(np.column_stack([sh_l, sh_r]), -0.99, 0.99), sr, subtype="PCM_16")
+                r_sh = motor_flac.analyze_file_data(str(p_sh), use_cache=False)
+                self.assertIs(r_sh["esp"]["mdct_lattice_detected"], True, r_sh["esp"])
+                self.assertEqual(
+                    r_sh["esp"]["mdct_lattice_family"],
+                    motor_flac.CodecLatticeFamily.MDCT_1024.value,
+                )
+                self.assertEqual(r_sh["veredicto"], "PROBABLE UPSCALE")
+
+    def test_60_engine_16_soft_rule_calibrations_mod20k_opus_shelf_crests_and_rule4(self):
+        """Engine 16.0: verifies hardened psychoacoustic_mod_20k, <19 kHz
+        opus_flat_shelf guard, relaxed gentle_fullband_crests guard, and
+        Rule 4 monotonicity fix for smooth acoustic tracks."""
+        from unittest import mock
+        import _motor_bits as bits_mod
+        import _motor_espectral as spectral
+
+        # 1. Hardened psychoacoustic_mod_20k: spares drp_med ~ 30 / drp_iqr ~ 24 dB,
+        #    while test_25-style deep modulation (drp_med ~ 50 / drp_iqr ~ 24 dB) still fires.
+        acc_clean = spectral.PsychoacousticSTFTAccumulator(44100)
+        n_fr = 64
+        t_idx = np.linspace(0.0, 1.0, n_fr)
+        # Mild modulation: drp spans ~18..42 dB (drp_med = 30 dB, drp_iqr ~ 24 dB, top_iqr ~ 24 dB)
+        acc_clean._e_16_195 = (-50.0 + np.zeros(n_fr)).tolist()
+        acc_clean._e_202_218 = (-80.0 + 13.0 * np.sin(2.0 * np.pi * 4.0 * t_idx)).tolist()
+        res_clean = acc_clean.summary().metrics
+        self.assertAlmostEqual(res_clean["caida_modulacion_20k_db"], 30.0, delta=2.0)
+        self.assertGreater(res_clean["brecha_modulacion_20k_db"], 20.0)
+        self.assertIs(res_clean["modulacion_psicoacustica_20k"], False, res_clean)
+
+        acc_deep = spectral.PsychoacousticSTFTAccumulator(44100)
+        # Deep modulation: drp_med = 50 dB, drp_iqr ~ 24 dB, top_iqr ~ 24 dB -> fires
+        acc_deep._e_16_195 = (-45.0 + np.zeros(n_fr)).tolist()
+        acc_deep._e_202_218 = (-95.0 + 13.0 * np.sin(2.0 * np.pi * 4.0 * t_idx)).tolist()
+        res_deep = acc_deep.summary().metrics
+        self.assertIs(res_deep["modulacion_psicoacustica_20k"], True, res_deep)
+
+        # 2. opus_flat_shelf guard below 19 kHz (< 16 dB step)
+        freqs = np.fft.rfftfreq(4096, 1.0 / 44100)
+        for ceil_hz, caida_db, expected in (
+            (17743, 12.3, False),
+            (20010, 12.3, True),
+            (17500, 20.0, True),
+        ):
+            with self.subTest(opus_guard=(ceil_hz, caida_db)):
+                spec_g = {"techo_hz": ceil_hz, "clase_corte": "no_cutoff"}
+                psy = spectral.PsychoacousticSummary(
+                    metrics={
+                        "sospecha_corte_opus_20k": True,
+                        "caida_opus_20k_db": caida_db,
+                        "es_estacionario": False,
+                    }
+                )
+                spectral._apply_stationary_and_ms_guards(
+                    spec_g, psy, freqs, None, None, 1.0, 44100
+                )
+                self.assertIs(spec_g["sospecha_corte_opus_20k"], expected)
+
+        # 3. Relaxed gentle_fullband_crests guard (edge < 25 dB/kHz, blocking IQR > 1800 Hz)
+        clip_stats = (20, 18, 26, 3, 2)  # 20 events, 18 short (90% > 75%)
+        res_spared = bits_mod._classify_from_clip_stats(
+            clip_stats,
+            ceiling_hz=20100,
+            frequency_cutoff=None,
+            nyquist=22050,
+            edge_gradient_db_khz=21.5,
+            has_codec_signature=False,
+        )
+        self.assertIs(res_spared["clipping_reconstruccion_lossy"], False)
+
+        res_steep = bits_mod._classify_from_clip_stats(
+            clip_stats,
+            ceiling_hz=20100,
+            frequency_cutoff=None,
+            nyquist=22050,
+            edge_gradient_db_khz=26.5,
+            has_codec_signature=False,
+        )
+        self.assertIs(res_steep["clipping_reconstruccion_lossy"], True)
+
+        # End-to-end _BlockAnalysis._spectral_result(): advisory IQR=900 spared,
+        # blocking IQR=2200 or frequency_cutoff=19800 still flagged.
+        meta_cd = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2}
+        for lbl, iqr_val, f_cut, exp_lossy in (
+            ("advisory_iqr_900", 900.0, None, False),
+            ("blocking_iqr_2200", 2200.0, None, True),
+            ("cutoff_19800", 200.0, 19800, True),
+        ):
+            with self.subTest(crest_case=lbl):
+                ba = motor_flac._BlockAnalysis(meta_cd, 44100, 44100, "full", None)
+                ba._clip_acc._events = 20
+                ba._clip_acc._short_events = 18
+                ba._clip_acc._clip_runs = 2
+                ba._clip_acc._total_samples = 26
+                ba._clip_acc._max_streak = 3
+                fake_spec = {
+                    "error": None,
+                    "techo_hz": 20100,
+                    "frecuencia_corte": f_cut,
+                    "gradiente_borde_db_khz": 21.5,
+                    "iqr_corte_hz": iqr_val,
+                    "ratio_huecos_mdct": 0.0,
+                }
+                with mock.patch.object(ba._spectrum_acc, "result", return_value=fake_spec):
+                    out_sp = ba._spectral_result()
+                self.assertIs(out_sp["clipping_reconstruccion_lossy"], exp_lossy, lbl)
+
+        # 4. Rule 4 monotonicity fix for smooth acoustic tracks (0.70 <= rel_ceiling < 0.88, ratio <= 0.01)
+        base_r4 = {
+            "techo_hz": 17640,
+            "techo_rel_nyquist": 0.80,
+            "clase_corte": "no_cutoff",
+            "frecuencia_corte": None,
+            "distancia_nyquist": None,
+            "ratio_aplica": True,
+            "ratio": 0.006,
+            "var_alta_db": 2.0,
+            "separacion_stereo": 0.4,
+            "es_dual_mono": False,
+        }
+        spec_ac = dict(base_r4, decaimiento_acustico_suave=True)
+        sc_ac, verd_ac, probs_ac = motor_flac.calculate_score(meta_cd, spec_ac, {"aplica": False})
+        self.assertEqual(verd_ac, "PROBABLY LOSSLESS")
+        self.assertGreaterEqual(sc_ac, 0.60)
+        self.assertEqual(probs_ac, [])
+        self.assertEqual(spec_ac["finding_codes"], [])
+
+        spec_non_ac = dict(base_r4, decaimiento_acustico_suave=False)
+        sc_na, verd_na, _ = motor_flac.calculate_score(meta_cd, spec_non_ac, {"aplica": False})
+        self.assertEqual(verd_na, "SUSPICIOUS")
+        self.assertAlmostEqual(sc_na, 0.55, places=4)
 
 
 if __name__ == "__main__":

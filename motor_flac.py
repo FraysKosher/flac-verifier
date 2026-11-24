@@ -97,7 +97,18 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "15.1"
+ENGINE_VERSION = "16.0"
+# 16.0: Calibration audit on full-length dev corpus (610 tracks / 19,491 rows):
+#       - Isolated narrowband spike filter (_ceiling_without_isolated_spike)
+#         stripping <= 2 narrowband interference spikes (e.g. 15.734 kHz NTSC
+#         CRT leakage above a >= 1,500 Hz dead void) inside 10 kHz..0.88*Nyquist.
+#       - P1-1 v2 half-sample (+0.50) KBD probe & full 10-block fractional TDAC
+#         refinement for MDCT-1024 on primary block-0 only (zero fallback cost).
+#       - Hardened psychoacoustic_mod_20k thresholds (drp_med >= 42 dB / 34+34/30
+#         dB), guarded opus_flat_shelf below 19 kHz (< 16 dB step), relaxed
+#         gentle_fullband_crests (< 25 dB/kHz edge, blocking IQR > 1800 Hz only),
+#         and fixed Rule 4 monotonicity inversion for smooth acoustic tracks in
+#         0.70 <= rel_ceiling < 0.88 with ratio <= 0.01.
 # 15.1: Band-envelope solo-piano acoustic decay guard (5.8-13.5 kHz, tracking
 #       discrete harmonics with adjacent-band P75/P50 envelopes and tolerating
 #       >17.5 kHz noise-shaped dither) plus 5.5 kHz low-band brickwall/lattice
@@ -1050,7 +1061,7 @@ class _BlockAnalysis:
                 or spectrum.get("sbr_qmf_detectado")
                 or spectrum.get("modulacion_psicoacustica_20k")
                 or spectrum.get("mdct_lattice_detected")
-                or (spectrum.get("iqr_corte_hz") or 0.0) > 550.0
+                or (spectrum.get("iqr_corte_hz") or 0.0) > 1800.0
                 or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
             )
             spectrum.update(self._clip_acc.classify(

@@ -1,4 +1,4 @@
-"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 15.1).
+"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 16.0).
 
 Builds 320 tracks (140 authentic across 14 genuine mastering/archival/piano/
 percussive/synth families and 180 fakes across 25 real-encoder, AC-3/E-AC-3,
@@ -1166,7 +1166,7 @@ def _detailed_validation_doc(section, rows):
 
     from main import VERSION as APP_VERSION
     lines = [
-        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v{APP_VERSION}) — Validation Report (2026-11-23)",
+        f"# FLAC VERIFIER {motor_flac.ENGINE_VERSION} (v{APP_VERSION}) — Validation Report (2026-11-24)",
         "",
         section,
         "",

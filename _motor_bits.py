@@ -927,14 +927,14 @@ def _classify_from_clip_stats(stats, ceiling_hz=None, frequency_cutoff=None,
     # rip with three clicks and a 19 kHz ceiling used to be accused of Gibbs
     # overshoot. At least 10 events, 8 of them short, are required.
     # Also spare isolated 0 dBFS analog transient crests on uncut full-band
-    # masters (>= 88% Nyquist, gentle edge < 18 dB/kHz, zero codec signatures).
+    # masters (>= 88% Nyquist, gentle edge < 25 dB/kHz, zero codec signatures).
     gentle_fullband_crests = bool(
         frequency_cutoff is None
         and ceiling_hz is not None
         and nyquist
         and float(ceiling_hz) >= 0.88 * float(nyquist)
         and edge_gradient_db_khz is not None
-        and float(edge_gradient_db_khz) < 18.0
+        and float(edge_gradient_db_khz) < 25.0
         and not has_codec_signature
     )
     lossy = bool(
