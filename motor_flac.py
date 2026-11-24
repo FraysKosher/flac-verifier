@@ -97,7 +97,16 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "15.0"
+ENGINE_VERSION = "15.1"
+# 15.1: Band-envelope solo-piano acoustic decay guard (5.8-13.5 kHz, tracking
+#       discrete harmonics with adjacent-band P75/P50 envelopes and tolerating
+#       >17.5 kHz noise-shaped dither) plus 5.5 kHz low-band brickwall/lattice
+#       entry floor and 0.25 relative album support floor; hardened PQMF-32
+#       (Musepack) with split-half complex DFT phase coherence (>= 0.70) and
+#       MAD-floored scaling; selective fractional-sample TDAC refinement (P1-1)
+#       for +/-0.25/+0.50 sample delayed transcodes; offline streaming Red Book
+#       AccurateRip v1/v2 CRCs (`accuraterip`), informative FLAC `vendor` tag,
+#       and diagnostic `pre_echo_ratio_db` / `mgd_hf_dispersion` metrics.
 # 15.0: Add MDCT-512 (KBD alpha=5) lattice detector for AC-3 / E-AC-3, pure-NumPy
 #       phase-aligned Hi-Res decimation bridge (88.2-192 kHz -> 44.1/48 kHz) with
 #       unlocked far_cutoff codec attribution, float64/int24 16-bit grid tolerance
@@ -289,7 +298,7 @@ ENGINE_VERSION = "15.0"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.8.0"
+CACHE_SCHEMA_VERSION = "2.9.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 

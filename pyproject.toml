@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flac-verifier"
-version = "2.11.0"
+version = "2.11.1"
 description = "Forensic FLAC authenticity verifier for detecting lossy transcodes and inflated containers"
 readme = "README.md"
 requires-python = ">=3.10"

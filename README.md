@@ -5,9 +5,9 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.11.0](https://img.shields.io/badge/version-2.11.0-blue)](CHANGELOG.md)
+[![Version: 2.11.1](https://img.shields.io/badge/version-2.11.1-blue)](CHANGELOG.md)
 [![License: AGPL v3+](https://img.shields.io/badge/license-AGPL_v3%2B-blue)](LICENSE)
-[![Tests: 433](https://img.shields.io/badge/tests-433-brightgreen)](#tests)
+[![Tests: 438](https://img.shields.io/badge/tests-438-brightgreen)](#tests)
 
 A forensic audio verifier for deciding whether a FLAC file is **genuinely
 lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
@@ -22,10 +22,12 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ## What it checks
 
-- **Bit-exact integrity (`STREAMINFO MD5`):** decodes the PCM stream in a
-  single bounded-memory pass (8/16/24/32-bit integer FLAC) and verifies the MD5
-  signature outside the scoring model. A mismatch is reported immediately as
-  corruption.
+- **Bit-exact integrity (`STREAMINFO MD5` & offline AccurateRip v1/v2 CRCs):**
+  decodes the PCM stream in a single bounded-memory pass (8/16/24/32-bit integer
+  FLAC), verifies the `STREAMINFO MD5` outside the scoring model (mismatch is
+  reported immediately as corruption), extracts informative FLAC `vendor`
+  metadata, and computes offline Red Book (`16/44.1/2ch`) AccurateRip v1/v2 CRCs
+  (`accuraterip`: middle/first/last positions + CD sector alignment).
 - **24-bit & 32-bit algebraic lattice & micro-dither audit:** inspects the
   low bits across the whole track (`es_padded_16_en_24`, `es_16bit_dither_en_24`,
   `es_24bit_escalado_en_peine`, DoP markers) and quiet-block spectral floors
@@ -38,14 +40,17 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
   (`MDCT-1024` with both Vorbis and MPEG-4 AAC `KBD` $\alpha=4$ windows across
   `L`/`R`/`Mid` channels for Vorbis `-q4..-q9` & AAC 320, `PQMF-576` for MP3
   320/V0 even with `--lowpass -1`, `MDCT-512` `KBD` $\alpha=5$ for AC-3 and
-  E-AC-3, `PQMF-32` for Musepack SV7/SV8, `CELT-960` for Opus 20 kHz TDAC
-  boundary cancellation — including `88.2–192 kHz` Hi-Res containers via a
-  pure-NumPy decimation bridge and `far_cutoff` codec attribution), **seamless
-  QMF subband replication** for HE-AAC v1/v2 SBR (at 44.1–192 kHz even without
-  a boundary notch), upper-band 20 kHz psychoacoustic modulation, `sfb21` MDCT
-  islands, dynamic Mid/Side stereo collapse, inter-channel `MSC`/`IPD`
-  high-frequency stereo phase coupling (`stereo_phase_coupling`), harmonic
-  exciters, and Gibbs reconstruction clipping.
+  E-AC-3, split-half phase-coherent `PQMF-32` for Musepack SV7/SV8, `CELT-960`
+  for Opus 20 kHz TDAC boundary cancellation — with selective fractional-sample
+  TDAC refinement for `+/-0.25/+0.50` sample delayed transcodes, `88.2–192 kHz`
+  Hi-Res pure-NumPy decimation bridge, and `far_cutoff` codec attribution),
+  **seamless QMF subband replication** for HE-AAC v1/v2 SBR (at 44.1–192 kHz
+  even without a boundary notch), upper-band 20 kHz psychoacoustic modulation,
+  `sfb21` MDCT islands, dynamic Mid/Side stereo collapse, inter-channel
+  `MSC`/`IPD` high-frequency stereo phase coupling (`stereo_phase_coupling`),
+  diagnostic pre-echo (`pre_echo_ratio_db`) and high-frequency Modified Group
+  Delay (`mgd_hf_dispersion`) metrics, harmonic exciters, and Gibbs
+  reconstruction clipping.
 - **Multi-family corroboration & spectral stationarity guard:** condemning a
   file as `PROBABLE UPSCALE` requires either `>= 2` independent evidence
   families (`corroboracion_multifamilia`) or a deterministic structural proof
@@ -67,13 +72,13 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ### Windows portable release (no Python required)
 
-Download **[FLAC Verifier 2.11.0](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.11.0)**,
+Download **[FLAC Verifier 2.11.1](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.11.1)**,
 extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
 
-To verify the download with `SHA256SUMS_2.11.0.txt`:
+To verify the download with `SHA256SUMS_2.11.1.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.11.0-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_2.11.1-win64.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -181,7 +186,7 @@ FLAC VERIFIER/
 ├── comprobar_ejecutable.py   12-check verification suite for the frozen .exe
 ├── pyproject.toml            PEP 621 metadata & uv / pipx console scripts
 ├── docs/                     technical reference, design system, validation & comparison
-└── tests/                    433 unit tests (stdlib unittest, synthetic fixtures)
+└── tests/                    438 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -192,7 +197,7 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 433-test suite (~70 s, no external audio files needed)
+# Run the full 438-test suite (~70 s, no external audio files needed)
 python -m unittest discover -s tests
 
 # Skip GUI tests in headless environments
@@ -215,8 +220,8 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.11.0`).
-- **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 290-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.11.1`).
+- **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 320-track real-encoder & adversarial benchmark report with Wilson 95 % confidence intervals and SHA-256 manifest digest.
 - **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Development workflow and invariants.
@@ -226,21 +231,21 @@ python build.py
 ---
 
 <!-- BENCHMARK:START -->
-## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 290)
+## Validation benchmark (real `ffmpeg` codecs + adversarial DSP, n = 320)
 
-Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `15.0`):
-- **120 authentic controls** across 12 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, and Genuine 24/44.1 warm high-DR studio masters.
-- **170 fake & adversarial tracks** across 24 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
+Generated by `tests/benchmark_validacion.py` (fixed seed `2026`, engine `15.1`):
+- **140 authentic controls** across 14 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, Genuine 24/44.1 warm high-DR studio masters, Clean solo piano (5.8-10.2 kHz discrete harmonics with TPDF & noise-shaped dither), and Percussive beat-locked studio mixes.
+- **180 fake & adversarial tracks** across 25 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Fractional-delay (`+0.25`/`+0.50` sample) laundered AAC 320 & MP3 320 fullband (`P1-1`), Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|
-| Fake (n = 170) | **TP = 170** | FN = 0 |
-| Authentic (n = 120) | FP = 0 | **TN = 120** |
+| Fake (n = 180) | **TP = 180** | FN = 0 |
+| Authentic (n = 140) | FP = 0 | **TN = 140** |
 
 | Metric | Value | Wilson 95% CI |
 |---|---:|---:|
-| Sensitivity (TPR) | **100.0%** | 97.8% – 100.0% |
-| Specificity (TNR) | **100.0%** | 96.9% – 100.0% |
+| Sensitivity (TPR) | **100.0%** | 97.9% – 100.0% |
+| Specificity (TNR) | **100.0%** | 97.3% – 100.0% |
 
 Acceptance criterion: sensitivity >= 95% and specificity >= 95% — **PASS**.
 

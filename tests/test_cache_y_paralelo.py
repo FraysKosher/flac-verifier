@@ -723,7 +723,7 @@ class TestCentralizedCacheIsolation(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(album_dir, "_spectrograms")))
 
     def test_schema_version_invalidation(self):
-        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.8.0")
+        self.assertEqual(engine.CACHE_SCHEMA_VERSION, "2.9.0")
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "schema_probe.flac")
             shutil.copy(self.fx["ok16"], path)

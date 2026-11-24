@@ -5340,6 +5340,290 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         self.assertIn(motor_flac.FindingCode.JOINT_STEREO_COLLAPSE.value, spec_both["finding_codes"])
         self.assertNotIn(motor_flac.FindingCode.STEREO_PHASE_COUPLING.value, spec_both["finding_codes"])
 
+    def test_54_solo_piano_band_envelope_decay_and_adversarial_attacks(self):
+        """Engine 15.1: discrete-harmonic solo piano (5.8-12 kHz, TPDF and
+        noise-shaped dither) passes standalone via coarse band-envelope decay,
+        while ffmpeg lossy transcodes, 16/22.05 kHz sinc upscales, and
+        16-in-24 zero-padding stay flagged."""
+        import math
+        import shutil
+        import subprocess
+
+        sr = 44100
+
+        def _synth_piano(target_ceil_hz, noise_shaped=False, seed=5400):
+            rng = np.random.default_rng(seed)
+            n = int(sr * 5.0)
+            out = np.zeros((n, 2), dtype=np.float64)
+            notes = [
+                (0.05, 130.81, 2.0, 0.85), (0.10, 196.00, 1.9, 0.72),
+                (0.15, 261.63, 1.8, 0.75), (0.20, 329.63, 1.6, 0.65),
+                (1.30, 146.83, 2.0, 0.80), (1.35, 220.00, 1.8, 0.72),
+                (1.40, 293.66, 1.7, 0.70), (1.45, 349.23, 1.5, 0.62),
+                (2.60, 110.00, 2.1, 0.85), (2.65, 220.00, 1.9, 0.75),
+                (2.70, 261.63, 1.7, 0.70), (2.75, 392.00, 1.5, 0.65),
+                (3.75, 130.81, 1.2, 0.82), (3.80, 246.94, 1.1, 0.68),
+                (3.85, 329.63, 1.1, 0.72), (3.90, 440.00, 1.0, 0.65),
+            ]
+            decay_db_khz = 56.0 / max(1.5, (target_ceil_hz - 500.0) / 1000.0)
+            for t0, f0, dur_n, vel in notes:
+                i0 = int(t0 * sr)
+                i1 = min(n, int((t0 + dur_n) * sr))
+                tn = np.arange(i1 - i0, dtype=np.float64) / float(sr)
+                atk = 1.0 - np.exp(-tn / 0.004)
+                pan = rng.uniform(0.38, 0.62)
+                gl, gr = float(np.cos(pan * np.pi * 0.5)), float(np.sin(pan * np.pi * 0.5))
+                max_k = int(min(target_ceil_hz * 1.45, 16500.0) // f0)
+                nl = np.zeros(i1 - i0, dtype=np.float64)
+                nr = np.zeros(i1 - i0, dtype=np.float64)
+                for k in range(1, max_k + 1):
+                    fk = f0 * k * math.sqrt(1.0 + 0.00025 * k * k)
+                    if fk >= 17500.0:
+                        break
+                    db_k = -decay_db_khz * max(0.0, (fk - 400.0) / 1000.0) + 2.5 * float(np.sin(0.9 * k))
+                    amp = vel * (10.0 ** (db_k / 20.0))
+                    tau = max(0.08, 1.8 / (1.0 + (fk / 1200.0) ** 1.15))
+                    w = amp * atk * np.exp(-tn / tau) * np.sin(2.0 * np.pi * fk * tn + rng.uniform(0.0, 6.28))
+                    nl += w * gl
+                    nr += w * gr
+                out[i0:i1, 0] += nl
+                out[i0:i1, 1] += nr
+            room = signal.sosfilt(
+                signal.butter(2, 1800.0, btype="low", fs=sr, output="sos"),
+                rng.standard_normal((n, 2)), axis=0,
+            ) * (10.0 ** (-82.0 / 20.0))
+            out = out / (np.max(np.abs(out)) * 1.15) + room
+            dither = (rng.random((n, 2)) - rng.random((n, 2))) / 32768.0
+            if noise_shaped:
+                hp = signal.sosfilt(
+                    signal.butter(4, 17500.0, btype="high", fs=sr, output="sos"),
+                    rng.standard_normal((n, 2)), axis=0,
+                )
+                hp *= (10.0 ** (-78.0 / 20.0)) / (np.std(hp) + 1e-12)
+                return np.clip(out + dither + hp, -0.99, 0.99)
+            return np.clip(out + dither, -0.99, 0.99)
+
+        # Clean solo pianos across 5.8-11 kHz (TPDF & noise-shaped dither) pass
+        for idx, (ceil_t, ns) in enumerate((
+            (6800.0, False), (7400.0, True), (8500.0, False),
+            (10200.0, True), (12000.0, False),
+        )):
+            sig = _synth_piano(ceil_t, noise_shaped=ns, seed=5410 + idx)
+            p_clean = self.tmp_path / f"piano_clean_{idx}.flac"
+            sf.write(p_clean, sig, sr, subtype="PCM_16")
+            res = motor_flac.analyze_file_data(str(p_clean), use_cache=False)
+            self.assertEqual(res["veredicto"], "PROBABLY LOSSLESS", f"idx={idx}: {res['problemas']}")
+            self.assertEqual(res["problemas"], [], f"idx={idx}: {res['problemas']}")
+            self.assertIs(res["esp"]["decaimiento_acustico_suave"], True)
+
+        # Sinc resamples (16 kHz & 22.05 kHz -> 44.1 kHz) and 16-in-24 zero-pad stay caught
+        src_piano = _synth_piano(7400.0, noise_shaped=False, seed=5450)
+        for low_sr in (16000, 22050):
+            y_up = signal.resample_poly(
+                signal.resample_poly(src_piano, low_sr, sr, axis=0), sr, low_sr, axis=0
+            )
+            p_sinc = self.tmp_path / f"piano_sinc_{low_sr}.flac"
+            sf.write(p_sinc, np.clip(y_up, -0.99, 0.99), sr, subtype="PCM_16")
+            r_sinc = motor_flac.analyze_file_data(str(p_sinc), use_cache=False)
+            self.assertIn(r_sinc["veredicto"], BAD_VERDICTS, f"sinc {low_sr}")
+
+        p_pad24 = self.tmp_path / "piano_pad24.flac"
+        sf.write(p_pad24, np.round(src_piano * 32767.0) / 32768.0, sr, subtype="PCM_24")
+        r_pad24 = motor_flac.analyze_file_data(str(p_pad24), use_cache=False)
+        self.assertIn(r_pad24["veredicto"], BAD_VERDICTS)
+
+        # Real ffmpeg codec attacks on low-ceiling solo piano stay caught
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            wav_p = self.tmp_path / "piano_src.wav"
+            sf.write(wav_p, src_piano, sr, subtype="PCM_16")
+            for tag, ext, c_args, out_sr in (
+                ("mp3_64", ".mp3", ["-c:a", "libmp3lame", "-b:a", "64k"], 44100),
+                ("mp3_128", ".mp3", ["-c:a", "libmp3lame", "-b:a", "128k"], 44100),
+                ("mp3_320", ".mp3", ["-c:a", "libmp3lame", "-b:a", "320k"], 44100),
+                ("aac_96", ".m4a", ["-c:a", "aac", "-b:a", "96k"], 44100),
+                ("aac_320", ".m4a", ["-c:a", "aac", "-b:a", "320k"], 44100),
+                ("vorbis_q1", ".ogg", ["-c:a", "libvorbis", "-q:a", "1"], 44100),
+            ):
+                tmp_l = self.tmp_path / f"piano_{tag}{ext}"
+                out_f = self.tmp_path / f"piano_{tag}.flac"
+                r1 = subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(wav_p)] + c_args + [str(tmp_l)],
+                    capture_output=True, text=True,
+                )
+                if r1.returncode != 0:
+                    continue
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(tmp_l), "-ar", str(out_sr), str(out_f)],
+                    check=True, capture_output=True, text=True,
+                )
+                r_atk = motor_flac.analyze_file_data(str(out_f), use_cache=False)
+                self.assertIn(r_atk["veredicto"], BAD_VERDICTS, f"piano {tag}: {r_atk['esp']}")
+
+    def test_55_pqmf32_split_half_phase_coherence_rejects_percussive_controls(self):
+        """Engine 15.1: hardened PQMF-32 rejects percussive and jittered gated
+        studio controls via split-half complex DFT phase coherence while still
+        catching SV7 (36-sample) and SV8 (12-sample) Musepack lattices."""
+        sr = 44100
+        rng = np.random.default_rng(5501)
+        n = sr * 5
+        t = np.arange(n, dtype=np.float64) / float(sr)
+
+        # Jittered rhythmic HF gate (mimicking studio percussive hi-hats) must NOT trigger PQMF-32
+        for freq_mod in (12.0, 24.0, 40.0):
+            base = signal.sosfilt(
+                signal.butter(2, [1000.0, 13000.0], btype="band", fs=sr, output="sos"),
+                rng.standard_normal(n),
+            )
+            hf = signal.sosfilt(
+                signal.butter(3, 14000.0, btype="high", fs=sr, output="sos"),
+                rng.standard_normal(n),
+            )
+            jitter = np.cumsum(rng.normal(0.0, 0.002, n))
+            gate = (np.sin(2.0 * np.pi * freq_mod * t + jitter) > 0.2).astype(np.float64)
+            sig = (base * 0.4 + hf * gate * 0.25).astype(np.float32)
+            det = motor_flac._detect_lapped_codec_grid(sig, sr)
+            self.assertIs(det["mdct_lattice_detected"], False, f"freq_mod={freq_mod}: {det}")
+
+        # Real SV7 (block_len=36) and SV8 (block_len=12) Musepack lattices stay caught
+        h = signal.firwin(512, 1.0 / 64.0, window=("kaiser", 9.0)).astype(np.float64)
+        n_idx = np.arange(512, dtype=np.float64)
+        for blk_len in (12, 36):
+            src = rng.standard_normal(n) * 0.25
+            recon = np.zeros(n + 1024, dtype=np.float64)
+            for s in range(31):
+                ana = h * np.cos(np.pi / 64.0 * (2 * s + 1) * (n_idx - 16))
+                syn = ana[::-1]
+                sb = np.convolve(src, ana, mode="full")[511 : 511 + n]
+                dec = sb[::32].copy()
+                if s >= 18:
+                    for b_i in range(len(dec) // blk_len):
+                        sl = dec[b_i * blk_len : (b_i + 1) * blk_len]
+                        if s >= 22 and rng.random() < 0.35:
+                            dec[b_i * blk_len : (b_i + 1) * blk_len] = 0.0
+                        else:
+                            levels = 7.0 if s >= 24 else 15.0
+                            step = (np.max(np.abs(sl)) + 1e-12) / levels
+                            dec[b_i * blk_len : (b_i + 1) * blk_len] = np.round(sl / step) * step
+                up = np.zeros(len(dec) * 32, dtype=np.float64)
+                up[::32] = dec * 32.0
+                r_s = np.convolve(up, syn, mode="full")
+                recon[: len(r_s)] += r_s
+            mpc_mono = (recon[19 : 19 + n] / (np.max(np.abs(recon)) * 1.15)).astype(np.float32)
+            det_mpc = motor_flac._detect_lapped_codec_grid(mpc_mono, sr)
+            self.assertIs(det_mpc["mdct_lattice_detected"], True, f"blk_len={blk_len}")
+            self.assertEqual(det_mpc["mdct_lattice_family"], "PQMF-32 (Musepack)")
+            self.assertGreaterEqual(det_mpc["mdct_lattice_snr"], 7.5)
+
+    def test_56_selective_fractional_tdac_catches_subsample_laundered_transcodes(self):
+        """Engine 15.1 (P1-1): selective fractional-sample TDAC refinement
+        catches +0.25 and +0.50 sample delayed AAC 320 and MP3 320 fullband
+        transcodes while keeping zero false positives on clean controls."""
+        import shutil
+        import subprocess
+        from _motor_espectral import _fractional_shift_f32
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            self.skipTest("ffmpeg is not available on PATH")
+
+        sr = 44100
+        rng = np.random.default_rng(5601)
+        base = _create_track_reference(sr, duration=5.0, seed=5602)
+        n = len(base)
+        t = np.arange(n, dtype=np.float64) / float(sr)
+        chord = rng.standard_normal((n, 2)) * 0.15
+        for f0 in (110.0, 164.81, 220.0, 329.63, 440.0, 587.33):
+            for k in range(1, 34):
+                fk = f0 * k
+                if fk >= 19500.0:
+                    break
+                amp = (1.0 / (k ** 0.85)) * (0.5 + 0.5 * np.sin(2.0 * np.pi * (0.6 + 0.15 * (k % 5)) * t))
+                chord[:, 0] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0.0, 6.28))
+                chord[:, 1] += amp * np.sin(2.0 * np.pi * fk * t + rng.uniform(0.0, 6.28))
+        chord /= np.max(np.abs(chord)) * 1.15
+        mix = 0.55 * chord + 0.45 * base
+        mix /= np.max(np.abs(mix)) * 1.12
+
+        # Clean control (even with +0.25 shift) must remain GENUINE LOSSLESS
+        p_clean = self.tmp_path / "tdac_clean.flac"
+        sf.write(p_clean, mix, sr, subtype="PCM_16")
+        r_clean = motor_flac.analyze_file_data(str(p_clean), use_cache=False)
+        self.assertIs(r_clean["esp"]["mdct_lattice_detected"], False)
+        self.assertIn(r_clean["veredicto"], GOOD_VERDICTS)
+
+        wav_src = self.tmp_path / "tdac_src.wav"
+        sf.write(wav_src, mix, sr, subtype="PCM_16")
+
+        for cname, ext, c_args, exp_fam in (
+            ("aac320", ".m4a", ["-c:a", "aac", "-b:a", "320k", "-cutoff", "22000"], "MDCT-1024 (Vorbis/AAC)"),
+            ("mp3320", ".mp3", ["-c:a", "libmp3lame", "-b:a", "320k", "-cutoff", "22050"], "PQMF-576 (MP3)"),
+        ):
+            tmp_l = self.tmp_path / f"tdac_{cname}{ext}"
+            dec_f = self.tmp_path / f"tdac_{cname}_dec.flac"
+            subprocess.run(
+                [ffmpeg_bin, "-y", "-v", "error", "-i", str(wav_src)] + c_args + [str(tmp_l)],
+                check=True, capture_output=True, text=True,
+            )
+            subprocess.run(
+                [ffmpeg_bin, "-y", "-v", "error", "-i", str(tmp_l), str(dec_f)],
+                check=True, capture_output=True, text=True,
+            )
+            dec, _ = sf.read(dec_f, dtype="float32", always_2d=True)
+            for delta in (0.25, 0.50):
+                shifted = np.column_stack([
+                    _fractional_shift_f32(dec[:, 0], delta),
+                    _fractional_shift_f32(dec[:, 1], delta),
+                ])
+                p_sh = self.tmp_path / f"tdac_{cname}_{int(delta * 100)}.flac"
+                sf.write(p_sh, np.clip(shifted, -0.99, 0.99), sr, subtype="PCM_16")
+                r_sh = motor_flac.analyze_file_data(str(p_sh), use_cache=False)
+                self.assertIs(r_sh["esp"]["mdct_lattice_detected"], True, f"{cname} +{delta}: {r_sh['esp']}")
+                self.assertEqual(r_sh["esp"]["mdct_lattice_family"], exp_fam)
+                self.assertEqual(r_sh["veredicto"], "PROBABLE UPSCALE")
+
+    def test_57_offline_accuraterip_vendor_and_preecho_mgd_diagnostics(self):
+        """Engine 15.1: offline AccurateRip v1/v2 CRCs, FLAC vendor string,
+        and diagnostic pre_echo_ratio_db / mgd_hf_dispersion metrics are
+        populated cleanly without changing verdicts."""
+        import math
+
+        sr = 44100
+        # Sector-aligned 16/44.1/2ch CDDA track (588 * 340 frames ~ 4.53 s)
+        n_frames = 588 * 340
+        src = _create_track_reference(sr, duration=n_frames / float(sr), seed=5701)[:n_frames]
+        p_cd = self.tmp_path / "diag_cd.flac"
+        sf.write(p_cd, np.clip(src, -0.99, 0.99), sr, subtype="PCM_16")
+
+        res_cd = motor_flac.analyze_file_data(str(p_cd), use_cache=False)
+        self.assertIn(res_cd["veredicto"], GOOD_VERDICTS)
+        self.assertIsInstance(res_cd["meta"].get("vendor"), str)
+        self.assertTrue(len(res_cd["meta"]["vendor"]) > 0)
+
+        ar = res_cd["accuraterip"]
+        self.assertIs(ar["aplica"], True)
+        self.assertIs(ar["sector_aligned"], True)
+        for key in ("v1", "v2", "v1_first", "v2_first", "v1_last", "v2_last"):
+            self.assertRegex(ar[key], r"^[0-9A-F]{8}$")
+
+        # Exact parity against direct array helper
+        pcm_i16, _ = sf.read(p_cd, dtype="int16", always_2d=True)
+        self.assertEqual(ar, motor_flac.compute_accuraterip_crcs(pcm_i16, sr, 16))
+
+        # Finite diagnostic pre_echo_ratio_db & mgd_hf_dispersion
+        spectrum = res_cd["esp"]
+        self.assertIsInstance(spectrum["pre_echo_ratio_db"], float)
+        self.assertTrue(math.isfinite(spectrum["pre_echo_ratio_db"]))
+        self.assertIsInstance(spectrum["mgd_hf_dispersion"], float)
+        self.assertTrue(math.isfinite(spectrum["mgd_hf_dispersion"]))
+        self.assertGreaterEqual(spectrum["mgd_hf_dispersion"], 0.0)
+
+        # Non-Red-Book (24-bit / 48 kHz) returns accuraterip.aplica = False
+        p_24 = self.tmp_path / "diag_24_48.flac"
+        sf.write(p_24, _create_track_reference(48000, duration=4.0, seed=5702), 48000, subtype="PCM_24")
+        res_24 = motor_flac.analyze_file_data(str(p_24), use_cache=False)
+        self.assertEqual(res_24["accuraterip"], {"aplica": False})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

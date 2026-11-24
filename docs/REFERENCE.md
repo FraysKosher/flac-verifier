@@ -49,8 +49,10 @@ with `error` and the process continues until it emits `fin`.
   "tipo": "resultado", "indice": 1, "total": 3, "indice_original": 0,
   "archivo": "track.flac", "ruta": "C:/Music/track.flac",
   "meta": { "valido": true, "sample_rate": 44100, "bits_per_sample": 24,
-            "canales": 2, "duracion": 245.3, "md5": 12345 },
+            "canales": 2, "duracion": 245.3, "md5": 12345,
+            "vendor": "reference libFLAC 1.4.3 20230623" },
   "md5":  { "estado": "match", "calculado": "76a6…", "almacenado": "76a6…" },
+  "accuraterip": { "aplica": false },
   "clip": { "runs_clip": 0, "hay_clipping": false },
   "dr": 13.1,
   "bdi": { "aplica": true, "lsbs": "active",
@@ -77,6 +79,7 @@ with `error` and the process continues until it emits `fin`.
            "brecha_modulacion_20k_db": 4.2, "modulacion_psicoacustica_20k": false,
            "mdct_lattice_detected": false, "mdct_lattice_snr": 0.0,
            "mdct_lattice_family": null,
+           "pre_echo_ratio_db": 0.0, "mgd_hf_dispersion": 0.0,
            "corr_env_excitador": 0.0, "muesca_excitador_db": 0.0,
            "sospecha_excitador_armonico": false,
            "sbr_qmf_detectado": false, "sbr_qmf_correlacion": 0.0,
@@ -305,7 +308,7 @@ An entry is reused only if all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"15.0"`), `CACHE_SCHEMA_VERSION` (`"2.8.0"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"15.1"`), `CACHE_SCHEMA_VERSION` (`"2.9.0"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

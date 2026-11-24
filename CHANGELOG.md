@@ -5,6 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.1] - 2026-11-23
+
+### Added
+
+- **Selective fractional-sample TDAC refinement (`P1-1`, `_motor_espectral.py`, engine `15.1`)**:
+  added pure-NumPy / `pypocketfft` linear-phase fractional shifting (`_fractional_shift_f32`)
+  and zero-overhead borderline refinement (`-0.25`, `+0.25`, `+0.50` samples)
+  for `MDCT-1024`, `PQMF-576`, and `MDCT-512 (AC-3/E-AC-3)` with 2-tap
+  adjacent-offset pair boosting and single-shift mismatched-window fallback.
+  Catches sub-sample delayed `AAC 320`, `MP3 320`, and `Vorbis -q9` transcodes
+  while keeping `0 ms` overhead on clean tracks (`Z < 5.0`).
+- **Offline streaming AccurateRip v1/v2 CRCs (`_motor_bits.py`, `motor_flac.py`)**:
+  added O(1)-memory `_AccurateRipAccumulator` and array counterpart
+  `compute_accuraterip_crcs` for Red Book CDDA PCM (`16/44.1/2ch`), computing
+  `v1`/`v2` (middle), `v1_first`/`v2_first` (skipping first 2,939 frames),
+  `v1_last`/`v2_last` (excluding final 2,940 frames), and `sector_aligned`
+  (`total_frames % 588 == 0`) under additive `result["accuraterip"]`.
+- **Informative FLAC `vendor` string & diagnostic pre-echo/MGD metrics (`motor_flac.py`, `_motor_espectral.py`)**:
+  exposed Vorbis-comment `vendor` in `meta["vendor"]` and strictly finite,
+  bounded-cost diagnostic `pre_echo_ratio_db` and `mgd_hf_dispersion` keys in
+  `esp` (purely additive in Engine `15.1`, zero scoring impact).
+- **Expanded test & benchmark coverage**: added 5 regression/adversarial tests
+  (bringing the automated suite from **433** to **438 tests**) and expanded
+  `tests/benchmark_validacion.py` from **290** to **320 tracks** (39 families,
+  100.0% sensitivity / 100.0% specificity) covering clean discrete-harmonic
+  solo piano (`5.8–10.2 kHz`, TPDF & noise-shaped dither), percussive
+  beat-locked studio mixes, and fractional-delay (`+0.25/+0.50`) laundered
+  `AAC 320` & `MP3 320` fullband transcodes.
+
+### Fixed
+
+- **Band-envelope solo-piano acoustic decay guard (`_motor_espectral.py`, `_motor_veredicto.py`)**:
+  added `_coarse_envelope_descent_db_khz()` (adjacent-band P75/P50 envelope
+  descent), widened `subceiling_clean_acoustic_decay` to `5.8–13.5 kHz` with
+  noise-shaped dither tolerance (`> 17.5 kHz`), extended the low-band brickwall
+  and lapped-codec lattice entry floor down to `5.5 kHz`, lowered
+  `_is_clean_album_support_track()` acoustic support floor to `0.25`, and
+  guarded sub-12 kHz solo pianos against false `sfb21` and note-pitch IQR
+  triggers while keeping all `ffmpeg` transcodes, `16/22.05 kHz` sinc upscales,
+  and `16-in-24` zero-padded solo pianos caught.
+- **Hardened `PQMF-32 (Musepack)` lattice detector (`_motor_espectral.py`)**:
+  added split-half temporal consistency (`half >= 4` frames per half,
+  `min(r_h1, r_h2) >= 3.5`), complex DFT phase coherence (`>= 0.70`), and
+  MAD-floored robust background scaling (`z_mpc_rob >= 8.0`,
+  `r_mpc_floored >= 7.5`), eliminating false positives on percussive and
+  beat-locked studio mixes while preserving `7/7` detection on Musepack SV7/SV8.
+
+### Changed
+
+- **Engine & cache schema bump (`15.0` -> `15.1`, schema `2.8.0` -> `2.9.0`, version `2.11.0` -> `2.11.1`)**:
+  bumped `ENGINE_VERSION`, `CACHE_SCHEMA_VERSION`, `main.py`, `pyproject.toml`,
+  `version_info.txt`, and documentation.
+
 ## [2.11.0] - 2026-11-23
 
 ### Added

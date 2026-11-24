@@ -1,11 +1,12 @@
-"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 15.0).
+"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 15.1).
 
-Builds 290 tracks (120 authentic across 12 genuine mastering/archival/synth
-families and 170 fakes across 24 real-encoder, AC-3/E-AC-3, Hi-Res ultrasonic-
-masked transcode, SBR, subband, KBD-asymmetric, upscale and 24/32-bit forensic
-families) with fixed deterministic seeds, runs the engine on every track, and
-reports the confusion matrix, sensitivity, specificity, Wilson 95% confidence
-intervals, per-family breakdown and corpus SHA-256 digest.
+Builds 320 tracks (140 authentic across 14 genuine mastering/archival/piano/
+percussive/synth families and 180 fakes across 25 real-encoder, AC-3/E-AC-3,
+fractional-delay laundered TDAC, Hi-Res ultrasonic-masked transcode, SBR,
+subband, KBD-asymmetric, upscale and 24/32-bit forensic families) with fixed
+deterministic seeds, runs the engine on every track, and reports the confusion
+matrix, sensitivity, specificity, Wilson 95% confidence intervals, per-family
+breakdown and corpus SHA-256 digest.
 
 When `ffmpeg` is available on PATH, real external codec binaries (`libmp3lame`,
 `libshine`, `mp2`, `aac`, `aac_mf`, `libvorbis`, `libopus`, `wmav2`, `ac3`,
@@ -18,7 +19,7 @@ equivalents keep the benchmark runnable in minimal CI environments.
 Without `--check`, updates the validation tables in `docs/VALIDATION.md`,
 `README.md` and `docs/COMPARISON.md` and requires sensitivity >= 95%,
 specificity >= 95% and album coherence. With `--check`, runs non-mutating and
-requires 100% pass across all 290 tracks plus album coherence.
+requires 100% pass across all 320 tracks plus album coherence.
 """
 import argparse
 from concurrent.futures import ProcessPoolExecutor
@@ -41,7 +42,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import motor_flac
 from _motor_espectral import (
-    _fast_mdct_f32, _get_celt_1920, _get_kbd_2048, _get_kbd_512_ac3, _get_vorbis_2048
+    _fast_mdct_f32, _fractional_shift_f32, _get_celt_1920,
+    _get_kbd_2048, _get_kbd_512_ac3, _get_vorbis_2048,
 )
 
 SEED = 2026
@@ -172,6 +174,102 @@ def vintage_archival_tape(sr=44100, duration=5.0, seed=2026):
     hiss = rng.standard_normal((n, 2)) * (10.0 ** (-80.0 / 20.0))
     mix = vintage + hiss
     return mix / (np.max(np.abs(mix)) * 1.15)
+
+
+def solo_piano_discrete(sr=44100, duration=5.0, target_ceiling_hz=7400.0,
+                        noise_shaped=False, seed=2026):
+    """Discrete-overtone solo piano with optional >17.5 kHz noise-shaped dither."""
+    rng = np.random.default_rng(seed)
+    n = int(sr * duration)
+    out = np.zeros((n, 2), dtype=np.float64)
+    notes = [
+        (0.05, 130.81, 2.0, 0.85), (0.10, 196.00, 1.9, 0.72),
+        (0.15, 261.63, 1.8, 0.75), (0.20, 329.63, 1.6, 0.65),
+        (1.30, 146.83, 2.0, 0.80), (1.35, 220.00, 1.8, 0.72),
+        (1.40, 293.66, 1.7, 0.70), (1.45, 349.23, 1.5, 0.62),
+        (2.60, 110.00, 2.1, 0.85), (2.65, 220.00, 1.9, 0.75),
+        (2.70, 261.63, 1.7, 0.70), (2.75, 392.00, 1.5, 0.65),
+        (3.75, 130.81, 1.2, 0.82), (3.80, 246.94, 1.1, 0.68),
+        (3.85, 329.63, 1.1, 0.72), (3.90, 440.00, 1.0, 0.65),
+    ]
+    decay_db_khz = 56.0 / max(1.5, (float(target_ceiling_hz) - 500.0) / 1000.0)
+    for t0, f0, dur_n, vel in notes:
+        i0 = int(t0 * sr)
+        i1 = min(n, int((t0 + dur_n) * sr))
+        if i1 <= i0:
+            continue
+        tn = np.arange(i1 - i0, dtype=np.float64) / float(sr)
+        atk = 1.0 - np.exp(-tn / 0.004)
+        pan = rng.uniform(0.38, 0.62)
+        gl, gr = float(np.cos(pan * np.pi * 0.5)), float(np.sin(pan * np.pi * 0.5))
+        nl = np.zeros(i1 - i0, dtype=np.float64)
+        nr = np.zeros(i1 - i0, dtype=np.float64)
+        max_k = int(min(target_ceiling_hz * 1.45, 16500.0) // f0)
+        for k in range(1, max_k + 1):
+            fk = f0 * k * math.sqrt(1.0 + 0.00025 * k * k)
+            if fk >= 17500.0:
+                break
+            db_k = -decay_db_khz * max(0.0, (fk - 400.0) / 1000.0) + 2.5 * float(np.sin(0.9 * k))
+            amp = vel * (10.0 ** (db_k / 20.0))
+            tau = max(0.08, 1.8 / (1.0 + (fk / 1200.0) ** 1.15))
+            wave = amp * atk * np.exp(-tn / tau) * np.sin(2.0 * np.pi * fk * tn + rng.uniform(0.0, 6.28))
+            nl += wave * gl
+            nr += wave * gr
+        out[i0:i1, 0] += nl
+        out[i0:i1, 1] += nr
+    room = signal.sosfilt(
+        signal.butter(2, 1800.0, btype="low", fs=sr, output="sos"),
+        rng.standard_normal((n, 2)), axis=0,
+    ) * (10.0 ** (-82.0 / 20.0))
+    out = out / (np.max(np.abs(out)) * 1.15) + room
+    dither = (rng.random((n, 2)) - rng.random((n, 2))) / 32768.0
+    if noise_shaped:
+        hp = signal.sosfilt(
+            signal.butter(4, 17500.0, btype="high", fs=sr, output="sos"),
+            rng.standard_normal((n, 2)), axis=0,
+        )
+        hp *= (10.0 ** (-78.0 / 20.0)) / (np.std(hp) + 1e-12)
+        return np.clip(out + dither + hp, -0.99, 0.99)
+    return np.clip(out + dither, -0.99, 0.99)
+
+
+def percussive_studio_mix(sr=44100, duration=5.0, bpm=120.0, gated=False, seed=2026):
+    """Beat-locked percussive studio mix (kicks, snares, 16th hi-hats, gated synth)."""
+    rng = np.random.default_rng(seed)
+    n = int(sr * duration)
+    t = np.arange(n, dtype=np.float64) / float(sr)
+    sig = np.zeros((n, 2), dtype=np.float64)
+    step_16 = (60.0 / float(bpm)) / 4.0
+    k_idx = 0
+    while True:
+        i0 = int(round(k_idx * step_16 * sr))
+        if i0 >= n:
+            break
+        hh_len = min(n - i0, int(0.045 * sr))
+        th = np.arange(hh_len, dtype=np.float64) / float(sr)
+        hh = signal.sosfilt(
+            signal.butter(3, 7500.0, btype="high", fs=sr, output="sos"),
+            rng.standard_normal((hh_len, 2)), axis=0,
+        ) * np.exp(-th / (0.012 if k_idx % 2 == 0 else 0.007))[:, None] * (0.45 if k_idx % 2 == 0 else 0.25)
+        sig[i0 : i0 + hh_len] += hh
+        if k_idx % 4 == 0:
+            kl = min(n - i0, int(0.18 * sr))
+            tk = np.arange(kl, dtype=np.float64) / float(sr)
+            f_inst = 55.0 + 130.0 * np.exp(-tk / 0.025)
+            kick = 0.8 * np.exp(-tk / 0.07) * np.sin(2.0 * np.pi * np.cumsum(f_inst) / float(sr))
+            sig[i0 : i0 + kl] += kick[:, None]
+        if k_idx % 8 == 4:
+            sl = min(n - i0, int(0.14 * sr))
+            ts = np.arange(sl, dtype=np.float64) / float(sr)
+            sig[i0 : i0 + sl] += rng.standard_normal((sl, 2)) * np.exp(-ts / 0.035)[:, None] * 0.55
+        k_idx += 1
+    pad = rng.standard_normal((n, 2)) * 0.09
+    if gated:
+        jitter = np.cumsum(rng.normal(0.0, 0.002, n))
+        gate = (np.sin(2.0 * np.pi * (bpm / 60.0 * 4.0) * t + jitter) > 0.1).astype(np.float64)[:, None]
+        pad *= gate
+    sig += pad
+    return sig / (np.max(np.abs(sig)) * 1.12)
 
 
 # ─── LOSSY, SBR, SUBBAND & BIT-FORENSIC GENERATORS ──────────────────────────
@@ -367,10 +465,10 @@ def _ffmpeg_encode_decode(wav_in, out_flac, lossy_ext, codec_args, out_sr=None):
                 pass
 
 
-# ─── DATASET (n = 290: 120 authentic + 170 fake) ────────────────────────────
+# ─── DATASET (n = 320: 140 authentic + 180 fake) ────────────────────────────
 
 def create_dataset(directory):
-    """Returns [(path, authentic_bool, class_name, backend)] for n = 290 tracks."""
+    """Returns [(path, authentic_bool, class_name, backend)] for n = 320 tracks."""
     cases = []
     sr = 44100
 
@@ -532,6 +630,24 @@ def create_dataset(directory):
         )
         _save(p, warm_24, sr, "PCM_24")
         cases.append((p, True, "GEN 12: Genuine 24/44.1 warm high-DR master", "native_dsp"))
+
+    # 13. Clean digital solo piano (5.8-10.2 kHz discrete harmonics + noise-shaped dither)
+    piano_ceils = (6800.0, 7400.0, 8200.0, 9200.0, 10800.0)
+    for i in range(10):
+        p = os.path.join(directory, f"gen_solo_piano_{i:02d}.flac")
+        tgt_c = piano_ceils[i % len(piano_ceils)]
+        ns_flag = i >= 5
+        sig_p = solo_piano_discrete(sr, 5.0, target_ceiling_hz=tgt_c, noise_shaped=ns_flag, seed=2100 + i)
+        _save(p, sig_p, sr, "PCM_16")
+        cases.append((p, True, "GEN 13: Clean solo piano (5.8-10.2 kHz, TPDF/NS)", "native_dsp"))
+
+    # 14. Percussive / beat-locked studio mix (PQMF-32 & fractional-TDAC FP stress)
+    bpms = (92.0, 108.0, 120.0, 128.0, 138.0)
+    for i in range(10):
+        p = os.path.join(directory, f"gen_percussive_mix_{i:02d}.flac")
+        sig_m = percussive_studio_mix(sr, 5.0, bpm=bpms[i % len(bpms)], gated=(i >= 5), seed=2200 + i)
+        _save(p, sig_m, sr, "PCM_16")
+        cases.append((p, True, "GEN 14: Percussive beat-locked studio mix", "native_dsp"))
 
     # Pre-render 7 reference WAVs at 44.1 kHz for real ffmpeg codecs
     wav_refs = []
@@ -866,6 +982,43 @@ def create_dataset(directory):
         _save(p, ns_24, sr, "PCM_24")
         cases.append((p, False, "FAKE 24: 16-in-24 noise-shaped dither", "native_dsp"))
 
+    # 25. Fractional-delay (+0.25/+0.50 sample) laundered AAC 320 & MP3 320 fullband (P1-1)
+    for i in range(10):
+        p = os.path.join(directory, f"fake_frac_tdac_{i:02d}.flac")
+        is_aac = i < 5
+        delta_s = 0.25 if (i % 2 == 0) else 0.50
+        src_f = (
+            0.55 * musical_chord_master(sr, 5.0, 8400 + i)
+            + 0.45 * track_reference(sr, 5.0, 8450 + i)
+        )
+        w_f = os.path.join(directory, f"_tmp_frac_{i}.wav")
+        tmp_dec = os.path.join(directory, f"_tmp_frac_dec_{i}.flac")
+        _save(w_f, src_f, sr, "PCM_16")
+        if is_aac:
+            ext_f, args_f = ".m4a", ["-c:a", "aac", "-b:a", "320k", "-cutoff", "22000"]
+        else:
+            ext_f, args_f = ".mp3", ["-c:a", "libmp3lame", "-b:a", "320k", "-cutoff", "22050"]
+        used_ff = _ffmpeg_encode_decode(w_f, tmp_dec, ext_f, args_f)
+        if os.path.exists(w_f):
+            os.remove(w_f)
+        if used_ff and os.path.exists(tmp_dec):
+            x_fd, _ = sf.read(tmp_dec, dtype="float32", always_2d=True)
+            os.remove(tmp_dec)
+            backend = "ffmpeg"
+        else:
+            x_fd = (
+                _mdct1024_roundtrip(src_f, sr, 12000.0, 20500.0, 0.38, 8480 + i)
+                if is_aac
+                else _pqmf576_roundtrip(src_f, sr, 8490 + i)
+            ).astype(np.float32)
+            backend = "dsp_fallback"
+        x_sh = np.column_stack([
+            _fractional_shift_f32(x_fd[:, 0], delta_s),
+            _fractional_shift_f32(x_fd[:, 1], delta_s),
+        ])
+        _save(p, x_sh, sr, "PCM_16")
+        cases.append((p, False, "FAKE 25: Fractional-delay (+0.25/+0.50) AAC/MP3 320", backend))
+
     for w_path in wav_refs:
         if os.path.exists(w_path):
             os.remove(w_path)
@@ -974,8 +1127,8 @@ def _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok):
 ## Validation benchmark ({mode_txt}, n = {n_total})
 
 Generated by `tests/benchmark_validacion.py` (fixed seed `{SEED}`, engine `{motor_flac.ENGINE_VERSION}`):
-- **{n_auth} authentic controls** across 12 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, and Genuine 24/44.1 warm high-DR studio masters.
-- **{n_fake} fake & adversarial tracks** across 24 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
+- **{n_auth} authentic controls** across 14 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, Genuine 24/44.1 warm high-DR studio masters, Clean solo piano (5.8-10.2 kHz discrete harmonics with TPDF & noise-shaped dither), and Percussive beat-locked studio mixes.
+- **{n_fake} fake & adversarial tracks** across 25 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Fractional-delay (`+0.25`/`+0.50` sample) laundered AAC 320 & MP3 320 fullband (`P1-1`), Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|
@@ -1161,7 +1314,7 @@ def evaluate_real_corpus(manifest_path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run the 290-track forensic validation benchmark."
+        description="Run the 320-track forensic validation benchmark."
     )
     parser.add_argument(
         "--check", action="store_true",

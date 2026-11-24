@@ -143,6 +143,72 @@ class TestShortCircuitOnSilenceAndBadChecksum(unittest.TestCase):
                 ]
                 self.assertEqual(orphan_pngs, [])
 
+    def test_accuraterip_streaming_array_parity_and_boundaries(self):
+        """Offline AccurateRip v1/v2 CRCs match a big-integer reference oracle
+        across irregular streaming chunk sizes and 5-sector edge boundaries."""
+        import numpy as np
+        import motor_flac as engine
+
+        def _oracle(pcm_i16):
+            n = len(pcm_i16)
+            v1 = v2 = v1_f = v2_f = v1_l = v2_l = 0
+            for j in range(n):
+                idx = j + 1
+                u = ((int(pcm_i16[j, 1]) & 0xFFFF) << 16) | (int(pcm_i16[j, 0]) & 0xFFFF)
+                prod = u * idx
+                lo = prod & 0xFFFFFFFF
+                hi = (prod >> 32) & 0xFFFFFFFF
+                v1 = (v1 + lo) & 0xFFFFFFFF
+                v2 = (v2 + lo + hi) & 0xFFFFFFFF
+                if idx > 2939:
+                    v1_f = (v1_f + lo) & 0xFFFFFFFF
+                    v2_f = (v2_f + lo + hi) & 0xFFFFFFFF
+                if j < n - 2940:
+                    v1_l = (v1_l + lo) & 0xFFFFFFFF
+                    v2_l = (v2_l + lo + hi) & 0xFFFFFFFF
+            return {
+                "aplica": True,
+                "sector_aligned": bool(n > 0 and n % 588 == 0),
+                "v1": f"{v1:08X}",
+                "v2": f"{v2:08X}",
+                "v1_first": f"{v1_f:08X}",
+                "v2_first": f"{v2_f:08X}",
+                "v1_last": f"{v1_l:08X}",
+                "v2_last": f"{v2_l:08X}",
+            }
+
+        # Hand-verified tiny 3-frame vector:
+        # frame 1: L=1, R=0 -> u=0x00000001, prod=1
+        # frame 2: L=0, R=1 -> u=0x00010000, prod=0x00020000
+        # frame 3: L=-1 (0xFFFF), R=-1 (0xFFFF) -> u=0xFFFFFFFF, prod=3*0xFFFFFFFF=0x00000002_FFFFFFFD
+        vec = np.array([[1, 0], [0, 1], [-1, -1]], dtype="<i2")
+        res_vec = engine.compute_accuraterip_crcs(vec, 44100, 16)
+        self.assertEqual(res_vec["v1"], "0001FFFE")
+        self.assertEqual(res_vec["v2"], "00020000")
+        self.assertEqual(res_vec["v1_first"], "00000000")
+        self.assertEqual(res_vec["v1_last"], "00000000")
+        self.assertIs(res_vec["sector_aligned"], False)
+
+        # Boundary lengths and irregular chunking parity (streaming == array == oracle)
+        rng = np.random.default_rng(1510)
+        for n in (100, 2939, 2940, 2941, 5880, 5881):
+            pcm = rng.integers(-32768, 32768, size=(n, 2), dtype="<i2")
+            expected = _oracle(pcm)
+            self.assertEqual(engine.compute_accuraterip_crcs(pcm, 44100, 16), expected)
+            acc = engine._AccurateRipAccumulator(16, 44100, 2)
+            pos = 0
+            for step in (13, 257, 2939, 588, 4096, 65536):
+                if pos >= n:
+                    break
+                acc.add_int16_block(pcm[pos : pos + step])
+                pos += step
+            self.assertEqual(acc.result(), expected)
+
+        # Non-Red-Book formats report aplica=False
+        self.assertEqual(engine.compute_accuraterip_crcs(vec, 48000, 16), {"aplica": False})
+        self.assertEqual(engine.compute_accuraterip_crcs(vec, 44100, 24), {"aplica": False})
+        self.assertEqual(engine.compute_accuraterip_crcs(vec[:, :1], 44100, 16), {"aplica": False})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
