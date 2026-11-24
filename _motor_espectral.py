@@ -1579,6 +1579,8 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "mdct_lattice_detected":    False,
         "mdct_lattice_snr":         0.0,
         "mdct_lattice_family":      None,
+        "pre_echo_ratio_db":        0.0,
+        "mgd_hf_dispersion":        0.0,
         "familias_evidencia_lossy": [],
         "finding_codes":            [],
         "corroboracion_multifamilia": False,
@@ -3830,6 +3832,108 @@ def _probe_sbr_qmf_from_chosen(chosen, mc_pair, sr, ceiling_val):
     return _detect_sbr_qmf_replication(mid_parts, sr)
 
 
+def _compute_preecho_and_mgd(chosen, mc_pair, sr):
+    """Diagnostic P1-2 metrics computed from the already-selected active blocks:
+      - `pre_echo_ratio_db`: median dB rise of the 2-12 ms pre-transient window
+        above the 20-45 ms baseline on sharp high-frequency percussive onsets.
+      - `mgd_hf_dispersion`: median across active frames of wrapped adjacent-bin
+        phase-difference dispersion (Modified Group Delay statistic) in 10-18 kHz.
+
+    Pure NumPy + pypocketfft, bounded cost (< 15 ms), strictly finite floats,
+    and purely diagnostic in Engine 15.1 (zero effect on scoring or verdicts).
+    """
+    neutral = {"pre_echo_ratio_db": 0.0, "mgd_hf_dispersion": 0.0}
+    sr_int = int(sr or 0)
+    if sr_int < 41000 or not chosen:
+        return neutral
+    try:
+        ranked = sorted(chosen, key=lambda item: item[0], reverse=True)
+        best_blk = ranked[0][4]
+        if best_blk is None or len(best_blk) < 4096:
+            return neutral
+        ch0 = mc_pair[0] if (best_blk.ndim > 1 and mc_pair) else 0
+        sig = np.ascontiguousarray(
+            best_blk[:, ch0] if best_blk.ndim > 1 else best_blk,
+            dtype=np.float32,
+        )
+        max_len = min(int(sig.size), sr_int * 6)
+        if sig.size > max_len:
+            s0 = (sig.size - max_len) // 2
+            sig = np.ascontiguousarray(sig[s0 : s0 + max_len], dtype=np.float32)
+
+        # 1. Pre-echo ratio (1 ms high-pass 2nd-difference envelope)
+        pre_echo_db = 0.0
+        win_ms = max(16, int(round(sr_int * 0.001)))
+        if sig.size >= win_ms * 100 + 2:
+            d2 = sig[2:] - np.float32(2.0) * sig[1:-1] + sig[:-2]
+            n_ms = d2.size // win_ms
+            if n_ms >= 100:
+                env_p = np.mean(
+                    d2[: n_ms * win_ms].reshape(n_ms, win_ms) ** 2, axis=1
+                )
+                env_db = 10.0 * np.log10(np.maximum(env_p.astype(np.float64), 1e-24))
+                peak_global = float(np.max(env_db))
+                if math.isfinite(peak_global) and peak_global > -85.0:
+                    rises = []
+                    idx = 45
+                    limit = n_ms - 5
+                    while idx < limit:
+                        peak_loc = float(np.max(env_db[idx : idx + 3]))
+                        if peak_loc >= peak_global - 24.0:
+                            base_db = float(np.median(env_db[idx - 45 : idx - 20]))
+                            if (base_db < peak_global - 18.0
+                                    and base_db > -105.0
+                                    and peak_loc >= base_db + 14.0):
+                                pre_db = float(np.mean(env_db[idx - 12 : idx - 2]))
+                                rise = pre_db - base_db
+                                if math.isfinite(rise):
+                                    rises.append(rise)
+                                idx += 60
+                                continue
+                        idx += 1
+                    if len(rises) >= 3:
+                        med_rise = float(np.median(rises))
+                        if math.isfinite(med_rise):
+                            pre_echo_db = round(med_rise, 2)
+
+        # 2. High-frequency Modified Group Delay / wrapped phase-difference dispersion (10-18 kHz)
+        mgd_disp = 0.0
+        n_fft = 1024 if sr_int <= 48000 else 2048
+        hop = n_fft // 2
+        if sig.size >= n_fft + hop * 8:
+            frames = np.lib.stride_tricks.sliding_window_view(sig, n_fft)[::hop]
+            if len(frames) > 96:
+                stride = max(1, len(frames) // 96)
+                frames = frames[::stride][:96]
+            win = np.hanning(n_fft + 1)[:-1].astype(np.float32)
+            z = _rfft_f32(frames * win, axis=1)
+            freqs_m = np.fft.rfftfreq(n_fft, 1.0 / float(sr_int))
+            sl_hf, ok_hf = _freq_slice(
+                freqs_m, 10000.0, min(18000.0, float(sr_int) * 0.44), True
+            )
+            if ok_hf:
+                z_hf = z[:, sl_hf]
+                if z_hf.shape[1] >= 8:
+                    p_hf = (z_hf.real * z_hf.real + z_hf.imag * z_hf.imag).mean(axis=1)
+                    max_p = float(np.max(p_hf)) if p_hf.size else 0.0
+                    if max_p > 1e-12:
+                        act = p_hf >= max(1e-12, max_p * 1e-4)
+                        if int(np.count_nonzero(act)) >= 8:
+                            za = z_hf[act]
+                            cross = za[:, 1:] * np.conj(za[:, :-1])
+                            dphi = np.angle(cross)
+                            disp = float(np.median(np.std(dphi, axis=1)))
+                            if math.isfinite(disp) and disp >= 0.0:
+                                mgd_disp = round(disp, 4)
+
+        return {
+            "pre_echo_ratio_db": pre_echo_db,
+            "mgd_hf_dispersion": mgd_disp,
+        }
+    except Exception:
+        return neutral
+
+
 def _analyze_quiet_24bit_floor(quiet_audio, samplerate, is_stationary=False):
     """Audits one quiet non-silent block (RMS in [-92, -40] dBFS) of a >16-bit
     <=48 kHz container using the per-bin 10th percentile across STFT frames.
@@ -4536,6 +4640,7 @@ class _SpectralAccumulator:
                     is_stationary=bool(spectrum.get("es_estacionario")),
                 )
             )
+        spectrum.update(_compute_preecho_and_mgd(chosen, mc_pair, self.sr))
         if self.save_png and png_power:
             png_path, error = self._invoke_renderer(
                 freqs, np.concatenate(png_times),

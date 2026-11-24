@@ -52,6 +52,8 @@ from _motor_bits import (
     IO_RETRY_DELAYS, _is_transient_io_error, retry_io,
     FRAMES_BY_BLOCK, MAX_SAMPLES_BITS, _WIDTH_BY_BITS, _DTYPE_BY_WIDTH,
     _normalize_path_fs, _Int24Packer, _pack_int24_le, _pcm_bytes, _md5_pcm, _compare_md5, verify_md5,
+    ACCURATERIP_SECTOR_FRAMES, ACCURATERIP_FIRST_SKIP, ACCURATERIP_LAST_SKIP,
+    _AccurateRipAccumulator, compute_accuraterip_crcs,
     _StreamingBitDepthAccumulator, _ClippingAccumulator,
     analyze_bit_depth, _streaks, detect_clipping, _classify_streaks,
     _classify_clipping_nature, _dr_from_rms, calculate_dr,
@@ -409,6 +411,12 @@ def verify_metadata(path):
     try:
         audio = retry_io(lambda: FLAC(norm_path))
         info  = audio.info
+        raw_vendor = getattr(getattr(audio, "tags", None), "vendor", None)
+        vendor = (
+            raw_vendor.strip()
+            if isinstance(raw_vendor, str) and raw_vendor.strip()
+            else None
+        )
         return {
             "valido":           True,
             "sample_rate":      info.sample_rate,
@@ -417,6 +425,7 @@ def verify_metadata(path):
             "duracion":         round(info.length, 2),
             "total_samples":    int(getattr(info, "total_samples", 0) or 0),
             "md5":              getattr(info, "md5_signature", None),
+            "vendor":           vendor,
         }
     except FLACNoHeaderError:
         return {"valido": False}
@@ -758,6 +767,7 @@ class _BlockAnalysis:
         n_ch = int(meta.get("canales") or 2)
         self._clip_acc = _ClippingAccumulator(n_ch)
         self._peak     = 0.0
+        self._ar_acc   = _AccurateRipAccumulator(self.bits, self.sr, n_ch)
 
         # dynamic range (3 s blocks, carrying the incomplete block over)
         self._dr_block   = self.sr * 3
@@ -811,6 +821,8 @@ class _BlockAnalysis:
                     np.rint(np.asarray(block, dtype=np.float64) * 2147483648.0),
                     -2147483648.0, 2147483647.0).astype("<i4")
             self._integrity_and_clipping(block, q_int=q_int)
+            if self._ar_acc.applies:
+                self._ar_acc.add_float_block(block)
             mono = self._dynamic_range(block)
             self._sample_bits(block, offset)
             if self._forensic_bits is not None:
@@ -855,6 +867,8 @@ class _BlockAnalysis:
                 return
             if self._md5 is not None:
                 self._md5.update(_pcm_bytes(None, 16, self._md5_width, q_int=block_i16))
+            if self._ar_acc.applies:
+                self._ar_acc.add_int16_block(block_i16)
             max_abs = 0
             if block_i16.size:
                 max_abs = max(int(np.max(block_i16)), -int(np.min(block_i16)))
@@ -995,6 +1009,7 @@ class _BlockAnalysis:
         output = {
             "pico": self._peak,
             "md5": md5_out,
+            "accuraterip": self._ar_acc.result(),
             "clip": clip_out,
             "dr": dr_out,
         }
@@ -1578,6 +1593,7 @@ def analyze_file_data(path, mode="full", seconds=None, save_png=False,
                 md5=md5_info,
             )
 
+        result["accuraterip"] = payload.get("accuraterip", {"aplica": False})
         result["clip"] = payload["clip"]
         result["dr"]   = payload["dr"]
         result["bdi"]  = payload["bdi"]

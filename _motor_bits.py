@@ -267,6 +267,166 @@ def verify_md5(data, meta):
     """Compares the recomputed MD5 of an array with the STREAMINFO one. A fact, not a vote."""
     return _compare_md5(_md5_pcm(data, meta.get("bits_per_sample")), meta)
 
+
+ACCURATERIP_SECTOR_FRAMES = 588
+ACCURATERIP_FIRST_SKIP = 5 * ACCURATERIP_SECTOR_FRAMES - 1   # 2939 frames (AccurateRip track-1 spec)
+ACCURATERIP_LAST_SKIP = 5 * ACCURATERIP_SECTOR_FRAMES        # 2940 frames (AccurateRip last-track spec)
+
+
+class _AccurateRipAccumulator:
+    """Offline O(1)-memory streaming AccurateRip v1/v2 CRC accumulator.
+
+    Applies exclusively to Red Book CDDA PCM (16-bit, 44.1 kHz, 2 channels).
+    Tracks all three standard CD positions (`v1`/`v2` middle track,
+    `v1_first`/`v2_first` skipping the first 2,939 frames, and
+    `v1_last`/`v2_last` excluding the final 2,940 frames) using unsigned
+    64-bit block arithmetic and a fixed 2,940-frame tail buffer (~11.8 KB).
+    """
+
+    def __init__(self, bits_per_sample, sample_rate, channels):
+        self.bits = int(bits_per_sample or 0)
+        self.sr = int(sample_rate or 0)
+        self.channels = int(channels or 0)
+        self.applies = bool(
+            self.bits == 16 and self.sr == 44100 and self.channels == 2
+        )
+        self._frames = 0
+        self._v1 = 0
+        self._v2 = 0
+        self._v1_head = 0
+        self._v2_head = 0
+        self._tail = (
+            np.empty(ACCURATERIP_LAST_SKIP, dtype="<u4")
+            if self.applies
+            else None
+        )
+        self._tail_len = 0
+        self._state = AccumulatorState.COLLECTING
+        self._cached_result = None
+
+    @property
+    def state(self) -> AccumulatorState:
+        """Current streaming lifecycle phase."""
+        return self._state
+
+    def _accumulate_u32(self, u32):
+        n = int(u32.size)
+        if n == 0:
+            return
+        # Process in bounded chunks so uint64 sums never overflow even for direct
+        # callers passing arbitrarily large arrays.
+        chunk = FRAMES_BY_BLOCK
+        for start in range(0, n, chunk):
+            sub = u32[start : start + chunk]
+            m = int(sub.size)
+            idx = np.arange(self._frames + 1, self._frames + 1 + m, dtype=np.uint64)
+            prod = sub.astype(np.uint64) * idx
+            lo = prod & np.uint64(0xFFFFFFFF)
+            hi = prod >> np.uint64(32)
+            s_lo = int(lo.sum(dtype=np.uint64))
+            s_hi = int(hi.sum(dtype=np.uint64))
+            self._v1 = (self._v1 + s_lo) & 0xFFFFFFFF
+            self._v2 = (self._v2 + s_lo + s_hi) & 0xFFFFFFFF
+            if self._frames < ACCURATERIP_FIRST_SKIP:
+                n_head = min(m, ACCURATERIP_FIRST_SKIP - self._frames)
+                h_lo = int(lo[:n_head].sum(dtype=np.uint64))
+                h_hi = int(hi[:n_head].sum(dtype=np.uint64))
+                self._v1_head = (self._v1_head + h_lo) & 0xFFFFFFFF
+                self._v2_head = (self._v2_head + h_lo + h_hi) & 0xFFFFFFFF
+            if m >= ACCURATERIP_LAST_SKIP:
+                self._tail[:] = sub[-ACCURATERIP_LAST_SKIP:]
+                self._tail_len = ACCURATERIP_LAST_SKIP
+            else:
+                comb = self._tail_len + m
+                if comb <= ACCURATERIP_LAST_SKIP:
+                    self._tail[self._tail_len : comb] = sub
+                    self._tail_len = comb
+                else:
+                    keep = ACCURATERIP_LAST_SKIP - m
+                    self._tail[:keep] = self._tail[self._tail_len - keep : self._tail_len]
+                    self._tail[keep:] = sub
+                    self._tail_len = ACCURATERIP_LAST_SKIP
+            self._frames += m
+
+    def add_int16_block(self, block_i16):
+        if self._state is not AccumulatorState.COLLECTING:
+            raise RuntimeError("cannot add audio blocks after completion")
+        if not self.applies or block_i16 is None:
+            return
+        arr = np.asarray(block_i16)
+        if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != 2:
+            return
+        contig = np.ascontiguousarray(arr, dtype="<i2")
+        self._accumulate_u32(contig.view("<u4").ravel())
+
+    def add_float_block(self, block_f64):
+        if self._state is not AccumulatorState.COLLECTING:
+            raise RuntimeError("cannot add audio blocks after completion")
+        if not self.applies or block_f64 is None:
+            return
+        arr = np.asarray(block_f64)
+        if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != 2:
+            return
+        q = np.clip(np.rint(arr * 32768.0), -32768.0, 32767.0).astype("<i2")
+        self._accumulate_u32(np.ascontiguousarray(q, dtype="<i2").view("<u4").ravel())
+
+    def result(self):
+        if self._cached_result is not None:
+            return dict(self._cached_result)
+        if not self.applies:
+            out = {"aplica": False}
+            self._state = AccumulatorState.COMPLETED
+            self._cached_result = dict(out)
+            return out
+        v1 = self._v1 & 0xFFFFFFFF
+        v2 = self._v2 & 0xFFFFFFFF
+        v1_first = (v1 - self._v1_head) & 0xFFFFFFFF
+        v2_first = (v2 - self._v2_head) & 0xFFFFFFFF
+        if self._tail_len > 0:
+            tail_u = self._tail[: self._tail_len].astype(np.uint64)
+            tail_idx = np.arange(
+                self._frames - self._tail_len + 1, self._frames + 1, dtype=np.uint64
+            )
+            tail_prod = tail_u * tail_idx
+            t_lo = int((tail_prod & np.uint64(0xFFFFFFFF)).sum(dtype=np.uint64)) & 0xFFFFFFFF
+            t_hi = int((tail_prod >> np.uint64(32)).sum(dtype=np.uint64)) & 0xFFFFFFFF
+        else:
+            t_lo = 0
+            t_hi = 0
+        v1_last = (v1 - t_lo) & 0xFFFFFFFF
+        v2_last = (v2 - t_lo - t_hi) & 0xFFFFFFFF
+        out = {
+            "aplica": True,
+            "sector_aligned": bool(
+                self._frames > 0 and (self._frames % ACCURATERIP_SECTOR_FRAMES == 0)
+            ),
+            "v1": f"{v1:08X}",
+            "v2": f"{v2:08X}",
+            "v1_first": f"{v1_first:08X}",
+            "v2_first": f"{v2_first:08X}",
+            "v1_last": f"{v1_last:08X}",
+            "v2_last": f"{v2_last:08X}",
+        }
+        self._state = AccumulatorState.COMPLETED
+        self._cached_result = dict(out)
+        return out
+
+
+def compute_accuraterip_crcs(data, sr, bits):
+    """Array-path counterpart of `_AccurateRipAccumulator` (offline Red Book CRCs)."""
+    arr = np.asarray(data)
+    channels = int(arr.shape[1]) if arr.ndim == 2 else (1 if arr.ndim == 1 else 0)
+    acc = _AccurateRipAccumulator(bits, sr, channels)
+    if not acc.applies:
+        return acc.result()
+    if arr.dtype == np.dtype("<i2") or arr.dtype == np.int16:
+        for start in range(0, len(arr), FRAMES_BY_BLOCK):
+            acc.add_int16_block(arr[start : start + FRAMES_BY_BLOCK])
+    else:
+        for start in range(0, len(arr), FRAMES_BY_BLOCK):
+            acc.add_float_block(arr[start : start + FRAMES_BY_BLOCK])
+    return acc.result()
+
 def _format_bit_depth_result(bits, n_active, n_grid16, counts_idx, forensic=None):
     """Formats the LSB utilization metrics and conclusion from accumulated counts."""
     if n_active < 1000:
