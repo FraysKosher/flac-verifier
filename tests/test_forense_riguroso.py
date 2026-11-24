@@ -5849,8 +5849,8 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
                 self.assertEqual(r_sh["veredicto"], "PROBABLE UPSCALE")
 
     def test_60_engine_16_soft_rule_calibrations_mod20k_opus_shelf_crests_and_rule4(self):
-        """Engine 16.0: verifies hardened psychoacoustic_mod_20k, <19 kHz
-        opus_flat_shelf guard, relaxed gentle_fullband_crests guard, and
+        """Engine 16.0: verifies hardened psychoacoustic_mod_20k, low-ceiling
+        Opus 20 kHz shelf retention, relaxed gentle_fullband_crests guard, and
         Rule 4 monotonicity fix for smooth acoustic tracks."""
         from unittest import mock
         import _motor_bits as bits_mod
@@ -5876,15 +5876,22 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         res_deep = acc_deep.summary().metrics
         self.assertIs(res_deep["modulacion_psicoacustica_20k"], True, res_deep)
 
-        # 2. opus_flat_shelf guard below 19 kHz (< 16 dB step)
+        # 2. Low-ceiling (< 16 kHz) solo-piano / acoustic tracks carrying an
+        #    11-15 dB flat-stopband 20.00 kHz Opus shelf must retain
+        #    sospecha_corte_opus_20k = True (never cleared by low musical ceiling).
         freqs = np.fft.rfftfreq(4096, 1.0 / 44100)
-        for ceil_hz, caida_db, expected in (
-            (17743, 12.3, False),
-            (20010, 12.3, True),
-            (17500, 20.0, True),
+        for ceil_hz, caida_db in (
+            (11800, 11.4),
+            (14200, 13.6),
+            (15600, 15.2),
+            (20010, 12.3),
         ):
-            with self.subTest(opus_guard=(ceil_hz, caida_db)):
-                spec_g = {"techo_hz": ceil_hz, "clase_corte": "no_cutoff"}
+            with self.subTest(opus_shelf_retained=(ceil_hz, caida_db)):
+                spec_g = {
+                    "techo_hz": ceil_hz,
+                    "clase_corte": "no_cutoff",
+                    "decaimiento_acustico_suave": True,
+                }
                 psy = spectral.PsychoacousticSummary(
                     metrics={
                         "sospecha_corte_opus_20k": True,
@@ -5895,7 +5902,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
                 spectral._apply_stationary_and_ms_guards(
                     spec_g, psy, freqs, None, None, 1.0, 44100
                 )
-                self.assertIs(spec_g["sospecha_corte_opus_20k"], expected)
+                self.assertIs(spec_g["sospecha_corte_opus_20k"], True)
 
         # 3. Relaxed gentle_fullband_crests guard (edge < 25 dB/kHz, blocking IQR > 1800 Hz)
         clip_stats = (20, 18, 26, 3, 2)  # 20 events, 18 short (90% > 75%)

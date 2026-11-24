@@ -35,10 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `30.0` to `34.0 dB`, eliminating false positives on clean CD masters
   (`drp_med <= 36.8 dB`, `drp_iqr <= 28.7 dB`) while preserving deep
   frame-adaptive `> 20 kHz` modulation detection.
-- **Guarded `opus_flat_shelf` below `19 kHz` (`_motor_espectral.py`)**:
-  cleared weak (`< 16.0 dB`) sub-`-60 dB` `20 kHz` noise-floor steps on dark
-  acoustic tracks (`techo_hz < 19000 Hz`) while preserving real Opus/WMA/MP3
-  shelf detections.
 - **Relaxed `gentle_fullband_crests` guard (`_motor_bits.py`, `motor_flac.py`)**:
   raised the uncut full-band transition-edge guard from `18.0` to `25.0 dB/kHz`
   and restricted `has_codec_sig` cut-off jitter blocking to extreme jitter

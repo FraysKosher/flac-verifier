@@ -3643,12 +3643,6 @@ def _apply_stationary_and_ms_guards(
                 and (spectrum.get("frecuencia_corte") or 0) < 0.85 * (spectrum.get("techo_hz") or 0)):
             spectrum.update(CutoffAssessment.none().to_protocol_fields())
     ceiling_val = spectrum.get("techo_hz", 0)
-    if (
-        spectrum.get("sospecha_corte_opus_20k")
-        and ceiling_val < 19000
-        and float(spectrum.get("caida_opus_20k_db") or 0.0) < 16.0
-    ):
-        spectrum["sospecha_corte_opus_20k"] = False
     hires_clean_rolloff = bool(
         sr >= 88200
         and spectrum.get("clase_corte") == CutoffClass.NO_CUTOFF.value
