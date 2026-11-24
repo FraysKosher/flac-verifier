@@ -2820,6 +2820,21 @@ def _detect_sbr_qmf_replication(mono, sr):
         return {**neutral, "sbr_detector_error": f"{type(exc).__name__}: {exc}"}
 
 
+def _fractional_shift_f32(sig, shift_samples):
+    """Fractional-sample linear-phase time shift via pypocketfft (zero scipy)."""
+    x = np.asarray(sig, dtype=np.float32).reshape(-1)
+    n = int(x.size)
+    delta = float(shift_samples)
+    if n == 0 or delta == 0.0:
+        return np.ascontiguousarray(x, dtype=np.float32)
+    n_fft = 1 << int(math.ceil(math.log2(max(2, n + 256))))
+    spec = _rfft_f32(x, n=n_fft)
+    k = np.arange(spec.size, dtype=np.float64)
+    phase = np.exp((-2j * math.pi * delta / float(n_fft)) * k).astype(np.complex64)
+    y = _irfft_f32(spec * phase, n=n_fft)
+    return np.ascontiguousarray(y[:n], dtype=np.float32)
+
+
 def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
     """Single-mode lapped transform & subband lattice evaluator."""
     neutral = {
@@ -2848,12 +2863,15 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
 
         # 1. MDCT-1024 (Vorbis / AAC Sine & KBD alpha=4)
         z1024 = 0.0
+        z1024_trig = 0.0
+        best_1024_cand = None
+        seg_1024 = None
         n_blocks_1024 = 10
         needed_1024 = n_blocks_1024 * 1024 + 2048
         if mono.size >= needed_1024:
-            seg = _select_continuous_subwindow(mono, needed_1024)
+            seg_1024 = _select_continuous_subwindow(mono, needed_1024)
             n_all_1024 = n_blocks_1024 * 1024
-            all_frames = np.lib.stride_tricks.sliding_window_view(seg, 2048)[:n_all_1024]
+            all_frames = np.lib.stride_tricks.sliding_window_view(seg_1024, 2048)[:n_all_1024]
             valid_slices_1024 = []
             for f_lo, f_hi in bands_1024:
                 k_lo = int(f_lo / nyq * 1024)
@@ -2875,11 +2893,22 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                             active_c = rms_c[:, 0] > np.float32(1e-6)
                             sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
                             sp_by_band[b_idx][i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
-                    for sp_all in sp_by_band:
+                    for b_idx, sp_all in enumerate(sp_by_band):
                         scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
                         z_cand, med_c, mx_c = _robust_z_peak(scores_1024, min_scale=1e-3)
                         if med_c < 0.55 and (mx_c - med_c) >= 0.008:
                             z1024 = max(z1024, z_cand)
+                        # 2-tap adjacent-offset pair Z boosts sub-sample smeared TDAC peaks
+                        # at near-zero cost (128-element roll) without inflating clean tracks.
+                        pair_1024 = 0.5 * (scores_1024 + np.roll(scores_1024, -1))
+                        z_p, med_p, mx_p = _robust_z_peak(pair_1024, min_scale=1e-3)
+                        cand_trig = max(
+                            z_cand if (med_c < 0.55 and (mx_c - med_c) >= 0.005) else 0.0,
+                            z_p if (med_p < 0.55 and (mx_p - med_p) >= 0.005) else 0.0,
+                        )
+                        if cand_trig > z1024_trig:
+                            z1024_trig = cand_trig
+                            best_1024_cand = (w, valid_slices_1024[b_idx])
                         if z1024 >= 10.0:
                             break
                     if z1024 >= 10.0:
@@ -2894,6 +2923,10 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
 
         # 2. PQMF-576 (MP3 hybrid filterbank) & PQMF-32 (Musepack subband frames)
         z576 = 0.0
+        z576_trig = 0.0
+        best_576_cand = None
+        seg_576_fft = None
+        n_fft_576 = 0
         z_mpc = 0.0
         n_gran = 32
         needed_576 = (n_gran + 3) * 576 + 512
@@ -2901,6 +2934,8 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
             seg = _select_continuous_subwindow(mono, needed_576)
             n_fft = 1 << int(np.ceil(np.log2(needed_576 + 512)))
             seg_fft = _rfft_f32(seg, n=n_fft)
+            seg_576_fft = seg_fft
+            n_fft_576 = n_fft
 
             if fullband_mode:
                 pqmf_sets = [(19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)]
@@ -2929,9 +2964,11 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                 if len(sb_set) == 11:
                     sb_mp3 = sb_arr_all[3:11]
                     mp3_sbs = sb_set[3:11]
+                    bank_fft_mp3 = bank_fft[3:11]
                 else:
                     sb_mp3 = sb_arr_all
                     mp3_sbs = sb_set
+                    bank_fft_mp3 = bank_fft
 
                 dec_all = sb_mp3[:, : m_sub_total * 32].reshape(8, m_sub_total, 32).transpose(2, 0, 1).copy()
                 for idx_s, s_val in enumerate(mp3_sbs):
@@ -2958,18 +2995,31 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                         )
                         scores_cur = sp_cur.mean(axis=1)
                         z_cur, med_cur, mx_cur = _robust_z_peak(scores_cur, min_scale=1e-3)
-                        if med_cur < 0.55 and (mx_cur - med_cur) >= 0.015:
-                            return z_cur
-                        return 0.0
+                        z_int = z_cur if (med_cur < 0.55 and (mx_cur - med_cur) >= 0.015) else 0.0
+                        pair_cur = 0.5 * (scores_cur + np.roll(scores_cur, -1))
+                        z_p, med_p, mx_p = _robust_z_peak(pair_cur, min_scale=1e-3)
+                        z_tr = max(
+                            z_cur if (med_cur < 0.55 and (mx_cur - med_cur) >= 0.010) else 0.0,
+                            z_p if (med_p < 0.55 and (mx_p - med_p) >= 0.010) else 0.0,
+                        )
+                        return z_int, z_tr
 
-                    z576 = max(z576, _score_pqmf_slice(coeffs))
+                    z_cur_full, z_tr_full = _score_pqmf_slice(coeffs)
+                    z576 = max(z576, z_cur_full)
+                    if z_tr_full > z576_trig:
+                        z576_trig = z_tr_full
+                        best_576_cand = (bank_fft_mp3, mp3_sbs)
                     sub_rms = np.sqrt(np.mean(coeffs * coeffs, axis=(0, 2, 3, 4)))
                     max_sub_rms = float(np.max(sub_rms))
                     if max_sub_rms > 0.0:
                         active_sb = sub_rms >= (0.05 * max_sub_rms)
                         n_act_sb = int(np.count_nonzero(active_sb))
                         if 4 <= n_act_sb < 8:
-                            z576 = max(z576, _score_pqmf_slice(coeffs[:, active_sb, :, :, :]))
+                            z_cur_act, z_tr_act = _score_pqmf_slice(coeffs[:, active_sb, :, :, :])
+                            z576 = max(z576, z_cur_act)
+                            if z_tr_act > z576_trig:
+                                z576_trig = z_tr_act
+                                best_576_cand = (bank_fft_mp3, mp3_sbs)
 
                 if z576 >= 12.0:
                     break
@@ -3079,6 +3129,9 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
         # Evaluated before PQMF-32 so Dolby Digital streams are never hijacked
         # by the lower-threshold Musepack subband harmonic test.
         z512 = 0.0
+        z512_trig = 0.0
+        best_512_cand = None
+        seg_512_ref = None
         n_blocks_512 = 32
         needed_512 = n_blocks_512 * 256 + 512
         if mono.size >= needed_512:
@@ -3099,9 +3152,9 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                 if k_hi_5 > k_lo_5 + 12:
                     valid_slices_512.append((k_lo_5, k_hi_5))
             if valid_slices_512:
-                seg_512 = _select_continuous_subwindow(mono, needed_512)
+                seg_512_ref = _select_continuous_subwindow(mono, needed_512)
                 n_all_512 = n_blocks_512 * 256
-                frames_512 = np.lib.stride_tricks.sliding_window_view(seg_512, 512)[:n_all_512]
+                frames_512 = np.lib.stride_tricks.sliding_window_view(seg_512_ref, 512)[:n_all_512]
                 w_512 = _get_kbd_512_ac3()
                 sp_512_by_band = [
                     np.empty(n_all_512, dtype=np.float32)
@@ -3120,11 +3173,20 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                         sp_512_by_band[b_idx][i:end_i] = np.where(
                             active_5, sp_5, np.float32(0.0)
                         )
-                for sp_all_5 in sp_512_by_band:
+                for b_idx, sp_all_5 in enumerate(sp_512_by_band):
                     scores_512 = sp_all_5.reshape(n_blocks_512, 256).mean(axis=0)
                     z_cand_5, med_5, mx_5 = _robust_z_peak(scores_512, min_scale=1e-3)
                     if med_5 < 0.65 and (mx_5 - med_5) >= 0.008:
                         z512 = max(z512, z_cand_5)
+                    pair_512 = 0.5 * (scores_512 + np.roll(scores_512, -1))
+                    z_p5, med_p5, mx_p5 = _robust_z_peak(pair_512, min_scale=1e-3)
+                    cand_5_tr = max(
+                        z_cand_5 if (med_5 < 0.65 and (mx_5 - med_5) >= 0.006) else 0.0,
+                        z_p5 if (med_p5 < 0.65 and (mx_p5 - med_p5) >= 0.006) else 0.0,
+                    )
+                    if cand_5_tr > z512_trig:
+                        z512_trig = cand_5_tr
+                        best_512_cand = valid_slices_512[b_idx]
                     if z512 >= 10.0:
                         break
 
@@ -3196,6 +3258,181 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                 "mdct_lattice_snr": round(float(z_opus), 2),
                 "mdct_lattice_family": CodecLatticeFamily.CELT_960.value,
             }
+
+        # 4. Selective fractional-sample TDAC refinement (P1-1):
+        #    Zero overhead on clean tracks; triggers ONLY when an integer-offset
+        #    probe lands in its borderline sub-threshold band (e.g. sub-sample
+        #    resampler drift or fractional-delay laundering).
+        frac_shifts = (-0.25, 0.25, 0.50)
+
+        if (best_1024_cand is not None and seg_1024 is not None
+                and (5.0 <= z1024 < 10.0 or z1024_trig >= 4.7)):
+            w_best, (k_lo_b, k_hi_b) = best_1024_cand
+            n_blk_ref = 6
+            n_all_ref = n_blk_ref * 1024
+            need_ref = n_all_ref + 2048
+            s_ref_base = seg_1024[:need_ref]
+            n_fft_r = 1 << int(math.ceil(math.log2(max(2, need_ref + 256))))
+            spec_r = _rfft_f32(s_ref_base, n=n_fft_r)
+            k_r = np.arange(spec_r.size, dtype=np.float64)
+            z1024_ref = 0.0
+            best_sh_sig = None
+            for delta in frac_shifts:
+                phase_r = np.exp(
+                    (-2j * math.pi * delta / float(n_fft_r)) * k_r
+                ).astype(np.complex64)
+                s_sh = _irfft_f32(spec_r * phase_r, n=n_fft_r)[:need_ref]
+                fr_sh = np.lib.stride_tricks.sliding_window_view(s_sh, 2048)[:n_all_ref]
+                sp_sh = np.empty(n_all_ref, dtype=np.float32)
+                for i in range(0, n_all_ref, 1024):
+                    c_sh = np.abs(_fast_mdct_f32(fr_sh[i : i + 1024], w_best))[:, k_lo_b:k_hi_b]
+                    rms_sh = np.sqrt(
+                        np.mean(c_sh * c_sh, axis=1, keepdims=True)
+                    ) + np.float32(1e-12)
+                    act_sh = rms_sh[:, 0] > np.float32(1e-6)
+                    sp_sh[i : i + 1024] = np.where(
+                        act_sh,
+                        np.mean(c_sh < (rms_sh * np.float32(0.05)), axis=1),
+                        np.float32(0.0),
+                    )
+                sc_sh = sp_sh.reshape(n_blk_ref, 8, 128).mean(axis=0).max(axis=0)
+                z_sh, med_sh, mx_sh = _robust_z_peak(sc_sh, min_scale=1e-3)
+                if med_sh < 0.55 and (mx_sh - med_sh) >= 0.008:
+                    if z_sh > z1024_ref:
+                        z1024_ref = z_sh
+                        best_sh_sig = s_sh
+                    if z1024_ref >= 10.5:
+                        return {
+                            "mdct_lattice_detected": True,
+                            "mdct_lattice_snr": round(float(z1024_ref), 2),
+                            "mdct_lattice_family": CodecLatticeFamily.MDCT_1024.value,
+                        }
+            # When the winning shift boosts a mismatched window (e.g. Sine on a
+            # KBD AAC stream) into [6.0, 10.5), probe the remaining 2 MDCT-1024
+            # windows at that single aligned shift (zero extra FFT).
+            if best_sh_sig is not None and z1024_ref >= 6.0:
+                fr_sh = np.lib.stride_tricks.sliding_window_view(best_sh_sig, 2048)[:n_all_ref]
+                for w_alt in (_get_vorbis_2048(), _get_kbd_2048(), _get_sine_2048()):
+                    if w_alt is w_best:
+                        continue
+                    sp_sh = np.empty(n_all_ref, dtype=np.float32)
+                    for i in range(0, n_all_ref, 1024):
+                        c_sh = np.abs(_fast_mdct_f32(fr_sh[i : i + 1024], w_alt))[:, k_lo_b:k_hi_b]
+                        rms_sh = np.sqrt(
+                            np.mean(c_sh * c_sh, axis=1, keepdims=True)
+                        ) + np.float32(1e-12)
+                        act_sh = rms_sh[:, 0] > np.float32(1e-6)
+                        sp_sh[i : i + 1024] = np.where(
+                            act_sh,
+                            np.mean(c_sh < (rms_sh * np.float32(0.05)), axis=1),
+                            np.float32(0.0),
+                        )
+                    sc_sh = sp_sh.reshape(n_blk_ref, 8, 128).mean(axis=0).max(axis=0)
+                    z_sh, med_sh, mx_sh = _robust_z_peak(sc_sh, min_scale=1e-3)
+                    if med_sh < 0.55 and (mx_sh - med_sh) >= 0.008:
+                        z1024_ref = max(z1024_ref, z_sh)
+                        if z1024_ref >= 10.5:
+                            return {
+                                "mdct_lattice_detected": True,
+                                "mdct_lattice_snr": round(float(z1024_ref), 2),
+                                "mdct_lattice_family": CodecLatticeFamily.MDCT_1024.value,
+                            }
+            z1024 = max(z1024, min(z1024_ref, 9.9))
+
+        if (best_576_cand is not None and seg_576_fft is not None and n_fft_576 > 0
+                and (6.0 <= z576 < 12.0 or z576_trig >= 5.5)):
+            bank_fft_mp3, mp3_sbs = best_576_cand
+            k_576 = np.arange(seg_576_fft.size, dtype=np.float64)
+            mdct36_basis = _get_mdct36_basis()
+            z576_ref = 0.0
+            for delta in frac_shifts:
+                phase_5 = np.exp(
+                    (-2j * math.pi * delta / float(n_fft_576)) * k_576
+                ).astype(np.complex64)
+                conv_sh = _irfft_f32(
+                    (seg_576_fft * phase_5)[None, :] * bank_fft_mp3, n=n_fft_576, axis=1
+                )
+                sb_sh = conv_sh[:, 511:needed_576].astype(np.float32)
+                m_sub_sh = sb_sh.shape[1] // 32
+                dec_sh = (
+                    sb_sh[:, : m_sub_sh * 32]
+                    .reshape(8, m_sub_sh, 32)
+                    .transpose(2, 0, 1)
+                    .copy()
+                )
+                for idx_s, s_val in enumerate(mp3_sbs):
+                    if s_val % 2 == 1:
+                        dec_sh[:, idx_s, 1::2] *= -1.0
+                w36_sh = np.lib.stride_tricks.sliding_window_view(dec_sh, 36, axis=2)
+                n_av_sh = (w36_sh.shape[2] // 18) * 18
+                if n_av_sh < 18 * 10:
+                    continue
+                mf_sh = n_av_sh // 18
+                grp_sh = w36_sh[:, :, :n_av_sh, :].reshape(32, 8, mf_sh, 18, 36)
+                c_sh5 = np.abs(grp_sh @ mdct36_basis)
+                flat_sh5 = c_sh5.transpose(0, 3, 2, 1, 4).reshape(576, mf_sh, 8 * 18)
+                rms_sh5 = np.sqrt(
+                    np.mean(flat_sh5 * flat_sh5, axis=2, keepdims=True)
+                ) + np.float32(1e-12)
+                act_sh5 = rms_sh5[:, :, 0] > np.float32(1e-6)
+                sp_sh5 = np.where(
+                    act_sh5,
+                    np.mean(flat_sh5 < (rms_sh5 * np.float32(0.05)), axis=2),
+                    np.float32(0.0),
+                )
+                z_sh5, med_sh5, mx_sh5 = _robust_z_peak(sp_sh5.mean(axis=1), min_scale=1e-3)
+                if med_sh5 < 0.55 and (mx_sh5 - med_sh5) >= 0.015:
+                    z576_ref = max(z576_ref, z_sh5)
+                    if z576_ref >= 12.5:
+                        return {
+                            "mdct_lattice_detected": True,
+                            "mdct_lattice_snr": round(float(z576_ref), 2),
+                            "mdct_lattice_family": CodecLatticeFamily.PQMF_576.value,
+                        }
+            z576 = max(z576, min(z576_ref, 11.9))
+
+        if (best_512_cand is not None and seg_512_ref is not None
+                and (5.5 <= z512 < 10.5 or z512_trig >= 5.5)):
+            k_lo_5b, k_hi_5b = best_512_cand
+            n_blk_5r = 20
+            n_all_5r = n_blk_5r * 256
+            need_5r = n_all_5r + 512
+            s5_base = seg_512_ref[:need_5r]
+            n_fft_5r = 1 << int(math.ceil(math.log2(max(2, need_5r + 256))))
+            spec_5r = _rfft_f32(s5_base, n=n_fft_5r)
+            k_5r = np.arange(spec_5r.size, dtype=np.float64)
+            w_512 = _get_kbd_512_ac3()
+            z512_ref = 0.0
+            for delta in frac_shifts:
+                phase_5r = np.exp(
+                    (-2j * math.pi * delta / float(n_fft_5r)) * k_5r
+                ).astype(np.complex64)
+                s5_sh = _irfft_f32(spec_5r * phase_5r, n=n_fft_5r)[:need_5r]
+                fr5_sh = np.lib.stride_tricks.sliding_window_view(s5_sh, 512)[:n_all_5r]
+                sp5_sh = np.empty(n_all_5r, dtype=np.float32)
+                for i in range(0, n_all_5r, 512):
+                    end_i = min(i + 512, n_all_5r)
+                    c5_sh = np.abs(_fast_mdct_f32(fr5_sh[i:end_i], w_512))[:, k_lo_5b:k_hi_5b]
+                    rms5_sh = np.sqrt(
+                        np.mean(c5_sh * c5_sh, axis=1, keepdims=True)
+                    ) + np.float32(1e-12)
+                    act5_sh = rms5_sh[:, 0] > np.float32(1e-6)
+                    sp5_sh[i:end_i] = np.where(
+                        act5_sh,
+                        np.mean(c5_sh < (rms5_sh * np.float32(0.05)), axis=1),
+                        np.float32(0.0),
+                    )
+                sc5_sh = sp5_sh.reshape(n_blk_5r, 256).mean(axis=0)
+                z5_sh, med5_sh, mx5_sh = _robust_z_peak(sc5_sh, min_scale=1e-3)
+                if med5_sh < 0.65 and (mx5_sh - med5_sh) >= 0.008:
+                    z512_ref = max(z512_ref, z5_sh)
+                    if z512_ref >= 11.0:
+                        return {
+                            "mdct_lattice_detected": True,
+                            "mdct_lattice_snr": round(float(z512_ref), 2),
+                            "mdct_lattice_family": CodecLatticeFamily.MDCT_512_AC3.value,
+                        }
+            z512 = max(z512, min(z512_ref, 9.9))
 
         best_z = max(z1024, z576, z512, z_mpc, z_opus, z_opus_sub)
         return {
