@@ -1091,6 +1091,45 @@ def _max_smoothed_descent_db_khz(freqs_hz, power_db, f_min, f_max):
     return round(max(0.0, gradient), 2)
 
 
+def _coarse_envelope_descent_db_khz(
+    freqs_hz, power_db, f_min, f_max, band_hz=1000.0, step_hz=250.0, percentile=75.0
+):
+    """Steepest adjacent-band envelope descent (dB/kHz) inside [f_min, f_max].
+
+    Compares consecutive non-overlapping `band_hz` bands (`[f, f+B]` vs
+    `[f+B, f+2B]`) stepped every `step_hz`. This suppresses narrow inter-harmonic
+    valleys of discrete-overtone solo instruments (e.g. solo piano) while
+    preserving the full step height of brickwall/resampler drops (>= 20-45 dB/kHz).
+    Upward noise-shaped dither rises produce negative slopes and clamp to 0.0.
+    """
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    pdb = np.asarray(power_db, dtype=np.float64)
+    b_hz = float(band_hz)
+    s_hz = float(step_hz)
+    if (freqs.size < 8 or pdb.shape != freqs.shape
+            or b_hz <= 0.0 or s_hz <= 0.0
+            or (float(f_max) - float(f_min)) < (2.0 * b_hz)):
+        return 0.0
+    max_slope = 0.0
+    lo = float(f_min)
+    hi_lim = float(f_max) + 1e-6
+    inv_b_khz = 1000.0 / b_hz
+    while lo + 2.0 * b_hz <= hi_lim:
+        sl_a, ok_a = _freq_slice(freqs, lo, lo + b_hz, True)
+        sl_b, ok_b = _freq_slice(freqs, lo + b_hz, lo + 2.0 * b_hz, True)
+        if ok_a and ok_b:
+            seg_a = pdb[sl_a]
+            seg_b = pdb[sl_b]
+            if np.all(np.isfinite(seg_a)) and np.all(np.isfinite(seg_b)):
+                va = float(np.percentile(seg_a, percentile))
+                vb = float(np.percentile(seg_b, percentile))
+                slope = (va - vb) * inv_b_khz
+                if math.isfinite(slope) and slope > max_slope:
+                    max_slope = slope
+        lo += s_hz
+    return round(max(0.0, max_slope), 2)
+
+
 def _gradient_edge_db_khz(freqs_hz, power_db, ceiling_hz, nyquist):
     """Steepest smoothed descent (dB/kHz) in the transition band around the ceiling.
 
@@ -1194,14 +1233,14 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # at the Nyquist; only a cut-off below 88% of Nyquist is flagged.
     nyquist = samplerate / 2.0
 
-    # Dedicated low-band brickwall pass (6.5-12.5 kHz): catches 16/22.05 -> 44.1 kHz
+    # Dedicated low-band brickwall pass (5.5-12.5 kHz): catches 12/16/22.05 -> 44.1 kHz
     # resamples and low-bitrate codec brickwalls without changing the >= 12 kHz
-    # window step_size. Uses a fixed ~500 Hz physical window and requires both
-    # a steep transition slope (> 28 dB/kHz) and sustained post-cutoff suppression
-    # (>= 25 dB below `before` across the next 1-4 kHz) so tonal inter-harmonic
-    # valleys never trigger a false cut-off.
-    if cutoff_hz is None and samplerate <= 48000 and 6500.0 <= ceiling_hz < 12500.0:
-        mask_lo = (freqs >= 6000.0) & (freqs <= 13500.0)
+    # window step_size. Uses a fixed ~500 Hz physical window and requires a steep
+    # transition slope (> 28 dB/kHz), coarse band-envelope confirmation (>= 16 dB/kHz),
+    # and sustained post-cutoff suppression (>= 25 dB below `before` across the next
+    # 1-4 kHz) so tonal inter-harmonic valleys never trigger a false cut-off.
+    if cutoff_hz is None and samplerate <= 48000 and 5500.0 <= ceiling_hz < 12500.0:
+        mask_lo = (freqs >= 5000.0) & (freqs <= 13500.0)
         if np.count_nonzero(mask_lo) > 10:
             pr_lo = power_db_n[mask_lo]
             fr_lo = freqs[mask_lo]
@@ -1226,6 +1265,14 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
                     min_grad = 28.0 if (cond_primary[i_c] or cond_medium[i_c]) else 36.0
                     if grad_c <= min_grad:
                         continue
+                    coarse_c = _coarse_envelope_descent_db_khz(
+                        freqs,
+                        power_db_n,
+                        max(3500.0, cand_hz - 1800.0),
+                        min(nyquist - 200.0, cand_hz + 1800.0),
+                    )
+                    if coarse_c < 16.0:
+                        continue
                     post_lo = cand_hz + 1000.0
                     post_hi = min(nyquist - 500.0, cand_hz + 4000.0)
                     if post_hi <= post_lo:
@@ -1233,7 +1280,7 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
                     mask_post = (freqs >= post_lo) & (freqs <= post_hi)
                     if not np.any(mask_post):
                         continue
-                    mask_pre = (freqs >= max(6000.0, cand_hz - 1000.0)) & (freqs <= cand_hz)
+                    mask_pre = (freqs >= max(5000.0, cand_hz - 1000.0)) & (freqs <= cand_hz)
                     pre_ref = max(
                         float(bef_lo[i_c]),
                         float(np.median(power_db_n[mask_pre])) if np.any(mask_pre) else -300.0,
@@ -1351,44 +1398,65 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
                 and (e_m3 - e_m4) <= 8.0
             )
 
-    # Clean digital solo-instrument decay (e.g. modern ECM solo piano in
-    # 16/44.1 without analog tape hiss): -60 dB contour crosses in 7.5-10.5 kHz
-    # with a low centroid (< 1100 Hz), progressive pre-ceiling decay, gentle
-    # post-ceiling continuation (tolerating either a quiet digital floor or
-    # noise-shaped dither), and no hidden filter cliff in the 5 kHz above the
-    # ceiling.
+    # Clean digital solo-instrument decay (e.g. modern ECM / concert solo piano
+    # in 16/44.1 without analog tape hiss): -60 dB contour crosses in 5.8-13.5 kHz
+    # with a low centroid (< 950 Hz below 7.5 kHz, < 1100 Hz above), progressive
+    # pre-ceiling decay, smooth coarse band-envelope continuation (tracking
+    # discrete piano harmonics via 1.2 kHz P75 windows while tolerating >17.5 kHz
+    # noise-shaped dither), and no hidden resampler/codec brickwall cliff below
+    # 17.5 kHz.
     subceiling_clean_acoustic_decay = False
     if (samplerate <= 48000 and near_nyq_high
-            and 7500.0 <= ceiling_hz < 10500.0
-            and 0.0 < centroid_hz < 1100.0
-            and 0.5 <= gradient_edge < 16.0):
-        s_pre_lo, ok_pre_lo = _freq_slice(
-            freqs, max(3000.0, ceiling_hz - 4000.0), max(4500.0, ceiling_hz - 2000.0)
-        )
-        s_pre_hi, ok_pre_hi = _freq_slice(
-            freqs, max(5500.0, ceiling_hz - 1200.0), ceiling_hz
-        )
-        s_p1, ok_p1 = _freq_slice(freqs, ceiling_hz + 250.0, ceiling_hz + 1500.0)
-        s_p2, ok_p2 = _freq_slice(
-            freqs, ceiling_hz + 1500.0, min(nyquist - 500.0, ceiling_hz + 3500.0)
-        )
-        if ok_pre_lo and ok_pre_hi and ok_p1 and ok_p2:
-            e_pre_lo = float(np.median(power_db_n[s_pre_lo]))
-            e_pre_hi = float(np.median(power_db_n[s_pre_hi]))
-            e_p1 = float(np.median(power_db_n[s_p1]))
-            e_p2 = float(np.median(power_db_n[s_p2]))
-            pre_drop = e_pre_lo - e_pre_hi
-            step_p1 = e_pre_hi - e_p1
-            step_p2 = e_p1 - e_p2
-            post_max_grad = _max_smoothed_descent_db_khz(
-                freqs, power_db_n, ceiling_hz, min(nyquist - 500.0, ceiling_hz + 5000.0)
+            and 5800.0 <= ceiling_hz < 13500.0
+            and gradient_edge >= 0.5):
+        max_cent_sub = 950.0 if ceiling_hz < 7500.0 else 1100.0
+        if 0.0 < centroid_hz < max_cent_sub:
+            hi_post_cap = min(17500.0, nyquist - 500.0)
+            s_pre_lo, ok_pre_lo = _freq_slice(
+                freqs, max(1800.0, ceiling_hz - 4000.0), max(3200.0, ceiling_hz - 1800.0)
             )
-            subceiling_clean_acoustic_decay = bool(
-                6.0 <= pre_drop <= 45.0
-                and step_p1 < 16.0
-                and step_p2 < 24.0
-                and post_max_grad < 16.0
+            s_pre_hi, ok_pre_hi = _freq_slice(
+                freqs, max(4000.0, ceiling_hz - 1200.0), ceiling_hz
             )
+            s_p1, ok_p1 = _freq_slice(
+                freqs, ceiling_hz + 250.0, min(hi_post_cap, ceiling_hz + 1500.0)
+            )
+            s_p2, ok_p2 = _freq_slice(
+                freqs, ceiling_hz + 1500.0, min(hi_post_cap, ceiling_hz + 3500.0)
+            )
+            if ok_pre_lo and ok_pre_hi and ok_p1 and ok_p2:
+                e_pre_lo = float(np.percentile(power_db_n[s_pre_lo], 75))
+                e_pre_hi = float(np.percentile(power_db_n[s_pre_hi], 75))
+                e_p1 = float(np.percentile(power_db_n[s_p1], 75))
+                e_p2 = float(np.percentile(power_db_n[s_p2], 75))
+                pre_drop = e_pre_lo - e_pre_hi
+                step_p1 = e_pre_hi - e_p1
+                step_p2 = e_p1 - e_p2
+                coarse_edge_grad = _coarse_envelope_descent_db_khz(
+                    freqs,
+                    power_db_n,
+                    max(3500.0, ceiling_hz - 2200.0),
+                    min(hi_post_cap, ceiling_hz + 2200.0),
+                    band_hz=1000.0,
+                    step_hz=250.0,
+                    percentile=75.0,
+                )
+                coarse_post_grad = _coarse_envelope_descent_db_khz(
+                    freqs,
+                    power_db_n,
+                    ceiling_hz,
+                    hi_post_cap,
+                    band_hz=750.0,
+                    step_hz=200.0,
+                    percentile=50.0,
+                )
+                subceiling_clean_acoustic_decay = bool(
+                    6.0 <= pre_drop <= 45.0
+                    and step_p1 < 16.0
+                    and step_p2 < 24.0
+                    and coarse_edge_grad < 18.0
+                    and coarse_post_grad < 11.0
+                )
 
     smooth_acoustic_decay = bool(
         (
@@ -2008,12 +2076,21 @@ class PsychoacousticSTFTAccumulator:
         islands_sfb21 = False
         if len(self._e_sfb21) >= 24:
             arr_sfb = np.asarray(self._e_sfb21, dtype=np.float64)
-            if np.all(np.isfinite(arr_sfb)):
+            arr_hi_sfb = np.asarray(self._env_16_20, dtype=np.float64)
+            if np.all(np.isfinite(arr_sfb)) and np.all(np.isfinite(arr_hi_sfb)):
                 brecha_sfb21 = float(np.percentile(arr_sfb, 90)
                                      - np.percentile(arr_sfb, 10))
+                abs_gap_sfb21 = (
+                    float(np.percentile(arr_hi_sfb, 90) - np.percentile(arr_hi_sfb, 10))
+                    if arr_hi_sfb.size >= 24
+                    else brecha_sfb21
+                )
                 ratio_off = float(np.mean(arr_sfb < -55.0))
-                islands_sfb21 = bool(brecha_sfb21 > 28.0
-                                   and 0.25 <= ratio_off <= 0.85)
+                islands_sfb21 = bool(
+                    brecha_sfb21 > 28.0
+                    and abs_gap_sfb21 >= 12.0
+                    and 0.25 <= ratio_off <= 0.85
+                )
 
         # Harmonic exciter / SBR: a bandwidth extension rebuilds the high band
         # from the 8-14 kHz envelope (so both move together) and leaves a notch
@@ -3096,10 +3173,10 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False
       3. MDCT-512 (ATSC A/52 AC-3 / E-AC-3 KBD alpha=5, 256-sample hop).
       4. PQMF-32 (Musepack SV7/SV8 32-band pure subband 36-sample frame grid).
       5. CELT-960 (Opus 20 ms low-overlap MDCT with 1 - 0.85*z^-1 preemphasis).
-    When 7.0 kHz <= ceiling_hz < 17.5 kHz, checks the adaptive passband first and
+    When 5.5 kHz <= ceiling_hz < 17.5 kHz, checks the adaptive passband first and
     falls back to the fullband upper-hiss probe (12.0-20.5 kHz + CELT-960) so
-    high-bitrate transcodes of dark ambient/tape recordings cannot hide below
-    the -60 dB ceiling.
+    high-bitrate transcodes of dark ambient/solo piano recordings cannot hide
+    below the -60 dB ceiling.
     """
     if not (41000 <= sr <= 48000):
         return {
@@ -3107,7 +3184,7 @@ def _detect_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False
             "mdct_lattice_snr": 0.0,
             "mdct_lattice_family": None,
         }
-    if ceiling_hz is not None and ceiling_hz < 7000.0:
+    if ceiling_hz is not None and ceiling_hz < 5500.0:
         return {
             "mdct_lattice_detected": False,
             "mdct_lattice_snr": 0.0,
@@ -4126,25 +4203,39 @@ class _SpectralAccumulator:
                 )
             )
         ceiling_val = spectrum.get("techo_hz", 0)
-        if 41000 <= self.sr <= 48000 and ceiling_val >= 7000:
+        if 41000 <= self.sr <= 48000 and ceiling_val >= 5500:
             spectrum.update(
                 _probe_lapped_codec_lattice(chosen, mc_pair, self.sr, ceiling_val)
             )
-        elif self.sr >= 88200 and ceiling_val >= 7000:
+        elif self.sr >= 88200 and ceiling_val >= 5500:
             spectrum.update(
                 _probe_hires_lapped_codec_lattice(chosen, mc_pair, self.sr, ceiling_val)
             )
+        if (ceiling_val < 12000
+                and spectrum.get("decaimiento_acustico_suave")
+                and float(spectrum.get("brecha_p90_p10_agudos_db") or 0.0) < 42.0
+                and not spectrum.get("mdct_lattice_detected")):
+            spectrum["islas_mdct_sfb21"] = False
         low_centroid_smooth_iqr = bool(
             self.sr <= 48000
-            and ceiling_val >= 14000
-            and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 750.0
             and not spectrum.get("corte_detectado")
             and not spectrum.get("islas_mdct_sfb21")
             and not spectrum.get("sospecha_corte_opus_20k")
             and not spectrum.get("sospecha_joint_stereo")
             and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
             and not spectrum.get("mdct_lattice_detected")
-            and float(spectrum.get("iqr_corte_hz") or 0.0) <= 680.0
+            and (
+                (
+                    ceiling_val >= 14000
+                    and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 750.0
+                    and float(spectrum.get("iqr_corte_hz") or 0.0) <= 680.0
+                )
+                or (
+                    spectrum.get("decaimiento_acustico_suave")
+                    and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 950.0
+                    and float(spectrum.get("iqr_corte_hz") or 0.0) <= 900.0
+                )
+            )
         )
         if low_centroid_smooth_iqr:
             cur_iqr = float(spectrum.get("iqr_corte_hz") or 0.0)

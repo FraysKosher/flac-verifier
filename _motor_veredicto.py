@@ -1149,7 +1149,7 @@ def _is_clean_album_support_track(result, reference):
             rel >= 0.80
             or (
                 spectrum.get("decaimiento_acustico_suave")
-                and (rel >= 0.35 or spectrum.get("native_24bit_hf_tail"))
+                and (rel >= 0.25 or spectrum.get("native_24bit_hf_tail"))
             )
         )
     return bool(
