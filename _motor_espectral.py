@@ -2986,8 +2986,10 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                         n_sb_mpc, m_sub_total, 32).transpose(2, 0, 1)
                     w_mpc = np.lib.stride_tricks.sliding_window_view(dec_mpc, 6, axis=2)
                     nf_mpc = (w_mpc.shape[2] // 36) * 36
-                    if nf_mpc >= 36 * 8:
-                        blks_m = w_mpc[:, :, :nf_mpc, :].reshape(32, n_sb_mpc, nf_mpc // 36, 36, 6)
+                    n_frames_36 = nf_mpc // 36
+                    half_36 = n_frames_36 // 2
+                    if n_frames_36 >= 8 and half_36 >= 4:
+                        blks_m = w_mpc[:, :, :nf_mpc, :].reshape(32, n_sb_mpc, n_frames_36, 36, 6)
                         rms_m = np.sqrt(np.mean(blks_m * blks_m, axis=4)) + np.float32(1e-12)
                         if n_sb_mpc == 11:
                             anchor_m = np.mean(rms_m[:, :3], axis=1, keepdims=True)
@@ -3009,13 +3011,15 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                             denom_m = float(n_valid) * np.maximum(1, np.sum(act_m, axis=1))
                             curves_36 = np.sum(holes_m, axis=(1, 2)) / denom_m
                             spans = np.max(curves_36, axis=1) - np.min(curves_36, axis=1)
-                            c36 = curves_36[int(np.argmax(spans))]
+                            best_off = int(np.argmax(spans))
+                            c36 = curves_36[best_off]
                             mx_m = float(np.max(c36))
                             mn_m = float(np.min(c36))
                             if mx_m >= 0.045 and (mx_m - mn_m) >= 0.035:
                                 dft_m = np.abs(np.fft.rfft(c36 - np.mean(c36)))
                                 bg_m = np.delete(dft_m, [0, 1, 2, 3, 6])
-                                med_bg = float(np.median(bg_m)) + 1e-9
+                                med_bg_raw = float(np.median(bg_m))
+                                med_bg = med_bg_raw + 1e-9
                                 r1 = float(dft_m[1]) / med_bg
                                 r2 = float(dft_m[2]) / med_bg
                                 r3 = float(dft_m[3]) / med_bg
@@ -3023,7 +3027,46 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                                     z576 = max(z576, 12.0, r1, r2)
                                     break
                                 elif r3 >= 5.5 or z576 < 8.5:
-                                    z_mpc = max(z_mpc, max(r1, r3))
+                                    k_win = 1 if dft_m[1] >= dft_m[3] else 3
+                                    act_off = act_m[best_off]
+                                    holes_off = holes_m[best_off]
+                                    denom_h1 = float(n_valid) * np.maximum(
+                                        1, np.sum(act_off[:half_36], axis=0)
+                                    )
+                                    denom_h2 = float(n_valid) * np.maximum(
+                                        1, np.sum(act_off[half_36 : 2 * half_36], axis=0)
+                                    )
+                                    c_h1 = np.sum(holes_off[:, :half_36, :], axis=(0, 1)) / denom_h1
+                                    c_h2 = np.sum(
+                                        holes_off[:, half_36 : 2 * half_36, :], axis=(0, 1)
+                                    ) / denom_h2
+                                    dft_h1 = np.fft.rfft(c_h1 - np.mean(c_h1))
+                                    dft_h2 = np.fft.rfft(c_h2 - np.mean(c_h2))
+                                    amp_h1 = np.abs(dft_h1)
+                                    amp_h2 = np.abs(dft_h2)
+                                    if float(amp_h1[k_win]) > 1e-6 and float(amp_h2[k_win]) > 1e-6:
+                                        phase_coh = float(
+                                            np.cos(np.angle(dft_h1[k_win]) - np.angle(dft_h2[k_win]))
+                                        )
+                                        bg_h1 = np.delete(amp_h1, [0, 1, 2, 3, 6])
+                                        bg_h2 = np.delete(amp_h2, [0, 1, 2, 3, 6])
+                                        r_h1 = float(amp_h1[k_win]) / max(float(np.median(bg_h1)), 1e-3)
+                                        r_h2 = float(amp_h2[k_win]) / max(float(np.median(bg_h2)), 1e-3)
+                                        mad_bg = float(np.median(np.abs(bg_m - med_bg_raw)))
+                                        iqr_bg = (
+                                            float(np.percentile(bg_m, 75) - np.percentile(bg_m, 25))
+                                            / 1.349
+                                        )
+                                        scale_bg = max(
+                                            1.4826 * mad_bg, 0.5 * iqr_bg, 0.5 * med_bg_raw, 1e-3
+                                        )
+                                        z_mpc_rob = (float(dft_m[k_win]) - med_bg_raw) / scale_bg
+                                        r_mpc_floored = float(dft_m[k_win]) / max(med_bg_raw, 1e-3)
+                                        if (phase_coh >= 0.70
+                                                and min(r_h1, r_h2) >= 3.5
+                                                and r_mpc_floored >= 7.5
+                                                and z_mpc_rob >= 8.0):
+                                            z_mpc = max(z_mpc, min(z_mpc_rob, r_mpc_floored))
 
         if z576 >= 12.0:
             return {
@@ -3092,7 +3135,7 @@ def _eval_lapped_codec_grid(mono, sr, ceiling_hz=None, skip_celt: bool = False):
                 "mdct_lattice_family": CodecLatticeFamily.MDCT_512_AC3.value,
             }
 
-        if z_mpc >= 6.5:
+        if z_mpc >= 7.5:
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z_mpc), 2),
