@@ -1609,6 +1609,14 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
         "mdct_lattice_detected":    False,
         "mdct_lattice_snr":         0.0,
         "mdct_lattice_family":      None,
+        "neural_vocoder_detected":  False,
+        "vocoder_phase_coh_diff":   0.0,
+        "vocoder_hf_comb_z":        0.0,
+        "vocoder_comb_spacing_hz":  0.0,
+        "spectral_folding_detected": False,
+        "spectral_folding_corr":    0.0,
+        "spectral_folding_z":       0.0,
+        "spectral_folding_pivot_hz": 0.0,
         "pre_echo_ratio_db":        0.0,
         "mgd_hf_dispersion":        0.0,
         "familias_evidencia_lossy": [],
@@ -2899,6 +2907,9 @@ def _eval_lapped_codec_grid(
         z1024 = 0.0
         z1024_trig = 0.0
         best_1024_cand = None
+        z1024_mid = 0.0
+        z1024_mid_trig = 0.0
+        best_1024_mid_cand = None
         seg_1024 = None
         n_blocks_1024 = 10
         needed_1024 = n_blocks_1024 * 1024 + 2048
@@ -2912,12 +2923,16 @@ def _eval_lapped_codec_grid(
                 k_hi = int(f_hi / nyq * 1024)
                 if k_hi > k_lo + 8:
                     valid_slices_1024.append((k_lo, k_hi))
+            k_lo_mid = int(8500.0 / nyq * 1024)
+            k_hi_mid = int(14800.0 / nyq * 1024)
+            has_mid_slice = bool(fullband_mode and k_hi_mid > k_lo_mid + 8)
             if valid_slices_1024:
                 for w in (_get_vorbis_2048(), _get_kbd_2048(), _get_sine_2048()):
                     sp_by_band = [
                         np.empty(n_all_1024, dtype=np.float32)
                         for _ in valid_slices_1024
                     ]
+                    sp_mid = np.empty(n_all_1024, dtype=np.float32) if has_mid_slice else None
                     for i in range(0, n_all_1024, 1024):
                         chunk = all_frames[i : i + 1024]
                         coeffs_chunk = np.abs(_fast_mdct_f32(chunk, w))
@@ -2927,6 +2942,15 @@ def _eval_lapped_codec_grid(
                             active_c = rms_c[:, 0] > np.float32(1e-6)
                             sp_chunk = np.mean(coeffs < (rms_c * np.float32(0.05)), axis=1)
                             sp_by_band[b_idx][i : i + 1024] = np.where(active_c, sp_chunk, np.float32(0.0))
+                        if sp_mid is not None:
+                            c_mid = coeffs_chunk[:, k_lo_mid:k_hi_mid]
+                            rms_m = np.sqrt(np.mean(c_mid * c_mid, axis=1, keepdims=True)) + np.float32(1e-12)
+                            act_m = rms_m[:, 0] > np.float32(1e-6)
+                            sp_mid[i : i + 1024] = np.where(
+                                act_m,
+                                np.mean(c_mid < (rms_m * np.float32(0.05)), axis=1),
+                                np.float32(0.0),
+                            )
                     for b_idx, sp_all in enumerate(sp_by_band):
                         scores_1024 = sp_all.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
                         z_cand, med_c, mx_c = _robust_z_peak(scores_1024, min_scale=1e-3)
@@ -2947,11 +2971,31 @@ def _eval_lapped_codec_grid(
                             break
                     if z1024 >= 10.0:
                         break
+                    if sp_mid is not None:
+                        scores_mid = sp_mid.reshape(n_blocks_1024, 8, 128).mean(axis=0).max(axis=0)
+                        z_m, med_m, mx_m = _robust_z_peak(scores_mid, min_scale=1e-3)
+                        if med_m < 0.55 and (mx_m - med_m) >= 0.008:
+                            z1024_mid = max(z1024_mid, z_m)
+                        pair_mid = 0.5 * (scores_mid + np.roll(scores_mid, -1))
+                        z_mp, med_mp, mx_mp = _robust_z_peak(pair_mid, min_scale=1e-3)
+                        cand_mid_trig = max(
+                            z_m if (med_m < 0.55 and (mx_m - med_m) >= 0.005) else 0.0,
+                            z_mp if (med_mp < 0.55 and (mx_mp - med_mp) >= 0.005) else 0.0,
+                        )
+                        if cand_mid_trig > z1024_mid_trig:
+                            z1024_mid_trig = cand_mid_trig
+                            best_1024_mid_cand = (w, (k_lo_mid, k_hi_mid))
 
         if z1024 >= 10.0:
             return {
                 "mdct_lattice_detected": True,
                 "mdct_lattice_snr": round(float(z1024), 2),
+                "mdct_lattice_family": CodecLatticeFamily.MDCT_1024.value,
+            }
+        if z1024_mid >= 10.5:
+            return {
+                "mdct_lattice_detected": True,
+                "mdct_lattice_snr": round(float(z1024_mid), 2),
                 "mdct_lattice_family": CodecLatticeFamily.MDCT_1024.value,
             }
 
@@ -3433,6 +3477,46 @@ def _eval_lapped_codec_grid(
             if z1024_ref >= 5.0 or not allow_half_probe:
                 z1024 = max(z1024, min(z1024_ref, 9.9))
 
+        # Sub-splice mid-band MDCT-1024 (8.5-14.8 kHz) fractional TDAC refinement:
+        # isolated from sub-threshold `best_z` so clean tonal tracks never inflate
+        # `mdct_lattice_snr`.
+        if (best_1024_mid_cand is not None and seg_1024 is not None
+                and (5.5 <= z1024_mid < 10.5 or z1024_mid_trig >= 5.2)):
+            w_mid_b, (k_lo_mb, k_hi_mb) = best_1024_mid_cand
+            n_blk_mref = 10 if seg_1024.size >= 10 * 1024 + 2048 else 6
+            n_all_mref = n_blk_mref * 1024
+            need_mref = n_all_mref + 2048
+            s_mref_base = seg_1024[:need_mref]
+            n_fft_mr = 1 << int(math.ceil(math.log2(max(2, need_mref + 256))))
+            spec_mr = _rfft_f32(s_mref_base, n=n_fft_mr)
+            k_mr = np.arange(spec_mr.size, dtype=np.float64)
+            for delta in frac_shifts:
+                phase_mr = np.exp(
+                    (-2j * math.pi * delta / float(n_fft_mr)) * k_mr
+                ).astype(np.complex64)
+                s_msh = _irfft_f32(spec_mr * phase_mr, n=n_fft_mr)[:need_mref]
+                fr_msh = np.lib.stride_tricks.sliding_window_view(s_msh, 2048)[:n_all_mref]
+                sp_msh = np.empty(n_all_mref, dtype=np.float32)
+                for i in range(0, n_all_mref, 1024):
+                    c_msh = np.abs(_fast_mdct_f32(fr_msh[i : i + 1024], w_mid_b))[:, k_lo_mb:k_hi_mb]
+                    rms_msh = np.sqrt(
+                        np.mean(c_msh * c_msh, axis=1, keepdims=True)
+                    ) + np.float32(1e-12)
+                    act_msh = rms_msh[:, 0] > np.float32(1e-6)
+                    sp_msh[i : i + 1024] = np.where(
+                        act_msh,
+                        np.mean(c_msh < (rms_msh * np.float32(0.05)), axis=1),
+                        np.float32(0.0),
+                    )
+                sc_msh = sp_msh.reshape(n_blk_mref, 8, 128).mean(axis=0).max(axis=0)
+                z_msh, med_msh, mx_msh = _robust_z_peak(sc_msh, min_scale=1e-3)
+                if med_msh < 0.55 and (mx_msh - med_msh) >= 0.008 and z_msh >= 11.0:
+                    return {
+                        "mdct_lattice_detected": True,
+                        "mdct_lattice_snr": round(float(z_msh), 2),
+                        "mdct_lattice_family": CodecLatticeFamily.MDCT_1024.value,
+                    }
+
         if (best_576_cand is not None and seg_576_fft is not None and n_fft_576 > 0
                 and (6.0 <= z576 < 12.0 or z576_trig >= 5.5)):
             bank_fft_mp3, mp3_sbs = best_576_cand
@@ -3898,8 +3982,11 @@ def _probe_hires_lapped_codec_lattice(chosen, mc_pair, sr, ceiling_val):
 
 
 def _probe_sbr_qmf_from_chosen(chosen, mc_pair, sr, ceiling_val):
-    """Post-STFT stage 3: seamless HE-AAC SBR QMF replication probe."""
-    if sr < 32000 or ceiling_val < 14500:
+    """Post-STFT stage 3: seamless HE-AAC SBR QMF replication probe.
+
+    Unlocks down to 5.5 kHz to catch dark solo-piano SBR and DAC 44.1 kHz,
+    enforcing stricter selectivity (r >= 0.34 or Z >= 15.0) below 14.5 kHz."""
+    if sr < 32000 or ceiling_val < 5500:
         return {}
     target_samples = int(sr * 6)
     mid_parts = []
@@ -3926,7 +4013,326 @@ def _probe_sbr_qmf_from_chosen(chosen, mc_pair, sr, ceiling_val):
             break
     if not mid_parts:
         return {}
-    return _detect_sbr_qmf_replication(mid_parts, sr)
+    res = _detect_sbr_qmf_replication(mid_parts, sr)
+    if ceiling_val < 14500 and res.get("sbr_qmf_detectado"):
+        corr_v = float(res.get("sbr_qmf_correlacion") or 0.0)
+        z_v = float(res.get("sbr_qmf_z") or 0.0)
+        if not (corr_v >= 0.34 or z_v >= 15.0):
+            out = {
+                "sbr_qmf_detectado": False,
+                "sbr_qmf_correlacion": 0.0,
+                "sbr_qmf_z": 0.0,
+            }
+            if "sbr_detector_error" in res:
+                out["sbr_detector_error"] = res["sbr_detector_error"]
+            return out
+    return res
+
+
+def _comb_quefrency_z_np(p_db, freqs, f_lo, f_hi):
+    """Pure-NumPy / pypocketfft spectral comb quefrency Z-score in 2.5-22.0 ms
+    (45.5-400 Hz comb spacing) relative to a ~170 Hz sliding-median baseline."""
+    sl, ok = _freq_slice(freqs, f_lo, f_hi, True)
+    if not ok:
+        return 0.0, 0.0, 0.0
+    sub = np.asarray(p_db[sl], dtype=np.float64)
+    if sub.size < 256 or freqs.size < 2:
+        return 0.0, 0.0, 0.0
+    df = float(freqs[1] - freqs[0])
+    if df <= 0.0:
+        return 0.0, 0.0, 0.0
+    k_med = max(21, int(round(170.0 / df)) | 1)
+    half = k_med // 2
+    win_2d = np.lib.stride_tricks.sliding_window_view(
+        np.pad(sub, half, mode="edge"), k_med
+    )
+    med_env = np.partition(win_2d, half, axis=1)[:, half]
+    det = sub - med_env
+    cb_p99 = float(np.percentile(det, 99.0))
+    r = np.clip(det, 0.0, 20.0).astype(np.float32)
+    r = (r - np.float32(np.mean(r))) * np.hanning(r.size).astype(np.float32)
+    n_q = 1 << int(math.ceil(math.log2(max(r.size * 2, 2048))))
+    q_mag = np.abs(_rfft_f32(r, n=n_q)).astype(np.float64)
+    quef_ms = (np.arange(q_mag.size, dtype=np.float64) / (float(n_q) * df)) * 1000.0
+    sl_q, ok_q = _freq_slice(quef_ms, 2.5, 22.0, True)
+    if not ok_q:
+        return 0.0, 0.0, cb_p99
+    qv = q_mag[sl_q]
+    if qv.size < 32:
+        return 0.0, 0.0, cb_p99
+    med = float(np.median(qv))
+    mad = float(np.median(np.abs(qv - med)))
+    idx_pk = int(np.argmax(qv))
+    z_pk = float((float(qv[idx_pk]) - med) / max(1.4826 * mad, 1e-6))
+    pk_q_ms = float(quef_ms[sl_q][idx_pk])
+    spacing_hz = (1000.0 / pk_q_ms) if pk_q_ms > 0.0 else 0.0
+    return z_pk, spacing_hz, cb_p99
+
+
+def _detect_neural_vocoder_artifacts(mono, sr):
+    """Engine 17.0 Pillar 3: pure-NumPy + pypocketfft neural vocoder comb and
+    band-anchored 2nd-order phase-acceleration coherence detector.
+
+    Detects transposed-convolution neural vocoders and latent-diffusion audio
+    super-resolution (FlashSR, AudioSR, BigVGAN, HiFi-GAN derivatives) while
+    remaining self-calibrating on stationary harmonic synth drones."""
+    neutral = {
+        "neural_vocoder_detected": False,
+        "vocoder_phase_coh_diff": 0.0,
+        "vocoder_hf_comb_z": 0.0,
+        "vocoder_comb_spacing_hz": 0.0,
+    }
+    sr_int = int(sr or 0)
+    if not (41000 <= sr_int <= 48000):
+        return dict(neutral)
+    try:
+        arr = np.asarray(mono, dtype=np.float32).reshape(-1)
+        if arr.size < 32768 or float(np.std(arr)) < 1e-4:
+            return dict(neutral)
+        if arr.size > FRAMES_BY_BLOCK:
+            s0 = (arr.size - FRAMES_BY_BLOCK) // 2
+            arr = np.ascontiguousarray(arr[s0 : s0 + FRAMES_BY_BLOCK], dtype=np.float32)
+        sr_f = float(sr_int)
+        f_cap = min(20800.0, 0.47 * sr_f)
+
+        # Part A: band-anchored 2nd-order phase-acceleration coherence (1024/512)
+        win = np.hanning(1025)[:-1].astype(np.float32)
+        fr_m = np.lib.stride_tricks.sliding_window_view(arr, 1024)[::512]
+        if fr_m.shape[0] < 4:
+            return dict(neutral)
+        zm = _rfft_f32(fr_m * win, axis=1)
+        mag_m = np.abs(zm)
+        u = zm / np.maximum(mag_m, np.float32(1e-12))
+        u_c = np.conj(u[1:-1])
+        pd2 = u[2:] * u[:-2] * (u_c * u_c)
+        w = np.minimum(np.minimum(mag_m[:-2], mag_m[1:-1]), mag_m[2:])
+        freqs_m = np.fft.rfftfreq(1024, 1.0 / sr_f)
+
+        def _band_coh(f_lo, f_hi):
+            sl_b, ok_b = _freq_slice(freqs_m, f_lo, f_hi, True)
+            if not ok_b:
+                return 0.0, 0.0
+            wb = w[:, sl_b]
+            fl = np.float32(max(float(np.max(wb)) * 1e-3, 1e-7))
+            wa = np.where(wb > fl, wb, np.float32(0.0))
+            ws = np.sum(wa, axis=0, dtype=np.float64)
+            cb = np.where(
+                ws > 0.0,
+                np.abs(np.sum(wa * pd2[:, sl_b], axis=0, dtype=np.complex128))
+                / np.maximum(ws, 1e-18),
+                0.0,
+            )
+            act_r = float(np.mean(ws > 0.0))
+            mean_cb = float(np.mean(cb[ws > 0.0])) if np.any(ws > 0.0) else 0.0
+            return mean_cb, act_r
+
+        ph_mid, _ = _band_coh(4000.0, 12000.0)
+        ph_hf, hf_act_r = _band_coh(15800.0, f_cap)
+        ph_diff = (ph_hf - ph_mid) if hf_act_r >= 0.35 else -0.1
+
+        # Part B: high-resolution Welch PSD comb quefrency Z-score
+        n_psd = min(16384, int(arr.size))
+        hop_w = max(1, n_psd // 2)
+        win_w = np.hanning(n_psd + 1)[:-1].astype(np.float32)
+        fr_w = np.lib.stride_tricks.sliding_window_view(arr, n_psd)[::hop_w]
+        zw = _rfft_f32(fr_w * win_w, axis=1)
+        pw = np.mean(zw.real * zw.real + zw.imag * zw.imag, axis=0, dtype=np.float64)
+        p_db = (10.0 * np.log10(np.maximum(pw, 1e-28))).astype(np.float32)
+        freqs_w = np.fft.rfftfreq(n_psd, 1.0 / sr_f)
+
+        mid_cz, _, cb_mid = _comb_quefrency_z_np(p_db, freqs_w, 4000.0, 11500.0)
+        hf_cz, hf_hz, cb_hf = _comb_quefrency_z_np(p_db, freqs_w, 13500.0, f_cap)
+        comb_diff = hf_cz - mid_cz
+        cb_diff = cb_hf - cb_mid
+
+        detected = bool(
+            (ph_diff >= 0.12 and hf_cz >= 11.5 and comb_diff >= 4.5)
+            or (ph_diff >= 0.20 and hf_cz >= 8.5 and cb_diff >= 9.5)
+        )
+        return {
+            "neural_vocoder_detected": detected,
+            "vocoder_phase_coh_diff": round(float(ph_diff), 4) if math.isfinite(ph_diff) else 0.0,
+            "vocoder_hf_comb_z": round(float(hf_cz), 2) if math.isfinite(hf_cz) else 0.0,
+            "vocoder_comb_spacing_hz": round(float(hf_hz), 2) if math.isfinite(hf_hz) else 0.0,
+        }
+    except Exception as exc:
+        return {**neutral, "vocoder_detector_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _extract_mid_and_decimate_for_probe(blk, mc_pair, sr):
+    """Extracts Mid mono (with anti-phase L-R fallback) and applies integer
+    2:1 or 4:1 Hi-Res decimation down to 48/44.1 kHz when sr >= 88.2 kHz."""
+    if blk.ndim > 1 and len(mc_pair) >= 2:
+        c0, c1 = mc_pair[0], mc_pair[1]
+        mid_p = 0.5 * (blk[:, c0] + blk[:, c1])
+        if float(np.dot(mid_p, mid_p)) <= 1e-6 * max(
+            float(np.dot(blk[:, c0], blk[:, c0])),
+            float(np.dot(blk[:, c1], blk[:, c1])),
+            0.0,
+        ):
+            mid_p = 0.5 * (blk[:, c0] - blk[:, c1])
+    else:
+        ch0 = mc_pair[0] if blk.ndim > 1 else 0
+        mid_p = blk[:, ch0] if blk.ndim > 1 else blk
+    sig = np.asarray(mid_p, dtype=np.float32).reshape(-1)
+    sr_int = int(sr or 0)
+    if sr_int >= 88200:
+        if sr_int % 48000 == 0 and (sr_int // 48000) in (2, 4):
+            return _decimate_int_f32(sig, sr_int // 48000), 48000
+        if sr_int % 44100 == 0 and (sr_int // 44100) in (2, 4):
+            return _decimate_int_f32(sig, sr_int // 44100), 44100
+        return None, 0
+    return sig, sr_int
+
+
+def _probe_neural_vocoder_from_chosen(chosen, mc_pair, sr, is_dsd=False):
+    """Post-STFT stage 3b: multi-block & Hi-Res neural vocoder artifact probe."""
+    neutral = {
+        "neural_vocoder_detected": False,
+        "vocoder_phase_coh_diff": 0.0,
+        "vocoder_hf_comb_z": 0.0,
+        "vocoder_comb_spacing_hz": 0.0,
+    }
+    sr_int = int(sr or 0)
+    if is_dsd or sr_int < 41000 or not chosen:
+        return dict(neutral)
+    ranked = sorted(
+        chosen, key=lambda it: (len(it[4]) >= 32768, it[0]), reverse=True
+    )
+    sig0, eff_sr0 = _extract_mid_and_decimate_for_probe(ranked[0][4], mc_pair, sr_int)
+    if sig0 is None or eff_sr0 == 0:
+        return dict(neutral)
+    res0 = _detect_neural_vocoder_artifacts(sig0, eff_sr0)
+    if res0.get("neural_vocoder_detected"):
+        return res0
+    first_err = res0.get("vocoder_detector_error")
+    if (
+        len(ranked) > 1
+        and len(ranked[1][4]) >= 32768
+        and (
+            float(res0.get("vocoder_phase_coh_diff") or 0.0) >= 0.05
+            or float(res0.get("vocoder_hf_comb_z") or 0.0) >= 7.5
+        )
+    ):
+        sig1, eff_sr1 = _extract_mid_and_decimate_for_probe(ranked[1][4], mc_pair, sr_int)
+        if sig1 is not None and eff_sr1 > 0:
+            res1 = _detect_neural_vocoder_artifacts(sig1, eff_sr1)
+            if res1.get("neural_vocoder_detected"):
+                return res1
+            if first_err is None and "vocoder_detector_error" in res1:
+                res0 = {**res0, "vocoder_detector_error": res1["vocoder_detector_error"]}
+    return res0
+
+
+def _detect_spectral_folding_2d(mono, sr):
+    """Engine 17.0 Pillar 4: fast O(1) BLAS Gram-matrix 2D spectral folding
+    detector for time-domain neural super-resolution / BWE (e.g. NovaSR)."""
+    neutral = {
+        "spectral_folding_detected": False,
+        "spectral_folding_corr": 0.0,
+        "spectral_folding_z": 0.0,
+        "spectral_folding_pivot_hz": 0.0,
+    }
+    sr_int = int(sr or 0)
+    if not (41000 <= sr_int <= 48000):
+        return dict(neutral)
+    try:
+        arr = np.asarray(mono, dtype=np.float32).reshape(-1)
+        n_fft, hop = 2048, 1024
+        if arr.size < n_fft * 14 or float(np.std(arr)) < 1e-4:
+            return dict(neutral)
+        frames = np.lib.stride_tricks.sliding_window_view(arr, n_fft)[::hop]
+        if len(frames) > 160:
+            frames = frames[:: max(1, len(frames) // 160)][:160]
+        win = np.hanning(n_fft + 1)[:-1].astype(np.float32)
+        spec = _rfft_f32(frames * win, axis=1)
+        df = float(sr_int) / float(n_fft)
+        k_max = min(spec.shape[1], int(20500.0 / df))
+        p_db = 10.0 * np.log10(
+            spec[:, :k_max].real ** 2 + spec[:, :k_max].imag ** 2 + np.float32(1e-24)
+        )
+        frame_e = np.mean(p_db[:, int(1000.0 / df) : int(7500.0 / df)], axis=1)
+        act = frame_e > (np.max(frame_e) - 35.0)
+        if int(np.count_nonzero(act)) < 20:
+            return dict(neutral)
+        p_db = p_db[act]
+
+        k_lo_a = int(2500.0 / df)
+        k_hi_a = int(7500.0 / df)
+        k_lo_u = int(8500.0 / df)
+        k_hi_u = min(k_max, int(15500.0 / df))
+        if k_hi_u <= k_lo_u + 8:
+            return dict(neutral)
+        if float(np.mean(p_db[:, k_lo_u:k_hi_u])) < float(np.mean(p_db[:, k_lo_a:k_hi_a])) - 62.0:
+            return dict(neutral)
+
+        w_bins = max(9, int(round(900.0 / df)) | 1)
+        padded = np.pad(p_db, ((0, 0), (w_bins // 2, w_bins // 2 + 1)), mode="edge")
+        cs = np.cumsum(padded, axis=1, dtype=np.float32)
+        smooth_f = (cs[:, w_bins:] - cs[:, :-w_bins]) / np.float32(w_bins)
+        resid = p_db - smooth_f
+        resid -= np.mean(resid, axis=1, keepdims=True)
+        resid -= np.mean(resid, axis=0, keepdims=True)
+        norms = np.sqrt(np.sum(resid * resid, axis=0, keepdims=True)) + np.float32(1e-9)
+        normed = np.ascontiguousarray(resid / norms, dtype=np.float32)
+
+        gap_b = max(3, int(round(250.0 / df)))
+        span_b = max(48, int(round(3800.0 / df)))
+        k_lo_piv = max(gap_b + span_b, int(round(6500.0 / df)))
+        k_hi_piv = min(k_max - gap_b - span_b - 1, int(round(13000.0 / df)))
+        if k_hi_piv < k_lo_piv + 8:
+            return dict(neutral)
+
+        k_base = k_lo_piv - gap_b - span_b
+        k_stop = k_hi_piv + gap_b + span_b
+        sub_n = normed[:, k_base:k_stop]
+        gram = sub_n.T @ sub_n
+        pivs = np.arange(k_lo_piv - k_base, k_hi_piv - k_base + 1, dtype=np.intp)[:, None]
+        d_idx = np.arange(span_b, dtype=np.intp)[None, :]
+        c_mat = gram[pivs - gap_b - 1 - d_idx, pivs + gap_b + d_idx]
+
+        p_w = min(span_b, max(24, int(round(1600.0 / df))))
+        cs_v = np.cumsum(np.pad(c_mat, ((0, 0), (1, 0))), axis=1, dtype=np.float32)
+        piv_scores = np.max((cs_v[:, p_w:] - cs_v[:, :-p_w]) / np.float32(p_w), axis=1)
+
+        z_fold, _, mx_fold = _robust_z_peak(piv_scores, min_scale=1e-2)
+        f0_hz = float((k_lo_piv + int(np.argmax(piv_scores))) * df)
+        detected = bool(
+            (mx_fold >= 0.31 and z_fold >= 8.0)
+            or (mx_fold >= 0.22 and z_fold >= 21.0)
+        )
+        return {
+            "spectral_folding_detected": detected,
+            "spectral_folding_corr": round(float(mx_fold), 4) if math.isfinite(mx_fold) else 0.0,
+            "spectral_folding_z": round(float(z_fold), 2) if math.isfinite(z_fold) else 0.0,
+            "spectral_folding_pivot_hz": (
+                round(f0_hz, 1) if (mx_fold > 0.0 and math.isfinite(f0_hz)) else 0.0
+            ),
+        }
+    except Exception as exc:
+        return {**neutral, "folding_detector_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _probe_spectral_folding_from_chosen(
+    chosen, mc_pair, sr, is_dsd=False, is_stationary=False
+):
+    """Post-STFT stage 3c: single-block & Hi-Res 2D spectral folding probe."""
+    neutral = {
+        "spectral_folding_detected": False,
+        "spectral_folding_corr": 0.0,
+        "spectral_folding_z": 0.0,
+        "spectral_folding_pivot_hz": 0.0,
+    }
+    sr_int = int(sr or 0)
+    if is_dsd or is_stationary or sr_int < 41000 or not chosen:
+        return dict(neutral)
+    ranked = sorted(
+        chosen, key=lambda it: (len(it[4]) >= 32768, it[0]), reverse=True
+    )
+    sig0, eff_sr0 = _extract_mid_and_decimate_for_probe(ranked[0][4], mc_pair, sr_int)
+    if sig0 is None or eff_sr0 == 0:
+        return dict(neutral)
+    return _detect_spectral_folding_2d(sig0, eff_sr0)
 
 
 def _compute_preecho_and_mgd(chosen, mc_pair, sr):
@@ -4723,11 +5129,37 @@ class _SpectralAccumulator:
             if cur_iqr > 350.0:
                 spectrum["iqr_corte_hz"] = 350.0
         if (self.sr >= 32000
-                and ceiling_val >= 14500
+                and ceiling_val >= 5500
                 and spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value
                 and not spectrum.get("mdct_lattice_detected")):
             spectrum.update(
                 _probe_sbr_qmf_from_chosen(chosen, mc_pair, self.sr, ceiling_val)
+            )
+        if (self.sr >= 41000
+                and ceiling_val >= 5500
+                and not spectrum.get("es_transferencia_dsd")):
+            spectrum.update(
+                _probe_neural_vocoder_from_chosen(
+                    chosen,
+                    mc_pair,
+                    self.sr,
+                    is_dsd=bool(spectrum.get("es_transferencia_dsd")),
+                )
+            )
+        if (self.sr >= 41000
+                and ceiling_val >= 8500
+                and not spectrum.get("es_transferencia_dsd")
+                and not spectrum.get("es_estacionario")
+                and not spectrum.get("sbr_qmf_detectado")
+                and not spectrum.get("sospecha_excitador_armonico")):
+            spectrum.update(
+                _probe_spectral_folding_from_chosen(
+                    chosen,
+                    mc_pair,
+                    self.sr,
+                    is_dsd=bool(spectrum.get("es_transferencia_dsd")),
+                    is_stationary=bool(spectrum.get("es_estacionario")),
+                )
             )
         if self._track_quiet_24 and self._quiet_block is not None:
             spectrum.update(

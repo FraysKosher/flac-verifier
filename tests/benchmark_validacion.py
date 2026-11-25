@@ -1,8 +1,9 @@
-"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 16.0).
+"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 17.0).
 
-Builds 320 tracks (140 authentic across 14 genuine mastering/archival/piano/
-percussive/synth families and 180 fakes across 25 real-encoder, AC-3/E-AC-3,
-fractional-delay laundered TDAC, Hi-Res ultrasonic-masked transcode, SBR,
+Builds 340 tracks (140 authentic across 14 genuine mastering/archival/piano/
+percussive/synth families and 200 fakes across 27 real-encoder, AC-3/E-AC-3,
+fractional-delay laundered TDAC, Hi-Res ultrasonic-masked transcode, neural
+vocoder/AI-spliced MDCT, time-domain spectral-folding BWE, dark SBR, SBR,
 subband, KBD-asymmetric, upscale and 24/32-bit forensic families) with fixed
 deterministic seeds, runs the engine on every track, and reports the confusion
 matrix, sensitivity, specificity, Wilson 95% confidence intervals, per-family
@@ -19,7 +20,7 @@ equivalents keep the benchmark runnable in minimal CI environments.
 Without `--check`, updates the validation tables in `docs/VALIDATION.md`,
 `README.md` and `docs/COMPARISON.md` and requires sensitivity >= 95%,
 specificity >= 95% and album coherence. With `--check`, runs non-mutating and
-requires 100% pass across all 320 tracks plus album coherence.
+requires 100% pass across all 340 tracks plus album coherence.
 """
 import argparse
 from concurrent.futures import ProcessPoolExecutor
@@ -437,6 +438,109 @@ def _mdct512_ac3_roundtrip(x, sr=44100, zero_prob=0.45, seed=23):
     return y / (np.max(np.abs(y)) * 1.14)
 
 
+def _neural_vocoder_comb(sr_in=48000, df_comb=100.0, duration=4.5, seed=8500):
+    """Authentic <=15.2 kHz music + phase-coherent periodic HF vocoder comb."""
+    rng = np.random.default_rng(seed)
+    n = int(sr_in * duration)
+    t = np.arange(n, dtype=np.float64) / float(sr_in)
+    base = track_reference(sr_in, duration=duration, seed=seed + 17)
+    low = signal.sosfilt(
+        signal.butter(8, 15200.0, btype="low", fs=sr_in, output="sos"),
+        base, axis=0,
+    )
+    env = 0.45 + 0.55 * (np.sin(2.0 * np.pi * (1.6 + 0.2 * (seed % 4)) * t) ** 2)
+    comb = np.zeros((n, 2), dtype=np.float64)
+    k_start = int(math.ceil(15600.0 / df_comb))
+    k_end = int(math.floor(min(21500.0, sr_in * 0.46) / df_comb))
+    for k in range(k_start, k_end + 1):
+        fk = k * df_comb
+        ph = rng.uniform(0.0, 2.0 * np.pi)
+        amp = 0.018 * (10.0 ** (-0.35 * (fk - 15600.0) / 1000.0))
+        comb[:, 0] += amp * np.cos(2.0 * np.pi * fk * t + ph)
+        comb[:, 1] += amp * np.cos(2.0 * np.pi * fk * t + ph + 0.15)
+    mix = low + comb * env[:, None]
+    return mix / (np.max(np.abs(mix)) * 1.12)
+
+
+def _ai_spliced_mdct1024(x, sr=44100, seed=8550):
+    """MDCT-1024 KBD base quantized in 8.2-15.4 kHz + smooth incoherent HF splice."""
+    rng = np.random.default_rng(seed)
+    w = _get_kbd_2048()
+    nyq = sr / 2.0
+    k_lo = int(8200.0 / nyq * 1024)
+    k_hi = int(15400.0 / nyq * 1024)
+    out = []
+    for ch in range(x.shape[1]):
+        padded = np.pad(x[:, ch].astype(np.float32), (2048, 2048))
+        n_fr = (padded.size - 2048) // 1024
+        frames = np.lib.stride_tricks.sliding_window_view(padded, 2048)[::1024][:n_fr]
+        c = _fast_mdct_f32(frames, w)
+        mask = rng.random((n_fr, k_hi - k_lo)) < 0.45
+        c[:, k_lo:k_hi] = np.where(mask, 0.0, c[:, k_lo:k_hi] * np.sqrt(1.0 / 0.55))
+        c[:, k_hi:] = 0.0
+        rec = _imdct_overlap_add(c, w)
+        out.append(rec[2048 + 41 : 2048 + 41 + len(x)])
+    base_m = np.column_stack(out).astype(np.float64)
+    hf_incoh = signal.sosfilt(
+        signal.butter(6, [15600.0, min(21700.0, sr * 0.49)], btype="band", fs=sr, output="sos"),
+        rng.standard_normal(base_m.shape), axis=0,
+    )
+    hf_incoh *= (10.0 ** (-26.0 / 20.0)) / (np.std(hf_incoh) + 1e-12)
+    mix = base_m + hf_incoh
+    return mix / (np.max(np.abs(mix)) * 1.12)
+
+
+def _spectral_folding_bwe(sr_in=48000, pivot_hz=8000.0, duration=4.5, seed=8600):
+    """Non-stationary <=pivot_hz music + time-domain folded upper band + HF tail."""
+    rng = np.random.default_rng(seed)
+    n = int(sr_in * duration)
+    t = np.arange(n, dtype=np.float64) / float(sr_in)
+    sig = track_reference(sr_in, duration=duration, seed=seed + 13)
+    for idx_v, f_base in enumerate((1850.0, 3100.0, 4600.0, 6150.0)):
+        burst = np.exp(-(((t * (1.7 + 0.4 * idx_v)) % 1.0) / 0.18))
+        mod = 1.0 + 0.18 * np.sin(2.0 * np.pi * (1.3 + 0.4 * idx_v) * t + idx_v)
+        phase = 2.0 * np.pi * np.cumsum(f_base * mod) / float(sr_in)
+        sig[:, 0] += 0.12 * burst * np.sin(phase)
+        sig[:, 1] += 0.12 * burst * np.cos(phase)
+    low = signal.sosfilt(
+        signal.butter(10, pivot_hz - 200.0, btype="low", fs=sr_in, output="sos"),
+        sig, axis=0,
+    )
+    carrier = 2.0 * np.cos(2.0 * np.pi * (2.0 * pivot_hz) * t)[:, None]
+    folded = signal.sosfilt(
+        signal.butter(6, [pivot_hz + 250.0, min(15800.0, sr_in * 0.45)], btype="band", fs=sr_in, output="sos"),
+        low * carrier, axis=0,
+    )
+    tail = signal.sosfilt(
+        signal.butter(4, [15800.0, min(21200.0, sr_in * 0.46)], btype="band", fs=sr_in, output="sos"),
+        rng.standard_normal((n, 2)), axis=0,
+    )
+    tail *= (10.0 ** (-34.0 / 20.0)) / (np.std(tail) + 1e-12)
+    mix = low + folded * 0.45 + tail
+    return mix / (np.max(np.abs(mix)) * 1.12)
+
+
+def _dark_piano_seamless_sbr(sr=44100, duration=5.0, seed=8660):
+    """Dark solo-piano track (techo_hz < 14.5 kHz) with seamless QMF SBR patch."""
+    piano = solo_piano_discrete(sr, duration=duration, target_ceiling_hz=10400.0, noise_shaped=False, seed=seed)
+    n_fft, hop = 2048, 1024
+    df = sr / float(n_fft)
+    k_cross = int(11500.0 / df)
+    k_top = int(18000.0 / df)
+    patch_w = k_top - k_cross
+    k_src = int(5000.0 / df)
+    out = np.zeros_like(piano)
+    for ch in range(2):
+        _, _, z_st = signal.stft(piano[:, ch], fs=sr, nperseg=n_fft, noverlap=n_fft - hop)
+        z_out = z_st.copy()
+        z_out[k_cross:, :] *= 1e-4
+        src_p = z_st[k_src : k_src + patch_w, :]
+        z_out[k_cross : k_cross + patch_w, :] = src_p * (10.0 ** (-18.0 / 20.0))
+        _, rec = signal.istft(z_out, fs=sr, nperseg=n_fft, noverlap=n_fft - hop)
+        out[:, ch] = rec[: len(piano)]
+    return out / (np.max(np.abs(out)) * 1.12)
+
+
 def _save(path, x, sr, subtype):
     sf.write(path, np.clip(x, -0.99, 0.99), sr, subtype=subtype)
 
@@ -465,7 +569,7 @@ def _ffmpeg_encode_decode(wav_in, out_flac, lossy_ext, codec_args, out_sr=None):
                 pass
 
 
-# ─── DATASET (n = 320: 140 authentic + 180 fake) ────────────────────────────
+# ─── DATASET (n = 340: 140 authentic + 200 fake) ────────────────────────────
 
 def create_dataset(directory):
     """Returns [(path, authentic_bool, class_name, backend)] for n = 320 tracks."""
@@ -1019,6 +1123,64 @@ def create_dataset(directory):
         _save(p, x_sh, sr, "PCM_16")
         cases.append((p, False, "FAKE 25: Fractional-delay (+0.25/+0.50) AAC/MP3 320", backend))
 
+    # 26. Neural vocoder SR comb & AI-spliced MDCT (44.1/48/96k)
+    for i in range(10):
+        p = os.path.join(directory, f"fake_neural_vocoder_{i:02d}.flac")
+        if i < 2:
+            x_v = _neural_vocoder_comb(48000, 100.0, 4.5, 8500 + i)
+            _save(p, x_v, 48000, "PCM_16")
+            backend = "native_dsp"
+        elif i < 4:
+            x_v = _neural_vocoder_comb(48000, 100.0, 4.5, 8510 + i)
+            x_r = signal.resample_poly(x_v, 147, 160, axis=0)
+            _save(p, x_r, sr, "PCM_16")
+            backend = "native_dsp"
+        elif i < 6:
+            x_v = _neural_vocoder_comb(sr, sr / 512.0, 4.5, 8520 + i)
+            _save(p, x_v, sr, "PCM_16")
+            backend = "native_dsp"
+        elif i < 8:
+            rng_v = np.random.default_rng(8530 + i)
+            x_v = _neural_vocoder_comb(48000, 100.0, 4.5, 8530 + i)
+            x_96 = signal.resample_poly(x_v, 2, 1, axis=0)
+            u_v = signal.sosfilt(
+                signal.butter(6, [23500.0, 43000.0], btype="band", fs=96000, output="sos"),
+                rng_v.standard_normal(x_96.shape), axis=0,
+            )
+            u_v *= (10.0 ** (-58.0 / 20.0)) / (np.std(u_v) + 1e-12)
+            _save(p, x_96 + u_v, 96000, "PCM_24")
+            backend = "native_dsp"
+        else:
+            x_sp = _ai_spliced_mdct1024(track_reference(sr, 5.0, 8540 + i), sr, 8550 + i)
+            _save(p, x_sp, sr, "PCM_16")
+            backend = "native_dsp"
+        cases.append((p, False, "FAKE 26: Neural vocoder SR comb & AI-spliced MDCT (44.1/48/96k)", backend))
+
+    # 27. Time-domain spectral-folding BWE & dark SBR (44.1/48/96k)
+    for i in range(10):
+        p = os.path.join(directory, f"fake_folding_darksbr_{i:02d}.flac")
+        if i < 3:
+            x_f = _spectral_folding_bwe(48000, 8000.0, 4.5, 8600 + i)
+            _save(p, x_f, 48000, "PCM_16")
+        elif i < 5:
+            x_f = _spectral_folding_bwe(48000, 8000.0, 4.5, 8610 + i)
+            x_r = signal.resample_poly(x_f, 147, 160, axis=0)
+            _save(p, x_r, sr, "PCM_16")
+        elif i < 7:
+            rng_f = np.random.default_rng(8620 + i)
+            x_f = _spectral_folding_bwe(48000, 8000.0, 4.5, 8620 + i)
+            x_96 = signal.resample_poly(x_f, 2, 1, axis=0)
+            u_f = signal.sosfilt(
+                signal.butter(6, [23500.0, 43000.0], btype="band", fs=96000, output="sos"),
+                rng_f.standard_normal(x_96.shape), axis=0,
+            )
+            u_f *= (10.0 ** (-58.0 / 20.0)) / (np.std(u_f) + 1e-12)
+            _save(p, x_96 + u_f, 96000, "PCM_24")
+        else:
+            x_ds = _dark_piano_seamless_sbr(sr, 5.0, 8660 + i)
+            _save(p, x_ds, sr, "PCM_16")
+        cases.append((p, False, "FAKE 27: Time-domain spectral-folding BWE & dark SBR (44.1/48/96k)", "native_dsp"))
+
     for w_path in wav_refs:
         if os.path.exists(w_path):
             os.remove(w_path)
@@ -1128,7 +1290,7 @@ def _section(rows, tp, tn, fp, fn, sens, spec, ic_sens, ic_spec, coherence_ok):
 
 Generated by `tests/benchmark_validacion.py` (fixed seed `{SEED}`, engine `{motor_flac.ENGINE_VERSION}`):
 - **{n_auth} authentic controls** across 14 families: CD 16/44.1, Studio 24/48, Hi-Res analogue 24/96, Hi-Res ultrasonic 24/192, DSD64 24/88.2, DSD128 24/192, Acoustic 18 kHz, Solo low-centroid (<15 kHz), Vintage 1950s archival tape (<14 kHz), Vinyl / Cassette / Dense polyphonic synth transfers, Stationary electronic synth drones & genuine 32-bit `PCM_32` masters, Genuine 24/44.1 warm high-DR studio masters, Clean solo piano (5.8-10.2 kHz discrete harmonics with TPDF & noise-shaped dither), and Percussive beat-locked studio mixes.
-- **{n_fake} fake & adversarial tracks** across 25 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Fractional-delay (`+0.25`/`+0.50` sample) laundered AAC 320 & MP3 320 fullband (`P1-1`), Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
+- **{n_fake} fake & adversarial tracks** across 27 families: MP3 (`libmp3lame` 128k / V0 / 320k fullband `-cutoff 22050`, `libshine` 320k), MP2 384k, AAC-LC (128k / 320k fullband `-cutoff 22000`, MediaFoundation 192k), Vorbis (`-q4`, `-q9` 320k fullband, plus 2 unconstrained `-q10` ~500k boundary probes), Opus (96k / 256k fullband `CELT-960`), WMAv2 192k, AC-3 & E-AC-3 16-bit (`MDCT-512`), Hi-Res 96 kHz transcodes masked with ultrasonic hiss, Fractional-delay (`+0.25`/`+0.50` sample) laundered AAC 320 & MP3 320 fullband (`P1-1`), Neural vocoder SR comb & AI-spliced `MDCT-1024` (44.1/48/96k), Time-domain spectral-folding BWE & dark solo-piano seamless SBR (44.1/48/96k), Seamless HE-AAC QMF SBR (0 dB notch at 44.1 & 96 kHz), Musepack SV7/SV8 `PQMF-32`, Vintage 1950s->MP3 transcodes, Sinc/Aliasing upscales, 24-bit zero-pad / gain-comb / boundary micro-dither / noise-shaped 16-in-24 dither, and MPEG-4 AAC `KBD-1024` asymmetric stereo & 16-in-32 container bloat.
 
 | Ground truth | Detected as fake | Detected as authentic |
 |---|---:|---:|

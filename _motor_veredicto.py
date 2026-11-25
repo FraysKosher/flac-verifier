@@ -65,6 +65,8 @@ class FindingCode(str, Enum):
     PARTIAL_LSBS = "partial_lsbs"
     GAIN_COMB_24 = "gain_comb_24"
     NOISE_SHAPED_16_IN_24 = "noise_shaped_16_in_24"
+    NEURAL_VOCODER_ARTIFACTS = "neural_vocoder_artifacts"
+    SPECTRAL_FOLDING_BWE = "spectral_folding_bwe"
     ALBUM_LOSSY_CONSISTENCY = "album_lossy_consistency"
 
 
@@ -273,7 +275,7 @@ class _ScoreLedger:
 
 
 def _has_non_opus_codec_signature(spectrum) -> bool:
-    """True when an explicit non-Opus filterbank, SBR, or MP3 sfb21 signature is present."""
+    """True when an explicit non-Opus filterbank, SBR, neural BWE, or MP3 sfb21 signature is present."""
     lattice_family = spectrum.get("mdct_lattice_family") or ""
     return bool(
         (
@@ -284,6 +286,8 @@ def _has_non_opus_codec_signature(spectrum) -> bool:
         )
         or spectrum.get("islas_mdct_sfb21")
         or spectrum.get("sbr_qmf_detectado")
+        or spectrum.get("neural_vocoder_detected")
+        or spectrum.get("spectral_folding_detected")
     )
 
 
@@ -342,6 +346,8 @@ def _is_codec_clean_core(spectrum, category, rel_cutoff) -> bool:
         and not spectrum.get("sbr_qmf_detectado")
         and not spectrum.get("modulacion_psicoacustica_20k")
         and not spectrum.get("mdct_lattice_detected")
+        and not spectrum.get("neural_vocoder_detected")
+        and not spectrum.get("spectral_folding_detected")
         and (spectrum.get("iqr_corte_hz") or 0.0) <= 550.0
         and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.10
     )
@@ -746,6 +752,33 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 family=EvidenceFamily.FILTERBANK_LATTICE,
                 code=FindingCode.LAPPED_CODEC_LATTICE,
             )
+        if spectrum.get("neural_vocoder_detected"):
+            ledger.penalize(
+                f"AI super-resolution / neural vocoder synthesis signature: "
+                f"periodic high-frequency spectral comb ({spectrum.get('vocoder_comb_spacing_hz', 0.0):.1f} Hz spacing, "
+                f"Z = {spectrum.get('vocoder_hf_comb_z', 0.0):.1f} sigma) with phase-locked upper band "
+                f"(phase coherence delta +{spectrum.get('vocoder_phase_coh_diff', 0.0):.2f})",
+                0.55,
+                blocks_max_verdict=True,
+                family=EvidenceFamily.FILTERBANK_LATTICE,
+                tier=EvidenceTier.HARD_PROOF,
+                code=FindingCode.NEURAL_VOCODER_ARTIFACTS,
+            )
+        if (spectrum.get("spectral_folding_detected")
+                and not spectrum.get("sbr_qmf_detectado")
+                and not spectrum.get("sospecha_excitador_armonico")):
+            ledger.penalize(
+                f"Artificial bandwidth extension / time-domain spectral folding: "
+                f"upper band mirrors lower-band trajectories around "
+                f"{spectrum.get('spectral_folding_pivot_hz', 0.0)/1000.0:.2f} kHz "
+                f"(r = {spectrum.get('spectral_folding_corr', 0.0):.2f}, "
+                f"Z = {spectrum.get('spectral_folding_z', 0.0):.1f} sigma)",
+                0.55,
+                blocks_max_verdict=True,
+                family=EvidenceFamily.SPECTRAL_ENVELOPE,
+                tier=EvidenceTier.HARD_PROOF,
+                code=FindingCode.SPECTRAL_FOLDING_BWE,
+            )
 
         # Steep 20.00 kHz shelf (libopus fullband or high-rate codec low-pass).
         # In isolation it is indistinguishable from a mastering anti-alias
@@ -995,6 +1028,7 @@ def _deserves_album_coherence(result):
                   "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
                   "sospecha_excitador_armonico", "sbr_qmf_detectado",
                   "modulacion_psicoacustica_20k", "mdct_lattice_detected",
+                  "neural_vocoder_detected", "spectral_folding_detected",
                   "noise_shaped_16_in_24"):
         if spectrum.get(key):
             return False
@@ -1086,9 +1120,12 @@ def _deserves_album_lossy_coherence(result):
 
 def _is_lossy_codec_quorum_track(result):
     """True when a 44.1/48 kHz track carries either a confirmed lapped-codec
-    lattice or a sharp ~20 kHz (78-87% Nyquist) codec brickwall in 48 kHz."""
+    lattice, neural vocoder/folding BWE proof, or a sharp ~20 kHz (78-87% Nyquist)
+    codec brickwall in 48 kHz."""
     spectrum = result.get("esp") or {}
-    if spectrum.get("mdct_lattice_detected"):
+    if (spectrum.get("mdct_lattice_detected")
+            or spectrum.get("neural_vocoder_detected")
+            or spectrum.get("spectral_folding_detected")):
         return True
     if (spectrum.get("sospecha_corte_opus_20k")
             and result.get("veredicto") in (
@@ -1185,6 +1222,7 @@ def _is_clean_batch_track(result):
         "clipping_reconstruccion_lossy", "islas_mdct_sfb21",
         "sospecha_excitador_armonico", "sbr_qmf_detectado",
         "modulacion_psicoacustica_20k", "mdct_lattice_detected",
+        "neural_vocoder_detected", "spectral_folding_detected",
         "noise_shaped_16_in_24",
     ):
         if spectrum.get(key):
@@ -1325,10 +1363,19 @@ def _evaluate_album_quorum(valid_tracks) -> AlbumQuorumDecision:
         for r in lattice_ref
         if (r.get("esp") or {}).get("mdct_lattice_family")
     ]
+    neural_count = sum(
+        1 for r in lattice_ref
+        if (r.get("esp") or {}).get("neural_vocoder_detected")
+        or (r.get("esp") or {}).get("spectral_folding_detected")
+    )
     dominant_family = (
         Counter(explicit_families).most_common(1)[0][0]
         if explicit_families
-        else "20 kHz lossy/Opus"
+        else (
+            "neural vocoder/BWE"
+            if neural_count * 2 >= len(lattice_ref)
+            else "20 kHz lossy/Opus"
+        )
     )
     lossy_candidates = []
     for r in valid_tracks:
@@ -1526,6 +1573,19 @@ def forensic_evidence(result):
         family = spectrum.get("mdct_lattice_family") or "MDCT"
         evidence.append(f"Lapped transform quantization lattice ({family}): "
                           f"Z = {spectrum.get('mdct_lattice_snr', 0.0):.1f} sigma")
+    if spectrum.get("neural_vocoder_detected"):
+        evidence.append(
+            f"Neural vocoder synthesis comb ({spectrum.get('vocoder_comb_spacing_hz', 0.0):.1f} Hz, "
+            f"Z = {spectrum.get('vocoder_hf_comb_z', 0.0):.1f} sigma, "
+            f"phase coherence +{spectrum.get('vocoder_phase_coh_diff', 0.0):.2f})"
+        )
+    if spectrum.get("spectral_folding_detected"):
+        evidence.append(
+            f"Time-domain spectral folding BWE around "
+            f"{spectrum.get('spectral_folding_pivot_hz', 0.0)/1000.0:.2f} kHz "
+            f"(r = {spectrum.get('spectral_folding_corr', 0.0):.2f}, "
+            f"Z = {spectrum.get('spectral_folding_z', 0.0):.1f} sigma)"
+        )
     forensic = bdi.get("forense_bits") or {}
     bits_container = int((result.get("meta") or {}).get("bits_per_sample") or 24)
     if forensic.get("es_padded_16_en_24"):

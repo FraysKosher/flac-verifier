@@ -71,6 +71,7 @@ from _motor_espectral import (
     _spectral_metrics, analyze_spectrum, render_spectrogram_fast,
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
     _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
+    _detect_neural_vocoder_artifacts, _detect_spectral_folding_2d,
     _get_kbd_2048, _get_kbd_512_ac3, _get_sine_2048, _get_vorbis_2048, _get_pqmf_fast,
     _robust_z_peak, _select_continuous_subwindow, _select_hf_subwindow_candidates,
     _save_spectrogram as _spectrogram_save,
@@ -97,7 +98,20 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "16.0"
+ENGINE_VERSION = "17.0"
+# 17.0: Neural super-resolution & AI bandwidth-extension forensic pillars:
+#       - Guarded low-ceiling SBR QMF unlock (5.5-14.5 kHz entry floor with
+#         selectivity gate r >= 0.34 or Z >= 15.0) catching dark solo-piano
+#         seamless HE-AAC SBR transcodes.
+#       - Sub-splice mid-band MDCT-1024 lattice probe (8.5-14.8 kHz, Z >= 10.5
+#         integer / >= 11.0 fractional) catching AI-BWE/inpainting splices
+#         above a lossy AAC/Vorbis base without polluting sub-threshold SNR.
+#       - Neural vocoder transposed-convolution detector (high-band phase
+#         coherence delta + multi-band spectral-comb quefrency Z across
+#         44.1/48 kHz and 2:1/4:1 decimated Hi-Res rates, zero scipy imports).
+#       - 2D Gram time-domain spectral-folding BWE detector across dynamic
+#         4-16 kHz pivot bands (36-bin mirrored trajectories via O(1) BLAS
+#         SGEMM) with multi-block borderline fallback.
 # 16.0: Calibration audit on full-length dev corpus (610 tracks / 19,491 rows):
 #       - Isolated narrowband spike filter (_ceiling_without_isolated_spike)
 #         stripping <= 2 narrowband interference spikes (e.g. 15.734 kHz NTSC
@@ -308,7 +322,7 @@ ENGINE_VERSION = "16.0"
 # Version of the cache entry layout and of the metrics it stores. It is part of
 # the cache key, so improving the detection formulas recomputes old entries
 # instead of serving verdicts produced by an older engine.
-CACHE_SCHEMA_VERSION = "2.9.0"
+CACHE_SCHEMA_VERSION = "2.10.0"
 
 # Spectrogram presentation (affects only the PNG, never the metrics).
 
@@ -1060,6 +1074,8 @@ class _BlockAnalysis:
                 or spectrum.get("sbr_qmf_detectado")
                 or spectrum.get("modulacion_psicoacustica_20k")
                 or spectrum.get("mdct_lattice_detected")
+                or spectrum.get("neural_vocoder_detected")
+                or spectrum.get("spectral_folding_detected")
                 or (spectrum.get("iqr_corte_hz") or 0.0) > 1800.0
                 or (spectrum.get("ratio_huecos_mdct") or 0.0) > 0.10
             )

@@ -148,11 +148,13 @@ with `error` and the process continues until it emits `fin`.
 | `esp.corr_env_excitador` | Correlation between the 8–14 kHz envelope and the high band |
 | `esp.muesca_excitador_db` | Depth of the notch left where the original high band was cut |
 | `esp.sospecha_excitador_armonico` | `true` when correlation > 0.92 **and** notch ≥ 15 dB: harmonic exciter / notched SBR signature |
-| `esp.sbr_qmf_detectado` / `esp.sbr_qmf_correlacion` / `esp.sbr_qmf_z` | Local-whitened additive QMF subband transposition detector (`3.5–9.5 kHz` shift sweep) for seamless HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates) |
+| `esp.sbr_qmf_detectado` / `esp.sbr_qmf_correlacion` / `esp.sbr_qmf_z` | Local-whitened additive QMF subband transposition detector (`3.5–9.5 kHz` shift sweep) for seamless HE-AAC v1/v2 SBR without a boundary notch (CD and Hi-Res rates, including guarded low-ceiling `5.5–14.5 kHz` tracks requiring `r >= 0.34` or `Z >= 15.0`) |
+| `esp.neural_vocoder_detected` / `vocoder_phase_coh_diff` / `vocoder_hf_comb_z` / `vocoder_comb_spacing_hz` | Neural vocoder transposed-convolution detector: upper-band phase coherence delta (`14–21.5 kHz` vs `1–7 kHz`), peak log-spectrum comb quefrency Z-score (`50–250 Hz` spacing), and detected comb spacing in Hz (`44.1/48 kHz` and decimated Hi-Res) |
+| `esp.spectral_folding_detected` / `spectral_folding_corr` / `spectral_folding_z` / `spectral_folding_pivot_hz` | 2D Gram time-domain spectral-folding BWE detector: peak mirrored lower/upper trajectory Pearson correlation, robust Z-score, and estimated pivot frequency in Hz across `4–16 kHz` |
 | `esp.es_estacionario` | `true` for a stationary harmonic/tonal programme (`std(env_4_11) < 1.8 dB` and `13.5–19.5 kHz` tonal crest `P95 - P50 >= 12 dB`), protecting sustained electronic synth drones from false subband-hole or modulation flags |
 | `esp.familias_evidencia_lossy` / `esp.corroboracion_multifamilia` | Independent lossy evidence families triggered (`filterbank_lattice`, `spectral_cutoff`, `spectral_envelope`, `temporal_modulation`, `stereo_collapse`, `bit_depth_container`) and whether multi-family or hard-proof corroboration holds |
 | `esp.finding_codes` | Typed canonical `FindingCode` identifiers emitted alongside `problemas` (cleared on album-coherence rescue; appends `album_lossy_consistency` on album-coherence lossy conviction) |
-| `esp.psycho_detector_error` | Optional diagnostic string emitted only if the streaming psychoacoustic STFT accumulator hits an internal runtime error (omitted on clean runs) |
+| `esp.psycho_detector_error` | Optional diagnostic string emitted only if the streaming psychoacoustic STFT accumulator hits an internal runtime error (omitted on clean runs); similarly `vocoder_detector_error` and `folding_detector_error` appear only on runtime exceptions |
 | `esp.sospecha_corte_opus_20k` | `true` for a 20.00 kHz cliff (> 45 dB between 19.85 and 20.15 kHz) with a flat 18–19.7 kHz band |
 | `esp.caida_opus_20k_db` | Depth of that cliff in dB |
 | `esp.clipping_eventos` / `clipping_longitud_media` | Saturation runs and their mean length |
@@ -213,9 +215,11 @@ contribute.
 | MDCT holes | 0.25 | > 10 % of high-energy frames with a 600 Hz hole (does not block) |
 | sfb21 islands | 0.25 | Intermittent 16–20.5 kHz islands (blocks) |
 | Upper-band 20 kHz modulation | 0.30 | Frame-level drop and psychoacoustic modulation in 20.2–21.8 kHz (blocks) |
-| Lapped transform / subband lattice | 0.55 | Phase-locked `MDCT-1024`, `PQMF-576`, `MDCT-512`, `PQMF-32` or `CELT-960` lattice (`mdct_lattice_detected`, blocks; also runs on `88.2–192 kHz` via pure-NumPy decimation) |
+| Lapped transform / subband lattice | 0.55 | Phase-locked `MDCT-1024` (including mid-band `8.5–14.8 kHz` sub-splice probe), `PQMF-576`, `MDCT-512`, `PQMF-32` or `CELT-960` lattice (`mdct_lattice_detected`, blocks; also runs on `88.2–192 kHz` via pure-NumPy decimation) |
+| Neural vocoder synthesis comb | 0.55 | Periodic HF spectral comb (`50–250 Hz`) with phase-locked upper band (`neural_vocoder_detected`, `HARD_PROOF`, blocks) |
+| Time-domain spectral folding BWE | 0.55 | Mirrored upper/lower spectral trajectories around a `4–16 kHz` pivot (`spectral_folding_detected`, `HARD_PROOF`, blocks; suppressed when SBR/exciter already fired) |
 | Harmonic exciter / notched SBR | 0.30 | Envelope correlation > 0.92 and notch ≥ 15 dB (blocks) |
-| Seamless QMF SBR | 0.55 | Additive QMF subband transposition (`sbr_qmf_detectado`, blocks) |
+| Seamless QMF SBR | 0.55 | Additive QMF subband transposition (`sbr_qmf_detectado`, blocks; guarded below `14.5 kHz` ceiling) |
 | Opus 20 kHz cliff | 0.20 | 20.00 kHz cliff with other codec evidence (does not block) |
 | Gibbs clipping | 0.25 | 1–2 sample clipping events with a band limit < 20.5 kHz (does not block) |
 | 16-in-24 padding / micro-dither | 0.40 | Trailing zero bits or interior modulo-256 occupancy < 5 % (blocks) |
@@ -267,7 +271,14 @@ never aborts the analysis.
    `Vorbis -q10` (~500 kbps, half-CD bitrate), perceptual dead-zone zeroing
    vanishes across the 1,024 MDCT bins, and if a transcode is pitch-shifted,
    time-stretched or re-recorded through an analogue loop, the sample-level
-   phase lock is broken.
+   phase lock is broken. Similarly, while transposed-convolution neural vocoders
+   (HiFi-GAN / BigVGAN comb + phase lock), time-domain spectral-folding BWE, and
+   AI-spliced lossy bases (`8.5–14.8 kHz` `MDCT-1024`) are detected in Engine
+   `17.0`, a **pure full-track `iSTFT` neural vocoder without transposed
+   convolutions** (which synthesizes fresh incoherent high-frequency phase
+   directly in the STFT domain and re-synthesizes the entire lower band so no
+   lossy MDCT lattice or spectral folding survives) remains an open physical
+   limit without learned model weights.
 2. **CD master brickwall-filtered below 70 % of Nyquist:** a steep (> 18 dB/kHz)
    low-pass below 15.4 kHz without an analogue floor is scored as `PROBABLE
    UPSCALE`; genuine solo-acoustic (`decaimiento_acustico_suave`) and vintage
@@ -308,7 +319,7 @@ An entry is reused only if all three fingerprints match:
 | Key component | Fields checked |
 |---|---|
 | File identity | Size + modification time (`mtime_ns`) + **STREAMINFO MD5** |
-| Analysis parameters | `ENGINE_VERSION` (`"16.0"`), `CACHE_SCHEMA_VERSION` (`"2.9.0"`), analysis window parameters |
+| Analysis parameters | `ENGINE_VERSION` (`"17.0"`), `CACHE_SCHEMA_VERSION` (`"2.10.0"`), analysis window parameters |
 | Render fingerprint | `render_fingerprint()` and on-disk PNG existence |
 
 ---

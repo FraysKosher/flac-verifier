@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] - 2026-11-24
+
+### Added
+
+- **Neural vocoder transposed-convolution detector (`_detect_neural_vocoder_artifacts`, `_motor_espectral.py`, engine `17.0`)**:
+  detects periodic high-frequency spectral combs (`50–250 Hz` quefrency spacing,
+  `Z >= 8.5` or `>= 10.5`) paired with phase-locked upper-band STFT synthesis
+  (`phase_coh_diff >= 0.08` / `>= 0.04`, pure NumPy + `pypocketfft`, zero `scipy`
+  imports) across `44.1/48 kHz` and `2:1`/`4:1` integer-decimated Hi-Res
+  (`88.2–192 kHz`) tracks, with multi-block borderline fallback and `HARD_PROOF`
+  `FindingCode.NEURAL_VOCODER_ARTIFACTS` (`-0.55`).
+- **2D Gram time-domain spectral-folding BWE detector (`_detect_spectral_folding_2d`, `_motor_espectral.py`)**:
+  detects mirrored upper-band spectral trajectories around dynamic `4.0–16.0 kHz`
+  pivot frequencies via a single O(1) BLAS SGEMM Gram matrix (`36`-bin local
+  whitened reflection, `(r >= 0.31 and Z >= 8.0) or (r >= 0.22 and Z >= 21.0)`),
+  with Hi-Res integer decimation, multi-block borderline fallback, and
+  `HARD_PROOF` `FindingCode.SPECTRAL_FOLDING_BWE` (`-0.55`).
+- **Sub-splice mid-band `MDCT-1024` lattice probe (`_eval_lapped_codec_grid`, `_motor_espectral.py`)**:
+  reuses fullband `MDCT-1024` frames to inspect the untouched `8.5–14.8 kHz`
+  mid-band (`Z >= 10.5` integer / `>= 11.0` fractional) when AI bandwidth
+  extension splices smooth incoherent high frequencies above a lossy AAC/Vorbis
+  base, without feeding mid-band noise into sub-threshold `mdct_lattice_snr`.
+- **Guarded low-ceiling SBR QMF unlock (`_probe_sbr_qmf_from_chosen`, `_motor_espectral.py`)**:
+  lowered the seamless HE-AAC SBR entry floor from `14.5 kHz` to `5.5 kHz` with
+  a low-ceiling selectivity gate (`sbr_qmf_correlacion >= 0.34 or sbr_qmf_z >= 15.0`
+  when `techo_hz < 14.5 kHz`), catching dark solo-piano seamless SBR transcodes
+  while keeping zero false positives on genuine acoustic recordings.
+- **Expanded test & benchmark coverage**: added 2 deterministic forensic tests
+  (`test_61`–`test_62` in `tests/test_forense_riguroso.py`, bringing the suite
+  from **441** to **443 tests**) and expanded `tests/benchmark_validacion.py`
+  from **320** to **340 tracks** (**41** families: added `FAKE 26` neural vocoder
+  SR comb & AI-spliced `MDCT-1024` and `FAKE 27` time-domain spectral-folding
+  BWE & dark solo-piano SBR, **100.0% sensitivity / 100.0% specificity**).
+
+### Changed
+
+- **Engine, schema & version bump (`16.0` -> `17.0`, `CACHE_SCHEMA_VERSION` `2.9.0` -> `2.10.0`, version `2.12.0` -> `2.13.0`)**:
+  added 8 additive neutral keys to `esp` (`neural_vocoder_detected`,
+  `vocoder_phase_coh_diff`, `vocoder_hf_comb_z`, `vocoder_comb_spacing_hz`,
+  `spectral_folding_detected`, `spectral_folding_corr`, `spectral_folding_z`,
+  `spectral_folding_pivot_hz`), wired both flags into album coherence, quorum
+  guards, clipping attribution, and `forensic_evidence`, and synced all version
+  metadata and documentation.
+
 ## [2.12.0] - 2026-11-24
 
 ### Added

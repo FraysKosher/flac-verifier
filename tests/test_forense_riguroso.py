@@ -3876,8 +3876,8 @@ class test_forensic_rigorous(unittest.TestCase):
         self.assertEqual(iso_spec["finding_codes"], [motor_flac.FindingCode.LOW_SPECTRAL_CEILING.value])
         self.assertEqual(len(probs_iso), 1)
 
-        # 9. Invariant 2.7.0+: ALBUM_LOSSY_CONSISTENCY + psycho_detector_error
-        self.assertEqual(len(list(motor_flac.FindingCode)), 26)
+        # 9. Invariant 2.10.0+: FindingCode registry size (28) + ALBUM_LOSSY_CONSISTENCY + psycho_detector_error
+        self.assertEqual(len(list(motor_flac.FindingCode)), 28)
         lossy_dir = self.base_path / "schema270_lossy_album"
         lossy_dir.mkdir(parents=True, exist_ok=True)
         lossy_batch = [
@@ -4114,7 +4114,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
     def test_finding_code_emission_across_calculate_score(self):
         """Every calculate_score penalty emits its canonical FindingCode while notes emit none."""
         fc = motor_flac.FindingCode
-        self.assertEqual(len(list(fc)), 26)
+        self.assertEqual(len(list(fc)), 28)
 
         # Clean track with notes (low high/mid ratio, dual-mono, mastering limiter) emits zero codes.
         spec_clean = {
@@ -4262,7 +4262,12 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         self.assertIn(fc.STEREO_PHASE_COUPLING.value, spec_v15["finding_codes"])
         self.assertIn(fc.NOISE_SHAPED_16_IN_24.value, spec_v15["finding_codes"])
 
-        for flag_key in ("noise_shaped_16_in_24", "stereo_phase_coupling"):
+        for flag_key in (
+            "noise_shaped_16_in_24",
+            "stereo_phase_coupling",
+            "neural_vocoder_detected",
+            "spectral_folding_detected",
+        ):
             cand_res = {
                 "meta": {"sample_rate": 44100, "bits_per_sample": 24, "canales": 2},
                 "md5": {"estado": motor_flac.Md5Status.MATCH.value},
@@ -4279,6 +4284,71 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
                 "problemas": ["flagged"],
             }
             self.assertFalse(motor_flac._deserves_album_coherence(cand_res), flag_key)
+
+        # Engine 17.0 HARD_PROOF codes: NEURAL_VOCODER_ARTIFACTS & SPECTRAL_FOLDING_BWE
+        spec_v17 = {
+            "techo_hz": 21500,
+            "techo_rel_nyquist": 21500 / 22050.0,
+            "clase_corte": "no_cutoff",
+            "frecuencia_corte": None,
+            "distancia_nyquist": None,
+            "ratio_aplica": True,
+            "ratio": 0.18,
+            "var_alta_db": 12.0,
+            "separacion_stereo": 0.4,
+            "neural_vocoder_detected": True,
+            "vocoder_comb_spacing_hz": 100.0,
+            "vocoder_hf_comb_z": 12.4,
+            "vocoder_phase_coh_diff": 0.24,
+            "spectral_folding_detected": True,
+            "spectral_folding_corr": 0.52,
+            "spectral_folding_z": 18.5,
+            "spectral_folding_pivot_hz": 8000,
+        }
+        sc_v17, verd_v17, probs_v17 = motor_flac.calculate_score(
+            {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2},
+            spec_v17,
+            {"aplica": False},
+        )
+        self.assertEqual(verd_v17, motor_flac.Verdict.PROBABLE_UPSCALE.value)
+        self.assertEqual(len(spec_v17["finding_codes"]), len(probs_v17))
+        self.assertIn(fc.NEURAL_VOCODER_ARTIFACTS.value, spec_v17["finding_codes"])
+        self.assertIn(fc.SPECTRAL_FOLDING_BWE.value, spec_v17["finding_codes"])
+        ev_v17 = motor_flac.forensic_evidence({"meta": {"sample_rate": 48000, "bits_per_sample": 16}, "esp": spec_v17, "bdi": {}})
+        self.assertTrue(any("Neural vocoder synthesis comb" in line for line in ev_v17))
+        self.assertTrue(any("Time-domain spectral folding BWE" in line for line in ev_v17))
+
+        # Verify each Engine 17.0 code alone produces HARD_PROOF PROBABLE UPSCALE on a full-band 1.00-vote track
+        for single_key, exp_code in (
+            ("neural_vocoder_detected", fc.NEURAL_VOCODER_ARTIFACTS.value),
+            ("spectral_folding_detected", fc.SPECTRAL_FOLDING_BWE.value),
+        ):
+            spec_one = {
+                "techo_hz": 23500,
+                "techo_rel_nyquist": 23500 / 24000.0,
+                "clase_corte": "no_cutoff",
+                "frecuencia_corte": None,
+                "distancia_nyquist": None,
+                "ratio_aplica": True,
+                "ratio": 0.18,
+                "var_alta_db": 12.0,
+                "separacion_stereo": 0.4,
+                single_key: True,
+                "vocoder_comb_spacing_hz": 100.0,
+                "vocoder_hf_comb_z": 12.0,
+                "vocoder_phase_coh_diff": 0.20,
+                "spectral_folding_corr": 0.50,
+                "spectral_folding_z": 16.0,
+                "spectral_folding_pivot_hz": 8000,
+            }
+            sc_o, verd_o, _ = motor_flac.calculate_score(
+                {"sample_rate": 48000, "bits_per_sample": 16, "canales": 2},
+                spec_one,
+                {"aplica": False},
+            )
+            self.assertAlmostEqual(sc_o, 0.45, places=4)
+            self.assertEqual(verd_o, motor_flac.Verdict.PROBABLE_UPSCALE.value)
+            self.assertEqual(spec_one["finding_codes"], [exp_code])
 
     def test_typed_album_coherence_clearing_and_legacy_fallback(self):
         """Typed FindingCode gates rescue, clears codes on shallow copy, and preserves legacy fallback."""
@@ -4398,12 +4468,27 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         self.assertNotIn("sbr_detector_error", clean_sbr)
         clean_mdct = spectral._eval_lapped_codec_grid(sig, 44100)
         self.assertNotIn("mdct_detector_error", clean_mdct)
+        clean_voc = spectral._detect_neural_vocoder_artifacts(sig, 44100)
+        self.assertNotIn("vocoder_detector_error", clean_voc)
+        clean_fold = spectral._detect_spectral_folding_2d(sig, 44100)
+        self.assertNotIn("folding_detector_error", clean_fold)
 
         # Injected exception inside SBR detector.
         with mock.patch.object(spectral, "_rfft_f32", side_effect=RuntimeError("boom-sbr")):
             err_sbr = spectral._detect_sbr_qmf_replication(sig, 44100)
         self.assertIs(err_sbr["sbr_qmf_detectado"], False)
         self.assertEqual(err_sbr.get("sbr_detector_error"), "RuntimeError: boom-sbr")
+
+        # Injected exception inside neural vocoder & spectral folding detectors.
+        with mock.patch.object(spectral, "_rfft_f32", side_effect=RuntimeError("boom-voc")):
+            err_voc = spectral._detect_neural_vocoder_artifacts(sig, 44100)
+        self.assertIs(err_voc["neural_vocoder_detected"], False)
+        self.assertEqual(err_voc.get("vocoder_detector_error"), "RuntimeError: boom-voc")
+
+        with mock.patch.object(spectral, "_rfft_f32", side_effect=RuntimeError("boom-fold")):
+            err_fold = spectral._detect_spectral_folding_2d(sig, 44100)
+        self.assertIs(err_fold["spectral_folding_detected"], False)
+        self.assertEqual(err_fold.get("folding_detector_error"), "RuntimeError: boom-fold")
 
         # Injected exception inside lapped-codec grid detector.
         with mock.patch.object(
@@ -5977,6 +6062,335 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         sc_na, verd_na, _ = motor_flac.calculate_score(meta_cd, spec_non_ac, {"aplica": False})
         self.assertEqual(verd_na, "SUSPICIOUS")
         self.assertAlmostEqual(sc_na, 0.55, places=4)
+
+    def test_61_neural_vocoder_comb_and_midband_mdct_splice(self):
+        """Engine 17.0: detects neural-vocoder periodic comb + upper-band phase
+        coherence across 48k, resampled 44.1k, native 44.1k, and ultrasonic-masked
+        96k containers, and catches AI-spliced MDCT-1024 tracks via the sub-splice
+        8.5-14.8 kHz lattice probe while preserving clean controls."""
+        import _motor_espectral as spectral
+        from scipy import fft as sp_fft
+
+        def _make_vocoder_comb(sr_in, df_comb, duration=4.5, seed=6101):
+            rng = np.random.default_rng(seed)
+            n = int(sr_in * duration)
+            t = np.arange(n, dtype=np.float64) / float(sr_in)
+            base = _create_track_reference(sr_in, duration=duration, seed=seed + 10)
+            low = signal.sosfilt(
+                signal.butter(8, 15200.0, btype="low", fs=sr_in, output="sos"),
+                base, axis=0,
+            )
+            env = 0.45 + 0.55 * (np.sin(2.0 * np.pi * 1.8 * t) ** 2)
+            comb = np.zeros((n, 2), dtype=np.float64)
+            k_start = int(np.ceil(15600.0 / df_comb))
+            k_end = int(np.floor(min(21500.0, sr_in * 0.46) / df_comb))
+            for k in range(k_start, k_end + 1):
+                fk = k * df_comb
+                ph = rng.uniform(0.0, 2.0 * np.pi)
+                amp = 0.018 * (10.0 ** (-0.35 * (fk - 15600.0) / 1000.0))
+                tone = amp * np.cos(2.0 * np.pi * fk * t + ph)
+                comb[:, 0] += tone
+                comb[:, 1] += amp * np.cos(2.0 * np.pi * fk * t + ph + 0.15)
+            mix = low + comb * env[:, None]
+            return np.clip(mix / (np.max(np.abs(mix)) * 1.12), -0.99, 0.99)
+
+        # 1a. 48 kHz 100.0 Hz neural vocoder comb
+        sig_48 = _make_vocoder_comb(48000, 100.0, seed=6101)
+        p_48 = self.tmp_path / "vocoder_48k.flac"
+        sf.write(p_48, sig_48, 48000, subtype="PCM_16")
+        r_48 = motor_flac.analyze_file_data(str(p_48), use_cache=False)
+        self.assertIs(r_48["esp"]["neural_vocoder_detected"], True, r_48["esp"])
+        self.assertIn(motor_flac.FindingCode.NEURAL_VOCODER_ARTIFACTS.value, r_48["esp"]["finding_codes"])
+        self.assertEqual(r_48["veredicto"], "PROBABLE UPSCALE")
+
+        # 1b. Resampled 48 -> 44.1 kHz & native 44.1 kHz (86.13 Hz comb)
+        sig_44_res = signal.resample_poly(sig_48, 147, 160, axis=0)
+        p_44_res = self.tmp_path / "vocoder_44k1_res.flac"
+        sf.write(p_44_res, np.clip(sig_44_res, -0.99, 0.99), 44100, subtype="PCM_16")
+        r_44_res = motor_flac.analyze_file_data(str(p_44_res), use_cache=False)
+        self.assertIs(r_44_res["esp"]["neural_vocoder_detected"], True, r_44_res["esp"])
+        self.assertIn(motor_flac.FindingCode.NEURAL_VOCODER_ARTIFACTS.value, r_44_res["esp"]["finding_codes"])
+        self.assertEqual(r_44_res["veredicto"], "PROBABLE UPSCALE")
+
+        sig_44_nat = _make_vocoder_comb(44100, 44100.0 / 512.0, seed=6105)
+        p_44_nat = self.tmp_path / "vocoder_44k1_nat.flac"
+        sf.write(p_44_nat, sig_44_nat, 44100, subtype="PCM_16")
+        r_44_nat = motor_flac.analyze_file_data(str(p_44_nat), use_cache=False)
+        self.assertIs(r_44_nat["esp"]["neural_vocoder_detected"], True, r_44_nat["esp"])
+        self.assertEqual(r_44_nat["veredicto"], "PROBABLE UPSCALE")
+
+        # 1c. 96 kHz upsampled + -58 dBFS ultrasonic hiss mask
+        rng_m = np.random.default_rng(6109)
+        sig_96 = signal.resample_poly(sig_48, 2, 1, axis=0)
+        u_hiss = signal.sosfilt(
+            signal.butter(6, [23500.0, 43000.0], btype="band", fs=96000, output="sos"),
+            rng_m.standard_normal(sig_96.shape), axis=0,
+        )
+        u_hiss *= (10.0 ** (-58.0 / 20.0)) / (np.std(u_hiss) + 1e-12)
+        p_96 = self.tmp_path / "vocoder_96k_masked.flac"
+        sf.write(p_96, np.clip(sig_96 + u_hiss, -0.99, 0.99), 96000, subtype="PCM_24")
+        r_96 = motor_flac.analyze_file_data(str(p_96), use_cache=False)
+        self.assertIs(r_96["esp"]["neural_vocoder_detected"], True, r_96["esp"])
+        self.assertIn(motor_flac.FindingCode.NEURAL_VOCODER_ARTIFACTS.value, r_96["esp"]["finding_codes"])
+        self.assertEqual(r_96["veredicto"], "PROBABLE UPSCALE")
+
+        # 1d. Clean controls: broadband 48k, GEN 11 stationary drone, and in-mix 25 kHz bitcrushed stem
+        clean_48 = _create_track_reference(48000, duration=4.5, seed=6120)
+        p_c48 = self.tmp_path / "clean_48k_ctrl.flac"
+        sf.write(p_c48, clean_48, 48000, subtype="PCM_16")
+        r_c48 = motor_flac.analyze_file_data(str(p_c48), use_cache=False)
+        self.assertIs(r_c48["esp"]["neural_vocoder_detected"], False, r_c48["esp"])
+        self.assertEqual(r_c48["veredicto"], "GENUINE LOSSLESS")
+
+        sr_d = 44100
+        n_d = int(sr_d * 5.0)
+        t_d = np.arange(n_d, dtype=np.float64) / float(sr_d)
+        rng_d = np.random.default_rng(6125)
+        drone = np.zeros((n_d, 2), dtype=np.float64)
+        for f0 in (550.0, 825.0):
+            for k in range(1, int(21200.0 // f0) + 1):
+                fk = f0 * k
+                amp = 1.0 / (k ** 0.76)
+                drone[:, 0] += amp * np.sin(2.0 * np.pi * fk * t_d + 0.31 * k)
+                drone[:, 1] += amp * np.cos(2.0 * np.pi * fk * t_d + 0.53 * k)
+        drone += rng_d.standard_normal((n_d, 2)) * (10.0 ** (-84.0 / 20.0))
+        drone /= np.max(np.abs(drone)) * 1.15
+        p_drone = self.tmp_path / "gen11_drone_ctrl.flac"
+        sf.write(p_drone, np.clip(drone, -0.99, 0.99), sr_d, subtype="PCM_16")
+        r_drone = motor_flac.analyze_file_data(str(p_drone), use_cache=False)
+        self.assertIs(r_drone["esp"]["neural_vocoder_detected"], False, r_drone["esp"])
+        self.assertEqual(r_drone["veredicto"], "GENUINE LOSSLESS")
+
+        # In-mix 25 kHz bitcrushed stem control: realistic in-mix crushed stem under clean broadband mix
+        rng_b = np.random.default_rng(6130)
+        b_pk, a_pk = ([0.049922, -0.095993, 0.050612, -0.004408],
+                      [1.0, -2.494956, 2.017265, -0.522189])
+        stem_pink = np.column_stack([
+            signal.lfilter(b_pk, a_pk, rng_b.standard_normal(len(clean_48))),
+            signal.lfilter(b_pk, a_pk, rng_b.standard_normal(len(clean_48))),
+        ])
+        stem_pink /= np.max(np.abs(stem_pink)) + 1e-12
+        # Zero-order hold at ~25 kHz (~1.92 samples at 48 kHz)
+        idx_hold = np.floor(np.arange(len(stem_pink)) / 1.92).astype(np.int64)
+        idx_hold = np.minimum((idx_hold * 1.92).astype(np.int64), len(stem_pink) - 1)
+        crushed_stem = stem_pink[idx_hold] * 0.14
+        mix_crush = clean_48 + crushed_stem
+        mix_crush /= np.max(np.abs(mix_crush)) * 1.12
+        p_crush = self.tmp_path / "bitcrushed_stem_ctrl.flac"
+        sf.write(p_crush, mix_crush, 48000, subtype="PCM_16")
+        r_crush = motor_flac.analyze_file_data(str(p_crush), use_cache=False)
+        self.assertLess(r_crush["esp"]["spectral_folding_corr"], 0.30, r_crush["esp"])
+        self.assertIs(r_crush["esp"]["neural_vocoder_detected"], False, r_crush["esp"])
+        self.assertIs(r_crush["esp"]["spectral_folding_detected"], False, r_crush["esp"])
+        self.assertEqual(r_crush["veredicto"], "GENUINE LOSSLESS")
+
+        # 2. AI-spliced MDCT-1024 mid-band (8.5-14.8 kHz) + clean 20 kHz LTI master control
+        sr_s = 44100
+        rng_s = np.random.default_rng(6140)
+        src_s = _create_track_reference(sr_s, duration=5.0, seed=6141)
+        w_kbd = spectral._get_kbd_2048()
+        nyq_s = sr_s / 2.0
+        k_lo_m = int(8200.0 / nyq_s * 1024)
+        k_hi_m = int(15400.0 / nyq_s * 1024)
+        out_ch = []
+        for ch in range(2):
+            pad_c = np.pad(src_s[:, ch].astype(np.float32), (2048, 2048))
+            n_fr = (pad_c.size - 2048) // 1024
+            fr_c = np.lib.stride_tricks.sliding_window_view(pad_c, 2048)[::1024][:n_fr]
+            c_m = spectral._fast_mdct_f32(fr_c, w_kbd)
+            mask_z = rng_s.random((n_fr, k_hi_m - k_lo_m)) < 0.45
+            c_m[:, k_lo_m:k_hi_m] = np.where(mask_z, 0.0, c_m[:, k_lo_m:k_hi_m] * np.sqrt(1.0 / 0.55))
+            c_m[:, k_hi_m:] = 0.0
+            u = sp_fft.idct(c_m, type=4, axis=-1, norm="ortho")
+            y_win = np.empty((n_fr, 2048), dtype=np.float32)
+            y_win[:, :512] = u[:, 512:]
+            y_win[:, 512:1024] = -u[:, -1:511:-1]
+            y_win[:, 1024:1536] = -u[:, 511::-1]
+            y_win[:, 1536:] = -u[:, :512]
+            y_win *= w_kbd
+            rec = np.zeros((n_fr + 1) * 1024, dtype=np.float32)
+            for idx_f in range(n_fr):
+                rec[idx_f * 1024 : idx_f * 1024 + 2048] += y_win[idx_f]
+            out_ch.append(rec[2048 + 41 : 2048 + 41 + len(src_s)])
+        base_mdct = np.column_stack(out_ch).astype(np.float64)
+        # Splice smooth incoherent HF noise above 15.6 kHz so techo_hz > 21 kHz
+        hf_incoh = signal.sosfilt(
+            signal.butter(6, [15600.0, 21700.0], btype="band", fs=sr_s, output="sos"),
+            rng_s.standard_normal(base_mdct.shape), axis=0,
+        )
+        hf_incoh *= (10.0 ** (-26.0 / 20.0)) / (np.std(hf_incoh) + 1e-12)
+        spliced = base_mdct + hf_incoh
+        spliced /= np.max(np.abs(spliced)) * 1.12
+        p_spl = self.tmp_path / "ai_spliced_mdct1024.flac"
+        sf.write(p_spl, spliced, sr_s, subtype="PCM_16")
+        r_spl = motor_flac.analyze_file_data(str(p_spl), use_cache=False)
+        self.assertGreater(r_spl["esp"]["techo_hz"], 21000, r_spl["esp"])
+        self.assertIs(r_spl["esp"]["mdct_lattice_detected"], True, r_spl["esp"])
+        self.assertEqual(r_spl["esp"]["mdct_lattice_family"], motor_flac.CodecLatticeFamily.MDCT_1024.value)
+        self.assertIn(motor_flac.FindingCode.LAPPED_CODEC_LATTICE.value, r_spl["esp"]["finding_codes"])
+        self.assertEqual(r_spl["veredicto"], "PROBABLE UPSCALE")
+
+        # Clean 20 kHz LTI master keeps mdct_lattice_snr < 3.8
+        lti_20k = signal.sosfilt(
+            signal.butter(8, 20000.0, btype="low", fs=sr_s, output="sos"),
+            _create_track_reference(sr_s, duration=5.0, seed=6155), axis=0,
+        )
+        p_lti = self.tmp_path / "clean_lti_20k_ctrl.flac"
+        sf.write(p_lti, np.clip(lti_20k, -0.99, 0.99), sr_s, subtype="PCM_16")
+        r_lti = motor_flac.analyze_file_data(str(p_lti), use_cache=False)
+        self.assertIs(r_lti["esp"]["mdct_lattice_detected"], False, r_lti["esp"])
+        self.assertLess(r_lti["esp"]["mdct_lattice_snr"], 3.8, r_lti["esp"])
+
+    def test_62_spectral_folding_2d_and_guarded_low_ceiling_sbr(self):
+        """Engine 17.0: detects 2D time-domain spectral-folding BWE around 8.0 kHz
+        across 48k, resampled 44.1k, and ultrasonic-masked 96k, and validates the
+        guarded 5.5-14.5 kHz SBR unlock + low-ceiling selectivity threshold."""
+        import math
+        from unittest import mock
+        import _motor_espectral as spectral
+
+        def _make_folding_bwe(sr_in=48000, pivot_hz=8000.0, duration=4.5, seed=6201):
+            rng = np.random.default_rng(seed)
+            n = int(sr_in * duration)
+            t = np.arange(n, dtype=np.float64) / float(sr_in)
+            # Non-stationary broadband music + transient bursts strictly below pivot_hz
+            sig = _create_track_reference(sr_in, duration=duration, seed=seed + 7)
+            for idx_v, f_base in enumerate((1850.0, 3100.0, 4600.0, 6150.0)):
+                burst = np.exp(-(((t * (1.7 + 0.4 * idx_v)) % 1.0) / 0.18))
+                mod = 1.0 + 0.18 * np.sin(2.0 * np.pi * (1.3 + 0.4 * idx_v) * t + idx_v)
+                phase = 2.0 * np.pi * np.cumsum(f_base * mod) / float(sr_in)
+                sig[:, 0] += 0.12 * burst * np.sin(phase)
+                sig[:, 1] += 0.12 * burst * np.cos(phase)
+            low = signal.sosfilt(
+                signal.butter(10, pivot_hz - 200.0, btype="low", fs=sr_in, output="sos"),
+                sig, axis=0,
+            )
+            # Time-domain reflection around pivot_hz: cos(2*pi*(2*pivot_hz)*t) * low
+            carrier = 2.0 * np.cos(2.0 * np.pi * (2.0 * pivot_hz) * t)[:, None]
+            folded_raw = low * carrier
+            folded = signal.sosfilt(
+                signal.butter(6, [pivot_hz + 250.0, min(15800.0, sr_in * 0.45)], btype="band", fs=sr_in, output="sos"),
+                folded_raw, axis=0,
+            )
+            # Add smooth broadband tail above 15.8 kHz so the track appears full-band
+            tail = signal.sosfilt(
+                signal.butter(4, [15800.0, min(21200.0, sr_in * 0.46)], btype="band", fs=sr_in, output="sos"),
+                rng.standard_normal((n, 2)), axis=0,
+            )
+            tail *= (10.0 ** (-34.0 / 20.0)) / (np.std(tail) + 1e-12)
+            mix = low + folded * 0.45 + tail
+            return np.clip(mix / (np.max(np.abs(mix)) * 1.12), -0.99, 0.99)
+
+        # 1a. 48 kHz spectral-folding BWE
+        fold_48 = _make_folding_bwe(48000, 8000.0, seed=6201)
+        p_f48 = self.tmp_path / "folding_48k.flac"
+        sf.write(p_f48, fold_48, 48000, subtype="PCM_16")
+        r_f48 = motor_flac.analyze_file_data(str(p_f48), use_cache=False)
+        self.assertIs(r_f48["esp"]["spectral_folding_detected"], True, r_f48["esp"])
+        self.assertIn(motor_flac.FindingCode.SPECTRAL_FOLDING_BWE.value, r_f48["esp"]["finding_codes"])
+        self.assertEqual(r_f48["veredicto"], "PROBABLE UPSCALE")
+
+        # 1b. Resampled 48 -> 44.1 kHz
+        fold_44 = signal.resample_poly(fold_48, 147, 160, axis=0)
+        p_f44 = self.tmp_path / "folding_44k1.flac"
+        sf.write(p_f44, np.clip(fold_44, -0.99, 0.99), 44100, subtype="PCM_16")
+        r_f44 = motor_flac.analyze_file_data(str(p_f44), use_cache=False)
+        self.assertIs(r_f44["esp"]["spectral_folding_detected"], True, r_f44["esp"])
+        self.assertIn(motor_flac.FindingCode.SPECTRAL_FOLDING_BWE.value, r_f44["esp"]["finding_codes"])
+        self.assertEqual(r_f44["veredicto"], "PROBABLE UPSCALE")
+
+        # 1c. 96 kHz upsampled + -58 dBFS ultrasonic hiss mask
+        rng_u = np.random.default_rng(6209)
+        fold_96 = signal.resample_poly(fold_48, 2, 1, axis=0)
+        u_h = signal.sosfilt(
+            signal.butter(6, [23500.0, 43000.0], btype="band", fs=96000, output="sos"),
+            rng_u.standard_normal(fold_96.shape), axis=0,
+        )
+        u_h *= (10.0 ** (-58.0 / 20.0)) / (np.std(u_h) + 1e-12)
+        p_f96 = self.tmp_path / "folding_96k_masked.flac"
+        sf.write(p_f96, np.clip(fold_96 + u_h, -0.99, 0.99), 96000, subtype="PCM_24")
+        r_f96 = motor_flac.analyze_file_data(str(p_f96), use_cache=False)
+        self.assertIs(r_f96["esp"]["spectral_folding_detected"], True, r_f96["esp"])
+        self.assertIn(motor_flac.FindingCode.SPECTRAL_FOLDING_BWE.value, r_f96["esp"]["finding_codes"])
+        self.assertEqual(r_f96["veredicto"], "PROBABLE UPSCALE")
+
+        # 2a. Dark solo-piano seamless QMF SBR fake (techo_hz < 14.5 kHz)
+        sr_p = 44100
+        rng_p = np.random.default_rng(6220)
+        n_p = int(sr_p * 5.0)
+        piano = np.zeros((n_p, 2), dtype=np.float64)
+        notes = [
+            (0.05, 130.81, 2.0, 0.90), (0.10, 196.00, 1.9, 0.78),
+            (0.15, 261.63, 1.8, 0.80), (0.20, 329.63, 1.6, 0.70),
+            (1.25, 146.83, 2.0, 0.85), (1.30, 220.00, 1.8, 0.76),
+            (1.35, 293.66, 1.7, 0.75), (1.40, 349.23, 1.5, 0.68),
+            (2.50, 110.00, 2.1, 0.90), (2.55, 220.00, 1.9, 0.78),
+            (2.60, 261.63, 1.7, 0.74), (2.65, 392.00, 1.5, 0.70),
+            (3.70, 130.81, 1.2, 0.86), (3.75, 246.94, 1.1, 0.72),
+            (3.80, 329.63, 1.1, 0.76), (3.85, 440.00, 1.0, 0.68),
+        ]
+        for t0, f0, dur_n, vel in notes:
+            i0 = int(t0 * sr_p)
+            i1 = min(n_p, int((t0 + dur_n) * sr_p))
+            tn = np.arange(i1 - i0, dtype=np.float64) / float(sr_p)
+            atk = 1.0 - np.exp(-tn / 0.004)
+            for k in range(1, int(11500.0 // f0) + 1):
+                fk = f0 * k * math.sqrt(1.0 + 0.00022 * k * k)
+                if fk >= 11500.0:
+                    break
+                db_k = -5.4 * max(0.0, (fk - 400.0) / 1000.0)
+                amp = vel * (10.0 ** (db_k / 20.0))
+                tau = max(0.09, 1.6 / (1.0 + (fk / 1400.0) ** 1.1))
+                w = amp * atk * np.exp(-tn / tau) * np.sin(2.0 * np.pi * fk * tn + rng_p.uniform(0.0, 6.28))
+                piano[i0:i1, 0] += w * 0.72
+                piano[i0:i1, 1] += w * 0.68
+        piano /= np.max(np.abs(piano)) * 1.15
+        # Seamless QMF SBR patch replicating 5.0-11.0 kHz -> 11.5-17.5 kHz at -66 dB relative to peak
+        n_fft_s, hop_s = 2048, 1024
+        df_s = sr_p / float(n_fft_s)
+        k_cross = int(11500.0 / df_s)
+        k_top = int(18000.0 / df_s)
+        patch_w = k_top - k_cross
+        k_src = int(5000.0 / df_s)
+        piano_sbr = np.zeros_like(piano)
+        for ch in range(2):
+            _, _, z_st = signal.stft(piano[:, ch], fs=sr_p, nperseg=n_fft_s, noverlap=n_fft_s - hop_s)
+            z_out = z_st.copy()
+            z_out[k_cross:, :] *= 1e-4
+            src_p = z_st[k_src : k_src + patch_w, :]
+            z_out[k_cross : k_cross + patch_w, :] = src_p * (10.0 ** (-18.0 / 20.0))
+            _, rec = signal.istft(z_out, fs=sr_p, nperseg=n_fft_s, noverlap=n_fft_s - hop_s)
+            piano_sbr[:, ch] = rec[:n_p]
+        p_psbr = self.tmp_path / "dark_piano_sbr.flac"
+        sf.write(p_psbr, np.clip(piano_sbr, -0.99, 0.99), sr_p, subtype="PCM_16")
+        r_psbr = motor_flac.analyze_file_data(str(p_psbr), use_cache=False)
+        self.assertLess(r_psbr["esp"]["techo_hz"], 14500, r_psbr["esp"])
+        self.assertIs(r_psbr["esp"]["sbr_qmf_detectado"], True, r_psbr["esp"])
+        self.assertIn(motor_flac.FindingCode.SBR_REPLICA.value, r_psbr["esp"]["finding_codes"])
+        self.assertEqual(r_psbr["veredicto"], "PROBABLE UPSCALE")
+
+        # 2b. Low-ceiling (< 14.5 kHz) SBR selectivity gate rejects borderline (r=0.307, Z=13.6)
+        blk_dummy = rng_p.standard_normal((65536, 2)).astype(np.float32) * 0.2
+        chosen_dummy = [(0.1, 0, 0, 0, blk_dummy)]
+        borderline = {
+            "sbr_qmf_detectado": True,
+            "sbr_qmf_correlacion": 0.307,
+            "sbr_qmf_z": 13.6,
+        }
+        with mock.patch.object(spectral, "_detect_sbr_qmf_replication", return_value=borderline):
+            res_low = spectral._probe_sbr_qmf_from_chosen(chosen_dummy, (0, 1), 44100, 11000)
+            res_hi = spectral._probe_sbr_qmf_from_chosen(chosen_dummy, (0, 1), 44100, 18000)
+        self.assertIs(res_low["sbr_qmf_detectado"], False, res_low)
+        self.assertIs(res_hi["sbr_qmf_detectado"], True, res_hi)
+
+        # Strong low-ceiling SBR (r >= 0.34 or Z >= 15.0) passes the selectivity gate
+        for strong_mock in (
+            {"sbr_qmf_detectado": True, "sbr_qmf_correlacion": 0.35, "sbr_qmf_z": 13.2},
+            {"sbr_qmf_detectado": True, "sbr_qmf_correlacion": 0.31, "sbr_qmf_z": 15.4},
+        ):
+            with mock.patch.object(spectral, "_detect_sbr_qmf_replication", return_value=strong_mock):
+                res_ok = spectral._probe_sbr_qmf_from_chosen(chosen_dummy, (0, 1), 44100, 11000)
+            self.assertIs(res_ok["sbr_qmf_detectado"], True, strong_mock)
 
 
 if __name__ == "__main__":
