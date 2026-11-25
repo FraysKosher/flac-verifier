@@ -67,3 +67,36 @@ jobs:
           echo "Suite finished on ${{ runner.os }} with Python ${{ matrix.python }}."
           echo "Expected: 443 tests. Two are skipped when the platform cannot"
           echo "create processes or when ffmpeg is not on the PATH."
+
+  web-tests:
+    name: web · Python & Node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install ffmpeg and Python dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Generate web fixtures
+        run: python web/tools/make_fixtures.py web/.fixtures
+
+      - name: Run web Python tests
+        run: python -m unittest discover -s web/tests -v
+
+      - name: Run web Node tests
+        run: npm --prefix web test
+
+      - name: Verify static site assembly
+        run: bash web/tools/assemble.sh && test -f web/_site/index.html && test -f web/_site/motor_flac.py && test -f web/_site/LICENSE
