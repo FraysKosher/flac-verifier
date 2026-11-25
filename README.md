@@ -101,6 +101,14 @@ pip install -r requirements.txt
 `reportlab` (PDF report), `customtkinter` (GUI) and `tkinterdnd2` (drag and
 drop) are optional; the engine and CLI work without them.
 
+### Web version
+
+Open the [web version](https://frayskosher.github.io/flac-verifier/) and choose an album folder.
+
+Supported browsers: desktop Chromium and Firefox.
+
+- The first load downloads about 33 MB.
+
 ---
 
 ## Usage

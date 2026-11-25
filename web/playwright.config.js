@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { defineConfig, devices } from '@playwright/test';
+
+// Surface the service worker's own network requests to the test.
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1';
+
+const PORT = 8765;
+
+export default defineConfig({
+  testDir: './tests-e2e',
+  timeout: 180_000,
+  fullyParallel: false,
+  workers: 1,
+  reporter: 'list',
+  use: {
+    baseURL: `http://localhost:${PORT}`,
+    trace: 'retain-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+  ],
+  webServer: {
+    command: `bash tools/assemble.sh && python3 -m http.server -d _site ${PORT}`,
+    url: `http://localhost:${PORT}/index.html`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+  },
+});
