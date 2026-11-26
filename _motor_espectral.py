@@ -1437,56 +1437,81 @@ def _spectral_metrics(freqs, power_l, power_r, samplerate, is_stereo=None, power
     # 17.5 kHz.
     subceiling_clean_acoustic_decay = False
     if (samplerate <= 48000 and near_nyq_high
-            and 5800.0 <= ceiling_hz < 13500.0
+            and 5800.0 <= ceiling_hz < 0.88 * nyquist
             and gradient_edge >= 0.5):
-        max_cent_sub = 950.0 if ceiling_hz < 7500.0 else 1100.0
+        max_cent_sub = 950.0 if (ceiling_hz < 7500.0 or ceiling_hz >= 13500.0) else 1100.0
         if 0.0 < centroid_hz < max_cent_sub:
-            hi_post_cap = min(17500.0, nyquist - 500.0)
-            s_pre_lo, ok_pre_lo = _freq_slice(
-                freqs, max(1800.0, ceiling_hz - 4000.0), max(3200.0, ceiling_hz - 1800.0)
-            )
-            s_pre_hi, ok_pre_hi = _freq_slice(
-                freqs, max(4000.0, ceiling_hz - 1200.0), ceiling_hz
-            )
-            s_p1, ok_p1 = _freq_slice(
-                freqs, ceiling_hz + 250.0, min(hi_post_cap, ceiling_hz + 1500.0)
-            )
-            s_p2, ok_p2 = _freq_slice(
-                freqs, ceiling_hz + 1500.0, min(hi_post_cap, ceiling_hz + 3500.0)
-            )
-            if ok_pre_lo and ok_pre_hi and ok_p1 and ok_p2:
-                e_pre_lo = float(np.percentile(power_db_n[s_pre_lo], 75))
-                e_pre_hi = float(np.percentile(power_db_n[s_pre_hi], 75))
-                e_p1 = float(np.percentile(power_db_n[s_p1], 75))
-                e_p2 = float(np.percentile(power_db_n[s_p2], 75))
-                pre_drop = e_pre_lo - e_pre_hi
-                step_p1 = e_pre_hi - e_p1
-                step_p2 = e_p1 - e_p2
-                coarse_edge_grad = _coarse_envelope_descent_db_khz(
+            if ceiling_hz >= 17500.0:
+                cg_hi = _coarse_envelope_descent_db_khz(
                     freqs,
                     power_db_n,
                     max(3500.0, ceiling_hz - 2200.0),
-                    min(hi_post_cap, ceiling_hz + 2200.0),
+                    min(nyquist - 200.0, ceiling_hz + 2200.0),
                     band_hz=1000.0,
                     step_hz=250.0,
                     percentile=75.0,
                 )
-                coarse_post_grad = _coarse_envelope_descent_db_khz(
-                    freqs,
-                    power_db_n,
-                    ceiling_hz,
-                    hi_post_cap,
-                    band_hz=750.0,
-                    step_hz=200.0,
-                    percentile=50.0,
-                )
                 subceiling_clean_acoustic_decay = bool(
-                    6.0 <= pre_drop <= 45.0
-                    and step_p1 < 16.0
-                    and step_p2 < 24.0
-                    and coarse_edge_grad < 18.0
-                    and coarse_post_grad < 11.0
+                    gradient_edge < 30.0 and 0.5 <= cg_hi < 12.0
                 )
+            else:
+                hi_post_cap = min(19500.0 if ceiling_hz >= 13500.0 else 17500.0, nyquist - 300.0)
+                s_pre_lo, ok_pre_lo = _freq_slice(
+                    freqs, max(1800.0, ceiling_hz - 4000.0), max(3200.0, ceiling_hz - 1800.0)
+                )
+                s_pre_hi, ok_pre_hi = _freq_slice(
+                    freqs, max(4000.0, ceiling_hz - 1200.0), ceiling_hz
+                )
+                s_p1, ok_p1 = _freq_slice(
+                    freqs, ceiling_hz + 250.0, min(hi_post_cap, ceiling_hz + 1500.0)
+                )
+                s_p2, ok_p2 = _freq_slice(
+                    freqs, ceiling_hz + 1500.0, min(hi_post_cap, ceiling_hz + 3500.0)
+                )
+                if ok_pre_lo and ok_pre_hi and ok_p1 and ok_p2:
+                    e_pre_lo = float(np.percentile(power_db_n[s_pre_lo], 75))
+                    e_pre_hi = float(np.percentile(power_db_n[s_pre_hi], 75))
+                    e_p1 = float(np.percentile(power_db_n[s_p1], 75))
+                    e_p2 = float(np.percentile(power_db_n[s_p2], 75))
+                    pre_drop = e_pre_lo - e_pre_hi
+                    step_p1 = e_pre_hi - e_p1
+                    step_p2 = e_p1 - e_p2
+                    coarse_edge_grad = _coarse_envelope_descent_db_khz(
+                        freqs,
+                        power_db_n,
+                        max(3500.0, ceiling_hz - 2200.0),
+                        min(hi_post_cap, ceiling_hz + 2200.0),
+                        band_hz=1000.0,
+                        step_hz=250.0,
+                        percentile=75.0,
+                    )
+                    coarse_post_grad = _coarse_envelope_descent_db_khz(
+                        freqs,
+                        power_db_n,
+                        ceiling_hz,
+                        hi_post_cap,
+                        band_hz=750.0,
+                        step_hz=200.0,
+                        percentile=50.0,
+                    )
+                    if ceiling_hz < 13500.0:
+                        subceiling_clean_acoustic_decay = bool(
+                            4.0 <= pre_drop <= 45.0
+                            and step_p1 < 16.0
+                            and step_p2 < 24.0
+                            and (
+                                (pre_drop >= 6.0 and coarse_edge_grad < 18.0 and coarse_post_grad < 11.0)
+                                or (coarse_edge_grad < 15.0 and coarse_post_grad < 13.5)
+                            )
+                        )
+                    else:
+                        subceiling_clean_acoustic_decay = bool(
+                            6.0 <= pre_drop <= 45.0
+                            and step_p1 < 16.0
+                            and step_p2 < 24.0
+                            and coarse_edge_grad < 15.0
+                            and coarse_post_grad < 16.0
+                        )
 
     smooth_acoustic_decay = bool(
         (
@@ -3727,6 +3752,10 @@ def _apply_stationary_and_ms_guards(
                 and (spectrum.get("frecuencia_corte") or 0) < 0.85 * (spectrum.get("techo_hz") or 0)):
             spectrum.update(CutoffAssessment.none().to_protocol_fields())
     ceiling_val = spectrum.get("techo_hz", 0)
+    if (spectrum.get("sospecha_corte_opus_20k")
+            and ceiling_val > 20600
+            and float(spectrum.get("caida_opus_20k_db") or 0.0) < 20.0):
+        spectrum["sospecha_corte_opus_20k"] = False
     hires_clean_rolloff = bool(
         sr >= 88200
         and spectrum.get("clase_corte") == CutoffClass.NO_CUTOFF.value
@@ -5109,6 +5138,11 @@ class _SpectralAccumulator:
             and not spectrum.get("islas_mdct_sfb21")
             and not spectrum.get("sospecha_corte_opus_20k")
             and not spectrum.get("sospecha_joint_stereo")
+            and not spectrum.get("stereo_phase_coupling")
+            and not spectrum.get("modulacion_psicoacustica_20k")
+            and not spectrum.get("sbr_qmf_detectado")
+            and not spectrum.get("neural_vocoder_detected")
+            and not spectrum.get("spectral_folding_detected")
             and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
             and not spectrum.get("mdct_lattice_detected")
             and (
@@ -5121,6 +5155,12 @@ class _SpectralAccumulator:
                     spectrum.get("decaimiento_acustico_suave")
                     and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 950.0
                     and float(spectrum.get("iqr_corte_hz") or 0.0) <= 900.0
+                )
+                or (
+                    spectrum.get("decaimiento_acustico_suave")
+                    and 0.0 < float(spectrum.get("centroide_hz") or 0.0) < 750.0
+                    and float(spectrum.get("gradiente_borde_db_khz") or 0.0) < 18.0
+                    and float(spectrum.get("iqr_corte_hz") or 0.0) <= 1350.0
                 )
             )
         )

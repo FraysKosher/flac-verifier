@@ -98,7 +98,18 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "17.0"
+ENGINE_VERSION = "17.1"
+# 17.1: Acoustic low-centroid and full-band Opus guard calibration (Wave 2 DEV audit):
+#       - Clear sub-20 dB Opus 20 kHz step flags and suppress sub-threshold
+#         lattice corroboration when spectral energy extends above 20.6 kHz
+#         into Nyquist.
+#       - Exempt clean uncut smooth-acoustic crests (>= 70% Nyquist, zero codec
+#         signatures) from false Gibbs overshoot flags.
+#       - Extend subceiling_clean_acoustic_decay to 13.5 kHz..0.88*Nyquist via
+#         coarse band-envelope descent (< 15 dB/kHz below 17.5 kHz, 0.5..12 dB/kHz
+#         above) and harden low_centroid_smooth_iqr against SPC/mod20k/SBR/neural
+#         signatures while adding a dark smooth-acoustic branch (centroid < 750 Hz,
+#         edge < 18 dB/kHz, IQR <= 1,350 Hz).
 # 17.0: Neural super-resolution & AI bandwidth-extension forensic pillars:
 #       - Guarded low-ceiling SBR QMF unlock (5.5-14.5 kHz entry floor with
 #         selectivity gate r >= 0.34 or Z >= 15.0) catching dark solo-piano
@@ -1085,6 +1096,7 @@ class _BlockAnalysis:
                 nyquist=self.sr // 2,
                 edge_gradient_db_khz=spectrum.get("gradiente_borde_db_khz"),
                 has_codec_signature=has_codec_sig,
+                smooth_acoustic=bool(spectrum.get("decaimiento_acustico_suave")),
             ))
         return spectrum
 

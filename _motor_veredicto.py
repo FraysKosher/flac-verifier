@@ -315,8 +315,10 @@ def _opus_corroboration_flags(spectrum) -> tuple[bool, bool, bool]:
         or spectrum.get("modulacion_psicoacustica_20k")
         or spectrum.get("mdct_lattice_detected")
     )
+    ceiling_hz = spectrum.get("techo_hz")
     sub_lattice = bool(
         not other_corroboration
+        and (ceiling_hz is None or float(ceiling_hz) <= 20600.0)
         and (spectrum.get("mdct_lattice_snr") or 0.0) >= 3.8
     )
     return iqr_suppressed_by_opus, other_corroboration, sub_lattice

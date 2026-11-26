@@ -894,7 +894,8 @@ class _ClippingAccumulator:
         return {"runs_clip": clip_runs, "hay_clipping": clip_runs > 0}
 
     def classify(self, ceiling_hz=None, frequency_cutoff=None, nyquist=None,
-                 edge_gradient_db_khz=None, has_codec_signature=False):
+                 edge_gradient_db_khz=None, has_codec_signature=False,
+                 smooth_acoustic=False):
         return _classify_from_clip_stats(
             self.snapshot(),
             ceiling_hz=ceiling_hz,
@@ -902,12 +903,13 @@ class _ClippingAccumulator:
             nyquist=nyquist,
             edge_gradient_db_khz=edge_gradient_db_khz,
             has_codec_signature=has_codec_signature,
+            smooth_acoustic=smooth_acoustic,
         )
 
 
 def _classify_from_clip_stats(stats, ceiling_hz=None, frequency_cutoff=None,
                               nyquist=None, edge_gradient_db_khz=None,
-                              has_codec_signature=False):
+                              has_codec_signature=False, smooth_acoustic=False):
     """Vector 6 classification from (events, short_events, total_samples, max_streak, clip_runs)."""
     events, short_events, total_samples, max_streak, _ = stats
     if not events:
@@ -944,6 +946,14 @@ def _classify_from_clip_stats(stats, ceiling_hz=None, frequency_cutoff=None,
         and cutoff_effective is not None
         and cutoff_effective < 20500.0
         and not gentle_fullband_crests
+        and not (
+            smooth_acoustic
+            and frequency_cutoff is None
+            and ceiling_hz is not None
+            and nyquist
+            and float(ceiling_hz) >= 0.70 * float(nyquist)
+            and not has_codec_signature
+        )
     )
     master = bool(mean >= 4.0 and ceiling_hz is not None and nyquist
                   and ceiling_hz >= 0.97 * nyquist)

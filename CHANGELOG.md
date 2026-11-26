@@ -5,12 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.13.1] - 2026-11-25
 
 ### Added
 
 - Web version at https://frayskosher.github.io/flac-verifier/: choose an album folder in desktop Chromium or Firefox. 32-bit FLAC files are analyzed. The first load downloads about 33 MB.
 - Web version: the engine downloads once and later loads start from the local cache.
+
+### Changed
+
+- **Acoustic low-centroid & full-band Opus guard calibration (engine `17.1`)**:
+  - Clear sub-20 dB `opus_20k_cutoff` steps and suppress sub-threshold
+    `mdct_lattice_snr` corroboration when real spectral energy extends above
+    `20.6 kHz` into Nyquist (eliminating false flags on full-band pop/electronic
+    masters while preserving 100% detection of `Opus 256k` and `WMAv2 192k`).
+  - Add optional `smooth_acoustic` crest exemption to `_classify_from_clip_stats`
+    / `_ClippingAccumulator.classify` so clean uncut acoustic recordings with
+    `ceiling_hz >= 0.70 * nyquist` and zero codec signatures are not accused of
+    `gibbs_lossy_clipping`.
+  - Extend `subceiling_clean_acoustic_decay` across `13.5 kHz .. 0.88 * nyquist`
+    via coarse band-envelope descent (recovering solo voice/nylon-guitar albums
+    whose tracks sit in `10.9–19.2 kHz`) and harden `low_centroid_smooth_iqr`
+    against `stereo_phase_coupling`, `modulacion_psicoacustica_20k`, `SBR`,
+    `neural_vocoder`, and `spectral_folding` while adding a dark smooth-acoustic
+    branch (`centroid < 750 Hz`, `edge < 18 dB/kHz`, `IQR <= 1,350 Hz`).
+  - Validated on the artist-disjoint `DEV` corpus (`415/420` post-coherence,
+    `0` Wave 2 false positives; `157/157` real-audio adversarial transcodes
+    caught), the `340/340` synthetic validation benchmark, and a one-shot frozen
+    blind holdout (`test`: `57/57` `100%`; `test_wave2`: `122/122` `100%`
+    specificity, `99/100` `99.0%` adversarial sensitivity).
 
 ## [2.13.0] - 2026-11-24
 

@@ -6392,6 +6392,185 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
                 res_ok = spectral._probe_sbr_qmf_from_chosen(chosen_dummy, (0, 1), 44100, 11000)
             self.assertIs(res_ok["sbr_qmf_detectado"], True, strong_mock)
 
+    def test_engine171_fullband_opus_and_sublattice_guard(self):
+        """Engine 17.1: sub-20 dB Opus steps above 20.6 kHz clear cleanly, while real 20 kHz shelves stay flagged."""
+        import _motor_espectral as spectral
+        import _motor_veredicto as verdict
+
+        freqs = np.fft.rfftfreq(4096, 1.0 / 44100.0)
+        flat = np.full_like(freqs, 1e-4, dtype=np.float64)
+        psycho = spectral.PsychoacousticSummary(
+            metrics={
+                "sospecha_corte_opus_20k": True,
+                "caida_opus_20k_db": 10.75,
+                "iqr_corte_hz": 0.0,
+            },
+            ms_p95_db=3.0,
+        )
+        # Full-band signal extending to Nyquist (> 20.6 kHz) with mild < 20 dB step
+        spec_full = {"techo_hz": 22050, "clase_corte": "no_cutoff"}
+        spectral._apply_stationary_and_ms_guards(spec_full, psycho, freqs, flat, flat, 0.0, 44100)
+        self.assertIs(spec_full["sospecha_corte_opus_20k"], False)
+
+        # Real Opus 256k shelf (<= 20.6 kHz) stays flagged
+        spec_opus = {"techo_hz": 20062, "clase_corte": "no_cutoff"}
+        spectral._apply_stationary_and_ms_guards(spec_opus, psycho, freqs, flat, flat, 0.0, 44100)
+        self.assertIs(spec_opus["sospecha_corte_opus_20k"], True)
+
+        # Steep >= 20 dB cliff above 20.6 kHz also stays flagged
+        psycho_steep = spectral.PsychoacousticSummary(
+            metrics={
+                "sospecha_corte_opus_20k": True,
+                "caida_opus_20k_db": 23.5,
+                "iqr_corte_hz": 0.0,
+            },
+            ms_p95_db=3.0,
+        )
+        spec_steep = {"techo_hz": 21200, "clase_corte": "no_cutoff"}
+        spectral._apply_stationary_and_ms_guards(spec_steep, psycho_steep, freqs, flat, flat, 0.0, 44100)
+        self.assertIs(spec_steep["sospecha_corte_opus_20k"], True)
+
+        # Defense-in-depth: sub_lattice corroboration requires techo_hz <= 20600 Hz
+        _, _, sub_hi = verdict._opus_corroboration_flags({
+            "sospecha_corte_opus_20k": True,
+            "techo_hz": 22050,
+            "mdct_lattice_snr": 4.45,
+        })
+        _, _, sub_lo = verdict._opus_corroboration_flags({
+            "sospecha_corte_opus_20k": True,
+            "techo_hz": 20062,
+            "mdct_lattice_snr": 4.45,
+        })
+        self.assertIs(sub_hi, False)
+        self.assertIs(sub_lo, True)
+
+    def test_engine171_smooth_acoustic_crest_gibbs_guard(self):
+        """Engine 17.1: uncut smooth-acoustic crests >= 70% Nyquist without codec signatures are not Gibbs overshoot."""
+        import _motor_bits as bits
+
+        stats = (94, 94, 94, 1, 0)
+        clean = bits._classify_from_clip_stats(
+            stats,
+            ceiling_hz=19175,
+            frequency_cutoff=None,
+            nyquist=22050,
+            edge_gradient_db_khz=26.6,
+            has_codec_signature=False,
+            smooth_acoustic=True,
+        )
+        self.assertIs(clean["clipping_reconstruccion_lossy"], False, clean)
+
+        # Any codec signature, detected cutoff, sub-70% ceiling, or non-smooth spectrum still flags Gibbs
+        for kwargs in (
+            {"ceiling_hz": 19175, "frequency_cutoff": None, "has_codec_signature": True, "smooth_acoustic": True},
+            {"ceiling_hz": 19175, "frequency_cutoff": 19000, "has_codec_signature": False, "smooth_acoustic": True},
+            {"ceiling_hz": 14000, "frequency_cutoff": None, "has_codec_signature": False, "smooth_acoustic": True},
+            {"ceiling_hz": 19175, "frequency_cutoff": None, "has_codec_signature": False, "smooth_acoustic": False},
+        ):
+            flagged = bits._classify_from_clip_stats(
+                stats, nyquist=22050, edge_gradient_db_khz=26.6, **kwargs,
+            )
+            self.assertIs(flagged["clipping_reconstruccion_lossy"], True, kwargs)
+
+    def test_engine171_subceiling_acoustic_decay_high_band(self):
+        """Engine 17.1: coarse-envelope acoustic decay covers 13.5-19.4 kHz low-centroid roll-offs without sparing brickwalls."""
+        import _motor_espectral as spectral
+
+        sr = 44100
+        freqs = np.fft.rfftfreq(4096, 1.0 / sr)
+
+        def _make_power(slope_db_per_khz, floor_db=-88.0, brickwall_hz=None):
+            # Low-centroid body below 800 Hz + linear high-frequency roll-off
+            db = np.where(
+                freqs < 800.0,
+                -2.0 - 0.015 * freqs,
+                -14.0 - slope_db_per_khz * (freqs - 800.0) / 1000.0,
+            )
+            db = np.maximum(db, floor_db)
+            if brickwall_hz is not None:
+                db = np.where(freqs >= brickwall_hz, -110.0, db)
+            return 10.0 ** (db / 10.0)
+
+        # Case A: smooth roll-off crossing -60 dB around 15.6 kHz (13.5-17.5 kHz branch)
+        p_mid = _make_power(slope_db_per_khz=3.1)
+        m_mid = spectral._spectral_metrics(freqs, p_mid, p_mid, sr, is_stereo=True)
+        self.assertGreaterEqual(m_mid["techo_hz"], 13500)
+        self.assertLess(m_mid["techo_hz"], 17500)
+        self.assertIs(m_mid["decaimiento_acustico_suave"], True, m_mid)
+
+        # Case B: smooth roll-off crossing -60 dB around 18.6 kHz (17.5-19.4 kHz branch)
+        p_hi = _make_power(slope_db_per_khz=2.6)
+        m_hi = spectral._spectral_metrics(freqs, p_hi, p_hi, sr, is_stereo=True)
+        self.assertGreaterEqual(m_hi["techo_hz"], 17500)
+        self.assertLess(m_hi["techo_hz"], 0.88 * (sr / 2.0))
+        self.assertIs(m_hi["decaimiento_acustico_suave"], True, m_hi)
+
+        # Case C: sharp brickwall cutoff at 15.8 kHz must NOT be treated as smooth acoustic decay
+        p_cut = _make_power(slope_db_per_khz=1.0, brickwall_hz=15800.0)
+        m_cut = spectral._spectral_metrics(freqs, p_cut, p_cut, sr, is_stereo=True)
+        self.assertIs(m_cut["decaimiento_acustico_suave"], False, m_cut)
+
+    def test_engine171_dark_acoustic_iqr_guard_and_codec_exclusions(self):
+        """Engine 17.1: dark smooth-acoustic IQR smoothing caps IQR <= 1350 Hz only when codec-free."""
+        from unittest import mock
+        import _motor_espectral as spectral
+
+        sr = 44100
+        rng = np.random.default_rng(17104)
+        blk = (rng.standard_normal((65536, 2)) * 0.1).astype(np.float32)
+
+        def _eval_with(extra_psycho):
+            acc = spectral._SpectralAccumulator(sr, True, mode="full")
+            acc.add(blk, 0)
+            base_metrics = {
+                "techo_hz": 16200,
+                "techo_rel_nyquist": 16200.0 / 22050.0,
+                "clase_corte": spectral.CutoffClass.NO_CUTOFF.value,
+                "corte_detectado": False,
+                "frecuencia_corte": None,
+                "gradiente_borde_db_khz": 12.0,
+                "centroide_hz": 660.0,
+                "decaimiento_acustico_suave": True,
+                "rolloff_analogico_genuino": False,
+                "es_transferencia_dsd": False,
+                "es_estacionario": False,
+            }
+            psy_metrics = {
+                "iqr_corte_hz": 1250.0,
+                "islas_mdct_sfb21": False,
+                "sospecha_corte_opus_20k": False,
+                "sospecha_joint_stereo": False,
+                "stereo_phase_coupling": False,
+                "modulacion_psicoacustica_20k": False,
+                "ratio_huecos_mdct": 0.0,
+                "brecha_p90_p10_agudos_db": 20.0,
+            }
+            psy_metrics.update(extra_psycho)
+            spc_val = bool(extra_psycho.get("stereo_phase_coupling", False))
+            psy_summary = spectral.PsychoacousticSummary(metrics=psy_metrics, ms_p95_db=3.0)
+            with (
+                mock.patch.object(spectral, "_spectral_metrics", return_value=dict(base_metrics)),
+                mock.patch.object(acc._psycho, "summary", return_value=psy_summary),
+                mock.patch.object(spectral, "_analyze_stereo_phase_coupling", return_value={"stereo_phase_coupling": spc_val}),
+                mock.patch.object(spectral, "_probe_lapped_codec_lattice", return_value={"mdct_lattice_detected": False, "mdct_lattice_snr": 0.0}),
+                mock.patch.object(spectral, "_probe_sbr_qmf_from_chosen", return_value={"sbr_qmf_detectado": False}),
+                mock.patch.object(spectral, "_probe_neural_vocoder_from_chosen", return_value={"neural_vocoder_detected": False}),
+                mock.patch.object(spectral, "_probe_spectral_folding_from_chosen", return_value={"spectral_folding_detected": False}),
+            ):
+                return acc.result()
+
+        # Codec-free dark acoustic track gets IQR capped to 350.0 Hz
+        r_clean = _eval_with({})
+        self.assertEqual(r_clean["iqr_corte_hz"], 350.0, r_clean)
+
+        # Presence of SPC or psychoacoustic_mod_20k blocks IQR smoothing
+        for blocker in (
+            {"stereo_phase_coupling": True},
+            {"modulacion_psicoacustica_20k": True},
+        ):
+            r_blk = _eval_with(blocker)
+            self.assertEqual(r_blk["iqr_corte_hz"], 1250.0, (blocker, r_blk))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
