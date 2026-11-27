@@ -31,7 +31,9 @@ jobs:
         run: python build.py --release-assets
 
       - name: Run post-build executable verification (quick)
-        run: python comprobar_ejecutable.py --quick
+        run: |
+          python -c "import os, soundfile as sf, tests.fixtures as fx; os.makedirs('build/ci_album', exist_ok=True); sf.write('build/ci_album/01_clean.flac', fx.full_band_noise(44100, 1.5, seed=1), 44100, subtype='PCM_16'); sf.write('build/ci_album/02_clean.flac', fx.full_band_noise(44100, 1.5, seed=2), 44100, subtype='PCM_16')"
+          python comprobar_ejecutable.py --quick --album build/ci_album
 
       - name: Upload Windows release artifacts
         uses: actions/upload-artifact@v4
