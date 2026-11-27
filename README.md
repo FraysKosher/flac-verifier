@@ -7,7 +7,7 @@
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
 [![Version: 3.0.0](https://img.shields.io/badge/version-3.0.0-blue)](CHANGELOG.md)
 [![License: AGPL v3+](https://img.shields.io/badge/license-AGPL_v3%2B-blue)](LICENSE)
-[![Tests: 497](https://img.shields.io/badge/tests-497-brightgreen)](#tests)
+[![Tests: 501](https://img.shields.io/badge/tests-501-brightgreen)](#tests--building)
 
 A forensic audio verifier and persistent desktop library manager for deciding
 whether a FLAC file is **genuinely lossless** or a fake: a lossy transcode

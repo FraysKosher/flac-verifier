@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           echo "Suite finished on ${{ runner.os }} with Python ${{ matrix.python }}."
-          echo "Expected: 497 tests. Up to two may be skipped when the platform cannot"
+          echo "Expected: 501 tests. Up to two may be skipped when the platform cannot"
           echo "create processes or depending on optional legacy GUI packages."
 
   web-tests:
