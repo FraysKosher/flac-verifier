@@ -104,6 +104,7 @@ class AlbumCoherenceAction(str, Enum):
     NONE = "none"
     RESCUED_LOSSLESS = "rescued_lossless"
     CONVICTED_LOSSY = "convicted_lossy"
+    CONVICTED_HIRES_UPSCALE = "convicted_hires_upscale"
 
 
 class AlbumQuorumKind(str, Enum):
@@ -113,6 +114,7 @@ class AlbumQuorumKind(str, Enum):
     CLEAN_STANDARD = "clean_standard"
     CLEAN_MIXED_VHS = "clean_mixed_vhs"
     LOSSY_CODEC = "lossy_codec"
+    HIRES_UPSCALED = "hires_upscaled"
 
 
 @dataclass(frozen=True)
@@ -274,6 +276,33 @@ class _ScoreLedger:
         return evaluation.score, evaluation.verdict.value, list(evaluation.problems)
 
 
+def _has_lossy_codec_proof(spectrum) -> bool:
+    """True when an explicit lossy codec, SBR, or neural/AI signature is present."""
+    return bool(
+        spectrum.get("mdct_lattice_detected")
+        or spectrum.get("sbr_qmf_detectado")
+        or spectrum.get("islas_mdct_sfb21")
+        or spectrum.get("sospecha_excitador_armonico")
+        or spectrum.get("neural_vocoder_detected")
+        or spectrum.get("spectral_folding_detected")
+        or spectrum.get("sospecha_corte_opus_20k")
+        or spectrum.get("modulacion_psicoacustica_20k")
+    )
+
+
+def _is_hires_source_nyquist_cutoff(sr, spectrum) -> bool:
+    """True when a Hi-Res (>= 88.2 kHz) far_cutoff sits at a 44.1/48 kHz source
+    Nyquist boundary (20.5-24.8 kHz) without any lossy codec/neural proof."""
+    if int(sr or 0) < 88200:
+        return False
+    if spectrum.get("clase_corte") != CutoffClass.FAR_CUTOFF.value:
+        return False
+    if _has_lossy_codec_proof(spectrum):
+        return False
+    fc = spectrum.get("frecuencia_corte")
+    return bool(isinstance(fc, (int, float)) and 20500.0 <= float(fc) <= 24800.0)
+
+
 def _has_non_opus_codec_signature(spectrum) -> bool:
     """True when an explicit non-Opus filterbank, SBR, neural BWE, or MP3 sfb21 signature is present."""
     lattice_family = spectrum.get("mdct_lattice_family") or ""
@@ -417,19 +446,42 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
 
         # 1. Content above the CD band: it can only be demanded of a file that
         #    claims to be hi-res. At 44.1/48 kHz it is physically impossible.
+        has_lossy_proof = _has_lossy_codec_proof(spectrum)
+        hires_source_nyquist_cut = _is_hires_source_nyquist_cutoff(sr, spectrum)
+        has_hires_upscale_proof = bool(
+            spectrum.get("muro_brickwall_nyquist")
+            or spectrum.get("espejo_aliasing_detectado")
+            or category == CutoffClass.FAR_CUTOFF.value
+            or has_lossy_proof
+        )
+        hires_analog_or_dsd = bool(
+            spectrum.get("rolloff_analogico_genuino")
+            or spectrum.get("es_transferencia_dsd")
+        )
+        hires_borderline_22k = bool(
+            sr > 48000
+            and LIMIT_CD_HZ <= ceiling < 23000
+            and not hires_analog_or_dsd
+        )
         if is_hires:
             ledger.add_votes(0.0, 3.0)
-            if ceiling >= LIMIT_CD_HZ:
+            if ceiling >= 23000 or hires_analog_or_dsd:
                 ledger.add_votes(3.0)
-            elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
-                ledger.add_votes(3.0)
-                ledger.note("Genuine analogue/DSD master: smooth ultrasonic "
-                            "roll-off with a continuous floor")
+                if ceiling < LIMIT_CD_HZ and not spectrum.get("es_transferencia_dsd"):
+                    ledger.note(
+                        "Genuine analogue high-res master: smooth ultrasonic "
+                        "roll-off with a continuous floor"
+                    )
+            elif ceiling >= LIMIT_CD_HZ:
+                ledger.add_votes(1.5)
+                ledger.note(
+                    f"Borderline high-res bandwidth: spectral ceiling at "
+                    f"{ceiling/1000:.1f} kHz sits just above the 22.05 kHz CD "
+                    f"limit with limited ultrasonic extension"
+                )
             elif ceiling >= 18000:
                 ledger.add_votes(1.5)
-                ledger.note(f"Partial high-res content: spectral ceiling at "
-                            f"{ceiling/1000:.1f} kHz ({rel_ceiling*100:.0f}% of Nyquist of {nyq_txt})")
-            else:
+            elif has_hires_upscale_proof:
                 ledger.penalize(
                     f"Likely upscaled from 44.1/48 kHz: declares {sr/1000:.1f} kHz "
                     f"but its spectral ceiling sits at {ceiling/1000:.1f} kHz (below the CD band)",
@@ -475,13 +527,11 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
         )
         ledger.add_votes(0.0, 3.0)
         if sr > 48000:
-            if ceiling >= LIMIT_CD_HZ:
+            if ceiling >= 23000 or hires_analog_or_dsd:
                 ledger.add_votes(3.0)
-            elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"):
-                ledger.add_votes(3.0)
-                ledger.note("Genuine analogue/DSD master: the declared high-res "
-                            "band is backed by smooth ultrasonic morphology")
-            else:
+            elif hires_borderline_22k:
+                ledger.add_votes(1.5)
+            elif has_hires_upscale_proof:
                 ledger.penalize(
                     f"No ultrasonic content for {sr/1000:.1f} kHz high-res: "
                     f"spectral ceiling is {ceiling/1000:.1f} kHz (below the "
@@ -489,6 +539,20 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                     f"{sr/1000:.1f} kHz band is not backed by content)",
                     0.40,
                     family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    tier=EvidenceTier.HARD_PROOF,
+                    code=FindingCode.HIRES_NO_ULTRASONIC,
+                )
+            else:
+                ledger.penalize(
+                    f"No verified ultrasonic content for {sr/1000:.1f} kHz high-res: "
+                    f"spectral ceiling sits at {ceiling/1000:.1f} kHz (below the "
+                    f"{LIMIT_CD_HZ/1000:.2f} kHz CD limit, so the declared "
+                    f"{sr/1000:.1f} kHz band is not backed by content; no brickwall "
+                    f"or lossy codec signature detected)",
+                    0.30,
+                    blocks_max_verdict=True,
+                    family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    tier=EvidenceTier.SOFT_BLOCKING,
                     code=FindingCode.HIRES_NO_ULTRASONIC,
                 )
         elif rel_ceiling >= 0.88:
@@ -527,12 +591,17 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
 
         # 3b. Morphology that no legitimate master produces.
         if spectrum.get("muro_brickwall_nyquist"):
+            src_desc = (
+                "a 44.1/48 kHz lossy source"
+                if has_lossy_proof
+                else "a 44.1/48 kHz lossless master (no lossy codec signature detected)"
+            )
             ledger.penalize(
-                f"Upscaled from a 44.1/48 kHz source into a high-res container: "
+                f"Upscaled from {src_desc} into a high-res container: "
                 f"abrupt brickwall drop at the CD/DAT Nyquist "
                 f"({spectrum.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz, "
                 f"{spectrum.get('salto_ultrasonico_db', 0.0):.1f} dB step into silence)",
-                0.40,
+                0.55,
                 family=EvidenceFamily.SPECTRAL_CUTOFF,
                 code=FindingCode.NYQUIST_BRICKWALL,
             )
@@ -556,9 +625,25 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
         ledger.add_votes(0.0, 3.0)
         if category == CutoffClass.FAR_CUTOFF.value:
             if spectrum.get("es_transferencia_dsd") or spectrum.get("rolloff_analogico_genuino"):
-                ledger.note(f"Genuine analogue/DSD master roll-off: musical "
+                master_kind = (
+                    "DSD/SACD transfer"
+                    if spectrum.get("es_transferencia_dsd")
+                    else "analogue high-res master"
+                )
+                ledger.note(f"Genuine {master_kind} roll-off: musical "
                             f"band ends naturally at {spectrum['frecuencia_corte']/1000:.1f} kHz "
                             f"({rel_cutoff*100:.0f}% of Nyquist)")
+            elif hires_source_nyquist_cut:
+                ledger.penalize(
+                    f"Source sample-rate Nyquist limit (artificial cut-off at "
+                    f"{spectrum['frecuencia_corte']/1000:.1f} kHz, "
+                    f"{rel_cutoff*100:.0f}% of Nyquist of {nyq_txt}): "
+                    f"high frequencies stop at a 44.1/48 kHz master boundary "
+                    f"(no lossy codec signature detected)",
+                    0.40,
+                    family=EvidenceFamily.SPECTRAL_CUTOFF,
+                    code=FindingCode.HIRES_UPSCALE_CUTOFF,
+                )
             elif is_hires and spectrum.get("muro_brickwall_nyquist"):
                 ledger.penalize(
                     f"Upscaled lower-rate source (artificial cut-off at "
@@ -638,11 +723,12 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
             ledger.note("Dual-mono programme: left and right channels carry the same "
                         "audio, so stereo separation is not informative")
         if spectrum.get("sospecha_joint_stereo"):
+            delta_ms = float(spectrum.get("delta_corte_ms_hz") or 0.0)
+            delta_part = f", cut-off delta {delta_ms:.0f} Hz" if delta_ms >= 100.0 else ""
             ledger.penalize(
                 f"Lossy joint-stereo signature (MP3/AAC): Side channel (L-R) "
                 f"collapses at high frequencies (Mid-Side drop "
-                f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, cut-off delta "
-                f"{spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz)",
+                f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB{delta_part})",
                 0.30,
                 family=EvidenceFamily.STEREO_COLLAPSE,
                 code=FindingCode.JOINT_STEREO_COLLAPSE,
@@ -779,8 +865,9 @@ def calculate_score(meta, spectrum, bdi, include_notes=False):
                 and not spectrum.get("sbr_qmf_detectado")
                 and not spectrum.get("sospecha_excitador_armonico")):
             ledger.penalize(
-                f"Artificial bandwidth extension / time-domain spectral folding: "
-                f"upper band mirrors lower-band trajectories around "
+                f"Time-domain spectral folding / aliasing (AI bandwidth extension "
+                f"or unfiltered low-rate sampler): upper band mirrors lower-band "
+                f"trajectories around "
                 f"{spectrum.get('spectral_folding_pivot_hz', 0.0)/1000.0:.2f} kHz "
                 f"(r = {spectrum.get('spectral_folding_corr', 0.0):.2f}, "
                 f"Z = {spectrum.get('spectral_folding_z', 0.0):.1f} sigma)",
@@ -1155,6 +1242,46 @@ def _is_lossy_codec_quorum_track(result):
     )
 
 
+def _deserves_album_hires_upscale_coherence(result):
+    """True when a Hi-Res (>= 88.2 kHz) track passed standalone only because its
+    spectral ceiling grazed 22.05-23.5 kHz by a few bins without confirmed
+    analogue/DSD ultrasonic roll-off and with a steep ultrasonic drop."""
+    if not isinstance(result, dict) or result.get("error"):
+        return False
+    if result.get("veredicto") not in (
+        Verdict.GENUINE_LOSSLESS.value,
+        Verdict.PROBABLY_LOSSLESS.value,
+    ):
+        return False
+    meta = result.get("meta") or {}
+    sr = int(meta.get("sample_rate") or 0)
+    if sr < 88200:
+        return False
+    spectrum = result.get("esp") or {}
+    if (spectrum.get("error")
+            or spectrum.get("muro_brickwall_nyquist")
+            or spectrum.get("rolloff_analogico_genuino")
+            or spectrum.get("es_transferencia_dsd")):
+        return False
+    ceiling = float(spectrum.get("techo_hz") or 0.0)
+    jump_db = float(spectrum.get("salto_ultrasonico_db") or 0.0)
+    return bool(LIMIT_CD_HZ <= ceiling < 23500.0 and jump_db >= 25.0)
+
+
+def _is_hires_brickwall_quorum_track(result):
+    """True when a Hi-Res (>= 88.2 kHz) track has a confirmed Nyquist brickwall
+    upscale from a 44.1/48 kHz master."""
+    meta = result.get("meta") or {}
+    sr = int(meta.get("sample_rate") or 0)
+    if sr < 88200:
+        return False
+    spectrum = result.get("esp") or {}
+    return bool(
+        spectrum.get("muro_brickwall_nyquist")
+        and not spectrum.get("es_transferencia_dsd")
+    )
+
+
 def _is_clean_quorum_track(result):
     verdict = result.get("veredicto")
     if verdict == Verdict.GENUINE_LOSSLESS.value:
@@ -1351,8 +1478,87 @@ def _evaluate_album_quorum(valid_tracks) -> AlbumQuorumDecision:
                     candidates=tuple(candidates),
                 )
 
+    if not quorum_tracks and len(valid_tracks) >= 4:
+        # Pure-acoustic / vintage album clean quorum: when an entire <=48 kHz
+        # album consists of low-brightness acoustic/archival tracks (no track
+        # reaches 88% Nyquist, yet >= 75% pass standalone with smooth acoustic
+        # decay, verified MD5, score >= 0.70, and zero codec defects), rescue
+        # isolated `low_spectral_ceiling` SUSPICIOUS tracks.
+        fmt_counts = Counter(
+            (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
+            for r in valid_tracks
+        )
+        acoustic_ref = fmt_counts.most_common(1)[0][0]
+        if int(acoustic_ref[0] or 0) <= 48000:
+            acoustic_support = [
+                r for r in valid_tracks
+                if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == acoustic_ref
+                and r.get("veredicto") == Verdict.PROBABLY_LOSSLESS.value
+                and float(r.get("score") or 0.0) >= 0.70
+                and (r.get("md5") or {}).get("estado") == Md5Status.MATCH.value
+                and bool((r.get("esp") or {}).get("decaimiento_acustico_suave"))
+                and (r.get("esp") or {}).get("clase_corte") == CutoffClass.NO_CUTOFF.value
+                and _is_clean_batch_track(r)
+            ]
+            if (len(acoustic_support) >= 4
+                    and len(acoustic_support) / float(len(valid_tracks)) >= 0.75):
+                ac_candidates = []
+                for r in valid_tracks:
+                    if r.get("veredicto") != Verdict.SUSPICIOUS.value:
+                        continue
+                    meta = r.get("meta") or {}
+                    if (meta.get("sample_rate"), meta.get("bits_per_sample")) != acoustic_ref:
+                        continue
+                    codes = (r.get("esp") or {}).get("finding_codes") or []
+                    if codes and any(
+                        (c.value if isinstance(c, Enum) else str(c))
+                        != FindingCode.LOW_SPECTRAL_CEILING.value
+                        for c in codes
+                    ):
+                        continue
+                    if _deserves_album_coherence(r):
+                        ac_candidates.append(r)
+                max_ac = max(2, len(valid_tracks) // 4)
+                if 1 <= len(ac_candidates) <= max_ac:
+                    return AlbumQuorumDecision(
+                        kind=AlbumQuorumKind.CLEAN_STANDARD,
+                        reference_format=acoustic_ref,
+                        candidates=tuple(ac_candidates),
+                    )
+
     if len(valid_tracks) < 3:
         return AlbumQuorumDecision(AlbumQuorumKind.NONE)
+    hires_bw_tracks = [
+        r for r in valid_tracks
+        if _is_hires_brickwall_quorum_track(r)
+    ]
+    if hires_bw_tracks:
+        hr_ref_key = Counter(
+            (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"])
+            for r in hires_bw_tracks
+        ).most_common(1)[0][0]
+        hr_ref = [
+            r for r in hires_bw_tracks
+            if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == hr_ref_key
+        ]
+        if len(hr_ref) / float(len(valid_tracks)) >= 0.75:
+            hr_candidates = [
+                r for r in valid_tracks
+                if (r["meta"]["sample_rate"], r["meta"]["bits_per_sample"]) == hr_ref_key
+                and not (
+                    r.get("coherencia_album") is True
+                    and r.get("veredicto") == Verdict.PROBABLE_UPSCALE.value
+                )
+                and _deserves_album_hires_upscale_coherence(r)
+            ]
+            max_hr = max(2, len(valid_tracks) // 4)
+            if 1 <= len(hr_candidates) <= max_hr:
+                return AlbumQuorumDecision(
+                    kind=AlbumQuorumKind.HIRES_UPSCALED,
+                    reference_format=hr_ref_key,
+                    candidates=tuple(hr_candidates),
+                )
+
     lattice_tracks = [
         r for r in valid_tracks
         if _is_lossy_codec_quorum_track(r)
@@ -1471,6 +1677,35 @@ def apply_album_coherence(results):
                 r["album_coherence_note"] = ALBUM_COHERENCE_NOTE
                 r["album_coherence_action"] = AlbumCoherenceAction.RESCUED_LOSSLESS.value
                 updated += 1
+        elif decision.kind is AlbumQuorumKind.HIRES_UPSCALED:
+            for r in decision.candidates:
+                if (r.get("coherencia_album") is True
+                        and r.get("veredicto") == Verdict.PROBABLE_UPSCALE.value):
+                    continue
+                spec = r.get("esp") or {}
+                ceil_khz = float(spec.get("techo_hz") or 0.0) / 1000.0
+                jump_db = float(spec.get("salto_ultrasonico_db") or 0.0)
+                note = (
+                    f"Likely 44.1/48 kHz master upscaled into high-res by album "
+                    f"consistency: borderline {ceil_khz:.1f} kHz ceiling "
+                    f"({jump_db:.1f} dB ultrasonic drop) in a brickwall-upscaled "
+                    f"album (no lossy codec signature detected)"
+                )
+                r["veredicto"] = Verdict.PROBABLE_UPSCALE.value
+                r["score"] = min(float(r.get("score") or 0.0), 0.35)
+                r["problemas"] = list(r.get("problemas") or []) + [note]
+                if isinstance(r.get("esp"), dict):
+                    existing_codes = list(r["esp"].get("finding_codes") or [])
+                    r["esp"] = {
+                        **r["esp"],
+                        "finding_codes": existing_codes
+                        + [FindingCode.HIRES_NO_ULTRASONIC.value],
+                    }
+                r["evidencias_forenses"] = list(r.get("evidencias_forenses") or []) + [note]
+                r["coherencia_album"] = True
+                r["album_coherence_note"] = note
+                r["album_coherence_action"] = AlbumCoherenceAction.CONVICTED_HIRES_UPSCALE.value
+                updated += 1
         elif decision.kind is AlbumQuorumKind.LOSSY_CODEC:
             dominant_family = decision.dominant_family or "20 kHz lossy/Opus"
             for r in decision.candidates:
@@ -1527,21 +1762,24 @@ def forensic_evidence(result):
                           + (f" ({float(rel)*100:.0f}% of Nyquist)"
                              if isinstance(rel, (int, float)) else ""))
     if spectrum.get("muro_brickwall_nyquist"):
-        evidence.append(f"Hi-Res brickwall at the CD/DAT Nyquist "
+        evidence.append(f"Hi-Res brickwall at the 44.1/48 kHz source Nyquist "
                           f"({spectrum.get('gradiente_nyquist_db_khz', 0.0):.1f} dB/kHz)")
     if spectrum.get("espejo_aliasing_detectado"):
         evidence.append(f"Spectral mirror around 22.05 kHz "
                           f"(r = {spectrum.get('correlacion_espejo_22k', 0.0):.2f})")
     if spectrum.get("es_transferencia_dsd"):
         evidence.append("DSD/SACD noise-shaping profile in 24-40 kHz")
-    elif spectrum.get("rolloff_analogico_genuino") or spectrum.get("rolloff_banda_limitada_genuina"):
-        evidence.append("Analogue/acoustic roll-off with a continuous ultrasonic floor")
+    elif spectrum.get("rolloff_analogico_genuino"):
+        evidence.append("Analogue high-res roll-off with a continuous ultrasonic floor")
+    elif spectrum.get("rolloff_banda_limitada_genuina"):
+        evidence.append("Genuine analogue/archival high-frequency roll-off")
     if spectrum.get("es_estacionario"):
         evidence.append("Stationary harmonic/tonal programme (sustained drone/synth guard)")
     if spectrum.get("sospecha_joint_stereo"):
+        delta_ms = float(spectrum.get("delta_corte_ms_hz") or 0.0)
+        delta_ev = f", cut-off delta {delta_ms:.0f} Hz" if delta_ms >= 100.0 else ""
         evidence.append(f"Side channel (L-R) collapse: "
-                          f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB, "
-                          f"cut-off delta {spectrum.get('delta_corte_ms_hz', 0.0):.0f} Hz")
+                          f"{spectrum.get('caida_side_agudos_db', 0.0):.1f} dB{delta_ev}")
     elif spectrum.get("stereo_phase_coupling"):
         evidence.append(f"Inter-channel stereo coupling (MSC {spectrum.get('msc_lo', 0.0):.2f} -> "
                           f"{spectrum.get('msc_hi', 0.0):.2f}, IPD lock "

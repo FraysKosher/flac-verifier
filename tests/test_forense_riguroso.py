@@ -6742,6 +6742,197 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         res_stat = spectral._detect_neural_vocoder_artifacts(enc_sig, sr, is_stationary=True)
         self.assertIs(res_stat["neural_vocoder_detected"], False, res_stat)
 
+    def test_62_engine173_hires_continuity_attribution_and_coherence(self):
+        """Engine 17.3: Hi-Res 22.05 kHz continuity, honest 44.1/48 kHz upscale
+        attribution, stopband guard for analog tape floors, Hi-Res M/S guard,
+        pure-acoustic clean quorum, and Hi-Res brickwall album quorum."""
+        import _motor_espectral as spectral
+        import _motor_veredicto as verdict_mod
+
+        meta96 = {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2}
+        bdi_active = {"aplica": True, "lsbs": "active", "forense_bits": {}}
+
+        def _base_hires_spec(ceiling_hz, **overrides):
+            spec = {
+                "techo_hz": ceiling_hz,
+                "techo_rel_nyquist": ceiling_hz / 48000.0,
+                **motor_flac.CutoffAssessment.none().to_protocol_fields(),
+                "ratio_aplica": True,
+                "ratio": 0.05,
+                "var_alta_db": 10.0,
+                "separacion_stereo": 0.30,
+                "muro_brickwall_nyquist": False,
+                "rolloff_analogico_genuino": False,
+                "es_transferencia_dsd": False,
+            }
+            spec.update(overrides)
+            return spec
+
+        # 1. Continuity across 22,050 Hz (1-bin boundary) with zero contradictory notes.
+        sc_below, v_below, p_below, n_below = motor_flac.calculate_score(
+            meta96, _base_hires_spec(22031), bdi_active, include_notes=True
+        )
+        sc_above, v_above, p_above, n_above = motor_flac.calculate_score(
+            meta96, _base_hires_spec(22055), bdi_active, include_notes=True
+        )
+        self.assertEqual(v_below, "SUSPICIOUS")
+        self.assertAlmostEqual(sc_below, 0.50, places=2)
+        self.assertEqual(v_above, "PROBABLY LOSSLESS")
+        self.assertLess(sc_above - sc_below, 0.35)
+        self.assertFalse(any("Partial high-res content" in n for n in n_below))
+
+        # 2. Warm Hi-Res master without brickwall/codec -> SUSPICIOUS (never 0% PROBABLE UPSCALE);
+        #    corroborated brickwall upscale -> PROBABLE UPSCALE with honest non-lossy wording.
+        sc_warm, v_warm, p_warm = motor_flac.calculate_score(
+            meta96, _base_hires_spec(17500), bdi_active
+        )
+        self.assertEqual(v_warm, "SUSPICIOUS")
+        self.assertEqual(len(p_warm), 1)
+        self.assertIn("no brickwall or lossy codec signature", p_warm[0])
+
+        sc_bw_hi, v_bw_hi, p_bw_hi = motor_flac.calculate_score(
+            meta96,
+            _base_hires_spec(
+                22200,
+                muro_brickwall_nyquist=True,
+                gradiente_nyquist_db_khz=38.0,
+                salto_ultrasonico_db=68.0,
+            ),
+            bdi_active,
+        )
+        self.assertEqual(v_bw_hi, "PROBABLE UPSCALE")
+        self.assertLess(sc_bw_hi, 0.45)
+        self.assertTrue(any("44.1/48 kHz lossless master" in p for p in p_bw_hi))
+
+        # 3. 48->96 kHz source Nyquist cut-off at 23,930 Hz must NOT claim "Lossy codec signature".
+        spec_48_in_96 = _base_hires_spec(
+            23930,
+            clase_corte="far_cutoff",
+            corte_detectado=True,
+            frecuencia_corte=23930,
+            distancia_nyquist=23930 / 48000.0,
+            corte_artificial=True,
+            muro_brickwall_nyquist=True,
+            gradiente_nyquist_db_khz=44.0,
+            salto_ultrasonico_db=72.0,
+        )
+        _, v_48_96, p_48_96 = motor_flac.calculate_score(meta96, spec_48_in_96, bdi_active)
+        self.assertEqual(v_48_96, "PROBABLE UPSCALE")
+        self.assertTrue(any("Source sample-rate Nyquist limit" in p for p in p_48_96), p_48_96)
+        self.assertFalse(any("Lossy codec signature" in p for p in p_48_96), p_48_96)
+        self.assertIn("hires_upscale_cutoff", spec_48_in_96["finding_codes"])
+        self.assertNotIn("artificial_cutoff", spec_48_in_96["finding_codes"])
+
+        # 4. Stopband guard protects analog tape floor (-74 dBFS) even with steep -31 dB/kHz roll-off,
+        #    and continuous steep ultrasonic roll-off (-20 dB/kHz) qualifies as genuine analog Hi-Res.
+        freqs = np.linspace(10000.0, 46000.0, 1801)
+        tape_curve = np.where(
+            freqs <= 21500.0,
+            -44.0 - 0.8 * (freqs - 14000.0) / 1000.0,
+            np.where(
+                freqs <= 22300.0,
+                -50.0 - 31.0 * (freqs - 21500.0) / 1000.0,
+                -74.8 - 0.15 * (freqs - 22300.0) / 1000.0,
+            ),
+        )
+        diag_tape = spectral._diagnose_hires_authenticity(freqs, tape_curve, 96000, ceiling_hz=21700.0)
+        self.assertIs(diag_tape["muro_brickwall_nyquist"], False, diag_tape)
+
+        steep_analog = np.where(
+            freqs <= 20500.0,
+            -38.0 - 1.5 * (freqs - 14000.0) / 1000.0,
+            np.where(
+                freqs <= 22000.0,
+                -47.75 - 19.5 * (freqs - 20500.0) / 1000.0,
+                -77.0 - 0.75 * (freqs - 22000.0) / 1000.0,
+            ),
+        )
+        diag_steep = spectral._diagnose_hires_authenticity(freqs, steep_analog, 96000, ceiling_hz=21600.0)
+        self.assertIs(diag_steep["muro_brickwall_nyquist"], False, diag_steep)
+        self.assertIs(diag_steep["rolloff_analogico_genuino"], True, diag_steep)
+
+        # 5. Pure-acoustic clean album quorum rescues isolated low-ceiling tracks.
+        meta44 = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2}
+        bolero_tracks = []
+        for idx in range(1, 7):
+            bolero_tracks.append({
+                "archivo": f"{idx:02d}_bolero.flac",
+                "ruta": f"/virtual/bolero_album/{idx:02d}_bolero.flac",
+                "meta": meta44,
+                "md5": {"estado": "match"},
+                "bdi": {"aplica": False},
+                "veredicto": "PROBABLY LOSSLESS",
+                "score": 0.79,
+                "problemas": [],
+                "notes": [],
+                "esp": {
+                    "techo_hz": 14500,
+                    "techo_rel_nyquist": 0.658,
+                    "clase_corte": "no_cutoff",
+                    "decaimiento_acustico_suave": True,
+                },
+            })
+        bolero_tracks.append({
+            "archivo": "07_dark_bolero.flac",
+            "ruta": "/virtual/bolero_album/07_dark_bolero.flac",
+            "meta": meta44,
+            "md5": {"estado": "match"},
+            "bdi": {"aplica": False},
+            "veredicto": "SUSPICIOUS",
+            "score": 0.50,
+            "problemas": ["Unexplained low spectral ceiling"],
+            "notes": [],
+            "esp": {
+                "techo_hz": 11800,
+                "techo_rel_nyquist": 0.535,
+                "clase_corte": "no_cutoff",
+                "decaimiento_acustico_suave": False,
+                "finding_codes": ["low_spectral_ceiling"],
+            },
+        })
+        verdict_mod.apply_album_coherence(bolero_tracks)
+        self.assertEqual(bolero_tracks[-1]["veredicto"], "PROBABLY LOSSLESS")
+        self.assertEqual(bolero_tracks[-1].get("album_coherence_action"), "rescued_lossless")
+
+        # 6. Hi-Res brickwall album quorum flags borderline 22.1 kHz sibling without analog roll-off.
+        hires_album = []
+        for idx in range(1, 5):
+            hires_album.append({
+                "archivo": f"{idx:02d}_upscaled.flac",
+                "ruta": f"/virtual/hires_up_album/{idx:02d}_upscaled.flac",
+                "meta": meta96,
+                "md5": {"estado": "match"},
+                "bdi": bdi_active,
+                "veredicto": "PROBABLE UPSCALE",
+                "score": 0.15,
+                "problemas": ["Upscaled from a 44.1/48 kHz lossless master"],
+                "notes": [],
+                "esp": _base_hires_spec(
+                    22010,
+                    muro_brickwall_nyquist=True,
+                    salto_ultrasonico_db=65.0,
+                    finding_codes=["nyquist_brickwall"],
+                ),
+            })
+        hires_album.append({
+            "archivo": "05_borderline_22100.flac",
+            "ruta": "/virtual/hires_up_album/05_borderline_22100.flac",
+            "meta": meta96,
+            "md5": {"estado": "match"},
+            "bdi": bdi_active,
+            "veredicto": "PROBABLY LOSSLESS",
+            "score": 0.77,
+            "problemas": [],
+            "notes": [],
+            "esp": _base_hires_spec(22120, salto_ultrasonico_db=34.0),
+        })
+        verdict_mod.apply_album_coherence(hires_album)
+        self.assertEqual(hires_album[-1]["veredicto"], "PROBABLE UPSCALE")
+        self.assertEqual(
+            hires_album[-1].get("album_coherence_action"),
+            "convicted_hires_upscale",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

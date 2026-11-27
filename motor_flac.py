@@ -81,6 +81,7 @@ from _motor_veredicto import (
     FindingCode, VerdictCap, AlbumCoherenceAction, AlbumQuorumKind,
     AlbumQuorumDecision, ScoreEvaluation, _ScoreLedger, calculate_score,
     _deserves_album_coherence, _deserves_album_lossy_coherence,
+    _deserves_album_hires_upscale_coherence,
     _is_clean_quorum_track, _evaluate_album_quorum,
     apply_album_coherence, forensic_evidence,
 )
@@ -98,7 +99,25 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "17.2"
+ENGINE_VERSION = "17.3"
+# 17.3: Hi-Res continuity, honest source attribution, and pure-acoustic quorum:
+#       - Guard the generic >28 dB/kHz Hi-Res brickwall slope against genuine
+#         analogue tape floors (> -82 dBFS with jump <= 36 dB) and extend
+#         `continuous_steep_rolloff` to -23 dB/kHz when ultrasonic content
+#         continues decaying across 24-42 kHz (> -95/-105 dBFS, decay >= 7.5 dB).
+#       - Eliminate the 1-bin 22,050 Hz scoring cliff and contradictory notes on
+#         Hi-Res tracks: uncorroborated <22.05 kHz ceilings without brickwall or
+#         codec signatures now emit a single SOFT_BLOCKING `HIRES_NO_ULTRASONIC`
+#         (SUSPICIOUS) instead of double HARD_PROOF penalties, borderline
+#         22.05-23.0 kHz tracks without ultrasonic roll-off score PROBABLY
+#         LOSSLESS, and confirmed `NYQUIST_BRICKWALL` penalises -0.55.
+#       - Distinguish 44.1/48 kHz lossless masters repackaged in Hi-Res from
+#         lossy codec transcodes across engine, CLI, PDF, spectrogram markers,
+#         and v3 library smart filters; guard Hi-Res brickwall M/S dynamic
+#         collapse against false MP3/AAC joint-stereo attribution.
+#       - Add pure-acoustic clean album quorum (for vintage/acoustic albums where
+#         >= 75% of tracks pass standalone with `decaimiento_acustico_suave`) and
+#         Hi-Res brickwall album consistency for borderline 22.1 kHz tracks.
 # 17.2: Mega-Arena DEV forensic calibration (pure NumPy + pypocketfft, zero ML):
 #       - Add CodecLatticeFamily.MDCT_2048_WMA (4096-sample Sine window, 2048-sample
 #         hop, 128-sample block-switching subgrid) catching WMAv2 transcodes while
@@ -1350,6 +1369,8 @@ def classify_batch_disposition(result) -> BatchDisposition:
             and _deserves_album_coherence(result)):
         return BatchDisposition.DEFERRED
     if _deserves_album_lossy_coherence(result):
+        return BatchDisposition.DEFERRED
+    if _deserves_album_hires_upscale_coherence(result):
         return BatchDisposition.DEFERRED
     return BatchDisposition.IMMEDIATE
 

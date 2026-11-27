@@ -837,7 +837,8 @@ def _assess_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
 
     muro_brickwall = (
         (worse_slope < -28.0 and worse_slope < slope_base * 2.1
-         and jump_db > 15.0)
+         and jump_db > 15.0
+         and (level_after_db < -82.0 or jump_db > 36.0))
         or (
             jump_db > 21.0
             and level_after_db < -125.0
@@ -915,9 +916,9 @@ def _assess_hires_authenticity(freqs_hz, spectrum_mid_db, sample_rate,
         and (level_14_17k - level_before_db) >= 1.5
     )
     continuous_steep_rolloff = (
-        worse_slope > -15.0
-        and slope_skirt_44k > -18.0
-        and slope_skirt_48k > -18.0
+        worse_slope > -23.0
+        and slope_skirt_44k > -23.0
+        and slope_skirt_48k > -23.0
         and jump_db < 40.0
         and level_after_db > -95.0
         and level_ultra_top_db > -105.0
@@ -3977,6 +3978,11 @@ def _apply_stationary_and_ms_guards(
             and not centered_hf_vocal
             and not hires_ultrasonic_stereo
             and not (hires_clean_rolloff and ceiling_val < 13500)
+            and not (
+                sr >= 88200
+                and spectrum.get("muro_brickwall_nyquist")
+                and delta_cutoff < 1100.0
+            )
             and (delta_cutoff >= 800.0
                  or (collapse >= 6.0 and math.isfinite(ms_p95) and ms_p95 >= 25.0))):
         spectrum["sospecha_joint_stereo"] = True
