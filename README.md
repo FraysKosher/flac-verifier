@@ -146,10 +146,15 @@ prompts whenever `ENGINE_VERSION` advances.
 
 Click any track to open the **Forensic Inspector** with an interactive Magma
 Canvas spectrogram (`Full` / `Upper` zoom, live `kHz · dBFS · mm:ss` crosshair,
-and toggleable forensic evidence markers) and `Mark reviewed` audit notes:
+and toggleable forensic evidence markers), expandable to a full Spek-style
+**Lightbox** with kHz/time axes and dBFS scale, plus `Mark reviewed` audit notes:
 
 <p align="center">
   <img src="docs/screenshots/album_inspector.png" alt="FLAC Verifier v3.0.0 album detail and interactive Canvas spectrogram" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/spectrogram_lightbox.png" alt="FLAC Verifier v3.0.0 expanded Spek-style spectrogram Lightbox with forensic markers" width="900">
 </p>
 
 Switch between **Dark** and **Light** themes in place (synchronized with the
