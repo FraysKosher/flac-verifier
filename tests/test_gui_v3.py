@@ -336,6 +336,41 @@ class TestGuiV3Headless(unittest.TestCase):
         self.assertTrue(pf["ok"])
         self.assertTrue(pf["queued"])
 
+    def test_spectrogram_markers_hires_attribution_and_analog_suppression(self) -> None:
+        """Engine 17.3: spectrogram markers label 48->96 kHz cut-offs as Source Nyquist
+        (not Codec cut-off) and suppress CD-limit warnings on genuine analog Hi-Res."""
+        import spectrogram_bridge as sb
+
+        res_48_in_96 = {
+            "meta": {"sample_rate": 96000, "bits_per_sample": 24},
+            "veredicto": "PROBABLE UPSCALE",
+            "esp": {
+                "nyquist": 48000,
+                "techo_hz": 23930,
+                "corte_artificial": True,
+                "frecuencia_corte": 23930,
+                "muro_brickwall_nyquist": True,
+                "finding_codes": ["nyquist_brickwall", "hires_upscale_cutoff"],
+            },
+        }
+        markers_up = sb.extract_forensic_markers(res_48_in_96)
+        cutoff_labels = [m["label"] for m in markers_up if m["kind"] == "cutoff"]
+        self.assertEqual(cutoff_labels, ["Source Nyquist cut-off 23.93 kHz"])
+
+        res_analog_96 = {
+            "meta": {"sample_rate": 96000, "bits_per_sample": 24},
+            "veredicto": "GENUINE LOSSLESS",
+            "esp": {
+                "nyquist": 48000,
+                "techo_hz": 21600,
+                "rolloff_analogico_genuino": True,
+                "muro_brickwall_nyquist": False,
+                "corte_artificial": False,
+            },
+        }
+        markers_ok = sb.extract_forensic_markers(res_analog_96)
+        self.assertFalse(any(m["kind"] == "hires_ceiling" for m in markers_ok), markers_ok)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

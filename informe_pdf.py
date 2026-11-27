@@ -97,8 +97,39 @@ STYLE_ERROR = ("NO VERDICT (ERROR)",) + DANGER_TONE
 CUTOFF_CLASS_TEXT = {
     "no_cutoff":            "no cut-off detected",
     "near_nyquist_cutoff":  "inconclusive (consistent with a mastering filter)",
-    "far_cutoff":         "lossy codec signature",
+    "far_cutoff":           "lossy codec signature",
 }
+
+
+def _cutoff_class_label(meta, spectrum):
+    """Contextual cut-off label distinguishing 44.1/48 kHz Hi-Res upscales and
+    analogue/DSD roll-offs from genuine lossy codec cut-offs."""
+    category = (spectrum or {}).get("clase_corte")
+    if category != "far_cutoff":
+        return CUTOFF_CLASS_TEXT.get(category, category)
+    if spectrum.get("es_transferencia_dsd"):
+        return "DSD/SACD passband"
+    if spectrum.get("rolloff_analogico_genuino"):
+        return "natural analogue roll-off"
+    sr = int((meta or {}).get("sample_rate") or 0)
+    fc = spectrum.get("frecuencia_corte")
+    has_lossy = bool(
+        spectrum.get("mdct_lattice_detected")
+        or spectrum.get("sbr_qmf_detectado")
+        or spectrum.get("islas_mdct_sfb21")
+        or spectrum.get("sospecha_excitador_armonico")
+        or spectrum.get("neural_vocoder_detected")
+        or spectrum.get("spectral_folding_detected")
+        or spectrum.get("sospecha_corte_opus_20k")
+        or spectrum.get("modulacion_psicoacustica_20k")
+    )
+    if sr >= 88200 and not has_lossy and (
+        isinstance(fc, (int, float)) and 20500.0 <= float(fc) <= 24800.0
+    ):
+        return "source sample-rate Nyquist limit (44.1/48 kHz)"
+    if sr >= 88200 and not has_lossy and spectrum.get("muro_brickwall_nyquist"):
+        return "upscaled lower-rate source boundary"
+    return CUTOFF_CLASS_TEXT["far_cutoff"]
 MD5_TEXT = {
     "match":      "verified (match)",
     "mismatch":   "MISMATCH — file corrupt",
@@ -304,7 +335,7 @@ def _technical_table(res, styles):
                             f"{_num(spectrum.get('techo_hz'), ' Hz', 0)}"
                             f" ({_pct(spectrum.get('techo_rel_nyquist'))} of Nyquist)"))
         if spectrum.get("corte_detectado"):
-            category = CUTOFF_CLASS_TEXT.get(spectrum.get("clase_corte"), spectrum.get("clase_corte"))
+            category = _cutoff_class_label(meta, spectrum)
             text_cutoff = (f"{_num(spectrum.get('frecuencia_corte'), ' Hz', 0)}"
                            f" ({_pct(spectrum.get('distancia_nyquist'))} of Nyquist) · {category}")
         else:
@@ -579,8 +610,9 @@ def _cover(album_path, results, mode, styles):
         HRFlowable(width="100%", thickness=0.8, color=colors.HexColor(ACCENT),
                    spaceBefore=0, spaceAfter=5 * mm),
         Paragraph("FLAC verification report", styles["titulo"]),
-        Paragraph("Fake lossless detection: lossy transcodes and "
-                  "bit-depth upgrades.", styles["subtitulo"]),
+        Paragraph("Forensic lossless audit: lossy transcodes, Hi-Res upscales, "
+                  "bit-depth inflation, and AI/neural bandwidth extension.",
+                  styles["subtitulo"]),
         Spacer(1, 6 * mm),
         Paragraph(f"<b>Album analyzed:</b> {html.escape(str(album_path))}",
                   styles["normal"]),
@@ -592,11 +624,13 @@ def _cover(album_path, results, mode, styles):
                  Paragraph("Executive summary", styles["seccion"]),
                  _table(rows, [72 * mm, 30 * mm, 30 * mm], styles, comandos),
                  Spacer(1, 4 * mm),
-                 Paragraph("The verdict rests on four verifiable facts: "
-                           "STREAMINFO MD5 integrity, actual LSB utilization, spectral "
-                           "analysis with distance to Nyquist, and coherence between the declared "
-                           "format and the content. A file with a confirmed defect "
-                           "never receives the top verdict.", styles["subtitulo"])]
+                 Paragraph("Each verdict combines deterministic forensic checks: "
+                           "STREAMINFO MD5 and offline AccurateRip CRCs, lapped-transform "
+                           "codec lattice inversion (MDCT/PQMF/CELT/WMA and HE-AAC SBR), "
+                           "AI/neural vocoder and spectral-folding detection, Hi-Res/DSD "
+                           "ultrasonic morphology, and 24/32-bit algebraic LSB audits. "
+                           "A track with a confirmed defect never receives the top verdict.",
+                           styles["subtitulo"])]
     return element
 
 

@@ -20,6 +20,12 @@ const TECH_GLOSSARY = {
   "sfb21": "MP3 scalefactor band 21 (>16 kHz) producing intermittent high-frequency spectral islands.",
   "AccurateRip": "Offline Red Book CDDA frame CRC check matching lossless CD pressing boundaries.",
   "DoP": "DSD over PCM (DoP 1.0): 1-bit DSD stream framed inside a 24-bit PCM container.",
+  "Nyquist": "Half the sample rate (e.g. 22.05 kHz for 44.1 kHz CD, 24 kHz for 48 kHz, 48 kHz for 96 kHz).",
+  "Brickwall": "Abrupt vertical low-pass cut-off into digital silence typical of sample-rate upscaling or lossy codecs.",
+  "LSB": "Least Significant Bits: the lowest 8 bits of a 24-bit PCM sample, audited for 16-bit padding or comb scaling.",
+  "DSD": "Direct Stream Digital (SACD 1-bit delta-sigma audio) with characteristic rising noise-shaping above 24 kHz.",
+  "MD5": "STREAMINFO PCM MD5 checksum proving the decoded audio stream is bit-exact and uncorrupted.",
+  "Spectral folding": "Mirrored high-frequency reflection produced by time-domain AI bandwidth extension or unfiltered low-rate samplers.",
 };
 
 const TECH_TERM_RE = new RegExp(
@@ -42,7 +48,7 @@ const VIEW_TITLES = {
 
 const state = {
   appVersion: "3.0.0",
-  engineVersion: "17.2",
+  engineVersion: "17.3",
   portable: false,
   theme: "dark",
   cpuCount: 8,
@@ -1178,7 +1184,7 @@ function closeInspector() {
   $$(".track-row").forEach((r) => r.classList.remove("selected"));
 }
 
-const CAUTIONARY_NOTE_RE = /\b(partial|limited|below|missing|warning|suspicious|unverified|borderline|reduced|no ultrasonic|no high|low ceiling|low spectral|inactive)\b/i;
+const CAUTIONARY_NOTE_RE = /\b(partial|limited|below|missing|warning|suspicious|unverified|borderline|reduced|no ultrasonic|no high|low ceiling|low spectral|inactive|inconclusive|dual-mono|limiter|upscale|cut-off|stationary)\b/i;
 
 function formatInspectorTitle(t) {
   const title = String(t.title || "").trim();
@@ -1472,12 +1478,28 @@ function normalizeQuickDropResult(ev, albumFolder) {
   (ev.notes || []).forEach((n) => evidence.push({ level: "ok", text: String(n) }));
 
   const filename = String(ev.archivo || "");
-  const finding = md5.estado === "mismatch"
-    ? "Corrupt MD5"
-    : (esp.mdct_lattice_detected ? String(esp.mdct_lattice_family || "MDCT").split("(")[0].trim()
-      : (esp.muro_brickwall_nyquist ? `Brickwall ${((esp.techo_hz || 24000) / 1000).toFixed(1)} kHz`
-        : (esp.corte_artificial ? `Cut-off ${((esp.frecuencia_corte || esp.techo_hz || 0) / 1000).toFixed(1)} kHz`
-          : (verdict === "GENUINE LOSSLESS" ? "Clean" : verdict))));
+  const bdi = ev.bdi || {};
+  const fb = bdi.forense_bits || {};
+  const sr = Number(meta.sample_rate || 0);
+  const fc = Number(esp.frecuencia_corte || esp.techo_hz || 0);
+  const findingCodes = Array.isArray(esp.finding_codes) ? esp.finding_codes : [];
+  let finding = verdict === "GENUINE LOSSLESS" ? "Clean" : verdict;
+  if (md5.estado === "mismatch") finding = "Corrupt MD5";
+  else if (esp.neural_vocoder_detected) finding = esp.vocoder_comb_spacing_hz ? `AI · ${(esp.vocoder_comb_spacing_hz / 1000).toFixed(1)}k comb` : "AI · Neural vocoder";
+  else if (esp.spectral_folding_detected) finding = "AI · Spectral folding";
+  else if (esp.mdct_lattice_detected) finding = String(esp.mdct_lattice_family || "MDCT").split("(")[0].trim();
+  else if (esp.sbr_qmf_detectado) finding = "HE-AAC SBR";
+  else if (esp.muro_brickwall_nyquist) finding = `Brickwall ${((esp.techo_hz || 24000) / 1000).toFixed(1)} kHz`;
+  else if (fb.es_padded_16_en_24) finding = "16-in-24 padded";
+  else if (fb.es_16bit_dither_en_24) finding = "16-in-24 dither";
+  else if (fb.es_24bit_escalado_en_peine) finding = "24-bit gain comb";
+  else if (esp.noise_shaped_16_in_24) finding = "16-in-24 shaped";
+  else if (esp.corte_artificial) finding = (sr >= 88200 && fc >= 20500 && fc <= 24800) ? `Source Nyquist ${(fc / 1000).toFixed(1)}k` : `Cut-off ${(fc / 1000).toFixed(1)} kHz`;
+  else if (findingCodes.includes("hires_no_ultrasonic") || findingCodes.includes("hires_below_cd")) finding = esp.techo_hz ? `No ultrasonic (${(esp.techo_hz / 1000).toFixed(1)}k)` : "No ultrasonic";
+  else if (verdict === "GENUINE LOSSLESS" && esp.es_transferencia_dsd) finding = "DSD transfer";
+  else if (verdict === "GENUINE LOSSLESS" && Number(meta.bits_per_sample) >= 24 && sr >= 88200) finding = `Native ${meta.bits_per_sample}/${Math.round(sr / 1000)}k`;
+  else if (verdict === "GENUINE LOSSLESS" && sr === 44100 && Number(meta.bits_per_sample) === 16) finding = "Clean CD";
+  else if (verdict === "PROBABLY LOSSLESS") finding = "Acoustic / clean";
 
   return {
     id: `qd-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,

@@ -106,7 +106,7 @@ def _bit_depth(bdi):
     }.get(bdi.get("lsbs"), "⚠️ ")
     print(f"  {ic} LSB utilization: {bdi['conclusion']}")
 
-def _spectrum(spectrum):
+def _spectrum(spectrum, meta=None):
     if spectrum.get("error"):
         print(f"  ⚠️  Spectral error: {spectrum['error']}")
         return
@@ -125,8 +125,32 @@ def _spectrum(spectrum):
     category = spectrum.get("clase_corte")
     if category == engine.CutoffClass.FAR_CUTOFF.value:
         fc = spectrum.get("frecuencia_corte") or 0
-        print(f"  ❌ Artificial cut-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
-              f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): codec signature")
+        sr = int((meta or {}).get("sample_rate") or (nyquist * 2))
+        has_lossy = bool(
+            spectrum.get("mdct_lattice_detected")
+            or spectrum.get("sbr_qmf_detectado")
+            or spectrum.get("islas_mdct_sfb21")
+            or spectrum.get("sospecha_excitador_armonico")
+            or spectrum.get("neural_vocoder_detected")
+            or spectrum.get("spectral_folding_detected")
+            or spectrum.get("sospecha_corte_opus_20k")
+            or spectrum.get("modulacion_psicoacustica_20k")
+        )
+        if spectrum.get("es_transferencia_dsd") or spectrum.get("rolloff_analogico_genuino"):
+            print(f"  ℹ️  Natural passband roll-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
+                  f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): "
+                  f"analogue/DSD master")
+        elif sr >= 88200 and not has_lossy and 20500 <= fc <= 24800:
+            print(f"  ❌ Source Nyquist cut-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
+                  f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): "
+                  f"44.1/48 kHz master upscaled into high-res (no lossy codec signature)")
+        elif sr >= 88200 and not has_lossy and spectrum.get("muro_brickwall_nyquist"):
+            print(f"  ❌ Upscaled lower-rate source cut-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
+                  f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): "
+                  f"high frequencies stop at the source Nyquist")
+        else:
+            print(f"  ❌ Artificial cut-off at {fc:,} Hz ({fc/1000:.1f} kHz, "
+                  f"{(spectrum.get('distancia_nyquist') or 0)*100:.0f}% of Nyquist): codec signature")
     elif category == engine.CutoffClass.NEAR_NYQUIST.value:
         fc = spectrum.get("frecuencia_corte") or 0
         print(f"  ℹ️  Band cut at {fc:,} Hz ({fc/1000:.1f} kHz, "
@@ -152,7 +176,7 @@ def _body(res):
     _clipping(res.get("clip"))
     _dr(res.get("dr"))
     _bit_depth(res.get("bdi") or {})
-    _spectrum(res.get("esp") or {})
+    _spectrum(res.get("esp") or {}, meta)
 
     print(f"\n  {verdict_label(res['veredicto'])}  (score {res['score']:.0%})")
     for problem in res.get("problemas", []):

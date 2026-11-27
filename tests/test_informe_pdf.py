@@ -218,7 +218,7 @@ class test_report_pdf(unittest.TestCase):
         text = text_pdf(report["ruta"])
         self.assertIn("FLAC VERIFIER", text)                       # wordmark
         self.assertIn("Authenticity and lossless verification", text)
-        self.assertIn("engine 17.2", text)                         # footer
+        self.assertIn("engine 17.3", text)                         # footer
         self.assertNotEqual(
             pdf.STYLE_VERDICT["PROBABLY LOSSLESS"],
             pdf.STYLE_VERDICT["SUSPICIOUS"],
@@ -709,6 +709,52 @@ class test_report_pdf(unittest.TestCase):
         self.assertEqual(stream2[:], ["a", "b", "c", "d"])
         del stream2[1:]
         self.assertEqual(stream2[:], ["a"])
+
+    def test_hires_source_nyquist_cutoff_never_says_lossy_codec_signature(self):
+        """Engine 17.3: PDF attribute table distinguishes Hi-Res 44.1/48 kHz Nyquist
+        limits, genuine analogue/DSD passbands, and actual lossy codec signatures."""
+        meta96 = {"sample_rate": 96000, "bits_per_sample": 24, "canales": 2}
+        meta44 = {"sample_rate": 44100, "bits_per_sample": 16, "canales": 2}
+
+        self.assertEqual(
+            pdf._cutoff_class_label(
+                meta96,
+                {"clase_corte": "far_cutoff", "frecuencia_corte": 23930, "muro_brickwall_nyquist": True},
+            ),
+            "source sample-rate Nyquist limit (44.1/48 kHz)",
+        )
+        self.assertEqual(
+            pdf._cutoff_class_label(
+                meta96,
+                {"clase_corte": "far_cutoff", "frecuencia_corte": 22500, "rolloff_analogico_genuino": True},
+            ),
+            "natural analogue roll-off",
+        )
+        self.assertEqual(
+            pdf._cutoff_class_label(
+                meta96,
+                {"clase_corte": "far_cutoff", "frecuencia_corte": 23500, "es_transferencia_dsd": True},
+            ),
+            "DSD/SACD passband",
+        )
+        self.assertEqual(
+            pdf._cutoff_class_label(
+                meta96,
+                {
+                    "clase_corte": "far_cutoff",
+                    "frecuencia_corte": 23930,
+                    "mdct_lattice_detected": True,
+                },
+            ),
+            "lossy codec signature",
+        )
+        self.assertEqual(
+            pdf._cutoff_class_label(
+                meta44,
+                {"clase_corte": "far_cutoff", "frecuencia_corte": 16000},
+            ),
+            "lossy codec signature",
+        )
 
 
 if __name__ == "__main__":

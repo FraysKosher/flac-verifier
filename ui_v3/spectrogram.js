@@ -1,5 +1,5 @@
 /* Interactive Canvas 2D spectrogram renderer (Magma LUT, Full/Upper zoom,
-   live kHz · dBFS · mm:ss crosshair, Engine 17.2 forensic markers, and full
+   live kHz · dBFS · mm:ss crosshair, Engine 17.3 forensic markers, and full
    Spek-style Lightbox axes + dBFS color bar). */
 
 const MAGMA_STOPS = [

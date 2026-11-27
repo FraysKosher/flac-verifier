@@ -494,6 +494,61 @@ class TestLibraryDB(unittest.TestCase):
         note_ev = next(e for e in dday_track["evidence"] if "Partial high-res" in e["text"])
         self.assertEqual(note_ev["level"], "neutral")
 
+    def test_engine173_finding_codes_hires_attribution_and_coherence_tags(self) -> None:
+        """Engine 17.3: read esp.finding_codes & bdi.lsbs, separate Hi-Res source
+        Nyquist upscales from lossy transcodes, and handle album_coherence_action."""
+        alb_dir = os.path.join(self.tmp, "HiRes_48_in_96")
+        os.makedirs(alb_dir, exist_ok=True)
+        f1 = os.path.join(alb_dir, "01.flac")
+        f2 = os.path.join(alb_dir, "02.flac")
+        for f in (f1, f2):
+            open(f, "wb").close()
+
+        r1 = _make_result(alb_dir, "01.flac", sr=96000, bits=24, verdict="PROBABLE UPSCALE", score=0.10)
+        r1["esp"].update({
+            "techo_hz": 23930,
+            "corte_artificial": True,
+            "frecuencia_corte": 23930,
+            "muro_brickwall_nyquist": True,
+            "finding_codes": ["nyquist_brickwall", "hires_upscale_cutoff"],
+        })
+        r1["bdi"] = {"aplica": True, "lsbs": "empty", "forense_bits": {}}
+        r1["problemas"] = [
+            "Upscaled from a 44.1/48 kHz lossless master (no lossy codec signature detected)",
+            "Source sample-rate Nyquist limit (artificial cut-off at 23.9 kHz)",
+        ]
+        r1["notas_tecnicas"] = [
+            "Ambiguous near-Nyquist transition — inconclusive",
+            "Dual-mono track (identical L and R channels)",
+        ]
+
+        r2 = _make_result(alb_dir, "02.flac", sr=96000, bits=24, verdict="SUSPICIOUS", score=0.45)
+        r2["album_coherence_action"] = "convicted_hires_upscale"
+        r2["problemas"] = ["Album coherence: flagged as Hi-Res upscale"]
+
+        self.db.upsert_album_results(alb_dir, [r1, r2], "17.3", read_tags=False)
+        tracks = self.db.query_tracks(view="all")
+        t1 = next(t for t in tracks if t["filename"] == "01.flac")
+        t2 = next(t for t in tracks if t["filename"] == "02.flac")
+
+        self.assertIn("hires_upscale_cutoff", t1["finding_codes"])
+        self.assertIn("empty_lsbs", t1["finding_codes"])
+        self.assertNotIn("artificial_cutoff", t1["finding_codes"])
+        self.assertIn("hires_upscaled", t1["smart_tags"])
+        self.assertIn("fake_24bit", t1["smart_tags"])
+        self.assertNotIn("lossy", t1["smart_tags"])
+        self.assertEqual(t1["primary_finding"], "Brickwall 23.9 kHz")
+        for ev in t1["evidence"]:
+            if "inconclusive" in ev["text"] or "Dual-mono" in ev["text"]:
+                self.assertEqual(ev["level"], "neutral", ev)
+
+        self.assertIn("hires_upscaled", t2["smart_tags"])
+        self.assertNotIn("lossy", t2["smart_tags"])
+        self.assertEqual(t2["primary_finding"], "Album Hi-Res upscale")
+
+        alb = self.db.query_albums()[0]
+        self.assertIn("Upscaled Hi-Res album quorum", alb["coherence_summary"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

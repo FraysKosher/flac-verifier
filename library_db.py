@@ -382,18 +382,41 @@ def _extract_finding_codes(result: dict[str, Any]) -> list[str]:
             seen.add(code)
             codes.append(code)
 
-    for raw in result.get("finding_codes") or ():
-        _add(str(raw))
-
     spectrum = result.get("esp") or {}
+    meta = result.get("meta") or {}
     bdi = result.get("bdi") or {}
     forensic = bdi.get("forense_bits") or {}
     md5 = result.get("md5") or {}
+    sr = int(meta.get("sample_rate") or 0)
+
+    for raw in result.get("finding_codes") or ():
+        _add(str(raw))
+    for raw in spectrum.get("finding_codes") or ():
+        _add(str(raw))
+
+    has_lossy_sig = bool(
+        spectrum.get("mdct_lattice_detected")
+        or spectrum.get("sbr_qmf_detectado")
+        or spectrum.get("islas_mdct_sfb21")
+        or spectrum.get("sospecha_excitador_armonico")
+        or spectrum.get("neural_vocoder_detected")
+        or spectrum.get("spectral_folding_detected")
+        or spectrum.get("sospecha_corte_opus_20k")
+        or spectrum.get("modulacion_psicoacustica_20k")
+    )
 
     if spectrum.get("mdct_lattice_detected"):
         _add("lapped_codec_lattice")
     if spectrum.get("corte_artificial"):
-        _add("artificial_cutoff")
+        fc = spectrum.get("frecuencia_corte")
+        is_hires_source_nyq = (
+            sr >= 88200
+            and not has_lossy_sig
+            and isinstance(fc, (int, float))
+            and 20500.0 <= float(fc) <= 24800.0
+        )
+        if not (spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd")):
+            _add("hires_upscale_cutoff" if is_hires_source_nyq else "artificial_cutoff")
     if spectrum.get("sospecha_corte_opus_20k"):
         _add("opus_20k_cutoff")
     if spectrum.get("sbr_qmf_detectado"):
@@ -427,14 +450,15 @@ def _extract_finding_codes(result: dict[str, Any]) -> list[str]:
     if forensic.get("es_24bit_escalado_en_peine"):
         _add("gain_comb_24")
     if bdi.get("aplica"):
-        state = str(bdi.get("estado") or "").lower()
+        state = str(bdi.get("lsbs") or bdi.get("estado") or "").lower()
         if state == "empty":
             _add("empty_lsbs")
         elif state == "partial":
             _add("partial_lsbs")
     if md5.get("estado") == "mismatch":
         _add("corrupt_md5")
-    if result.get("coherencia_album_lossy"):
+    if (result.get("album_coherence_action") == "convicted_lossy"
+            or result.get("coherencia_album_lossy")):
         _add("album_lossy_consistency")
 
     return codes
@@ -537,14 +561,30 @@ def _derive_primary_finding(
         return "20 kHz shelf"
     if spectrum.get("corte_artificial"):
         fc = spectrum.get("frecuencia_corte") or spectrum.get("techo_hz")
+        if "hires_upscale_cutoff" in finding_codes:
+            if isinstance(fc, (int, float)) and fc > 0:
+                return f"Source Nyquist {fc/1000.0:.1f}k"
+            return "Source Nyquist"
         if isinstance(fc, (int, float)) and fc > 0:
             return f"Cut-off {fc/1000.0:.1f} kHz"
         return "Codec cut-off"
     if spectrum.get("sospecha_joint_stereo") or spectrum.get("stereo_phase_coupling"):
         return "Stereo collapse"
+    if "hires_no_ultrasonic" in finding_codes or "hires_below_cd" in finding_codes:
+        ceiling = spectrum.get("techo_hz")
+        if isinstance(ceiling, (int, float)) and ceiling > 0:
+            return f"No ultrasonic ({ceiling/1000.0:.1f}k)"
+        return "No ultrasonic"
     if "cutoff_jitter" in finding_codes:
         return "Cut-off jitter"
+    coherence_action = str(result.get("album_coherence_action") or "").lower()
+    if coherence_action == "convicted_hires_upscale":
+        return "Album Hi-Res upscale"
+    if coherence_action == "convicted_lossy" or "album_lossy_consistency" in finding_codes:
+        return "Album lossy match"
     if verdict_class == "ok":
+        if spectrum.get("es_transferencia_dsd"):
+            return "DSD transfer"
         if bits >= 24 and sr >= 88200:
             return f"Native {bits}/{sr//1000}k"
         if sr == 44100 and bits == 16:
@@ -593,6 +633,12 @@ _CAUTIONARY_NOTE_TOKENS = (
     "low ceiling",
     "low spectral",
     "inactive",
+    "inconclusive",
+    "dual-mono",
+    "limiter",
+    "upscale",
+    "cut-off",
+    "stationary",
 )
 
 
@@ -629,8 +675,25 @@ def _summarize_album_coherence(results: list[dict[str, Any]]) -> str:
     """Produces a concise human-readable album summary from track results."""
     if not results:
         return ""
-    rescued = sum(1 for r in results if r.get("coherencia_album"))
-    convicted = sum(1 for r in results if r.get("coherencia_album_lossy"))
+    convicted_lossy = sum(
+        1 for r in results
+        if r.get("album_coherence_action") == "convicted_lossy"
+        or r.get("coherencia_album_lossy")
+    )
+    convicted_hires = sum(
+        1 for r in results
+        if r.get("album_coherence_action") == "convicted_hires_upscale"
+    )
+    rescued = sum(
+        1 for r in results
+        if r.get("album_coherence_action") == "rescued_lossless"
+        or (
+            r.get("coherencia_album")
+            and r.get("album_coherence_action") not in ("convicted_lossy", "convicted_hires_upscale")
+            and not r.get("coherencia_album_lossy")
+            and _classify_verdict(r)[1] == "ok"
+        )
+    )
     bad = sum(1 for r in results if _classify_verdict(r)[1] == "bad")
     warn = sum(1 for r in results if _classify_verdict(r)[1] == "warn")
     ar_ok = sum(1 for r in results if (r.get("accuraterip") or {}).get("aplica"))
@@ -642,8 +705,10 @@ def _summarize_album_coherence(results: list[dict[str, Any]]) -> str:
         if ar_ok == total and total > 0:
             return "AccurateRip CDDA layout · all tracks verified lossless"
         return "All tracks verified lossless"
-    if convicted:
+    if convicted_lossy:
         return f"Lossy album quorum · {bad} of {total} track(s) flagged"
+    if convicted_hires:
+        return f"Upscaled Hi-Res album quorum · {bad} of {total} track(s) flagged"
     if bad > 0:
         return f"Mixed provenance · {bad} of {total} track(s) flagged"
     return f"{warn} of {total} track(s) marked suspicious"

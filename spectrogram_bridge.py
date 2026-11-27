@@ -11,7 +11,7 @@ Design invariants:
   - Presentation-only: computes zero forensic verdicts, cut-offs, or scores.
     All forensic overlay markers are read strictly from the already-computed
     engine result dictionary.
-  - Zero impact on Engine 17.2 analysis speed or NDJSON payload size: mass
+  - Zero impact on Engine 17.3 analysis speed or NDJSON payload size: mass
     library scans never serialize grids into NDJSON or SQLite.
 """
 from __future__ import annotations
@@ -393,10 +393,28 @@ def extract_forensic_markers(result: dict[str, Any] | None) -> list[dict[str, An
         markers.append({"freq_hz": freq, "label": label, "kind": "lattice"})
     elif spectrum.get("corte_artificial"):
         fc = float(spectrum.get("frecuencia_corte") or spectrum.get("techo_hz") or 0.0)
-        if fc > 0:
+        has_lossy = bool(
+            spectrum.get("sbr_qmf_detectado")
+            or spectrum.get("islas_mdct_sfb21")
+            or spectrum.get("sospecha_excitador_armonico")
+            or spectrum.get("neural_vocoder_detected")
+            or spectrum.get("spectral_folding_detected")
+            or spectrum.get("sospecha_corte_opus_20k")
+            or spectrum.get("modulacion_psicoacustica_20k")
+        )
+        if fc > 0 and not (
+            spectrum.get("rolloff_analogico_genuino")
+            or spectrum.get("es_transferencia_dsd")
+        ):
+            is_hires_src_nyq = sr >= 88200 and not has_lossy and (20500.0 <= fc <= 24800.0)
+            lbl = (
+                f"Source Nyquist cut-off {fc/1000.0:.2f} kHz"
+                if is_hires_src_nyq
+                else f"Codec cut-off {fc/1000.0:.2f} kHz"
+            )
             markers.append({
                 "freq_hz": fc,
-                "label": f"Codec cut-off {fc/1000.0:.2f} kHz",
+                "label": lbl,
                 "kind": "cutoff",
             })
 
@@ -438,19 +456,28 @@ def extract_forensic_markers(result: dict[str, Any] | None) -> list[dict[str, An
 
     # Hi-Res ultrasonic ceiling & low-spectral-ceiling markers (e.g. hires_no_ultrasonic / hires_below_cd).
     raw_codes: set[str] = set()
-    for entry in result.get("hallazgos") or result.get("finding_codes") or ():
-        if isinstance(entry, dict) and entry.get("code"):
-            raw_codes.add(str(entry["code"]))
-        elif isinstance(entry, str):
-            raw_codes.add(entry)
+    for src_codes in (
+        result.get("hallazgos") or (),
+        result.get("finding_codes") or (),
+        spectrum.get("finding_codes") or (),
+    ):
+        for entry in src_codes:
+            if isinstance(entry, dict) and entry.get("code"):
+                raw_codes.add(str(entry["code"]))
+            elif isinstance(entry, str):
+                raw_codes.add(entry)
     ceiling_hz = float(spectrum.get("techo_hz") or 0.0)
     verdict = str(result.get("veredicto") or "")
     has_ceiling_marker = any(
         m.get("kind") in ("brickwall", "cutoff", "hires_ceiling", "ceiling")
         for m in markers
     )
+    hires_verified_analog = bool(
+        (spectrum.get("rolloff_analogico_genuino") or spectrum.get("es_transferencia_dsd"))
+        and verdict in ("GENUINE LOSSLESS", "PROBABLY LOSSLESS")
+    )
     if sr >= 88200 and ceiling_hz > 0:
-        if not has_ceiling_marker and (
+        if not has_ceiling_marker and not hires_verified_analog and (
             ceiling_hz < 22050.0
             or "hires_no_ultrasonic" in raw_codes
             or "hires_below_cd" in raw_codes
