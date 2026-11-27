@@ -37,7 +37,9 @@ MODULES = ("main.py", "motor_flac.py", "gui.py", "theme.py",
            "verificar_flac.py",
            "informe_pdf.py", "build.py", "comprobar_ejecutable.py",
            "_motor_bits.py", "_motor_espectral.py", "_motor_veredicto.py",
-           "_motor_cache.py")
+           "_motor_cache.py", "library_db.py", "covers.py",
+           "scan_manager.py", "spectrogram_bridge.py", "gui_v3.py",
+           "updater.py")
 
 OWN = re.compile(r"[ñÑáéíóúÁÉÍÓÚüÜ¿¡]")
 
@@ -79,7 +81,7 @@ SPANISH_WORDS = re.compile(
     re.IGNORECASE)
 # Words spelled the same in English: no signal of the language.
 FALSE_POSITIVES = {
-    "album", "compatible", "control", "pie", "solo", "dos", "pro",
+    "album", "albums", "compatible", "control", "pie", "solo", "dos", "pro",
     "volatile", "cached", "nonexistent", "anchor", "variable",
     "error", "total", "cache", "ratio", "output", "normal",
     "controls", "decimal", "decimals", "isdecimal", "mismatch",

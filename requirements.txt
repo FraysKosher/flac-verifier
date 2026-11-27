@@ -26,12 +26,12 @@ pillow>=9.1
 # spectrograms.
 reportlab>=4.0
 
-# Only for the graphical interface (python gui.py or python verificar_flac.py --gui).
-customtkinter>=5.2
+# Only for the v3 desktop interface (python main.py / python gui_v3.py).
+pywebview>=5.0
 
-# Only for dragging folders onto the window. If it is missing the interface works
-# anyway: the path field is filled in with the "Browse" button.
-tkinterdnd2>=0.4
+# Legacy CustomTkinter GUI (--legacy-gui from source only):
+# customtkinter>=5.2
+# tkinterdnd2>=0.4
 
 # ─── ONLY TO BUILD THE .EXE ──────────────────────────────────────────────────
 # Not needed to use the program; only to build the distributable folder:

@@ -33,14 +33,17 @@ datas: list = []
 binaries: list = []
 hiddenimports: list = []
 
-# Packages that PyInstaller does not see in full on its own: the JSON themes and
-# fonts of customtkinter, the TCL/TK and the tkdnd DLLs, the libsndfile of
-# soundfile, and the fonts/data of reportlab and PIL.
-for paquete in ("customtkinter", "tkinterdnd2", "soundfile", "reportlab", "PIL"):
+# Packages that PyInstaller does not see in full on its own: webview/pythonnet
+# for the v3 WebView2 desktop shell, libsndfile, reportlab, and Pillow
+# (including WebP for the offline album artwork cache).
+for paquete in ("webview", "pythonnet", "clr_loader", "soundfile", "reportlab", "PIL"):
     # include_py_files=False: the source `.py` files are already compiled into the
     # PYZ; copying them again as *data* only bloats the bundle (and defeats the
     # `excludes` below, which drop unused modules but cannot drop data copies).
-    d, b, h = collect_all(paquete, include_py_files=False)
+    try:
+        d, b, h = collect_all(paquete, include_py_files=False)
+    except Exception:
+        continue
     datas += d
     binaries += b
     hiddenimports += h
@@ -66,17 +69,18 @@ if _scipy_spec and _scipy_spec.submodule_search_locations:
 
 # ─── Trim what the app never loads ───────────────────────────────────────────
 # Sources of dead weight that `collect_all` above pulls in:
-#   * tkinterdnd2 ships one native tkdnd build per platform and ABI; this is a
-#     Windows x64 build against Tcl/Tk 8.6, so only `win-x64` is ever loaded
-#     (the Tcl 9, Linux, macOS, arm64 and x86 builds cannot run here).
-#   * Pillow bundles optional codecs (AVIF, WebP…) the program never opens: it
-#     only reads PNG (spectrograms, icons) and writes JPEG (for the PDF).
+#   * Pillow keeps WebP (for cached 320x320 album covers) while dropping AVIF.
+#   * pywebview 6.x checks `webview/lib/runtimes/{win-arm64,win-x64,win-x86}`
+#     unconditionally at import time in `webview/platforms/edgechromium.py`, so
+#     the three tiny WebView2Loader.dll folders must stay; only the Android JAR
+#     and x86 WebBrowserInterop DLL are safe to trim.
 def _conservar(origen):
     ruta = str(origen).replace("\\", "/").lower()
-    if "tkinterdnd2/tkdnd/" in ruta:
-        return "tkinterdnd2/tkdnd/win-x64/" in ruta
+    if "webview/lib/" in ruta:
+        if ruta.endswith("pywebview-android.jar") or ruta.endswith("webbrowserinterop.x86.dll"):
+            return False
     base = os.path.basename(ruta)
-    return "_avif" not in base and "_webp" not in base
+    return "_avif" not in base
 
 datas    = [(s, d) for (s, d) in datas if _conservar(s)]
 binaries = [(s, d) for (s, d) in binaries if _conservar(s)]
@@ -100,8 +104,17 @@ hiddenimports += [
     "_motor_cache",
     "informe_pdf",
     "verificar_flac",
-    "gui",
+    "gui_v3",
+    "library_db",
+    "covers",
+    "scan_manager",
+    "spectrogram_bridge",
+    "updater",
     "theme",
+    "bottle",
+    "proxy_tools",
+    "sqlite3",
+    "ssl",
     "argparse",
     "multiprocessing",
     "multiprocessing.spawn",
@@ -124,6 +137,8 @@ datas += [
     ("Logo/icono_app.ico", "Logo"),
     # Line icons of the interface (DESIGN.md 8), whole folder in one entry.
     ("Logo/icons", "Logo/icons"),
+    # Modern v3 WebView2 frontend assets (HTML5, CSS3, Vanilla modules).
+    ("ui_v3", "ui_v3"),
 ]
 
 ICONO = "Logo/icono_app.ico"
@@ -147,19 +162,21 @@ a = Analysis(
         "IPython", "jupyter", "notebook", "nbformat",
         "matplotlib", "numpy.tests", "scipy.tests",
         "PyQt5", "PyQt6", "PySide2", "PySide6", "wx",
+        # Legacy Tcl/Tk & CustomTkinter stack retired from the frozen v3 bundle
+        # (gui.py remains available as a source-only --legacy-gui fallback).
+        "customtkinter", "tkinterdnd2", "tkinter", "_tkinter", "gui",
         # They used to enter through matplotlib.testing (now excluded): nothing
         # this program does needs them, and keeping them in the list stops a
         # future hook from dragging them in again.
         "pandas", "pyarrow", "cryptography", "lxml",
         "openpyxl", "xlrd", "sqlalchemy", "ipykernel", "sphinx",
-        # Optional codecs the app never opens (only PNG in, JPEG out).
-        "PIL._avif", "PIL._webp",
+        # Optional codecs the app never opens (keeps WebP for v3 album covers).
+        "PIL._avif",
         # reportlab's chart/graphics stack: `platypus` never imports it (verified),
         # so the report renders fine without it.
         "reportlab.graphics",
-        # Unused stdlib binary/dev stacks (offline desktop tool; hashlib MD5 uses
-        # libcrypto via _hashlib, never TLS/SSL or SQLite).
-        "ssl", "_ssl", "sqlite3", "_sqlite3",
+        # Unused stdlib dev stacks (sqlite3 and ssl stay enabled for library.db
+        # and HTTPS GitHub Releases update verification).
         "unittest", "pydoc", "doctest", "turtle", "turtledemo",
         # Entire scipy Python package and duplicate OpenBLAS are excluded:
         # polyphase resampling is pure NumPy and STFT/MDCT load pypocketfft directly.
@@ -173,18 +190,23 @@ a = Analysis(
 )
 
 # Post-Analysis TOC filter: strip Tcl timezone/locale catalogs (~700 files),
-# duplicate OpenBLAS from scipy.libs, and unused TLS/SQLite binaries while
-# keeping _tcl_data/encoding, core Tk scripts, pypocketfft, and libcrypto intact.
+# duplicate OpenBLAS from scipy.libs, and non-x64 WebView2 loaders while keeping
+# sqlite3, ssl, pypocketfft, WebP, and libcrypto intact.
 def _keep_toc_entry(entry):
     dest = str(entry[0]).replace("\\", "/").lower()
     src = str(entry[1]).replace("\\", "/").lower()
-    if any(seg in dest for seg in ("_tcl_data/tzdata/", "_tcl_data/msgs/",
-                                   "tcl/tzdata/", "tcl/msgs/", "tk/msgs/")):
+    if any(seg in dest for seg in ("_tcl_data/", "_tk_data/", "tcl/", "tk/",
+                                   "customtkinter/", "tkinterdnd2/")):
         return False
     if ("scipy.libs" in dest or "scipy.libs" in src) and "numpy.libs" not in src:
         return False
+    if "webview/lib/" in dest and any(
+        seg in dest for seg in ("/runtimes/win-x86/", "/runtimes/win-arm64/", "/x86/", "/arm64/")
+    ):
+        return False
     base = os.path.basename(dest)
-    if base in ("_ssl.pyd", "_sqlite3.pyd", "sqlite3.dll") or base.startswith("libssl"):
+    if base in ("pywebview-android.jar", "webbrowserinterop.x86.dll",
+                "tcl86t.dll", "tk86t.dll", "_tkinter.pyd"):
         return False
     return True
 

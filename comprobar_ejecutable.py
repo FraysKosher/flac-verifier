@@ -437,18 +437,14 @@ class Checker:
     def step_5_flag_internal(self, album: str) -> None:
         print("\n[5] The command the packaged GUI builds, and the --motor-cli flag")
 
-        # (a) What the GUI really runs when it is packaged. This process is made
-        # to pretend that it is the .exe so that `engine_path()` decides with the
-        # real rules, instead of copying the command by hand here (copying it is
-        # exactly what let the bug of the missing --motor-cli through).
+        # (a) What the packaged v3 GUI runs (`scan_manager.resolve_engine_command`).
         try:
-            import gui
-        except Exception as e:                 # no customtkinter on this machine
+            import scan_manager
+        except Exception as e:
             self.annotate("command built by the packaged GUI", False,
-                        f"could not read gui.engine_path(): {type(e).__name__}: {e}"
-                        " · install customtkinter on the build machine")
+                        f"could not read scan_manager.resolve_engine_command(): {type(e).__name__}: {e}")
         else:
-            base = gui.engine_path(frozen=True, executable=self.gui)
+            base = scan_manager.resolve_engine_command(frozen=True, executable=self.gui)
             command = [*base, "--path", album, "--mode", "center",
                        "--workers", "1", "--no-cache"]
             code, text = self.launch(command, limit=180, label="packaged_gui")

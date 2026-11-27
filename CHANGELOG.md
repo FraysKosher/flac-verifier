@@ -5,6 +5,56 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-27
+
+### Added
+
+- **Native Edge WebView2 desktop studio (`gui_v3.py` + `ui_v3/`)**:
+  replaces CustomTkinter as the default desktop application with a three-pane
+  studio workspace (persistent sidebar, virtualized album/track workspace, and
+  slide-over Forensic Inspector) featuring live Dark/Light theme switching
+  synchronized with the Windows 11 DWM title bar, native `pywebview`
+  drag-and-drop with full Windows paths, `Ctrl+K` Command Palette, keyboard
+  navigation (`Up`/`Down`/`Esc`), and concise tooltips on forensic codec terms.
+- **Persistent SQLite WAL library manager (`library_db.py` + `covers.py`)**:
+  indexes multi-album root folders into `%APPDATA%\FLAC Verifier\library.db`
+  (or `<app_dir>\data\library.db` in portable mode when `portable.flag` is
+  present) with Windows case-insensitive path deduplication, atomic per-album
+  commits, incremental scans, offline `320×320` WebP cover art extraction
+  (`METADATA_BLOCK_PICTURE` -> sidecar -> deterministic SVG sleeve), global
+  forensic views (`Lossy Transcodes`, `Hi-Res Upscaled`, `Fake 24-bit`,
+  `AI / Neural`, `Corrupt MD5`, `Reviewed / Ignored`), audit notes, automatic
+  outdated-engine re-verification banners, and CSV/JSON exports.
+- **Background scan orchestrator & Quick Drop v2 parity (`scan_manager.py`)**:
+  streams Engine `17.2` NDJSON events album-by-album with Pause/Resume/Cancel
+  and clean Windows process-tree shutdown, alongside a dedicated Quick Drop
+  lane preserving `Generate PDF report`, `PDF destination` (*Save in each album
+  folder* / *Save in custom folder…*), and one-click *Add to Library*.
+- **Interactive Canvas spectrogram (`spectrogram_bridge.py` + `ui_v3/spectrogram.js`)**:
+  generates presentation-only, on-demand `256×160` uint8 dBFS Magma spectrograms
+  cached as zlib `.specz` files (~15–30 KB) with `Full` / `Upper` zoom,
+  real-time `kHz · dBFS · mm:ss` crosshair, and toggleable forensic evidence
+  overlays — without modifying `motor_flac.py` or `_motor_espectral.py`.
+- **Per-user Windows installer & 1-click SHA-256 auto-updater (`updater.py`, `installer/flac_verifier.iss`, `.github/workflows/release-windows.yml`)**:
+  builds `FLAC_Verifier_Setup_3.0.0-win64.exe` (Inno Setup 6, no admin rights,
+  preserves `library.db` across upgrades), `FLAC_Verifier_3.0.0-win64-portable.zip`,
+  `SHA256SUMS_3.0.0.txt`, and `latest.json`. The in-app updater strictly
+  enforces HTTPS on an explicit GitHub Releases allowlist, verifies `SHA-256`
+  before launch, and includes an *Offline mode* toggle in Settings.
+- **45 new unit tests** (`test_library_db.py`, `test_covers.py`,
+  `test_scan_manager.py`, `test_gui_v3.py`, `test_updater.py`, and
+  `test_empaquetado.py` v3 checks), bringing the suite from **452** to **497 tests**.
+
+### Changed
+
+- **Frozen Windows bundle slimmed down (`flac_verifier.spec`, `main.py`, `build.py`)**:
+  retired `customtkinter`, `tkinterdnd2`, and Tcl/Tk completely from the frozen
+  Windows executables while keeping `gui.py` available in source mode via
+  `--legacy-gui` and keeping `theme.py` for `informe_pdf.py`.
+- **Engine `17.2` untouched**: all forensic detectors, scoring thresholds,
+  NDJSON protocol keys, and the `340/340` real-encoder + adversarial validation
+  benchmark remain byte-for-byte identical to `v2.13.2`.
+
 ## [2.13.2] - 2026-11-26
 
 ### Added

@@ -46,6 +46,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install "customtkinter>=5.2.0"
 
       - name: Show versions
         run: |
@@ -65,8 +66,8 @@ jobs:
         shell: bash
         run: |
           echo "Suite finished on ${{ runner.os }} with Python ${{ matrix.python }}."
-          echo "Expected: 452 tests. Two are skipped when the platform cannot"
-          echo "create processes or when ffmpeg is not on the PATH."
+          echo "Expected: 497 tests. Up to two may be skipped when the platform cannot"
+          echo "create processes or depending on optional legacy GUI packages."
 
   web-tests:
     name: web · Python & Node

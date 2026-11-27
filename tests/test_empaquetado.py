@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures as fx
 
 import gui
+import gui_v3
 import main
 
 ROOT = fx.ROOT
@@ -76,7 +77,7 @@ class test_point_input(unittest.TestCase):
         cli.assert_called_once_with([])
 
     def test_by_default_opens_ui(self):
-        with mock.patch.object(gui, "main", return_value=0) as ui:
+        with mock.patch.object(gui_v3, "main", return_value=0) as ui:
             self.assertEqual(main.main([]), 0)
         ui.assert_called_once_with(None)
 
@@ -85,12 +86,17 @@ class test_point_input(unittest.TestCase):
                                      (["-g", "D:/Music"], "D:/Music"),
                                      (["D:/Music"], "D:/Music")):
             with self.subTest(arguments=arguments):
-                with mock.patch.object(gui, "main", return_value=0) as ui:
+                with mock.patch.object(gui_v3, "main", return_value=0) as ui:
                     main.main(arguments)
                 ui.assert_called_once_with(expected)
 
+    def test_legacy_gui_flag_opens_legacy_ui(self):
+        with mock.patch.object(gui, "main", return_value=0) as legacy_ui:
+            self.assertEqual(main.main(["--legacy-gui", "D:/Music"]), 0)
+        legacy_ui.assert_called_once_with("D:/Music")
+
     def test_if_fails_ui_warns_without_tracebacks(self):
-        with mock.patch.dict(sys.modules, {"gui": None}):
+        with mock.patch.dict(sys.modules, {"gui_v3": None}):
             self.assertEqual(main.main([]), 1)
 
 
@@ -117,7 +123,7 @@ class test_executable_engine(unittest.TestCase):
         engine.assert_called_once_with(["--path", "C:/Album", "--mode", "center"])
 
     def test_without_arguments_sample_help_no_opens_window(self):
-        with self._as_engine_exe(), mock.patch.object(gui, "main") as ui:
+        with self._as_engine_exe(), mock.patch.object(gui_v3, "main") as ui:
             self.assertEqual(main.main([]), 0)
         ui.assert_not_called()
 
@@ -127,7 +133,7 @@ class test_executable_engine(unittest.TestCase):
 
     def test_can_open_window_if_requests(self):
         with self._as_engine_exe(), \
-             mock.patch.object(gui, "main", return_value=0) as ui:
+             mock.patch.object(gui_v3, "main", return_value=0) as ui:
             self.assertEqual(main.main(["--gui", "D:/Music"]), 0)
         ui.assert_called_once_with("D:/Music")
 
@@ -144,7 +150,7 @@ class test_executable_engine(unittest.TestCase):
             ("gui", "D:/Music"),
         )
         with mock.patch.object(motor_flac, "main_cli", return_value=0) as engine_cli, \
-             mock.patch.object(gui, "main", return_value=0) as ui:
+             mock.patch.object(gui_v3, "main", return_value=0) as ui:
             self.assertEqual(main.main(["--path", "C:/Album"]), 0)
         engine_cli.assert_called_once_with(["--path", "C:/Album"])
         ui.assert_not_called()
@@ -265,11 +271,15 @@ class TestSpecification(unittest.TestCase):
         compile(self.source, SPEC, "exec")      # valid syntax
 
     def test_collects_packages_with_data(self):
-        for paquete in ("customtkinter", "tkinterdnd2", "soundfile",
+        for paquete in ("webview", "pythonnet", "clr_loader", "soundfile",
                         "reportlab", "PIL"):
             with self.subTest(paquete=paquete):
                 self.assertIn(f'"{paquete}"', self.source)
         self.assertIn("collect_all", self.source)
+        excludes_part = self.source.split("excludes=[", 1)[1].split("],", 1)[0]
+        for retired in ("customtkinter", "tkinterdnd2", "tkinter"):
+            with self.subTest(retired=retired):
+                self.assertIn(f'"{retired}"', excludes_part)
 
     def test_declares_dll_soundfile(self):
         self.assertIn("collect_dynamic_libs", self.source)
@@ -291,7 +301,9 @@ class TestSpecification(unittest.TestCase):
         self.assertNotIn('"scipy.linalg"', hidden_part)
 
     def test_declares_modules_own_import_lazy(self):
-        for modulo in ("motor_flac", "informe_pdf", "verificar_flac", "gui"):
+        for modulo in ("motor_flac", "informe_pdf", "verificar_flac", "gui_v3",
+                       "library_db", "covers", "scan_manager",
+                       "spectrogram_bridge", "updater"):
             with self.subTest(modulo=modulo):
                 self.assertIn(f'"{modulo}"', self.source)
 
@@ -318,7 +330,7 @@ class TestSpecification(unittest.TestCase):
 
     def test_includes_assets_logo(self):
         for asset in ("LICENSE", "logo_flac_verifier.png", "logo_flac_verifier_128.png",
-                      "icono_app.ico", "Logo/icons"):
+                      "icono_app.ico", "Logo/icons", "ui_v3"):
             with self.subTest(asset=asset):
                 self.assertIn(asset, self.source)
 
@@ -540,6 +552,12 @@ class TestPyprojectToml(unittest.TestCase):
             "_motor_cache",
             "verificar_flac",
             "gui",
+            "gui_v3",
+            "library_db",
+            "covers",
+            "scan_manager",
+            "spectrogram_bridge",
+            "updater",
             "theme",
             "informe_pdf",
         }
@@ -549,7 +567,7 @@ class TestPyprojectToml(unittest.TestCase):
         for mod_name in py_modules:
             self.assertTrue(os.path.isfile(os.path.join(ROOT, f"{mod_name}.py")))
 
-        self.assertEqual(set(setuptools_cfg["packages"]), {"Logo", "Logo.icons"})
+        self.assertEqual(set(setuptools_cfg["packages"]), {"Logo", "Logo.icons", "ui_v3"})
         self.assertFalse(setuptools_cfg["include-package-data"])
         pkg_files = {}
         for pkg_name, patterns in setuptools_cfg["package-data"].items():
@@ -588,7 +606,7 @@ class TestPyprojectToml(unittest.TestCase):
                 os.chdir(prev_cwd)
             self.assertEqual(built_files, pkg_files)
 
-        self.assertEqual(set(pkg_files), {"Logo", "Logo.icons"})
+        self.assertEqual(set(pkg_files), {"Logo", "Logo.icons", "ui_v3"})
         self.assertTrue(
             {
                 "icono_app.ico",
@@ -599,6 +617,11 @@ class TestPyprojectToml(unittest.TestCase):
             }.issubset(pkg_files["Logo"])
         )
         self.assertGreaterEqual(len(pkg_files["Logo.icons"]), 51)
+        self.assertTrue(
+            {"index.html", "styles.css", "app.js", "covers.js", "spectrogram.js"}.issubset(
+                pkg_files["ui_v3"]
+            )
+        )
 
     def test_build_verify_raises_on_nonzero_version_exit(self):
         import contextlib

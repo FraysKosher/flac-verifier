@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLAC Verifier</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ======================= SIDEBAR ======================= -->
+  <aside class="sidebar">
+    <div class="brand-bar">
+      <svg class="brand-logo" viewBox="0 0 64 64" fill="none" aria-label="FLAC Verifier">
+        <rect width="64" height="64" rx="14" fill="#0f0f0d"/>
+        <rect x="2" y="32" width="8" height="28" rx="3" fill="#ffffff"/>
+        <rect x="15" y="16" width="8" height="44" rx="3" fill="#ffffff"/>
+        <rect x="28" y="0" width="8" height="60" rx="3" fill="#ffffff"/>
+        <rect x="41" y="24" width="8" height="36" rx="3" fill="#ffffff"/>
+        <rect x="54" y="8" width="8" height="52" rx="3" fill="#ffffff"/>
+        <polyline points="42,56 48,62 62,48" stroke="#5cb2bc" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand-name">FLAC Verifier</span>
+      <span class="brand-ver" id="brand-ver">3.0.0</span>
+    </div>
+
+    <div class="sidebar-scroll">
+      <div class="nav-section">
+        <div class="nav-label">Library</div>
+        <button class="add-root-btn" id="btn-add-root-cta" title="Add a root music folder to scan all albums recursively">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+          <span>Add Library Folder…</span>
+        </button>
+        <button class="nav-item active" data-view="albums">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span>Albums</span>
+          <span class="nav-count" id="cnt-albums">0</span>
+        </button>
+        <button class="nav-item" data-view="tracks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <span>All Tracks</span>
+          <span class="nav-count" id="cnt-tracks">0</span>
+        </button>
+        <button class="nav-item" data-view="needs_review">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18.4A2 2 0 0 0 3.5 21h17a2 2 0 0 0 1.7-2.6L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+          <span>Needs Review</span>
+          <span class="nav-count alert" id="cnt-flagged" style="display:none">0</span>
+        </button>
+        <button class="nav-item" data-view="drop">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span>Quick Drop</span>
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-label">Forensic Views</div>
+        <button class="nav-item" data-smart="lossy">
+          <span class="nav-dot" style="background: var(--bad)"></span>
+          <span>Lossy Transcodes</span>
+          <span class="nav-count" id="cnt-lossy">0</span>
+        </button>
+        <button class="nav-item" data-smart="hires_upscaled">
+          <span class="nav-dot" style="background: var(--warn)"></span>
+          <span>Hi-Res Upscaled</span>
+          <span class="nav-count" id="cnt-hires-up">0</span>
+        </button>
+        <button class="nav-item" data-smart="fake_24bit">
+          <span class="nav-dot" style="background: var(--bad)"></span>
+          <span>Fake 24-bit</span>
+          <span class="nav-count" id="cnt-fake24">0</span>
+        </button>
+        <button class="nav-item" data-smart="ai_neural">
+          <span class="nav-dot" style="background: #b583d8"></span>
+          <span>AI / Neural</span>
+          <span class="nav-count" id="cnt-ai">0</span>
+        </button>
+        <button class="nav-item" data-smart="corrupt_md5">
+          <span class="nav-dot" style="background: var(--bad)"></span>
+          <span>Corrupt MD5</span>
+          <span class="nav-count" id="cnt-corrupt">0</span>
+        </button>
+        <button class="nav-item" data-smart="reviewed">
+          <span class="nav-dot" style="background: var(--neutral)"></span>
+          <span>Reviewed / Ignored</span>
+          <span class="nav-count" id="cnt-reviewed">0</span>
+        </button>
+      </div>
+
+      <div class="nav-section" id="roots-section">
+        <div class="nav-label">
+          <span>Library Folders</span>
+          <button class="nav-add-btn" id="btn-add-folder" title="Add root music folder to library">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <div id="roots-list"></div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="indexer-card" id="btn-scan-activity" role="button" tabindex="0" title="Click to inspect live scan activity & queue">
+        <div class="indexer-top">
+          <span class="pulse-dot" id="idx-dot"></span>
+          <span class="idx-album-line" id="idx-album">Library up to date</span>
+        </div>
+        <div class="indexer-subrow">
+          <span class="idx-detail-line" id="idx-detail">Ready</span>
+          <div class="indexer-actions">
+            <button class="indexer-btn" id="idx-btn" type="button">Rescan</button>
+            <button class="indexer-btn" id="idx-cancel" type="button" hidden title="Cancel active scan">Stop</button>
+          </div>
+        </div>
+        <div class="progress-track"><div class="progress-fill" id="idx-bar"></div></div>
+      </div>
+      <div class="db-caption">
+        <span id="db-mode-label">library.db · SQLite</span>
+        <span id="engine-ver-footer">Engine 17.2</span>
+      </div>
+      <button class="update-pill" id="btn-update-pill" hidden>
+        <span class="pulse-dot" style="background:var(--accent)"></span>
+        <span id="update-pill-text">Update available</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ======================= MAIN WORKSPACE ======================= -->
+  <main class="main">
+    <header class="topbar">
+      <div class="crumb">
+        <button class="crumb-back" id="btn-back" hidden title="Back to Albums">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <span class="crumb-title" id="view-title">Albums</span>
+        <span class="crumb-meta" id="view-meta"></span>
+      </div>
+
+      <div class="topbar-spacer"></div>
+
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="search-input" type="text" placeholder="Search library…">
+        <span class="kbd">Ctrl K</span>
+      </div>
+
+      <button class="btn-secondary" id="btn-export-csv" title="Export current view as CSV">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 19h16"/></svg>
+        <span>Export</span>
+      </button>
+
+      <button class="icon-btn" id="btn-settings" title="Settings & Updates">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>
+        </svg>
+      </button>
+
+      <button class="icon-btn" id="btn-theme" title="Switch Dark / Light theme">
+        <svg id="theme-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4"/>
+        </svg>
+      </button>
+    </header>
+
+    <!-- Engine version upgrade coherence banner -->
+    <div class="engine-banner" id="engine-banner" hidden>
+      <div class="engine-banner-text" id="engine-banner-text"></div>
+      <div class="engine-banner-actions">
+        <button class="btn-ghost" id="btn-reverify-flagged">Re-verify flagged</button>
+        <button class="btn-secondary" id="btn-reverify-all">Re-verify all</button>
+        <button class="icon-btn" id="btn-dismiss-banner" title="Dismiss for this session">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="subbar" id="subbar">
+      <div class="segmented" id="filter-pills">
+        <button class="seg-btn active" data-pill="all">All <span class="seg-n" id="pill-all">0</span></button>
+        <button class="seg-btn" data-pill="ok">Genuine <span class="seg-n" id="pill-ok">0</span></button>
+        <button class="seg-btn" data-pill="warn">Suspicious <span class="seg-n" id="pill-warn">0</span></button>
+        <button class="seg-btn" data-pill="bad">Upscale / Fake <span class="seg-n" id="pill-bad">0</span></button>
+      </div>
+
+      <div class="segmented view-toggle" id="albums-view-toggle" hidden role="group" aria-label="Albums view mode">
+        <button class="seg-btn view-btn active" data-albums-view="grid" title="Grid view">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span>Grid</span>
+        </button>
+        <button class="seg-btn view-btn" data-albums-view="list" title="Compact list view">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+          <span>List</span>
+        </button>
+      </div>
+
+      <div class="albums-sort-wrap" id="albums-sort-wrap" hidden>
+        <select class="sort-select" id="sel-albums-sort" title="Sort albums">
+          <option value="artist">Artist (A–Z)</option>
+          <option value="title">Album title</option>
+          <option value="flagged">Flagged first</option>
+          <option value="year">Year</option>
+          <option value="format">Format</option>
+          <option value="recent">Recently scanned</option>
+        </select>
+        <button class="icon-btn sort-dir-btn" id="btn-albums-sort-dir" title="Toggle sort direction">↑</button>
+      </div>
+
+      <div class="stat-strip" id="stat-strip">
+        <span class="stat-pair"><i class="stat-dot" style="background:var(--ok)"></i>Genuine <b id="st-ok">0</b></span>
+        <span class="stat-pair"><i class="stat-dot" style="background:var(--bad)"></i>Flagged <b id="st-bad">0</b></span>
+        <span class="stat-pair">Engine <b id="st-engine">17.2</b></span>
+      </div>
+    </div>
+
+    <div class="viewport" id="viewport"></div>
+  </main>
+
+  <!-- ======================= FORENSIC INSPECTOR ======================= -->
+  <aside class="inspector closed" id="inspector">
+    <div class="insp-top">
+      <span class="insp-top-label">Forensic Inspector</span>
+      <button class="icon-btn" id="btn-close-insp" title="Close inspector (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="insp-body" id="insp-body"></div>
+
+    <div class="insp-footer">
+      <button class="btn-secondary" id="btn-mark-reviewed">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 6 9 17l-5-5"/></svg>
+        <span id="lbl-reviewed">Mark reviewed</span>
+      </button>
+      <button class="btn-secondary" id="btn-pdf">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>
+        <span>PDF</span>
+      </button>
+      <button class="icon-btn" id="btn-reveal" title="Reveal in File Explorer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </button>
+    </div>
+  </aside>
+</div>
+
+<!-- ======================= COMMAND PALETTE ======================= -->
+<div class="modal-backdrop" id="cmd-modal">
+  <div class="cmd-box">
+    <div class="cmd-input-row">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="cmd-input" type="text" placeholder="Jump to album, track, filter, or command…">
+      <span class="kbd">Esc</span>
+    </div>
+    <div class="cmd-results" id="cmd-results"></div>
+  </div>
+</div>
+
+<!-- ======================= ADD LIBRARY FOLDER MODAL ======================= -->
+<div class="modal-backdrop" id="add-root-modal">
+  <div class="cmd-box add-root-box">
+    <div class="settings-head">
+      <span>Add Library Folder</span>
+      <button class="icon-btn" id="btn-close-add-root" title="Close (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+      <div class="add-root-field">
+        <div class="drop-pdf-kicker">Selected root folder</div>
+        <div class="folder-path-row">
+          <div class="folder-path-pill mono" id="add-root-path" title=""></div>
+          <button class="btn-secondary" id="btn-add-root-change">Change…</button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Parallel workers</div>
+          <div class="settings-sub">Use 2–4 workers for laptops or SMB/network drives to avoid saturating Wi-Fi.</div>
+        </div>
+        <div class="opt-select" style="margin-left:0">
+          <select id="sel-add-root-workers"></select>
+        </div>
+      </div>
+
+      <div class="settings-row settings-col">
+        <div class="settings-row-top">
+          <div>
+            <div class="settings-label">Generate PDF report</div>
+            <div class="settings-sub">Creates a per-album forensic PDF report while indexing.</div>
+          </div>
+          <label class="opt-check"><input type="checkbox" id="chk-add-root-pdf"></label>
+        </div>
+
+        <div class="add-root-pdf-card" id="add-root-pdf-card" hidden>
+          <div class="drop-pdf-kicker">PDF destination</div>
+          <label class="opt-check">
+            <input type="radio" name="add-root-pdf-dest" value="album" checked>
+            <span>Save in each album folder <span style="color:var(--text-tertiary);margin-left:4px">(flac_verifier_report.pdf)</span></span>
+          </label>
+          <label class="opt-check">
+            <input type="radio" name="add-root-pdf-dest" value="custom">
+            <span>Save in custom folder… <span style="color:var(--text-tertiary);margin-left:4px">(&lt;Album&gt;_flac_verifier_report.pdf)</span></span>
+          </label>
+          <div class="drop-pdf-dir-row" id="add-root-pdf-dir-row" hidden>
+            <input class="text-input" id="inp-add-root-pdf-dir" type="text" placeholder="Choose destination folder…">
+            <button class="btn-secondary" id="btn-add-root-pick-pdf">Browse…</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Ignore cache</div>
+          <div class="settings-sub">Force fresh decoding instead of reusing cached Engine 17.2 track entries.</div>
+        </div>
+        <label class="opt-check"><input type="checkbox" id="chk-add-root-nocache"></label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" id="btn-cancel-add-root">Cancel</button>
+      <button class="btn-primary" id="btn-confirm-add-root">Add &amp; Scan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= SETTINGS & UPDATES MODAL ======================= -->
+<div class="modal-backdrop" id="settings-modal">
+  <div class="cmd-box settings-box">
+    <div class="settings-head">
+      <span>Settings &amp; Updates</span>
+      <button class="icon-btn" id="btn-close-settings" title="Close (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Default workers</div>
+          <div class="settings-sub">Applied to Library scans and Quick Drop (2–4 recommended over Wi-Fi/SMB).</div>
+        </div>
+        <div class="opt-select" style="margin-left:0">
+          <select id="sel-settings-workers"></select>
+        </div>
+      </div>
+      <div class="settings-row settings-col">
+        <div class="settings-row-top">
+          <div>
+            <div class="settings-label">Generate PDF reports on Library scans</div>
+            <div class="settings-sub">Off by default so music folders stay untouched unless opted in.</div>
+          </div>
+          <label class="opt-check"><input type="checkbox" id="chk-settings-lib-pdf"></label>
+        </div>
+        <div class="settings-pdf-subrow">
+          <span class="settings-sub" style="margin:0">Default PDF destination</span>
+          <div class="opt-select" style="margin-left:auto">
+            <select id="sel-settings-pdf-dest">
+              <option value="album">Each album folder</option>
+              <option value="custom">Custom folder…</option>
+            </select>
+          </div>
+        </div>
+        <div class="drop-pdf-dir-row" id="settings-pdf-dir-row" hidden>
+          <input class="text-input" id="inp-settings-pdf-dir" type="text" placeholder="Choose custom PDF folder…">
+          <button class="btn-secondary" id="btn-settings-pick-pdf">Browse…</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Offline mode</div>
+          <div class="settings-sub">Disable background update checks against GitHub Releases.</div>
+        </div>
+        <label class="opt-check"><input type="checkbox" id="chk-offline-mode"></label>
+      </div>
+      <div class="settings-row settings-update-block">
+        <div style="min-width:0;flex:1">
+          <div class="settings-label" id="upd-title">Application updates</div>
+          <div class="settings-sub" id="upd-sub">Verified via HTTPS + SHA-256 against official GitHub Releases.</div>
+          <div class="progress-track" id="upd-progress-wrap" hidden style="margin-top:8px"><div class="progress-fill" id="upd-progress-bar" style="width:0%"></div></div>
+        </div>
+        <div class="settings-upd-actions">
+          <button class="btn-secondary" id="btn-check-updates">Check now</button>
+          <button class="btn-primary" id="btn-install-update" hidden>Install &amp; Restart</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= SPECTROGRAM LIGHTBOX MODAL ======================= -->
+<div class="modal-backdrop modal-center" id="spec-modal">
+  <div class="cmd-box spec-lightbox-box">
+    <div class="settings-head">
+      <div class="lb-head-meta">
+        <span class="lb-title" id="lb-spec-title">Spectrogram</span>
+        <span class="lb-sub" id="lb-spec-sub"></span>
+      </div>
+      <div class="lb-head-actions">
+        <div class="spec-controls">
+          <button class="mini-pill active" id="lb-zoom-full">Full</button>
+          <button class="mini-pill" id="lb-zoom-high">Upper</button>
+          <button class="mini-pill active" id="lb-markers-btn" title="Show/hide forensic markers and CD Nyquist reference">Markers</button>
+        </div>
+        <button class="icon-btn" id="btn-close-spec-modal" title="Close (Esc)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="lb-body">
+      <div class="lb-canvas-wrap">
+        <canvas class="lb-canvas" id="lb-spec-canvas" width="1440" height="620"></canvas>
+      </div>
+      <div class="spec-readout lb-readout">
+        <span id="lb-spec-cursor">Hover to inspect Hz / dBFS</span>
+        <span id="lb-spec-format" style="color:var(--text-tertiary)"></span>
+        <span id="lb-spec-range">0.0 – 22.1 kHz</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= SCAN ACTIVITY MODAL ======================= -->
+<div class="modal-backdrop" id="activity-modal">
+  <div class="cmd-box activity-box">
+    <div class="settings-head">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="pulse-dot" id="act-dot"></span>
+        <span>Scan Activity</span>
+        <span class="brand-ver" id="act-state-badge">Idle</span>
+      </div>
+      <button class="icon-btn" id="btn-close-activity" title="Close (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="settings-body" id="act-body"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" id="act-btn-rescan">Rescan</button>
+      <button class="btn-secondary" id="act-btn-stop" hidden>Stop scan</button>
+      <button class="btn-primary" id="act-btn-close">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Native file drop overlay -->
+<div class="drop-scrim" id="drop-scrim" hidden>
+  <div class="drop-scrim-card">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+    <div class="drop-scrim-title" id="drop-scrim-title">Drop to run Quick Forensic Audit</div>
+    <div class="drop-scrim-sub">Supports single .flac files, albums, or multi-album root folders</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="tooltip-float" id="tooltip-float" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

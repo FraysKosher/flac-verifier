@@ -324,13 +324,31 @@ An entry is reused only if all three fingerprints match:
 
 ---
 
-## Windows packaging and verification
+### Windows packaging and verification
 
 ```powershell
 python build.py                                     # cleans, builds and verifies dist/FLAC_Verifier
+python build.py --release-assets                    # builds folder, portable ZIP, Inno Setup installer, SHA256SUMS & latest.json
 python comprobar_ejecutable.py                      # 12 checks across 8 steps
 python comprobar_ejecutable.py --album "D:\Album"   # verify against a specific folder
 ```
+
+### Desktop shell, persistent library and portable mode (v3.0.0+)
+
+- **Default desktop UI:** `main.py` launches `gui_v3.py` (Edge WebView2 via
+  `pywebview` serving static `ui_v3/` assets over a local Bottle WSGI bridge).
+  CustomTkinter, `tkinterdnd2`, and Tcl/Tk are excluded from the frozen Windows
+  executable; `gui.py` remains available from source via `--legacy-gui`.
+- **Data directory & portable mode:** `library_db.py` resolves its data folder
+  to `%APPDATA%\FLAC Verifier\` (storing `library.db`, `settings.json`,
+  `covers/*.webp`, and `specs/*.specz`), unless a `portable.flag` file exists
+  next to the executable (included in `FLAC_Verifier_<ver>-win64-portable.zip`),
+  in which case all state is stored locally in `<app_dir>\data\`.
+- **Per-user installer & auto-updater:** `installer/flac_verifier.iss` builds a
+  per-user Inno Setup 6 installer (`{localappdata}\Programs\FLAC Verifier`,
+  `PrivilegesRequired=lowest`) that preserves `%APPDATA%\FLAC Verifier\library.db`
+  across upgrades and silent 1-click updates verified by `updater.py` via strict
+  HTTPS allowlist + mandatory `SHA-256` digest check against `latest.json`.
 
 ### Why there are two executables
 

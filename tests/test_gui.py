@@ -27,7 +27,10 @@ import fixtures as fx
 
 import gui
 import theme
-import customtkinter as ctk
+try:
+    import customtkinter as ctk
+except ImportError:
+    ctk = None
 
 DND_REAL = gui.DND_OK                       # real state, to restore it after a reload
 
@@ -381,6 +384,8 @@ class TestDragAndDrop(unittest.TestCase):
 
     def test_without_tkinterdnd2_category_base_no_mix(self):
         """Without the library, the window simply inherits from ctk.CTk and does not fail."""
+        if not gui.CTK_OK or ctk is None:
+            self.skipTest("customtkinter is not installed")
         if DND_REAL:
             self.skipTest("tkinterdnd2 is installed")
         self.assertFalse(gui.DND_OK)
@@ -390,6 +395,8 @@ class TestDragAndDrop(unittest.TestCase):
 
     def test_with_tkinterdnd2_mocked_mix_wrapper(self):
         """The optional path has to work without the library installed."""
+        if not gui.CTK_OK:
+            self.skipTest("customtkinter is not installed")
         wrapper = type("DnDWrapper", (), {})
         root_dnd = type("TkinterDnD", (), {"DnDWrapper": wrapper,
                                            "_require": staticmethod(lambda window: "2.8")})

@@ -15,19 +15,23 @@ file is genuine lossless or a lossy transcode. Architecture is deliberately flat
 | Module | Responsibility |
 |---|---|
 | `motor_flac.py` | Engine facade (process pool, JSON protocol, CLI) over `_motor_bits.py` (MD5, clipping, DR, 24/32-bit lattice), `_motor_espectral.py` (streaming STFT, filterbank/SBR & Hi-Res/DSD detectors), `_motor_veredicto.py` (scoring, verdicts, album coherence) and `_motor_cache.py` (per-track cache I/O) |
+| `library_db.py`, `covers.py` | Persistent SQLite WAL library store and offline `320×320` WebP album cover cache |
+| `scan_manager.py`, `spectrogram_bridge.py` | Background Library/Quick Drop NDJSON orchestrator and on-demand interactive Canvas spectrogram grid |
+| `gui_v3.py`, `ui_v3/` | Default Edge WebView2 desktop shell and frontend (presentation only) |
+| `updater.py`, `installer/` | Strict HTTPS + SHA-256 GitHub Releases auto-updater and Inno Setup 6 installer script |
 | `verificar_flac.py` | CLI presentation only |
-| `gui.py` | Window only: launches the engine as a subprocess and paints events |
+| `gui.py` | Legacy CustomTkinter fallback (`--legacy-gui`, source only) |
 | `informe_pdf.py` | PDF only |
 | `main.py` | Thin flag dispatcher. Nothing else |
-| `build.py`, `comprobar_ejecutable.py` | Packaging and post-build verification |
+| `build.py`, `comprobar_ejecutable.py` | Packaging (`--release-assets`) and post-build verification |
 
 ## Commands
 
 ```bash
-.venv/Scripts/python.exe -m unittest discover -s tests        # ~452 tests, fast; run this first
+.venv/Scripts/python.exe -m unittest discover -s tests        # ~497 tests; run this first
 .venv/Scripts/python.exe -m unittest tests.test_veredictos     # one module
 FLAC_VERIFIER_SIN_GUI=1 python -m unittest discover -s tests   # no desktop (skips Tk tests)
-python build.py                                                # package the .exe (slow)
+python build.py --release-assets                               # package .exe, portable ZIP & Inno Setup
 python comprobar_ejecutable.py --album "<folder>"              # verify the built .exe
 ```
 
@@ -43,8 +47,8 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
 3. **Raise `ENGINE_VERSION`** (currently `"17.2"` in `motor_flac.py`) whenever any
    analysis calculation changes: it is what invalidates existing caches.
 4. No new runtime dependencies without discussing it. `numpy`, `scipy`, `soundfile`,
-   `mutagen`, `pillow` are required; `reportlab`, `customtkinter`, `tkinterdnd2` must stay
-   optional and degrade with a clear message.
+   `mutagen`, `pillow` are required; `pywebview`, `reportlab`, and legacy
+   `customtkinter`/`tkinterdnd2` must stay optional and degrade with a clear message.
 5. The analysis is a single streaming pass with bounded memory. Materialising a whole
    track again is a regression; the README performance tables are part of the contract.
 6. Any change to scoring, thresholds or spectral analysis needs a measurement (fixture,
@@ -80,5 +84,5 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
 
 ## Known doc drift (trust the code, not the doc)
 
-- The suite is **452 tests** and `ENGINE_VERSION = "17.2"`; `README.md` and
-  `CONTRIBUTING.md` agree. Keep the number you touch in sync.
+- The suite is **497 tests**, app version is **`3.0.0`**, and `ENGINE_VERSION = "17.2"`;
+  `README.md` and `CONTRIBUTING.md` agree. Keep the number you touch in sync.

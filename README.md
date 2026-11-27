@@ -5,17 +5,18 @@
 # FLAC VERIFIER
 
 [![CI](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/FraysKosher/flac-verifier/actions/workflows/ci.yml)
-[![Version: 2.13.2](https://img.shields.io/badge/version-2.13.2-blue)](CHANGELOG.md)
+[![Version: 3.0.0](https://img.shields.io/badge/version-3.0.0-blue)](CHANGELOG.md)
 [![License: AGPL v3+](https://img.shields.io/badge/license-AGPL_v3%2B-blue)](LICENSE)
-[![Tests: 452](https://img.shields.io/badge/tests-452-brightgreen)](#tests)
+[![Tests: 497](https://img.shields.io/badge/tests-497-brightgreen)](#tests)
 
-A forensic audio verifier for deciding whether a FLAC file is **genuinely
-lossless** or a fake: a lossy transcode (MP3, AAC, Vorbis, Opus, WMA…) or an
-inflated bit-depth/sample-rate container (16-in-24/32 padding, dithered 16-in-24,
-or 44.1/48 kHz upscaled to 96/192 kHz).
+A forensic audio verifier and persistent desktop library manager for deciding
+whether a FLAC file is **genuinely lossless** or a fake: a lossy transcode
+(MP3, AAC, Vorbis, Opus, WMA…), an AI/neural bandwidth-extended file, or an
+inflated bit-depth/sample-rate container (16-in-24/32 padding, dithered
+16-in-24, or 44.1/48 kHz upscaled to 96/192 kHz).
 
 <p align="center">
-  <img src="docs/screenshots/start.png" alt="FLAC Verifier start screen" width="900">
+  <img src="docs/screenshots/library_albums.png" alt="FLAC Verifier v3.0.0 persistent desktop library" width="900">
 </p>
 
 ---
@@ -77,15 +78,26 @@ or 44.1/48 kHz upscaled to 96/192 kHz).
 
 ## Installation
 
-### Windows portable release (no Python required)
+### Windows Installer (recommended — no Python or admin rights required)
 
-Download **[FLAC Verifier 2.13.2](https://github.com/FraysKosher/flac-verifier/releases/tag/v2.13.2)**,
-extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`.
+Download **[FLAC_Verifier_Setup_3.0.0-win64.exe](https://github.com/FraysKosher/flac-verifier/releases/tag/v3.0.0)**
+and run the per-user installer. It installs into `%LOCALAPPDATA%\Programs\FLAC Verifier`,
+preserves your indexed SQLite library (`%APPDATA%\FLAC Verifier\library.db`)
+across upgrades, and supports **1-click SHA-256 verified updates** directly from
+GitHub Releases (with an *Offline mode* toggle in Settings).
 
-To verify the download with `SHA256SUMS_2.13.2.txt`:
+### Windows Portable ZIP
+
+Download **[FLAC_Verifier_3.0.0-win64-portable.zip](https://github.com/FraysKosher/flac-verifier/releases/tag/v3.0.0)**,
+extract the `FLAC_Verifier` folder, and run `FLAC_Verifier.exe`. The portable
+archive includes `portable.flag`, storing `library.db`, cached covers, and
+settings inside `FLAC_Verifier\data\`.
+
+To verify either download against `SHA256SUMS_3.0.0.txt`:
 
 ```powershell
-Get-FileHash .\FLAC_Verifier_2.13.2-win64.zip -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_Setup_3.0.0-win64.exe -Algorithm SHA256
+Get-FileHash .\FLAC_Verifier_3.0.0-win64-portable.zip -Algorithm SHA256
 ```
 
 ### From source
@@ -99,8 +111,9 @@ flac-verifier
 pip install -r requirements.txt
 ```
 
-`reportlab` (PDF report), `customtkinter` (GUI) and `tkinterdnd2` (drag and
-drop) are optional; the engine and CLI work without them.
+`pywebview` (v3 desktop interface), `reportlab` (PDF report), and legacy
+`customtkinter` / `tkinterdnd2` (`--legacy-gui` fallback) are optional; the
+engine and CLI work without them.
 
 ### Web version
 
@@ -114,32 +127,50 @@ Supported browsers: desktop Chromium and Firefox.
 
 ## Usage
 
-### Graphical interface
+### Desktop library & forensic studio (`v3.0.0`)
 
 ```bash
 flac-verifier                            # when installed via uv / pipx
-python gui.py
-python verificar_flac.py --gui "D:/Music/Album"
+python main.py                           # launches the v3 WebView2 desktop app
+python main.py --gui "D:/Music/Album"    # opens Quick Drop ready for a folder
+python main.py --legacy-gui              # optional CustomTkinter fallback (source only)
 ```
 
-Drop a `.flac` file, a single album folder, or a whole artist/library tree onto
-the window (or click **Browse folder**), choose your options on the left rail,
-and press **Analyze**. Multi-album folder trees are queued album-by-album
-automatically, leaving music directories untouched by default while storing
-working cache and PNG spectrograms in your OS user cache directory. Filter the
-results live (`All`, `Flagged`, `Suspicious`, `Errors`), click any row to open
-the track inspector, and use the top-right sun/moon button to switch between
-dark and light themes in place.
+Add one or more **Library Folders** (`+ Add Library Folder…`) to recursively
+index multi-album collections into a local SQLite WAL database (`library.db`)
+with offline `320×320` WebP cover extraction, incremental rescanning, global
+forensic filters (`Lossy Transcodes`, `Hi-Res Upscaled`, `Fake 24-bit`,
+`AI / Neural`, `Corrupt MD5`, `Reviewed / Ignored`), `Ctrl+K` Command Palette,
+keyboard navigation (`↑` / `↓`), CSV/JSON export, and automatic re-verification
+prompts whenever `ENGINE_VERSION` advances.
+
+Click any track to open the **Forensic Inspector** with an interactive Magma
+Canvas spectrogram (`Full` / `Upper` zoom, live `kHz · dBFS · mm:ss` crosshair,
+and toggleable forensic evidence markers) and `Mark reviewed` audit notes:
 
 <p align="center">
-  <img src="docs/screenshots/batch_inspector.png" alt="FLAC Verifier batch results and track inspector" width="900">
+  <img src="docs/screenshots/album_inspector.png" alt="FLAC Verifier v3.0.0 album detail and interactive Canvas spectrogram" width="900">
 </p>
 
-**Generate PDF report** starts unchecked by default to avoid unexpected writes
-during bulk or read-only scans. When enabled, a **PDF destination** selector lets
-you choose explicitly between **Save in each album folder** (default) or **Save in
-custom folder...** (using `<Album>_flac_verifier_report.pdf` filenames so
-multi-album runs never overwrite earlier reports):
+Switch between **Dark** and **Light** themes in place (synchronized with the
+Windows 11 title bar and saved in `settings.json`):
+
+<p align="center">
+  <img src="docs/screenshots/tracks_light.png" alt="FLAC Verifier v3.0.0 light theme tracks view and forensic inspector" width="900">
+</p>
+
+Use **Quick Drop** for one-off audits of a `.flac` file, single album, or
+multi-album folder tree without adding it to the persistent library (or promote
+finished results with *Add to Library*). **Generate PDF report** starts
+unchecked by default to avoid unexpected writes during bulk or read-only scans;
+when enabled, **PDF destination** lets you choose explicitly between **Save in
+each album folder** (default) or **Save in custom folder…** (using
+`<Album>_flac_verifier_report.pdf` filenames so multi-album runs never
+overwrite earlier reports):
+
+<p align="center">
+  <img src="docs/screenshots/quick_drop.png" alt="FLAC Verifier v3.0.0 Quick Drop with PDF destination controls" width="900">
+</p>
 
 <p align="center">
   <img src="docs/screenshots/pdf_report.png" alt="FLAC Verifier generated PDF verification report" width="900">
@@ -187,21 +218,29 @@ For the full scoring weights, detector definitions and NDJSON event schema, see
 
 ```text
 FLAC VERIFIER/
-├── main.py                   single entry point (GUI, CLI or engine)
-├── motor_flac.py             analysis engine facade, process pool, cache & CLI
+├── main.py                   single entry point (v3 GUI, CLI, engine, or --legacy-gui)
+├── motor_flac.py             analysis engine facade, process pool, cache & CLI (Engine 17.2)
 ├── _motor_bits.py            MD5, clipping, DR & 24-bit algebraic lattice audit
 ├── _motor_espectral.py       streaming STFT, psychoacoustic & Hi-Res/DSD detectors
 ├── _motor_veredicto.py       scoring, verdicts, forensic evidence & album coherence
 ├── _motor_cache.py           JSON sanitiser & per-track cache I/O
+├── library_db.py             SQLite WAL persistent library, forensic filters & exports
+├── covers.py                 offline FLAC / sidecar 320x320 WebP cover art cache
+├── scan_manager.py           background Library & Quick Drop NDJSON scan orchestrator
+├── spectrogram_bridge.py     on-demand compact dBFS spectrogram grid for interactive Canvas
+├── gui_v3.py                 Edge WebView2 desktop shell & Python-JS API bridge
+├── ui_v3/                    v3 desktop frontend (HTML5 / CSS3 / vanilla ECMAScript modules)
+├── updater.py                strict HTTPS + SHA-256 GitHub Releases auto-updater
 ├── verificar_flac.py         interactive command-line interface
-├── gui.py                    CustomTkinter desktop interface
-├── theme.py                  dark & light design tokens shared by GUI and PDF
+├── gui.py                    legacy CustomTkinter fallback (--legacy-gui, source only)
+├── theme.py                  dark & light design tokens shared by PDF and legacy GUI
 ├── informe_pdf.py            per-album PDF report generator
-├── build.py                  PyInstaller builder & post-build verifier
+├── installer/                Inno Setup 6 per-user Windows installer script
+├── build.py                  PyInstaller builder, portable ZIP, Inno Setup & SHA-256 metadata
 ├── comprobar_ejecutable.py   12-check verification suite for the frozen .exe
 ├── pyproject.toml            PEP 621 metadata & uv / pipx console scripts
-├── docs/                     technical reference, design system, validation & comparison
-└── tests/                    452 unit tests (stdlib unittest, synthetic fixtures)
+├── docs/                     technical reference, design system, validation & screenshots
+└── tests/                    497 unit tests (stdlib unittest, synthetic fixtures)
 ```
 
 Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
@@ -212,14 +251,17 @@ Visual identity assets live in `Logo/` (`logo_flac_verifier.png`,
 ## Tests & building
 
 ```bash
-# Run the full 452-test suite (~75 s, no external audio files needed)
+# Run the full 497-test suite (no external audio files needed)
 python -m unittest discover -s tests
 
-# Skip GUI tests in headless environments
+# Skip Tk GUI tests in headless environments
 FLAC_VERIFIER_SIN_GUI=1 python -m unittest discover -s tests
 
 # Build the standalone Windows folder in dist/FLAC_Verifier/
 python build.py
+
+# Build full Windows release assets (folder, portable ZIP, Inno Setup .exe, SHA256SUMS, latest.json)
+python build.py --release-assets
 ```
 
 | Test module | Coverage |
@@ -227,7 +269,9 @@ python build.py
 | `test_blindaje.py`, `test_protocolo.py`, `test_md5.py` | Corrupt-file safety, strict NDJSON contract, 8/16/24/32-bit MD5 verification |
 | `test_veredictos.py`, `test_forense_riguroso.py` | Phase 8–17.2 forensic detectors: 24/32-bit lattice, 16-in-24 micro-dither & noise-shaped dither guard, `24/44.1` studio converter tail, DSD/Hi-Res (including active unclipped-frame 22.05/24 kHz brickwall unmasking), lapped transform & subband lattices (`MDCT-1024` Vorbis/KBD/Sine + sub-splice `3.5–14.8 kHz`, `MDCT-2048` WMAv2, `PQMF-576`, `MDCT-512` AC-3/E-AC-3, `PQMF-32`, `CELT-960` with unclipped fallback, plus Hi-Res `88.2–192 kHz` decimation bridge), neural vocoder comb/phase (`50–250 Hz` + commensurate `1,200 Hz` EnCodec 48 kHz stride comb) & 2D spectral-folding BWE detectors, seamless QMF SBR (including guarded low-ceiling `5.5–14.5 kHz` tracks), inter-channel `MSC`/`IPD` stereo phase coupling, multi-family corroboration, synth stationarity guard, `sfb21` islands, 20 kHz modulation, harmonic exciter, vintage/acoustic exemptions (`4.5–19.4 kHz`) & album coherence |
 | `test_rendimiento.py`, `test_cache_y_paralelo.py` | Streaming equivalence, vectorised hot paths, cache invalidation & partial PNG hydration, parallel pool & natural track ordering |
-| `test_gui.py`, `test_theme.py`, `test_informe_pdf.py` | GUI lifecycle, dark/light live retheming, WCAG contrast, PDF layout & spectrogram embedding |
+| `test_library_db.py`, `test_covers.py`, `test_scan_manager.py` | SQLite WAL schema, portable mode, Windows path normalization, incremental scans, engine-upgrade coherence, resilient WebP cover caching, background scan pause/resume/cancel, Quick Drop PDF parity & interactive spectrogram bridge |
+| `test_gui_v3.py`, `test_updater.py` | WebView2 WSGI server, JS API bridge, native drag-and-drop path validation, settings persistence, strict HTTPS/SHA-256 auto-updater & release metadata |
+| `test_gui.py`, `test_theme.py`, `test_informe_pdf.py` | Legacy GUI lifecycle, WCAG contrast tokens, PDF layout & spectrogram embedding |
 | `test_estructura.py`, `test_empaquetado.py`, `test_idioma.py` | Architectural boundaries, PyInstaller spec invariants & English-only repository enforcement |
 
 ---
@@ -235,7 +279,7 @@ python build.py
 ## Documentation
 
 - **[`docs/REFERENCE.md`](docs/REFERENCE.md)** — Full NDJSON protocol contract, scoring weights, known physical limits, cache keys and Windows packaging internals.
-- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 2.13.2`).
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history (`current: 3.0.0`).
 - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — 340-track real-encoder & adversarial benchmark report (41 families) with Wilson 95 % confidence intervals and SHA-256 manifest digest.
 - **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — Side-by-side architectural comparison with [FLAC Detective](https://github.com/Guillain-RDCDE/FLAC_Detective).
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — UI/PDF design system and accessibility tokens.

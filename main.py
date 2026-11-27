@@ -44,7 +44,7 @@ for _variable_blas in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
     os.environ.setdefault(_variable_blas, "1")
 del _variable_blas
 
-VERSION = "2.13.2"
+VERSION = "3.0.0"
 ENGINE_EXE_NAME = "flac_motor.exe"
 
 
@@ -56,9 +56,11 @@ class CliTarget(str, Enum):
     ENGINE = "engine"
     CLI = "cli"
     GUI = "gui"
+    LEGACY_GUI = "legacy_gui"
 
 
 GUI_OPTION_FLAGS = frozenset(("--gui", "-g"))
+LEGACY_GUI_FLAGS = frozenset(("--legacy-gui",))
 
 ENGINE_OPTION_FLAGS = frozenset((
     "--path",
@@ -74,8 +76,9 @@ ENGINE_OPTION_FLAGS = frozenset((
 HELP = """FLAC VERIFIER — FLAC authenticity verifier
 
 Usage:
-  FLAC_Verifier.exe                        Open the graphical interface
-  FLAC_Verifier.exe --gui [PATH]           Graphical interface, path ready
+  FLAC_Verifier.exe                        Open the desktop interface (v3)
+  FLAC_Verifier.exe --gui [PATH]           Desktop interface, path ready for Quick Drop
+  FLAC_Verifier.exe --legacy-gui [PATH]    Legacy CustomTkinter interface (source only)
   FLAC_Verifier.exe --motor-cli OPTIONS    Engine in console mode (used by the GUI)
   FLAC_Verifier.exe --cli                  Command-line interface
   FLAC_Verifier.exe --version              Show the version
@@ -121,6 +124,10 @@ def resolve_cli_dispatch(
         return (CliTarget.ENGINE, args[1:])
     if args and args[0] == "--cli":
         return (CliTarget.CLI, args[1:])
+    if args and args[0] in LEGACY_GUI_FLAGS:
+        rest = args[1:]
+        path = rest[0] if (rest and not rest[0].startswith("-")) else None
+        return (CliTarget.LEGACY_GUI, path)
 
     explicit_gui = bool(args and args[0] in GUI_OPTION_FLAGS)
     if frozen_engine and not explicit_gui:
@@ -157,13 +164,22 @@ def main(arguments: list[str] | None = None) -> int:
         return verificar_flac.main(list(payload) if isinstance(payload, list) else [])
 
     path = payload if isinstance(payload, str) else None
+    if target is CliTarget.LEGACY_GUI:
+        try:
+            from gui import main as legacy_gui_main
+        except Exception as e:
+            print(f"Could not load the legacy graphical interface: {type(e).__name__}: {e}")
+            print("You can use the v3 desktop interface or CLI:  FLAC_Verifier.exe --cli")
+            return 1
+        return legacy_gui_main(path)
+
     try:
-        from gui import main as gui_main
-    except Exception as e:                       # without customtkinter, without Tk…
+        from gui_v3 import main as gui_v3_main
+    except Exception as e:                       # without pywebview…
         print(f"Could not load the graphical interface: {type(e).__name__}: {e}")
         print("You can use the CLI instead:  FLAC_Verifier.exe --cli")
         return 1
-    return gui_main(path)
+    return gui_v3_main(path)
 
 
 if __name__ == "__main__":

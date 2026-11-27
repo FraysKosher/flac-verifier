@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flac-verifier"
-version = "2.13.2"
+version = "3.0.0"
 description = "Forensic FLAC authenticity verifier for detecting lossy transcodes and inflated containers"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,6 +37,9 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = [
+    "pywebview>=5.0",
+]
+legacy-gui = [
     "customtkinter>=5.2",
     "tkinterdnd2>=0.4",
 ]
@@ -44,8 +47,7 @@ pdf = [
     "reportlab>=4.0",
 ]
 all = [
-    "customtkinter>=5.2",
-    "tkinterdnd2>=0.4",
+    "pywebview>=5.0",
     "reportlab>=4.0",
 ]
 
@@ -69,12 +71,19 @@ py-modules = [
     "_motor_cache",
     "verificar_flac",
     "gui",
+    "gui_v3",
+    "library_db",
+    "covers",
+    "scan_manager",
+    "spectrogram_bridge",
+    "updater",
     "theme",
     "informe_pdf",
 ]
-packages = ["Logo", "Logo.icons"]
+packages = ["Logo", "Logo.icons", "ui_v3"]
 include-package-data = false
 
 [tool.setuptools.package-data]
 "Logo" = ["*.png", "*.ico", "*.svg"]
 "Logo.icons" = ["*.png"]
+"ui_v3" = ["*.html", "*.css", "*.js"]

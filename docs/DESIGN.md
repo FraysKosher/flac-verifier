@@ -467,3 +467,38 @@ Icon-only buttons need a tooltip (300 ms delay) and an accessible label.
 4. Buttons have hover, pressed, focus and disabled states and feel consistent.
 5. The PDF matches the GUI.
 6. 354 tests, 260-track validation benchmark, `comprobar_ejecutable` 12/12.
+
+---
+
+## 15. v3.0.0 Desktop Architecture (WebView2 + Persistent Library)
+
+Starting with **v3.0.0**, the default desktop interface (`gui_v3.py` + `ui_v3/`)
+moves from CustomTkinter to native Windows **Edge WebView2** via `pywebview`,
+while keeping `theme.py` for the PDF report and retaining `gui.py` in source
+mode only via `--legacy-gui`:
+
+- **Visual language:** Studio-grade three-pane workspace inspired by Linear,
+  macOS Music, and iZotope RX — neutral charcoal/porcelain surfaces, single
+  restrained amber accent, tabular monospace metrics, zero emoji, live
+  Dark/Light theme switching synchronized with the Windows 11 DWM title bar and
+  persisted in `settings.json`.
+- **Persistent SQLite Library (`library_db.py` + `covers.py`):** Multi-root
+  recursive album scanning stored in SQLite WAL (`%APPDATA%\FLAC Verifier\library.db`,
+  or alongside the binary when `portable.flag` is present), with offline
+  `320×320` WebP cover art extraction (`METADATA_BLOCK_PICTURE` -> sidecar ->
+  deterministic SVG sleeve), global forensic filter views (`Lossy Transcodes`,
+  `Hi-Res Upscaled`, `Fake 24-bit`, `AI / Neural`, `Corrupt MD5`, `Reviewed`),
+  `Reviewed / Ignored` audit annotations, automatic outdated-engine banners,
+  and CSV/JSON exports.
+- **Interactive Canvas Spectrogram (`spectrogram_bridge.py` + `ui_v3/spectrogram.js`):**
+  Presentation-only, on-demand `256×160` uint8 dBFS Magma heatmap with `Full` /
+  `Upper` zoom, live `kHz · dBFS · mm:ss` crosshair, and toggleable forensic
+  evidence overlays — zero changes to `motor_flac.py` (`ENGINE_VERSION = "17.2"`).
+- **Quick Drop & PDF parity (`scan_manager.py`):** Native `pywebview` drag-and-drop
+  with real Windows paths, album-by-album verification, `Generate PDF report`
+  with *Save in each album folder* / *Save in custom folder…*, and one-click
+  *Add to Library* promotion.
+- **Secure 1-click Updates (`updater.py` + `installer/flac_verifier.iss`):**
+  Per-user Inno Setup 6 installer (preserving `library.db` across upgrades)
+  plus strict HTTPS + SHA-256 verified update pill with an *Offline mode*
+  toggle in Settings.
