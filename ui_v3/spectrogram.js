@@ -252,54 +252,95 @@ export function renderInteractiveSpectrogram(canvas, readoutEl, rangeEl, specDat
       }
     }
 
-    // Forensic & reference markers
+    // Forensic & reference markers (with vertical anti-collision for label pills)
     if (showMarkers && markers.length) {
-      const usedY = [];
-      for (const m of markers.slice(0, 3)) {
+      const visible = [];
+      for (const m of markers.slice(0, 4)) {
         const freq = Number(m.freq_hz);
         if (!Number.isFinite(freq) || freq < minF || freq > maxF) continue;
         const my = Math.round(padT + ((maxF - freq) / Math.max(1, freqSpan)) * plotH);
-        const subtle = Boolean(m.subtle || m.kind === "reference");
-        ctx.save();
-        ctx.strokeStyle = subtle ? "rgba(226, 234, 242, 0.48)" : "#72d8e4";
-        ctx.lineWidth = subtle ? 1.4 : 2;
-        ctx.setLineDash(subtle ? [5, 5] : [8, 6]);
-        ctx.beginPath();
-        ctx.moveTo(padL, my);
-        ctx.lineTo(padL + plotW, my);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        visible.push({
+          m,
+          my,
+          subtle: Boolean(m.subtle || m.kind === "reference"),
+          text: String(m.label || ""),
+        });
+      }
 
-        const padX = showAxes ? Math.round(9 * dpr) : 11;
-        const badgeH = showAxes ? Math.round(22 * dpr) : 26;
-        const text = String(m.label || "");
-        if (text) {
-          ctx.font = `500 ${showAxes ? Math.round(11.5 * dpr) : 17}px ui-monospace, Consolas, monospace`;
-          const tw = ctx.measureText(text).width;
-          const bx = subtle && showAxes
-            ? padL + Math.round(10 * dpr)
-            : Math.max(padL + 10, padL + plotW - tw - padX * 2 - Math.round(10 * dpr));
-          let by = Math.max(padT + 8, Math.min(padT + plotH - badgeH - 8, my - badgeH - 6));
-          for (const prevY of usedY) {
-            if (Math.abs(by - prevY) < badgeH + 4) {
-              by = Math.min(padT + plotH - badgeH - 8, prevY + badgeH + 5);
-            }
-          }
-          usedY.push(by);
-          ctx.fillStyle = subtle ? "rgba(14, 18, 24, 0.80)" : "rgba(10, 14, 18, 0.88)";
-          ctx.strokeStyle = subtle ? "rgba(210, 220, 232, 0.34)" : "rgba(114, 216, 228, 0.60)";
-          ctx.lineWidth = 1.3;
-          ctx.beginPath();
-          if (typeof ctx.roundRect === "function") {
-            ctx.roundRect(bx, by, tw + padX * 2, badgeH, 6);
-          } else {
-            ctx.rect(bx, by, tw + padX * 2, badgeH);
-          }
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = subtle ? "#cfd8e2" : "#d9f4f7";
-          ctx.fillText(text, bx + padX, by + Math.round(badgeH * 0.68));
+      // Pass 1: draw every horizontal marker line so reference guides remain visible.
+      for (const item of visible) {
+        ctx.save();
+        ctx.strokeStyle = item.subtle ? "rgba(226, 234, 242, 0.48)" : "#72d8e4";
+        ctx.lineWidth = item.subtle ? 1.4 : 2;
+        ctx.setLineDash(item.subtle ? [5, 5] : [8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(padL, item.my);
+        ctx.lineTo(padL + plotW, item.my);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Pass 2: place non-overlapping label pills; omit subtle reference pill when a
+      // forensic marker sits within 24 px vertically (keeping the dashed line intact).
+      const padX = showAxes ? Math.round(9 * dpr) : 11;
+      const badgeH = showAxes ? Math.round(22 * dpr) : 26;
+      const minGap = showAxes ? Math.round(5 * dpr) : 6;
+      const refClearance = Math.round(24 * dpr);
+      const forensicYs = visible.filter((v) => !v.subtle).map((v) => v.my);
+
+      const minY = padT + 6;
+      const maxY = Math.max(minY, padT + plotH - badgeH - 6);
+      const fontSpec = `500 ${showAxes ? Math.round(11.5 * dpr) : 17}px ui-monospace, Consolas, monospace`;
+
+      const pills = [];
+      for (const item of visible) {
+        if (!item.text) continue;
+        if (item.subtle && forensicYs.some((fy) => Math.abs(fy - item.my) < refClearance)) {
+          continue;
         }
+        const preferredY = Math.max(minY, Math.min(maxY, item.my - badgeH - 5));
+        pills.push({ ...item, by: preferredY });
+      }
+
+      // Relax vertically top-to-bottom, then back up if pushed past the bottom bound.
+      pills.sort((a, b) => a.by - b.by);
+      for (let i = 1; i < pills.length; i++) {
+        const minAllowed = pills[i - 1].by + badgeH + minGap;
+        if (pills[i].by < minAllowed) {
+          pills[i].by = minAllowed;
+        }
+      }
+      if (pills.length && pills[pills.length - 1].by > maxY) {
+        pills[pills.length - 1].by = maxY;
+        for (let i = pills.length - 2; i >= 0; i--) {
+          const maxAllowed = pills[i + 1].by - badgeH - minGap;
+          if (pills[i].by > maxAllowed) {
+            pills[i].by = Math.max(minY, maxAllowed);
+          }
+        }
+      }
+
+      for (const item of pills) {
+        ctx.save();
+        ctx.font = fontSpec;
+        const tw = ctx.measureText(item.text).width;
+        const bx = item.subtle && showAxes
+          ? padL + Math.round(10 * dpr)
+          : Math.max(padL + 10, padL + plotW - tw - padX * 2 - Math.round(10 * dpr));
+        const by = Math.max(minY, Math.min(maxY, Math.round(item.by)));
+        ctx.fillStyle = item.subtle ? "rgba(14, 18, 24, 0.80)" : "rgba(10, 14, 18, 0.88)";
+        ctx.strokeStyle = item.subtle ? "rgba(210, 220, 232, 0.34)" : "rgba(114, 216, 228, 0.60)";
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(bx, by, tw + padX * 2, badgeH, 6);
+        } else {
+          ctx.rect(bx, by, tw + padX * 2, badgeH);
+        }
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = item.subtle ? "#cfd8e2" : "#d9f4f7";
+        ctx.fillText(item.text, bx + padX, by + Math.round(badgeH * 0.68));
         ctx.restore();
       }
     }

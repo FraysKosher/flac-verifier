@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import re
+import socket
 import ssl
 import subprocess
 import tempfile
@@ -49,7 +50,7 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset((
     "github-releases.githubusercontent.com",
 ))
 
-DEFAULT_TIMEOUT_SECONDS = 6.0
+DEFAULT_TIMEOUT_SECONDS = 12.0
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_INSTALLER_BYTES = 350 * 1024 * 1024
@@ -288,6 +289,33 @@ def _check_github_api_fallback(
     }
 
 
+def _format_network_error(exc: BaseException) -> str:
+    """Returns a concise, user-readable message for network/TLS/timeout errors."""
+    reason: Any = getattr(exc, "reason", exc)
+    if isinstance(exc, (TimeoutError, socket.timeout)) or isinstance(
+        reason, (TimeoutError, socket.timeout)
+    ):
+        return "Update check timed out while contacting GitHub Releases."
+    if isinstance(reason, str) and "timed out" in reason.lower():
+        return "Update check timed out while contacting GitHub Releases."
+
+    raw_text = ""
+    if isinstance(reason, ssl.SSLError):
+        raw_text = str(getattr(reason, "reason", "") or reason)
+        short = " ".join(raw_text.split())[:90].strip()
+        if short:
+            return f"TLS/SSL check failed while contacting GitHub Releases ({short})."
+        return "TLS/SSL check failed while contacting GitHub Releases."
+
+    raw_text = str(reason or exc)
+    short = " ".join(raw_text.split())
+    # Strip verbose OS errno prefixes while preserving the human-readable cause.
+    short = re.sub(r"^\[(?:Errno|WinError)\s+\d+\]\s*", "", short).strip()[:90]
+    if short:
+        return f"Could not reach GitHub Releases ({short}). Check your internet connection."
+    return "Could not reach GitHub Releases. Check your internet connection."
+
+
 def check_for_update(
     current_version: str,
     *,
@@ -342,19 +370,11 @@ def check_for_update(
             "current_version": str(current_version),
             "is_portable": is_portable,
         }
-    except TimeoutError:
+    except (TimeoutError, socket.timeout, urllib.error.URLError, OSError) as exc:
         return {
             "ok": False,
             "available": False,
-            "error": "Update check timed out while contacting GitHub Releases.",
-            "current_version": str(current_version),
-            "is_portable": is_portable,
-        }
-    except (urllib.error.URLError, OSError):
-        return {
-            "ok": False,
-            "available": False,
-            "error": "Could not reach GitHub Releases. Check your internet connection.",
+            "error": _format_network_error(exc),
             "current_version": str(current_version),
             "is_portable": is_portable,
         }

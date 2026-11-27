@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import ssl
 import sys
 import tempfile
 import unittest
@@ -88,6 +89,8 @@ class TestUpdater(unittest.TestCase):
                     updater.validate_release_url(bad)
 
     def test_offline_mode_and_timeout_handling(self) -> None:
+        self.assertGreaterEqual(updater.DEFAULT_TIMEOUT_SECONDS, 12.0)
+
         offline = updater.check_for_update("3.0.0", offline_mode=True, portable=False)
         self.assertTrue(offline["ok"])
         self.assertFalse(offline["available"])
@@ -98,6 +101,33 @@ class TestUpdater(unittest.TestCase):
         self.assertFalse(timed_out["ok"])
         self.assertFalse(timed_out["available"])
         self.assertIn("timed out", timed_out["error"].lower())
+
+        # TimeoutError wrapped inside URLError.reason must also report a clean timeout.
+        wrapped_to = _FakeOpener({
+            updater.LATEST_JSON_URL: urllib.error.URLError(TimeoutError("The read operation timed out"))
+        })
+        res_wrapped_to = updater.check_for_update("3.0.0", opener=wrapped_to, portable=False)
+        self.assertFalse(res_wrapped_to["ok"])
+        self.assertIn("timed out", res_wrapped_to["error"].lower())
+
+        # SSL and network errors include a concise readable reason without raw tracebacks.
+        ssl_err = _FakeOpener({
+            updater.LATEST_JSON_URL: urllib.error.URLError(
+                ssl.SSLCertVerificationError(1, "certificate verify failed")
+            )
+        })
+        res_ssl = updater.check_for_update("3.0.0", opener=ssl_err, portable=False)
+        self.assertFalse(res_ssl["ok"])
+        self.assertIn("TLS/SSL", res_ssl["error"])
+        self.assertIn("certificate verify failed", res_ssl["error"])
+
+        net_err = _FakeOpener({
+            updater.LATEST_JSON_URL: urllib.error.URLError(OSError("[Errno 11001] getaddrinfo failed"))
+        })
+        res_net = updater.check_for_update("3.0.0", opener=net_err, portable=False)
+        self.assertFalse(res_net["ok"])
+        self.assertIn("getaddrinfo failed", res_net["error"])
+        self.assertNotIn("Errno 11001", res_net["error"])
 
     def test_latest_json_404_falls_back_to_github_api_cleanly(self) -> None:
         http_404 = urllib.error.HTTPError(
