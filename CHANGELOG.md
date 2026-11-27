@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.2] - 2026-11-26
+
+### Added
+
+- **`MDCT-2048 (WMA)` lapped-transform lattice family (`_motor_espectral.py`, engine `17.2`)**:
+  adds `CodecLatticeFamily.MDCT_2048_WMA` with cached 4096-sample Sine window,
+  2048-sample hop, and 128-sample block-switching subgrid (gated to primary and
+  first secondary probe with sub-threshold noise isolated from `mdct_lattice_snr`),
+  raising `WMAv2 192 kbps` detection across 46 physical CDs from `94.70%` to
+  `99.52%` (`100.00%`, `179/179` on the frozen blind holdout).
+- **Commensurate `1,200 Hz` EnCodec 48 kHz stride-comb detector (`_detect_encodec_48k_comb_1200`) & sub-splice low-mid `MDCT-1024` (`3.5–9.5 kHz`)**:
+  detects exact `48000 / 40 = 1,200.000 Hz` transposed-convolution harmonics
+  via `n_fft = 15,360` (`df = 3.125 Hz`) and `100 Hz` sliding-median detrending
+  with sub-harmonic synth (`100/200/400 Hz`) and stationarity guards, plus a
+  zero-extra-FFT `3.5–9.5 kHz` `MDCT-1024` band for AI-spliced solo-instrument
+  tracks. On the frozen `neural_clips_test125` blind holdout (`1,250` clips),
+  `encodec_48k_24k` rose `81.60% -> 91.20%` (`MAESTRO` `2/14 -> 12/14`),
+  `ood_vocos_44k_spliced` rose `92.00% -> 99.20%` (`MAESTRO` `5/14 -> 13/14`),
+  total neural attack recall reached **`97.70%` (`977/1,000`)**, and short-clip
+  clean controls stayed unchanged (`0` new false positives).
+- **Active unclipped-frame Hi-Res brickwall & `CELT-960` unmasking**:
+  accumulates musically active unclipped frames (`|x| < 0.995`, RMS `> -40 dBFS`)
+  so inter-sample clipping from loudness-war CD masters no longer masks
+  `22.05/24 kHz` brickwalls on `96k/24b` upscales (`97.27% -> 100.00%`,
+  `623/623`) or `CELT-960` grids on `Opus 128k -> 44.1 kHz` (`96.79% -> 98.88%`,
+  `99.44%` on the blind holdout).
+- **5 deterministic Engine `17.2` forensic tests** in `tests/test_forense_riguroso.py`
+  bringing the suite from **447** to **452 tests**.
+
+### Changed
+
+- **Opus `sub_lattice` selectivity, dark IQR coherence & solo-piano `4.5–5.8 kHz` acoustic decay (`_motor_veredicto.py`, `_motor_espectral.py`)**:
+  exports dedicated `celt_lattice_snr` so non-CELT noise-floor MDCT peaks no
+  longer corroborate `opus_20k_cutoff`, raises `_allows_dark_sparse_iqr_rescue`
+  noise-floor tolerance to `mdct_lattice_snr < 5.5`, and extends
+  `subceiling_clean_acoustic_decay` to `4.5–5.8 kHz` (keeping low brickwalls
+  flagged from `4.5 kHz`). Specificity improved across all clean corpora:
+  **`100.00%` (`140/140`)** on `MAESTRO v3`, **`100.00%` (`179/179`)** on
+  frozen blind CDs (`99.93%`, `2,683/2,685` on blind CD fakes), and
+  **`99.20%` (`618/623`)** originals / **`99.78%` (`9,324/9,345`)** fakes across
+  all 46 physical CD albums (`340/340` synthetic validation benchmark).
+
 ## [2.13.1] - 2026-11-25
 
 ### Added

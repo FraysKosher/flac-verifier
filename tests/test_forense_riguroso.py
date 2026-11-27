@@ -4499,7 +4499,7 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         self.assertEqual(err_mdct.get("mdct_detector_error"), "RuntimeError: boom-mdct")
 
         # Fallback propagation when 7.0 kHz <= ceiling_hz < 17.5 kHz and fullband probe errors.
-        def _fake_eval(mono_in, sr_in, ceiling_hz=None):
+        def _fake_eval(mono_in, sr_in, ceiling_hz=None, **_kwargs):
             if ceiling_hz is not None:
                 return {
                     "mdct_lattice_detected": False,
@@ -6570,6 +6570,177 @@ class TestFindingCodesAndDiagnostics(unittest.TestCase):
         ):
             r_blk = _eval_with(blocker)
             self.assertEqual(r_blk["iqr_corte_hz"], 1250.0, (blocker, r_blk))
+
+    def test_engine172_mdct2048_wma_lattice_and_snr_isolation(self):
+        """Engine 17.2: MDCT-2048 (WMA) detects quantized 4096-sample Sine frames without inflating clean SNR."""
+        import _motor_espectral as spectral
+
+        sr = 44100
+        rng = np.random.default_rng(17201)
+        n_samp = 40960
+        clean = (rng.standard_normal(n_samp) * 0.15).astype(np.float32)
+
+        # Build a phase-aligned 2048-hop 4096-sample Sine MDCT-2048 quantized signal
+        w = spectral._get_sine_4096()
+        n_hop = 2048
+        out = np.zeros(n_samp, dtype=np.float32)
+        for s0 in range(0, n_samp - 4096, n_hop):
+            frame = clean[s0 : s0 + 4096]
+            c = spectral._fast_mdct_f32(frame[None, :], w)[0]
+            # Quantize small coefficients to zero in 6-19 kHz (simulating WMAv2 coding)
+            k0 = int(6000.0 / (sr / 2.0) * 2048)
+            k1 = int(19000.0 / (sr / 2.0) * 2048)
+            sub = c[k0:k1]
+            thr = float(np.percentile(np.abs(sub), 65))
+            c[k0:k1] = np.where(np.abs(sub) < thr, np.float32(0.0), sub)
+            # Inverse MDCT via orthogonal DCT-IV + TDAC unfolding + Sine window
+            u = spectral._dct4_ortho_f32(c)
+            n2 = 1024
+            rec = np.empty(4096, dtype=np.float32)
+            rec[:n2] = u[n2:]
+            rec[n2:2048] = -u[n2:][::-1]
+            rec[2048 : 2048 + n2] = -u[:n2][::-1]
+            rec[2048 + n2 :] = -u[:n2]
+            out[s0 : s0 + 4096] += rec * w
+
+        det_wma = spectral._detect_lapped_codec_grid(out[2048:-2048], sr, ceiling_hz=20000.0)
+        self.assertIs(det_wma["mdct_lattice_detected"], True, det_wma)
+        self.assertEqual(
+            det_wma["mdct_lattice_family"],
+            spectral.CodecLatticeFamily.MDCT_2048_WMA.value,
+        )
+        self.assertGreaterEqual(det_wma["mdct_lattice_snr"], 12.0)
+
+        det_clean = spectral._detect_lapped_codec_grid(clean, sr, ceiling_hz=20000.0)
+        self.assertIs(det_clean["mdct_lattice_detected"], False, det_clean)
+        self.assertLess(det_clean["mdct_lattice_snr"], 6.0)
+
+    def test_engine172_unclipped_hires_brickwall_and_real_hires_safety(self):
+        """Engine 17.2: unclipped active frames unmask 22.05 kHz brickwalls in clipped 96 kHz upscales."""
+        import _motor_espectral as spectral
+
+        sr = 96000
+        rng = np.random.default_rng(17202)
+        # Synthesize 3 seconds of genuine 44.1 -> 96 kHz upsampled audio:
+        # 1.5s heavily loudness-war clipped (injecting broadband 24-48 kHz harmonics)
+        # + 1.5s clean active passage exposing the 22.05 kHz Nyquist brickwall.
+        sr_cd = 44100
+        raw_cd = rng.standard_normal((int(sr_cd * 3.0), 2)).astype(np.float64)
+        cd_like = signal.resample(
+            raw_cd, int(round(len(raw_cd) * sr / sr_cd)), axis=0
+        )
+        n_half = len(cd_like) // 2
+        cd_like = cd_like[: 2 * n_half]
+        cd_like /= float(np.max(np.abs(cd_like)) + 1e-9)
+        upscaled = np.empty_like(cd_like)
+        upscaled[:n_half] = np.clip(cd_like[:n_half] * 2.4, -1.0, 1.0)
+        upscaled[n_half:] = cd_like[n_half:] * 0.45
+
+        res_fake = spectral.analyze_spectrum(upscaled, sr, mode="full", bits_per_sample=24)
+        self.assertIs(res_fake["muro_brickwall_nyquist"], True, res_fake)
+
+        # Genuine 96 kHz fullband signal with smooth ultrasonic content stays clean
+        raw = rng.standard_normal((2 * n_half, 2)).astype(np.float64)
+        sos_real = signal.butter(2, 18000.0, btype="low", fs=sr, output="sos")
+        real_96 = signal.sosfiltfilt(sos_real, raw, axis=0)
+        real_96 /= float(np.max(np.abs(real_96)) + 1e-9)
+        real_96[:n_half] = np.clip(real_96[:n_half] * 1.15, -1.0, 1.0)
+        real_96[n_half:] *= 0.45
+        res_real = spectral.analyze_spectrum(real_96, sr, mode="full", bits_per_sample=24)
+        self.assertIs(res_real["muro_brickwall_nyquist"], False, res_real)
+
+    def test_engine172_celt_sublattice_and_dark_iqr_rescue(self):
+        """Engine 17.2: Opus 20 kHz sub-lattice requires CELT SNR (not unrelated MDCT noise), and dark IQR rescue tolerates noise-floor SNR < 5.5."""
+        import _motor_veredicto as verdict
+
+        # Non-CELT noise-floor mdct_lattice_snr (3.86) with celt_lattice_snr=0.0 must NOT corroborate a 17 dB shelf
+        _, _, sub_non_celt = verdict._opus_corroboration_flags({
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 17.4,
+            "techo_hz": 17743,
+            "mdct_lattice_snr": 3.86,
+            "celt_lattice_snr": 0.0,
+        })
+        self.assertIs(sub_non_celt, False)
+
+        # Real CELT sub-threshold peak (>= 3.8) still corroborates
+        _, _, sub_celt = verdict._opus_corroboration_flags({
+            "sospecha_corte_opus_20k": True,
+            "caida_opus_20k_db": 14.5,
+            "techo_hz": 20010,
+            "mdct_lattice_snr": 4.2,
+            "celt_lattice_snr": 4.2,
+        })
+        self.assertIs(sub_celt, True)
+
+        # Dark sparse album coherence rescue allows noise-floor mdct_lattice_snr=4.6 (< 5.5)
+        ok_rescue = verdict._allows_dark_sparse_iqr_rescue(
+            44100,
+            {
+                "clase_corte": "no_cutoff",
+                "centroide_hz": 371.2,
+                "iqr_corte_hz": 872.1,
+                "ratio_huecos_mdct": 0.0025,
+                "mdct_lattice_snr": 4.59,
+            },
+            "match",
+        )
+        self.assertIs(ok_rescue, True)
+
+    def test_engine172_subceiling_acoustic_4500hz_vs_low_brickwall(self):
+        """Engine 17.2: dark solo-instrument decay down to 4.5 kHz is exempted while a 5.0 kHz brickwall is flagged."""
+        import _motor_espectral as spectral
+
+        sr = 44100
+        freqs = np.fft.rfftfreq(4096, 1.0 / sr)
+
+        # Smooth solo-piano decay crossing -60 dB around 5.0 kHz (post-4 kHz slope ~9.0 dB/kHz)
+        f_khz = freqs / 1000.0
+        db_dark = -12.0 - 15.0 * np.minimum(f_khz, 2.8) - 9.0 * np.maximum(f_khz - 2.8, 0.0)
+        db_dark = np.maximum(db_dark, -96.0)
+        p_dark = 10.0 ** (db_dark / 10.0)
+        m_dark = spectral._spectral_metrics(freqs, p_dark, p_dark, sr, is_stereo=True)
+        self.assertGreaterEqual(m_dark["techo_hz"], 4500)
+        self.assertLess(m_dark["techo_hz"], 5800)
+        self.assertIs(m_dark["decaimiento_acustico_suave"], True, m_dark)
+
+        # Sharp 5.0 kHz brickwall (e.g. 32 kbps transcode) must be flagged as far_cutoff
+        db_bw = np.where(freqs <= 5000.0, -10.0 - 2.0 * (freqs / 1000.0), -110.0)
+        p_bw = 10.0 ** (db_bw / 10.0)
+        m_bw = spectral._spectral_metrics(freqs, p_bw, p_bw, sr, is_stereo=True)
+        self.assertEqual(m_bw["clase_corte"], spectral.CutoffClass.FAR_CUTOFF.value, m_bw)
+        self.assertIs(m_bw["decaimiento_acustico_suave"], False, m_bw)
+
+    def test_engine172_encodec_48k_comb_1200_and_synth_guard(self):
+        """Engine 17.2: 1,200 Hz EnCodec 48 kHz comb detector catches exact harmonic lattice and rejects noise/200 Hz synths."""
+        import _motor_espectral as spectral
+
+        sr = 48000
+        rng = np.random.default_rng(17205)
+        n = sr * 4
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        noise = (rng.standard_normal(n) * 0.05).astype(np.float32)
+
+        # Clean broadband noise must not trigger
+        det_clean, _ = spectral._detect_encodec_48k_comb_1200(noise, sr)
+        self.assertIs(det_clean, False)
+
+        # 200 Hz sawtooth synth (sub-harmonic of 1,200 Hz) must be blocked by dominance guard
+        saw_200 = (0.25 * (2.0 * ((t * 200.0) % 1.0) - 1.0) + noise * 0.1).astype(np.float32)
+        det_saw, _ = spectral._detect_encodec_48k_comb_1200(saw_200, sr)
+        self.assertIs(det_saw, False)
+
+        # Exact 1,200 Hz transposed-convolution comb across 10.8-22.8 kHz triggers cleanly
+        enc_sig = noise.copy()
+        for k in range(9, 20):
+            enc_sig += (0.015 * np.sin(2.0 * np.pi * (k * 1200.0) * t)).astype(np.float32)
+        det_enc, z_enc = spectral._detect_encodec_48k_comb_1200(enc_sig, sr)
+        self.assertIs(det_enc, True, (det_enc, z_enc))
+        self.assertGreaterEqual(z_enc, 6.2)
+
+        # Stationarity flag suppresses EnCodec comb in _detect_neural_vocoder_artifacts
+        res_stat = spectral._detect_neural_vocoder_artifacts(enc_sig, sr, is_stationary=True)
+        self.assertIs(res_stat["neural_vocoder_detected"], False, res_stat)
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ from _motor_espectral import (
     PsychoacousticSTFTAccumulator, _SpectralAccumulator,
     _detect_lapped_codec_grid, _detect_sbr_qmf_replication,
     _detect_neural_vocoder_artifacts, _detect_spectral_folding_2d,
-    _get_kbd_2048, _get_kbd_512_ac3, _get_sine_2048, _get_vorbis_2048, _get_pqmf_fast,
+    _get_kbd_2048, _get_kbd_512_ac3, _get_sine_2048, _get_sine_4096, _get_vorbis_2048, _get_pqmf_fast,
     _robust_z_peak, _select_continuous_subwindow, _select_hf_subwindow_candidates,
     _save_spectrogram as _spectrogram_save,
 )
@@ -98,7 +98,20 @@ from _motor_cache import (
 # 8.1: the high band of a hi-res file is judged against the CD limit and not
 #      against a proportion of Nyquist (this fixed a false "PROBABLE UPSCALE"
 #      on 96/24 masters with an analogue roll-off).
-ENGINE_VERSION = "17.1"
+ENGINE_VERSION = "17.2"
+# 17.2: Mega-Arena DEV forensic calibration (pure NumPy + pypocketfft, zero ML):
+#       - Add CodecLatticeFamily.MDCT_2048_WMA (4096-sample Sine window, 2048-sample
+#         hop, 128-sample block-switching subgrid) catching WMAv2 transcodes while
+#         isolating sub-threshold SNR from non-WMA heuristics.
+#       - Track musically active unclipped frames/blocks (|x| < 0.995, RMS > -40 dBFS)
+#         to unmask 22.05/24 kHz Nyquist brickwalls in clipped loudness-war 96 kHz
+#         upscales and unclipped CELT-960 TDAC subwindows in hot Opus 44.1 kHz files.
+#       - Add zero-extra-FFT 3.5-9.5 kHz sub-splice MDCT-1024 probe (Z >= 11.5) and
+#         exact 1,200.000 Hz (n_fft=15,360 = 48*320) EnCodec 48 kHz transposed-conv
+#         harmonic comb detector guarded by stationarity and sub-harmonic dominance.
+#       - Scope opus_20k_cutoff sub-lattice corroboration to dedicated celt_lattice_snr,
+#         raise dark-sparse album IQR rescue lattice ceiling to < 5.5, and extend
+#         low-band brickwall / dark solo-instrument acoustic decay cleanly to 4.5 kHz.
 # 17.1: Acoustic low-centroid and full-band Opus guard calibration (Wave 2 DEV audit):
 #       - Clear sub-20 dB Opus 20 kHz step flags and suppress sub-threshold
 #         lattice corroboration when spectral energy extends above 20.6 kHz

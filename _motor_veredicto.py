@@ -316,10 +316,19 @@ def _opus_corroboration_flags(spectrum) -> tuple[bool, bool, bool]:
         or spectrum.get("mdct_lattice_detected")
     )
     ceiling_hz = spectrum.get("techo_hz")
+    if "celt_lattice_snr" in spectrum:
+        celt_snr = float(spectrum.get("celt_lattice_snr") or 0.0)
+        lat_snr = float(spectrum.get("mdct_lattice_snr") or 0.0)
+        drop_20k = float(spectrum.get("caida_opus_20k_db") or 0.0)
+        has_sub_peak = bool(
+            celt_snr >= 3.8 or (lat_snr >= 4.8 and drop_20k >= 25.0)
+        )
+    else:
+        has_sub_peak = float(spectrum.get("mdct_lattice_snr") or 0.0) >= 3.8
     sub_lattice = bool(
         not other_corroboration
         and (ceiling_hz is None or float(ceiling_hz) <= 20600.0)
-        and (spectrum.get("mdct_lattice_snr") or 0.0) >= 3.8
+        and has_sub_peak
     )
     return iqr_suppressed_by_opus, other_corroboration, sub_lattice
 
@@ -367,7 +376,7 @@ def _allows_dark_sparse_iqr_rescue(sr, spectrum, md5_state) -> bool:
             (
                 (spectrum.get("iqr_corte_hz") or 0.0) <= 950.0
                 and (spectrum.get("ratio_huecos_mdct") or 0.0) <= 0.01
-                and float(spectrum.get("mdct_lattice_snr") or 0.0) < 3.5
+                and float(spectrum.get("mdct_lattice_snr") or 0.0) < 5.5
             )
             or (
                 float(spectrum.get("techo_hz") or 0.0) < 12500.0
