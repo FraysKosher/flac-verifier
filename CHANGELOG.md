@@ -26,24 +26,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AI / Neural`, `Corrupt MD5`, `Reviewed / Ignored`), audit notes, automatic
   outdated-engine re-verification banners, and CSV/JSON exports.
 - **Background scan orchestrator & Quick Drop v2 parity (`scan_manager.py`)**:
-  streams Engine `17.2` NDJSON events album-by-album with Pause/Resume/Cancel
+  streams Engine `17.3` NDJSON events album-by-album with Pause/Resume/Cancel
   and clean Windows process-tree shutdown, alongside a dedicated Quick Drop
   lane preserving `Generate PDF report`, `PDF destination` (*Save in each album
   folder* / *Save in custom folder…*), and one-click *Add to Library*.
 - **Interactive Canvas spectrogram (`spectrogram_bridge.py` + `ui_v3/spectrogram.js`)**:
   generates presentation-only, on-demand `256×160` uint8 dBFS Magma spectrograms
   cached as zlib `.specz` files (~15–30 KB) with `Full` / `Upper` zoom,
-  real-time `kHz · dBFS · mm:ss` crosshair, and toggleable forensic evidence
-  overlays — without modifying `motor_flac.py` or `_motor_espectral.py`.
+  real-time `kHz · dBFS · mm:ss` crosshair, and toggleable Engine `17.3`
+  forensic evidence overlays (labeling 44.1/48 kHz Hi-Res upsamples as
+  `Source Nyquist cut-off` rather than `Codec cut-off` and suppressing CD-limit
+  warnings on verified analogue/DSD Hi-Res masters).
 - **Per-user Windows installer & 1-click SHA-256 auto-updater (`updater.py`, `installer/flac_verifier.iss`, `.github/workflows/release-windows.yml`)**:
   builds `FLAC_Verifier_Setup_3.0.0-win64.exe` (Inno Setup 6, no admin rights,
   preserves `library.db` across upgrades), `FLAC_Verifier_3.0.0-win64-portable.zip`,
   `SHA256SUMS_3.0.0.txt`, and `latest.json`. The in-app updater strictly
   enforces HTTPS on an explicit GitHub Releases allowlist, verifies `SHA-256`
   before launch, and includes an *Offline mode* toggle in Settings.
-- **45 new unit tests** (`test_library_db.py`, `test_covers.py`,
-  `test_scan_manager.py`, `test_gui_v3.py`, `test_updater.py`, and
-  `test_empaquetado.py` v3 checks), bringing the suite from **452** to **497 tests**.
+- **49 new unit tests** (`test_library_db.py`, `test_covers.py`,
+  `test_scan_manager.py`, `test_gui_v3.py`, `test_updater.py`,
+  `test_empaquetado.py` v3 checks, and Engine `17.3` Hi-Res/attribution/coherence
+  regressions), bringing the suite from **452** to **501 tests**.
 
 ### Changed
 
@@ -51,9 +54,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retired `customtkinter`, `tkinterdnd2`, and Tcl/Tk completely from the frozen
   Windows executables while keeping `gui.py` available in source mode via
   `--legacy-gui` and keeping `theme.py` for `informe_pdf.py`.
-- **Engine `17.2` untouched**: all forensic detectors, scoring thresholds,
-  NDJSON protocol keys, and the `340/340` real-encoder + adversarial validation
-  benchmark remain byte-for-byte identical to `v2.13.2`.
+- **Engine `17.3` Hi-Res calibration, album coherence & forensic message audit (`_motor_espectral.py`, `_motor_veredicto.py`, `informe_pdf.py`, `verificar_flac.py`, `library_db.py`, `spectrogram_bridge.py`, `ui_v3/`)**:
+  - Eliminates the 1-bin `22,050 Hz` verdict cliff on `>= 88.2 kHz` Hi-Res tracks:
+    uncorroborated `< 22.05 kHz` warm masters without a brickwall or lossy codec
+    now land at `SUSPICIOUS` (`50%`) instead of `0–10% PROBABLE UPSCALE`, while
+    borderline `22.05–23.0 kHz` ceilings score smoothly (`~77% PROBABLY LOSSLESS`)
+    and `NYQUIST_BRICKWALL` carries `-0.55` so genuine 44.1/48→96 kHz upsamples
+    consistently reach `PROBABLE UPSCALE`.
+  - Adds a stopband guard on the generic `worse_slope < -28.0` brickwall branch,
+    widens `continuous_steep_rolloff` slope tolerance to `-23 dB/kHz` for smooth
+    ultrasonic roll-offs (`-73..-91 dBFS` monotonic decay), and guards Hi-Res
+    M/S joint-stereo fusion on brickwall upsamples with `delta_cutoff < 1,100 Hz`.
+  - Separates lossless `44.1/48 kHz` source Nyquist limits (`20.5–24.8 kHz`,
+    `hires_upscale_cutoff`) from `lossy codec signature` across the engine, PDF
+    report, CLI, spectrogram markers, and SQLite smart tags (`Hi-Res Upscaled`
+    only, never `Lossy Transcodes`), and removes contradictory Hi-Res notes.
+  - Adds pure-acoustic clean album quorum (rescuing isolated low-ceiling acoustic
+    tracks on vintage/acoustic CDs) and Hi-Res brickwall album quorum
+    (`convicted_hires_upscale`), while fixing `library_db.py` finding-code, LSB,
+    and coherence extraction. Preserves `340/340` (`100.0%` sensitivity /
+    `100.0%` specificity) on `tests/benchmark_validacion.py`.
 
 ## [2.13.2] - 2026-11-26
 

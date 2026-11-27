@@ -493,7 +493,7 @@ mode only via `--legacy-gui`:
 - **Interactive Canvas Spectrogram (`spectrogram_bridge.py` + `ui_v3/spectrogram.js`):**
   Presentation-only, on-demand `256×160` uint8 dBFS Magma heatmap with `Full` /
   `Upper` zoom, live `kHz · dBFS · mm:ss` crosshair, and toggleable forensic
-  evidence overlays — zero changes to `motor_flac.py` (`ENGINE_VERSION = "17.2"`).
+  evidence overlays driven by Engine `17.3` forensic findings.
 - **Quick Drop & PDF parity (`scan_manager.py`):** Native `pywebview` drag-and-drop
   with real Windows paths, album-by-album verification, `Generate PDF report`
   with *Save in each album folder* / *Save in custom folder…*, and one-click

@@ -1,4 +1,4 @@
-"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 17.2).
+"""Reproducible multi-family validation benchmark for FLAC VERIFIER (Engine 17.3).
 
 Builds 340 tracks (140 authentic across 14 genuine mastering/archival/piano/
 percussive/synth families and 200 fakes across 27 real-encoder, AC-3/E-AC-3,

@@ -28,7 +28,7 @@ file is genuine lossless or a lossy transcode. Architecture is deliberately flat
 ## Commands
 
 ```bash
-.venv/Scripts/python.exe -m unittest discover -s tests        # ~497 tests; run this first
+.venv/Scripts/python.exe -m unittest discover -s tests        # ~501 tests; run this first
 .venv/Scripts/python.exe -m unittest tests.test_veredictos     # one module
 FLAC_VERIFIER_SIN_GUI=1 python -m unittest discover -s tests   # no desktop (skips Tk tests)
 python build.py --release-assets                               # package .exe, portable ZIP & Inno Setup
@@ -44,7 +44,7 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
    the CLI, the GUI or the PDF. `tests/test_estructura.py` catches it.
 2. `multiprocessing.freeze_support()` stays the **first statement** of the `__main__`
    block in `main.py` (`tests/test_empaquetado.py`).
-3. **Raise `ENGINE_VERSION`** (currently `"17.2"` in `motor_flac.py`) whenever any
+3. **Raise `ENGINE_VERSION`** (currently `"17.3"` in `motor_flac.py`) whenever any
    analysis calculation changes: it is what invalidates existing caches.
 4. No new runtime dependencies without discussing it. `numpy`, `scipy`, `soundfile`,
    `mutagen`, `pillow` are required; `pywebview`, `reportlab`, and legacy
@@ -84,5 +84,5 @@ time. Python is 3.10.11 in `.venv`; CI also runs 3.12 on Ubuntu and Windows.
 
 ## Known doc drift (trust the code, not the doc)
 
-- The suite is **497 tests**, app version is **`3.0.0`**, and `ENGINE_VERSION = "17.2"`;
+- The suite is **501 tests**, app version is **`3.0.0`**, and `ENGINE_VERSION = "17.3"`;
   `README.md` and `CONTRIBUTING.md` agree. Keep the number you touch in sync.
